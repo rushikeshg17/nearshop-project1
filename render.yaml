@@ -93,6 +93,13 @@ services:
       # that already exists, add it in the dashboard (Environment): a Blueprint sync does not prompt for it.
       - key: NEARSHOP_SENTRY_DSN
         sync: false # the Sentry project's DSN (Settings > Client Keys); the same project for both services
+      # Admin second factor (P2.4, app/core/security.py): the Fernet key that encrypts admins' TOTP secrets.
+      # Without it every admin sign-in answers 503 totp_unavailable. Staging's own key, never production's;
+      # create-admin runs as a one-off job on this service so it uses the same value. On a service that
+      # already exists, add it in the dashboard (Environment) before deploying P2.4: a Blueprint sync does
+      # not prompt for it.
+      - key: NEARSHOP_TOTP_KEY
+        sync: false # secret: uv run python -c "from app.core.security import generate_totp_key as g; print(g())"
       # Storage budget (P2.2): the Atlas tier's storage limit, for the admin storage card and the daily
       # snapshot's 70% and 85% warnings. Staging is on M0 (512 MB). Alerts: docs/runbooks/monitoring.md.
       - key: NEARSHOP_STORAGE_LIMIT_MB
@@ -151,6 +158,9 @@ services:
       # Error tracking (P2.1): on only when set; see the staging service.
       - key: NEARSHOP_SENTRY_DSN
         sync: false # the Sentry project's DSN
+      # Admin second factor (P2.4): production's own key; see the staging service. Add it before deploying P2.4.
+      - key: NEARSHOP_TOTP_KEY
+        sync: false # secret: production's own Fernet key, never staging's
       # Storage budget (P2.2): Atlas Flex, 5 GB (plan step 1-A). Set 512 while production is still on M0.
       - key: NEARSHOP_STORAGE_LIMIT_MB
         value: "5120"

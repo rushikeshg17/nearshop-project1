@@ -39,8 +39,8 @@ def make_user(db):
     made: list[int] = []
 
     def make(email: str, role: Role = Role.CUSTOMER, **fields) -> User:
-        user = db.users.insert(User(name="Session Tester", email=email, password_hash=hash_password(PASSWORD),
-                                    role=role, **fields))
+        fields.setdefault("name", "Session Tester")
+        user = db.users.insert(User(email=email, password_hash=hash_password(PASSWORD), role=role, **fields))
         made.append(user.id)
         return user
 
@@ -161,14 +161,23 @@ def test_an_old_token_is_rejected_after_a_phone_change(make_user):
 def test_deactivation_and_a_role_change_end_sessions(db, make_user):
     user = make_user("role-change@example.com")
     _, token = device(user.email)
+    # A role change ends every session: changing the role back does not bring the old token back.
+    db.users.update_one({"_id": user.id}, security.role_change_update(Role.OWNER))
+    assert me_with(token) is None
+    stored = db.users.get(user.id)
+    assert stored.role == Role.OWNER and stored.token_version == 1 and stored.sessions == []
+    db.users.update_one({"_id": user.id}, security.role_change_update(Role.CUSTOMER))
+    assert me_with(token) is None
+    assert db.users.get(user.id).token_version == 2
+    # Defence in depth: a role edited directly in the database (without the helper) still refuses the token.
+    _, token = device(user.email)
     db.users.update_one({"_id": user.id}, {"$set": {"role": Role.OWNER.value}})
-    assert me_with(token) is None  # the token says customer; the account no longer is
+    assert me_with(token) is None
     db.users.update_one({"_id": user.id}, {"$set": {"role": Role.CUSTOMER.value}})
-    assert me_with(token)["id"] == user.id
 
     assert admin_tasks.deactivate_user(db, user.id, ask=lambda _: db.mongo.name, out=lambda _: None) == 0
     stored = db.users.get(user.id)
-    assert stored.token_version == 1 and stored.sessions == []
+    assert stored.token_version == 3 and stored.sessions == []
     db.users.update_one({"_id": user.id}, {"$set": {"is_active": True}})
     assert me_with(token) is None  # reactivating does not bring old sessions back
 
@@ -397,9 +406,14 @@ def test_customer_login_is_unchanged(client):
 
 # ---------------------------------------------------------------- masked emails and the audited reveal
 def test_the_users_list_masks_emails_and_a_reveal_is_audited(admin, db, make_user):
-    target = make_user("reveal-me@example.com")
-    rows = admin.get("/api/admin/users", params={"q": "reveal-me"}).json()
-    assert [r["email"] for r in rows] == ["r***@example.com"]
+    target = make_user("reveal-me@example.com", name="Revealed Person")
+    rows = admin.get("/api/admin/users", params={"q": "revealed pers"}).json()
+    assert [(r["id"], r["email"]) for r in rows] == [(target.id, "r***@example.com")]
+    assert [r["id"] for r in admin.get("/api/admin/users", params={"q": str(target.id)}).json()] == [target.id]
+    # The search never matches email addresses, so it cannot confirm a masked address without the reveal
+    for q in ("reveal-me", "reveal-me@example.com", "@example.com", "example.com"):
+        assert target.id not in {r["id"] for r in admin.get("/api/admin/users", params={"q": q}).json()}, q
+    assert admin.get("/api/admin/users", params={"q": "9" * 40}).status_code == 200
     assert all("@" in r["email"] and "***" in r["email"] for r in admin.get("/api/admin/users").json())
     shops = admin.get("/api/admin/shops").json()
     assert shops and all(s["owner_email"].startswith(s["owner_email"][0] + "***@") for s in shops)
@@ -528,3 +542,19 @@ def test_rotate_demo_ends_the_demo_accounts_sessions(db, make_user):
     _, token = device(demo.email)
     assert admin_tasks.rotate_demo(db, ask=lambda _: db.mongo.name, out=lambda _: None) == 0
     assert me_with(token) is None
+
+
+# ---------------------------------------------------------------- deploy settings
+def test_the_totp_key_is_asked_for_by_both_api_services_and_documented():
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[2]
+    blueprint = yaml.safe_load((root / "render.yaml").read_text(encoding="utf-8"))
+    web = [s for s in blueprint["services"] if s["type"] == "web"]
+    assert {s["name"] for s in web} == {"nearshop-api-staging", "nearshop-api"}
+    for service in web:
+        assert {"key": "NEARSHOP_TOTP_KEY", "sync": False} in service["envVars"], service["name"]
+    example = (root / "backend" / ".env.example").read_text(encoding="utf-8")
+    assert "\nNEARSHOP_TOTP_KEY=\n" in example  # blank: each environment generates its own

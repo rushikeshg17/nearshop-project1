@@ -5,7 +5,9 @@ Sessions (P2.4). Every sign-in creates a session: a random id, recorded on the u
 `token_version` as `ver`. app/core/deps.py accepts a token only while its version equals the user's and its
 session is still on the user document, which it reads on every request anyway, so the check costs no extra
 database round trip. Logout removes one session; revoke_all_update() (sign-out-everywhere, password change,
-phone change, deactivation) bumps the version and clears the list, which ends every session at once.
+phone change, deactivation) bumps the version and clears the list, which ends every session at once. A role
+change goes through role_change_update(), which does the same, so tokens issued under the old role never work
+again, even if the role later changes back.
 
 Second factor. Admins confirm sign-in with a TOTP code (RFC 6238: HMAC-SHA1, 30-second step, 6 digits) or a
 single-use recovery code. The TOTP secret is stored encrypted with NEARSHOP_TOTP_KEY (a Fernet key; several
@@ -98,6 +100,13 @@ def revoke_all_update(extra: dict | None = None) -> dict:
     `extra` adds fields to the same $set (a new password hash, phone or role, is_active)."""
     return {"$inc": {"token_version": 1},
             "$set": {"sessions": [], "updated_at": utcnow(), **(extra or {})}}
+
+
+def role_change_update(role: str, extra: dict | None = None) -> dict:
+    """The users update for a new role: it sets the role and ends every session (revoke_all_update), so a role
+    change and a change back do not bring old tokens or sessions back. Every role change goes through this."""
+    value = getattr(role, "value", role)
+    return revoke_all_update({"role": value, **(extra or {})})
 
 
 _BROWSERS = (("edg/", "Edge"), ("opr/", "Opera"), ("samsungbrowser", "Samsung Internet"), ("firefox", "Firefox"),

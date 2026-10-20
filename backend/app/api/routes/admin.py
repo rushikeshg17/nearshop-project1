@@ -103,8 +103,12 @@ def users(_: AdminUser, db: DB, role: Literal["customer", "owner", "admin"] | No
     query: dict = {}
     if role:
         query["role"] = Role(role)
-    if q:
-        query["$or"] = [{"name": _contains(q)}, {"email": _contains(q)}]
+    if q and q.strip():
+        # By name, or by account id. Never by email: matching addresses would let an admin confirm or rebuild
+        # a masked address one character at a time without the audited reveal below.
+        term = q.strip()
+        by_id = term.isascii() and term.isdigit() and len(term) <= 18
+        query["$or"] = [{"name": _contains(term)}, *([{"_id": int(term)}] if by_id else [])]
     # Emails are masked; the full address takes the reveal action below, which is audited.
     return [{"id": u.id, "name": u.name, "email": mask_email(u.email), "role": u.role.value,
              "is_active": u.is_active, "created_at": iso(u.created_at), "last_login_at": iso(u.last_login_at)}

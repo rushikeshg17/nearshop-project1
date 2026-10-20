@@ -150,6 +150,7 @@ HOURLY_AND_DAILY = [
     ("registration", "POST", "/api/auth/register", {"json": {}}, lambda api: edge(), 3, 10),
     ("reservation create", "POST", "/api/reservations", {"json": {}}, _customer, 10, 30),
     ("order create", "POST", "/api/orders", {"json": {}}, _customer, 5, 15),
+    ("password change", "POST", "/api/auth/password", {"json": {}}, _customer, 5, 10),
 ]
 
 
@@ -270,8 +271,36 @@ def test_the_limits_match_plan_section_8_3():
     assert (r.LOGIN_IP.limit, r.LOGIN_IP.per) == (20, 900)
     assert (r.LOGIN_ACCOUNT.limit, r.LOGIN_ACCOUNT.per, r.LOGIN_ACCOUNT.cooldown) == (10, HOUR, 1800)
     assert all(rule.failures_only for rule in (r.LOGIN_ACCOUNT_IP, r.LOGIN_IP, r.LOGIN_ACCOUNT))
+    assert (r.PASSWORD_CHANGE_HOUR.limit, r.PASSWORD_CHANGE_HOUR.per, r.PASSWORD_CHANGE_HOUR.key) == (5, HOUR, ("user",))
+    assert (r.PASSWORD_CHANGE_DAY.limit, r.PASSWORD_CHANGE_DAY.per) == (10, DAY)
+    assert not (r.PASSWORD_CHANGE_HOUR.failures_only or r.PASSWORD_CHANGE_DAY.failures_only)
     assert {rule.name for rows in r.LIMITS for rule in rows.rules if rule.admin_exempt} == {
         "search_ip", "search_session", "suggest_ip"}
+
+
+# ---------------------------------------------------------------- password change
+
+
+def test_guessing_the_current_password_with_a_held_session_is_limited(api, limits):
+    """A wrong current password answers 400 (not a counted login failure), so the password-change rule counts
+    every attempt by the account: a stolen session cookie cannot guess at the default 600 per minute."""
+    res = api.post("/api/auth/login", json={"email": "cust@example.com", "password": PASSWORD}, headers=edge())
+    assert res.status_code == 200
+    assert api.cookies.get(settings.cookie_name)  # this client now holds the session cookie
+    h = edge("198.51.100.7")
+
+    def guess(current: str = "not-the-password"):
+        return api.post("/api/auth/password", json={"current_password": current, "new_password": "x" * 20},
+                        headers=h)
+
+    for _ in range(5):
+        res = guess()
+        assert res.status_code == 400 and res.json()["error"]["code"] == "wrong_password"
+    assert_limited(guess(), HOUR)
+    assert_limited(guess(PASSWORD), HOUR)  # the right password too, until the window ends
+    # another IP does not escape it: the count is the account's
+    h = edge("198.51.100.8")
+    assert_limited(guess(), HOUR)
 
 
 # ---------------------------------------------------------------- password login
