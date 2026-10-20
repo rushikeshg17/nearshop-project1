@@ -13,13 +13,13 @@ What it creates (all demo data; sales are flagged is_demo=True so AI outputs say
   - reservation / delivery history with realistic outcomes, status timelines and reviews
   - search history around the city, then trains every AI model
 
-Demo logins (password from NEARSHOP_DEMO_PASSWORD, default in .env.example):
-  customer  priya@nearshop.demo
-  owner     owner@nearshop.demo
-  admin     admin@nearshop.demo
+Demo logins use the password in NEARSHOP_DEMO_PASSWORD (backend/.env or the environment). There is
+no default: the seed stops before it touches any database unless that is a random value of at least
+16 characters. The team shares demo credentials privately.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -146,11 +146,34 @@ def seasonal_factor(season: list[float], day: datetime) -> float:
 
 WEEKDAY = [0.9, 0.92, 0.95, 0.97, 1.05, 1.2, 1.3]  # Mon..Sun
 
+DEMO_PASSWORD_MIN_LENGTH = 16
+# SHA-256 of the demo password that .env.example used to publish. Only the digest is kept, so the
+# old value does not reappear in the repo.
+RETIRED_DEMO_PASSWORD_SHA256 = "8cd5cf5588bf26aa04d49f072334e1657dc77d21034a55010b98f60239895528"
+
+
+def check_demo_password(password: str | None) -> str | None:
+    """Say why `password` must not be given to the demo accounts, or return None when it may be.
+
+    Pure: it reads no settings and touches no database. `main` calls it before creating any
+    database handle, so a rejected password means nothing was written."""
+    if not password:
+        return ('NEARSHOP_DEMO_PASSWORD is not set. Generate one with python3 -c "import secrets;'
+                'print(secrets.token_urlsafe(24))" and put it in backend/.env.')
+    if hashlib.sha256(password.encode()).hexdigest() == RETIRED_DEMO_PASSWORD_SHA256:
+        return "NEARSHOP_DEMO_PASSWORD is the old public default. Generate a new random value."
+    if len(password) < DEMO_PASSWORD_MIN_LENGTH:
+        return (f"NEARSHOP_DEMO_PASSWORD has {len(password)} characters; it needs at least "
+                f"{DEMO_PASSWORD_MIN_LENGTH}. Generate a random value.")
+    return None
+
 
 def main() -> None:
+    demo_password = settings.demo_password.get_secret_value()
+    if problem := check_demo_password(demo_password):
+        raise SystemExit(f"Seed stopped; no database was touched. {problem}")
     city_slug = settings.seed_city
     started = time.time()
-    demo_password = os.environ.get("NEARSHOP_DEMO_PASSWORD", "nearshop123")
     cities = load("cities.json")
     if city_slug not in cities:
         raise SystemExit(f"Unknown NEARSHOP_SEED_CITY '{city_slug}'. Options: {', '.join(cities)}")
@@ -603,7 +626,7 @@ def main() -> None:
     results = train_all(db)
     print(json.dumps({k: v for k, v in results.items() if k != "demand"}, indent=1, default=str)[:1500])
     print(f"  demand: {results.get('demand')}")
-    print(f"Done in {time.time() - started:.0f}s. Demo password: set by NEARSHOP_DEMO_PASSWORD (see .env.example)")
+    print(f"Done in {time.time() - started:.0f}s. Demo password: the NEARSHOP_DEMO_PASSWORD you set")
 
 
 if __name__ == "__main__":

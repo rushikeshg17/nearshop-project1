@@ -2,6 +2,7 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
@@ -13,11 +14,11 @@ import { homeFor } from "@/hooks/use-session";
 import { api, errorMessage } from "@/lib/api";
 import type { User } from "@/lib/types";
 
-const DEMO = [
-  { label: "Customer", email: "priya@nearshop.demo" },
-  { label: "Shop owner", email: "owner@nearshop.demo" },
-  { label: "Admin", email: "admin@nearshop.demo" },
-];
+// Build-time flag, off by default (next.config.ts gives it the value "false"). Only a demo
+// deployment built with NEXT_PUBLIC_NEARSHOP_DEMO_MODE=true shows the demo-account shortcuts;
+// in any other build this condition is the constant false and the demo module is left out.
+const DemoAccounts =
+  process.env.NEXT_PUBLIC_NEARSHOP_DEMO_MODE === "true" ? dynamic(() => import("./demo-accounts")) : null;
 
 export function safeNext(next: string | null) {
   // Only allow same-site relative paths to avoid open redirects.
@@ -101,21 +102,7 @@ export function LoginForm() {
         <Link href="/register/shop" className="font-medium text-foreground underline underline-offset-4">list your shop</Link>
       </p>
 
-      <div className="mt-10 rounded-2xl border border-dashed p-4">
-        <p className="text-xs font-medium text-muted-foreground">Demo accounts (password in backend/.env.example)</p>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {DEMO.map((d) => (
-            <button
-              key={d.email}
-              type="button"
-              onClick={() => setEmail(d.email)}
-              className="rounded-full border bg-card px-3 py-1 text-xs transition-colors hover:bg-accent"
-            >
-              {d.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      {DemoAccounts && <DemoAccounts onPick={setEmail} />}
     </div>
   );
 }

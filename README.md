@@ -54,7 +54,7 @@ The browser only talks to the Next.js origin. API calls and uploaded images are 
 
 ## Run it locally
 
-Requirements: Node 20.9+, [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 for you), and a MongoDB database: a free [Atlas](https://www.mongodb.com/atlas) cluster works. After `make setup`, put your connection string in `backend/.env` as `NEARSHOP_MONGODB_URI` (that file is gitignored; never commit it) and allow your IP address under Atlas > Network Access.
+Requirements: Node 20.9+, [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 for you), and a MongoDB database: a free [Atlas](https://www.mongodb.com/atlas) cluster works. After `make setup`, put your connection string in `backend/.env` as `NEARSHOP_MONGODB_URI` (that file is gitignored; never commit it) and allow your IP address under Atlas > Network Access. Also set `NEARSHOP_DEMO_PASSWORD` there to a random value of at least 16 characters; the seed refuses to run without one. The login page shows demo-account shortcuts only in a frontend built with `NEXT_PUBLIC_NEARSHOP_DEMO_MODE=true`.
 
 ```bash
 make setup     # install backend + frontend dependencies
@@ -72,13 +72,7 @@ cd frontend && npm install && npm run dev
 
 ### Demo accounts
 
-The password for all three is `NEARSHOP_DEMO_PASSWORD` in `backend/.env.example`.
-
-| Role | Email |
-|---|---|
-| Customer | `priya@nearshop.demo` |
-| Shop owner (Kaveri Mobiles) | `owner@nearshop.demo` |
-| Admin | `admin@nearshop.demo` |
+The team shares demo credentials privately.
 
 ### A five-minute demo
 
@@ -136,7 +130,7 @@ frontend/
 ## Tests
 
 ```bash
-make test        # backend: 26 tests
+make test        # backend: 36 tests
 cd frontend && npx tsc --noEmit && npx eslint src && npm run build
 ```
 

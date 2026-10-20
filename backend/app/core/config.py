@@ -2,6 +2,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -30,6 +31,9 @@ class Settings(BaseSettings):
 
     # Seed / location defaults
     seed_city: str = "ballari"
+    # Password given to the seeded demo accounts. No default: the seed refuses to run until a long
+    # random value is set in the environment or backend/.env (see database/seed/seed.py, check_demo_password).
+    demo_password: SecretStr = SecretStr("")
 
     # Fulfillment defaults
     reservation_hold_minutes: int = 30

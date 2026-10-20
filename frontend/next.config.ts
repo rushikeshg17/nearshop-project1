@@ -4,6 +4,9 @@ const API_ORIGIN = process.env.NEARSHOP_API_ORIGIN ?? "http://127.0.0.1:8000";
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
+  // Off unless the build sets it to "true". A default is needed so the flag is always inlined as a
+  // constant: an unset NEXT_PUBLIC_ variable is not, and the demo-account module would then ship.
+  env: { NEXT_PUBLIC_NEARSHOP_DEMO_MODE: process.env.NEXT_PUBLIC_NEARSHOP_DEMO_MODE ?? "false" },
   // The browser only ever talks to this origin; the API and uploaded images are proxied,
   // so the session cookie stays first-party and no CORS preflight is needed.
   async rewrites() {
