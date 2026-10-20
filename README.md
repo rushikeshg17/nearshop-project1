@@ -60,6 +60,7 @@ Requirements: Node 20.9+, [uv](https://docs.astral.sh/uv/) (it installs Python 3
 make setup     # install backend + frontend dependencies
 make db-up     # start the local MongoDB (docker-compose.yml) and wait until it is ready
 make seed      # reset the local database, generate the demo city, train all models (first run downloads a 90 MB model)
+make migrate   # after a pull that adds a schema migration (the API logs "schema is behind" until then)
 make api       # FastAPI on http://localhost:8000  (API docs at /docs)
 make web       # Next.js on http://localhost:3000  (in a second terminal)
 ```

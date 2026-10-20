@@ -33,13 +33,11 @@ db-up:
 db-down:
 	docker compose down
 
-schema:
-	cd backend && uv run python -m database.schema
-
 # Applies pending schema migrations, then creates missing collections, validators and indexes
 # (backend/database/migrate.py). Always the local database, whatever backend/.env points at: staging and
 # production migrate in their Render pre-deploy step. MIGRATE_ARGS=--status only reports.
 MIGRATE_ARGS ?=
+schema: migrate  # the old name; it used to run ensure_schema against whatever backend/.env named
 migrate: db-up
 	cd backend && NEARSHOP_MONGODB_URI='$(LOCAL_MONGODB_URI)' NEARSHOP_MONGODB_DB='$(LOCAL_MONGODB_DB)' \
 		uv run python -m database.migrate $(MIGRATE_ARGS)

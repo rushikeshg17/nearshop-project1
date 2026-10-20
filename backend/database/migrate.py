@@ -2,6 +2,7 @@
 
     uv run python -m database.migrate            # apply pending migrations, then ensure_schema
     uv run python -m database.migrate --status   # read-only: applied, expected and pending numbers
+    uv run python -m database.migrate --release-lock  # clear a lock left by a killed runner (runbook)
 
 Render runs it as each API service's preDeployCommand (render.yaml): it finishes before the new code
 starts, and a non-zero exit fails the deploy while the previous version keeps serving. How to write
@@ -9,7 +10,10 @@ a migration, the helpers and the expand-then-contract rule: database/migrations/
 
   * Lock: one document in schema_migrations_lock, so two runners never overlap. A second runner is
     refused (exit 3) while the lock is held. The holder refreshes it before each migration; a lock
-    left by a runner that died is taken over once it has expired (LOCK_TTL).
+    left by a runner that died is taken over once it has expired (LOCK_TTL). A runner that is killed
+    (a pre-deploy timeout or a cancelled deploy) never reaches its release, so its lock blocks every
+    deploy until it expires; --release-lock clears it at once, only once no runner is still working
+    (docs/runbooks/release-and-rollback.md, "Schema migrations").
   * Records: schema_migrations holds one document per applied migration: _id and number, name,
     applied_at and duration (seconds).
   * A database ahead of the code (it records migrations this code does not know, as after a
@@ -93,6 +97,14 @@ def refresh_lock(mongo: MongoDatabase, owner: str, ttl: timedelta = LOCK_TTL) ->
 
 def release_lock(mongo: MongoDatabase, owner: str) -> None:
     mongo[LOCK_COLLECTION].delete_one({"_id": LOCK_ID, "owner": owner})
+
+
+def force_release_lock(mongo: MongoDatabase) -> dict | None:
+    """Remove the lock whoever holds it, and return the removed lock document (None when unlocked).
+
+    For an operator clearing the lock of a runner that was killed. Never while a runner may still be
+    working: two runners would then overlap."""
+    return mongo[LOCK_COLLECTION].find_one_and_delete({"_id": LOCK_ID})
 
 
 # ---------------------------------------------------------------- versions
@@ -182,7 +194,10 @@ def remote_problem(environment: str, hosts: Sequence[str]) -> str | None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m database.migrate", description=__doc__.split("\n")[0])
-    parser.add_argument("--status", action="store_true", help="only report applied and pending migrations")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--status", action="store_true", help="only report applied and pending migrations")
+    action.add_argument("--release-lock", action="store_true",
+                        help="remove the migration lock left by a runner that was killed; apply nothing")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -197,8 +212,16 @@ def main(argv: Sequence[str] | None = None) -> int:
               f"pending {version.pending or 'none'}")
         return 0
     if problem := remote_problem(settings.environment, uri_hosts(settings.mongodb_uri)):
-        print(f"Migration refused; nothing was written. {problem}", file=sys.stderr)
+        print(f"{'Lock release' if args.release_lock else 'Migration'} refused; nothing was written. {problem}", file=sys.stderr)
         return 2
+    if args.release_lock:
+        removed = force_release_lock(mongo)
+        if removed is None:
+            print(f"database {mongo.name!r}: no migration lock was held")
+        else:
+            print(f"database {mongo.name!r}: removed the migration lock of {removed.get('owner', 'unknown')} "
+                  f"(since {removed.get('acquired_at')} UTC, expiring {removed.get('expires_at')} UTC)")
+        return 0
     try:
         applied = run(mongo)
     except MigrationLocked as exc:

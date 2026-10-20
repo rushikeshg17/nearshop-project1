@@ -113,7 +113,30 @@ No laptop holds either environment's credentials.
    "Use workflow from: release" and target production (read-only), or `make smoke` locally.
 5. Add a row to the release log below. Every production release gets one (check 5.2).
 
-Migrations run as Render's pre-deploy step once P1.4 adds them.
+**Schema migrations.** Each API service's pre-deploy step (render.yaml, `preDeployCommand`) runs
+`python -m database.migrate`: pending numbered migrations from `backend/database/migrations`, in order,
+then the collections, validators and indexes the code declares. It runs after the build and before the
+new version starts, while the previous version still serves. A non-zero exit fails the deploy and the
+previous version keeps serving; the deploy's log in Render shows the migration lines before the start.
+- Exit 1 (a migration failed): the failed migration is not recorded, so the next deploy runs it again
+  once it is fixed. Fix forward on main.
+- Exit 3 ("Another migration runner holds the lock"): only one runner may work at a time. Both API
+  services migrate their own database, so this is a second deploy of the same service, or the lock of a
+  runner that was killed. A runner killed mid-step (a pre-deploy timeout, a cancelled deploy) never
+  releases its lock, which then blocks every deploy until it expires an hour after the runner last
+  refreshed it. To clear it at once:
+  1. Check in Render (the service > Events) that no deploy of that service is still in its pre-deploy
+     step. Never clear the lock of a runner that is still working: two runners would overlap.
+  2. The service > Shell: `uv run --no-dev python -m database.migrate --release-lock`. It prints the
+     owner (host and process) of the lock it removed, and applies nothing.
+  3. Redeploy (Manual Deploy > Deploy latest commit), and check the log shows the migrations applied.
+- `uv run --no-dev python -m database.migrate --status` (in the Shell) reports, read-only, the applied
+  migration, the one the code expects and any pending.
+- The API logs "database schema is behind" at start when it finds pending migrations: the pre-deploy
+  step did not run or did not finish. Run it again by redeploying.
+
+From a laptop, `make migrate` only ever migrates the local database; with `NEARSHOP_ENVIRONMENT` set to
+`development` or `test` the runner refuses a hosted database.
 
 **Why staging smoke is a sweep, not a run per push.** checksPass deploys a commit only after the GitHub
 checks on it pass, and every Actions run, whatever starts it, is a check on a main commit, usually the

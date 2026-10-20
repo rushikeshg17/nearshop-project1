@@ -2,7 +2,7 @@
 
     uv run python -m database.migrate         # apply pending migrations, then create / update collections,
                                               # validators and indexes (what deploys run; see migrate.py)
-    uv run python -m database.schema          # only the create / update step (idempotent, never drops)
+    uv run python -m database.schema          # the same as database.migrate (kept for old habits)
 
 `reset` drops every collection, so it is guarded: see `check_reset_allowed`. The seed and the
 test suite are its only callers, and both pass a confirmation that repeats the database name.
@@ -472,10 +472,8 @@ def reset(mongo: MongoDatabase, *, confirm: str | None) -> None:
 
 
 if __name__ == "__main__":
-    from app.core.config import settings
-    from app.core.database import client
+    # The migration runner, with its lock, its records and its refusal to write to a hosted database
+    # from development or test: ensure_schema on its own is never run from the command line.
+    from database import migrate
 
-    logging.basicConfig(level=logging.INFO)
-    ensure_schema(client[settings.mongodb_db])
-    print(f"Schema ready in database '{settings.mongodb_db}': {len(VALIDATORS)} collections, "
-          f"{sum(len(v) for v in INDEXES.values())} indexes")
+    raise SystemExit(migrate.main())

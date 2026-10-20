@@ -207,6 +207,35 @@ def test_an_expired_lock_is_taken_over(scratch):
     assert scratch[migrate.LOCK_COLLECTION].count_documents({}) == 0
 
 
+def test_release_lock_clears_a_killed_runners_lock_from_the_command(scratch, monkeypatch, capsys):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "mongodb_db", scratch.name)
+    migrate.acquire_lock(scratch, "killed-runner")  # unexpired: run() would be refused for an hour
+    assert migrate.main(["--release-lock"]) == 0
+    assert "killed-runner" in capsys.readouterr().out
+    assert scratch[migrate.LOCK_COLLECTION].count_documents({}) == 0
+    assert migrate.applied_numbers(scratch) == set()  # it applied nothing
+    assert migrate.main(["--release-lock"]) == 0
+    assert "no migration lock" in capsys.readouterr().out
+    assert migrate.main([]) == 0 and migrate.applied_numbers(scratch) == {1}
+
+
+def test_release_lock_is_refused_for_a_hosted_database_in_development(monkeypatch, capsys):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "environment", "development")
+    monkeypatch.setattr(settings, "mongodb_uri", "mongodb+srv://cluster0.abcd1.mongodb.net/")
+    monkeypatch.setattr(migrate, "force_release_lock", lambda _m: pytest.fail("lock released on a hosted database"))
+    assert migrate.main(["--release-lock"]) == 2
+    assert "Lock release refused" in capsys.readouterr().err
+
+
+def test_the_schema_command_is_the_migration_runner():
+    source = open(schema.__file__).read().split('if __name__ == "__main__":', 1)[1]
+    assert "migrate.main()" in source and "ensure_schema(" not in source
+
+
 def test_a_failed_migration_is_not_recorded_and_the_lock_is_released(scratch):
     def broken(_mongo):
         raise RuntimeError("boom")

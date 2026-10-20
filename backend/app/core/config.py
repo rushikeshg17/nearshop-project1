@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     model_dir: Path = BACKEND_DIR / "ml_artifacts"
     enable_scheduler: bool = True
-    warm_on_startup: bool = True  # check the schema and build the semantic index when the API starts
+    warm_on_startup: bool = True  # build the semantic index when the API starts (the schema version check always runs)
 
     @field_validator("environment", mode="before")
     @classmethod
