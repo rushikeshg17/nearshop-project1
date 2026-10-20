@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.ai.semantic_index import index
 from app.api.router import api_router
@@ -106,9 +107,84 @@ async def lifespan(_: FastAPI):
         scheduler.shutdown()  # gives up its leases, so another process takes the jobs over at once
 
 
+class BodySizeLimitMiddleware:
+    """Refuse any request body over settings.max_request_body_mb with 413 body_too_large, on every route,
+    before anything parses it (P2.7, plan section 8.13). A declared Content-Length over the limit is refused
+    before a byte is read and the app never runs. Without one (chunked), the streamed bytes are counted: at
+    the first chunk past the limit the app is told the client left (so Starlette's form or body reader stops
+    and no handler runs), whatever it answers is dropped, and the 413 is sent instead."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    @staticmethod
+    def limit() -> int:
+        return settings.max_request_body_mb * 1024 * 1024
+
+    async def refuse(self, scope: Scope, send: Send) -> None:
+        await JSONResponse(
+            {"error": {"code": "body_too_large",
+                       "message": f"The request is larger than {settings.max_request_body_mb} MB."}},
+            status_code=413, headers={"Connection": "close"})(scope, _no_receive, send)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        limit = self.limit()
+        declared = next((v for k, v in scope["headers"] if k == b"content-length"), None)
+        if declared is not None:
+            try:
+                too_large = int(declared) > limit
+            except ValueError:
+                too_large = False  # the server refuses a malformed length itself; counting still applies
+            if too_large:
+                await self.refuse(scope, send)
+                return
+
+        received = 0
+        exceeded = False
+        started = False
+
+        async def counted_receive() -> Message:
+            nonlocal received, exceeded
+            if exceeded:
+                return {"type": "http.disconnect"}
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    exceeded = True
+                    return {"type": "http.disconnect"}
+            return message
+
+        async def guarded_send(message: Message) -> None:
+            nonlocal started
+            if exceeded and not started:
+                return  # the app's answer to the "disconnect"; the 413 replaces it
+            started = started or message["type"] == "http.response.start"
+            await send(message)
+
+        try:
+            await self.app(scope, counted_receive, guarded_send)
+        except Exception:
+            if not exceeded or started:
+                raise
+        if exceeded and not started:
+            await self.refuse(scope, send)
+
+
+async def _no_receive() -> Message:
+    return {"type": "http.disconnect"}
+
+
 app = FastAPI(title="NearShop API", version="1.0.0", lifespan=lifespan,
               description="Hyperlocal inventory discovery: find it nearby, reserve, pick up or get it delivered.")
 
+# Request bodies over settings.max_request_body_mb get 413 before anything parses them (BodySizeLimitMiddleware).
+# Added first, so it is the innermost: the edge check (403) comes before any body is read, and the 413 carries
+# the CORS, security and observability headers like every other answer.
+app.add_middleware(BodySizeLimitMiddleware)
 # Edge-only access, the client's address and rate limits (app/core/ratelimit.py). Added before CORS, so it runs
 # inside it: its 403 and 429 answers carry the CORS headers too.
 ratelimit.install(app)

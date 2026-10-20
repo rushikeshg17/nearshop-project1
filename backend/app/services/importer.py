@@ -7,12 +7,16 @@ until the owner confirms (commit).
 """
 from __future__ import annotations
 
+import csv
 import io
 import re
+import zipfile
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from rapidfuzz import fuzz, process
 
+from app.core.config import settings
 from app.core.database import Database
 from app.core.errors import AppError
 from app.models import Product, Shop
@@ -23,8 +27,8 @@ from app.services.loaders import with_category
 if TYPE_CHECKING:  # pandas is imported on use: it stays out of the API's serving memory
     import pandas as pd
 
-MAX_ROWS = 2000
-MAX_BYTES = 5 * 1024 * 1024
+# The commit route's row cap, fixed when the request model is defined; reading uses the live settings.
+MAX_ROWS = settings.import_max_rows
 AUTO_MATCH = 86  # at or above: confidently the same item
 SUGGEST_MATCH = 72  # between SUGGEST and AUTO: suggested, owner should check
 
@@ -74,30 +78,110 @@ def _number(v) -> float | None:
     return float(m.group()) if m else None
 
 
+def _check_xlsx_archive(data: bytes) -> None:
+    """Refuse a workbook that would expand too far, from the archive's entry list alone, before any XML
+    is parsed. Python's zipfile never inflates an entry past its declared size (it raises on a mismatch),
+    so the declared sizes bound what openpyxl can read."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            entries = archive.infolist()
+    except (zipfile.BadZipFile, OSError, ValueError, EOFError):
+        raise AppError("Couldn't read that file. Check it opens in Excel and has a header row.", code="bad_file") from None
+    limit_mb = settings.import_max_uncompressed_mb
+    total = sum(e.file_size for e in entries)
+    too_dense = any(e.file_size > settings.import_max_compression_ratio * max(e.compress_size, 1) for e in entries)
+    if total > limit_mb * 1024 * 1024 or too_dense:
+        raise AppError(f"That workbook expands to too much data (the limit is {limit_mb} MB unpacked). Export only "
+                       "the item list, or save it as .csv.", code="file_too_large")
+
+
+def _xlsx_rows(data: bytes) -> Iterator[list]:
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True, keep_links=False)
+    try:
+        ws = wb.worksheets[0]  # the first sheet, as before
+        ws.reset_dimensions()  # never pad rows to the width or height the file claims
+        for row in ws.iter_rows(values_only=True):
+            yield [None if v is None else str(v) for v in row]
+    finally:
+        wb.close()
+
+
+def _csv_rows(data: bytes) -> Iterator[list]:
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = data.decode("latin-1")
+    yield from csv.reader(io.StringIO(text, newline=""))
+
+
+def _bounded_table(rows: Iterator[list]) -> tuple[list[str], list[list]]:
+    """The header and data rows, read one row at a time and stopped at the first row past a limit: more
+    than settings.import_max_rows non-blank data rows, or a row with a value beyond column
+    settings.import_max_columns. Blank rows are skipped, and the first non-blank row is the header."""
+    max_rows, max_cols = settings.import_max_rows, settings.import_max_columns
+    header: list | None = None
+    body: list[list] = []
+    for raw in rows:
+        width = len(raw)
+        while width and (raw[width - 1] is None or str(raw[width - 1]).strip() == ""):
+            width -= 1
+        if not width:
+            continue
+        if width > max_cols:
+            raise AppError(f"That file has more than {max_cols} columns; keep only the item list columns.",
+                           code="too_many_columns")
+        if header is None:
+            header = raw[:width]
+            continue
+        if len(body) >= max_rows:
+            raise AppError(f"That file has more than {max_rows} rows; the limit is {max_rows} per upload.",
+                           code="too_many_rows")
+        body.append(raw[:width])
+    if header is None:
+        raise AppError("Couldn't read that file. Check it opens in Excel and has a header row.", code="bad_file")
+    width = max([len(header), *(len(r) for r in body)])
+    names: list[str] = []
+    for i in range(width):
+        name = str(header[i]).strip() if i < len(header) and header[i] is not None else ""
+        name = name or f"Unnamed: {i}"
+        base, n = name, 0
+        while name in names:  # duplicate headers get a suffix, as pandas gave them
+            n += 1
+            name = f"{base}.{n}"
+        names.append(name)
+    return names, [r + [None] * (width - len(r)) for r in body]
+
+
 def read_table(data: bytes, filename: str) -> pd.DataFrame:
+    """Parse an uploaded .xlsx or .csv item list within the limits in settings (plan section 8.13), all
+    enforced while reading: a .xlsx archive is checked before it is parsed, and reading stops at the first
+    row past the row or column limit. Blocking: runs in a worker thread (the import route is a def handler)."""
     import pandas as pd
 
-    if len(data) > MAX_BYTES:
-        raise AppError("File is larger than 5 MB. Split it or export only items in stock.", code="file_too_large")
+    if len(data) > settings.import_max_mb * 1024 * 1024:
+        raise AppError(f"File is larger than {settings.import_max_mb} MB. Split it or export only items in stock.",
+                       code="file_too_large")
     name = filename.lower()
+    if name.endswith(".xlsx"):
+        _check_xlsx_archive(data)
+        rows = _xlsx_rows(data)
+    elif name.endswith(".csv") or name.endswith(".txt"):
+        rows = _csv_rows(data)
+    else:
+        raise AppError("Upload a .xlsx or .csv file. Old .xls files: open and 'Save as' .xlsx first.", code="bad_file")
     try:
-        if name.endswith(".xlsx"):
-            df = pd.read_excel(io.BytesIO(data), engine="openpyxl", dtype=str)
-        elif name.endswith(".csv") or name.endswith(".txt"):
-            try:
-                df = pd.read_csv(io.BytesIO(data), dtype=str, encoding="utf-8-sig")
-            except UnicodeDecodeError:
-                df = pd.read_csv(io.BytesIO(data), dtype=str, encoding="latin-1")
-        else:
-            raise AppError("Upload a .xlsx or .csv file. Old .xls files: open and 'Save as' .xlsx first.", code="bad_file")
+        columns, body = _bounded_table(rows)
     except AppError:
         raise
     except Exception:
         raise AppError("Couldn't read that file. Check it opens in Excel and has a header row.", code="bad_file") from None
-    df = df.dropna(how="all")
-    if len(df) > MAX_ROWS:
-        raise AppError(f"That file has {len(df)} rows; the limit is {MAX_ROWS} per upload.", code="too_many_rows")
-    return df
+    finally:
+        close = getattr(rows, "close", None)
+        if close:
+            close()  # stops the generator early, closing the workbook
+    return pd.DataFrame(body, columns=columns, dtype=object)
 
 
 def preview(db: Database, shop: Shop, data: bytes, filename: str) -> dict:

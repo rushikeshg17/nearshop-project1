@@ -5,6 +5,7 @@ from datetime import datetime
 
 from app.core.config import settings
 from app.models import Category, Notification, Order, Product, Reservation, Review, Shop, StatusEvent
+from app.services.media import thumbnail_key
 from app.utils.hours import open_status
 
 
@@ -18,6 +19,13 @@ def media_url(path: str | None) -> str | None:
     if not path:
         return None
     return f"{settings.media_public_base_url or '/media'}/{path}"
+
+
+def thumbnail_url(path: str | None) -> str | None:
+    """The browser URL of a stored image's 320 px thumbnail (app/services/media.py, thumbnail_key), for lists
+    and small previews. Every image_url in these serializers has a thumbnail_url beside it. A photo stored
+    before thumbnails existed has one once database/admin_tasks.py backfill-thumbnails has run."""
+    return media_url(thumbnail_key(path)) if path else None
 
 
 def category_out(c: Category) -> dict:
@@ -46,6 +54,7 @@ def shop_brief(s: Shop, distance_km: float | None = None) -> dict:
         "free_delivery_above": s.free_delivery_above,
         "is_verified": s.is_verified,
         "image_url": media_url(s.image_path),
+        "thumbnail_url": thumbnail_url(s.image_path),
         "inventory_updated_at": iso(s.inventory_updated_at),
         "rating_avg": s.rating_avg,
         "rating_count": s.rating_count,
@@ -82,6 +91,7 @@ def listing(p: Product, shop: dict | None = None) -> dict:
         "unit": p.unit,
         "icon": p.icon,
         "image_url": media_url(p.image_path),
+        "thumbnail_url": thumbnail_url(p.image_path),
         "category": p.category.slug if p.category else None,
         "price": p.price,
         "mrp": p.mrp,
@@ -124,7 +134,8 @@ def reservation_out(r: Reservation, *, actions: list[str], events: list[StatusEv
         "closed_at": iso(r.closed_at),
         "close_reason": r.close_reason,
         "product": {"id": p.id, "name": p.name, "brand": p.brand, "unit": p.unit, "icon": p.icon,
-                    "image_url": media_url(p.image_path), "quantity_in_stock": p.quantity},
+                    "image_url": media_url(p.image_path), "thumbnail_url": thumbnail_url(p.image_path),
+                    "quantity_in_stock": p.quantity},
         "shop": {"id": r.shop.id, "slug": r.shop.slug, "name": r.shop.name, "locality": r.shop.locality,
                  "address_line": r.shop.address_line, "phone": r.shop.phone, "lat": r.shop.lat, "lng": r.shop.lng,
                  "hours_label": open_status(r.shop.opening_hours, r.shop.closed_on)["label"]},
@@ -163,7 +174,8 @@ def order_out(o: Order, *, actions: list[str], events: list[StatusEvent] | None 
         "items": [
             {"product_id": i.product_id, "name": i.name, "unit_price": i.unit_price, "quantity": i.quantity,
              "icon": i.product.icon if i.product else "Package",
-             "image_url": media_url(i.product.image_path) if i.product else None}
+             "image_url": media_url(i.product.image_path) if i.product else None,
+             "thumbnail_url": thumbnail_url(i.product.image_path) if i.product else None}
             for i in o.items
         ],
         "shop": {"id": o.shop.id, "slug": o.shop.slug, "name": o.shop.name, "locality": o.shop.locality,

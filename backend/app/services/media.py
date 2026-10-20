@@ -1,8 +1,11 @@
 """Image uploads behind a small storage interface.
 
-Uploads are decoded with Pillow, so anything that is not a real image is rejected, then re-encoded to
-WebP (this also strips EXIF/GPS metadata) and resized to a sane maximum. The result is stored under a
-key of the form folder/<uuid hex>.webp, which is what image_path holds in the database.
+Uploads are checked from their header (at most settings.max_image_pixels and settings.max_image_side px a
+side, before any decoding), decoded with Pillow (first frame only), so anything that is not a real image is
+rejected, then re-encoded to WebP (this also strips EXIF/GPS metadata) at up to 1,400 px, plus a 320 px
+thumbnail. The photo is stored under a key of the form folder/<uuid hex>.webp, which is what image_path
+holds in the database, and its thumbnail under folder/<uuid hex>.thumb.webp (thumbnail_key). Photos stored
+before thumbnails existed get theirs from python -m database.admin_tasks backfill-thumbnails.
 
 NEARSHOP_MEDIA_BACKEND picks where the bytes go:
 - local: files under settings.media_dir, served by the API at /media (development and test);
@@ -18,7 +21,6 @@ from typing import Protocol
 
 from fastapi import UploadFile
 from PIL import Image, ImageOps, UnidentifiedImageError
-from starlette.concurrency import run_in_threadpool
 
 from app.core.config import Settings, settings
 from app.core.errors import AppError
@@ -26,6 +28,10 @@ from app.core.errors import AppError
 log = logging.getLogger("nearshop.media")
 
 MAX_SIDE = 1400
+THUMB_SIDE = 320
+THUMB_SUFFIX = ".thumb"
+PHOTO_QUALITY = 82
+THUMB_QUALITY = 75
 ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP", "GIF"}
 CONTENT_TYPE = "image/webp"
 # Every key holds a fresh uuid and is never rewritten, so browsers and the CDN may keep it for a year.
@@ -36,6 +42,14 @@ class MediaStorage(Protocol):
     def put(self, key: str, data: bytes, content_type: str) -> None: ...
 
     def delete(self, key: str) -> None: ...
+
+    def get(self, key: str) -> bytes | None:
+        """The stored bytes, or None when the key does not exist."""
+        ...
+
+    def size(self, key: str) -> int | None:
+        """The stored size in bytes, or None when the key does not exist."""
+        ...
 
 
 class LocalStorage:
@@ -59,6 +73,14 @@ class LocalStorage:
         path = self._path(key)
         if path is not None and path.exists():
             path.unlink()
+
+    def get(self, key: str) -> bytes | None:
+        path = self._path(key)
+        return path.read_bytes() if path is not None and path.is_file() else None
+
+    def size(self, key: str) -> int | None:
+        path = self._path(key)
+        return path.stat().st_size if path is not None and path.is_file() else None
 
 
 class S3Storage:
@@ -94,6 +116,29 @@ class S3Storage:
     def delete(self, key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=key)
 
+    def get(self, key: str) -> bytes | None:
+        try:
+            return self.client.get_object(Bucket=self.bucket, Key=key)["Body"].read()
+        except Exception as exc:
+            if _missing(exc):
+                return None
+            raise
+
+    def size(self, key: str) -> int | None:
+        try:
+            return int(self.client.head_object(Bucket=self.bucket, Key=key)["ContentLength"])
+        except Exception as exc:
+            if _missing(exc):
+                return None
+            raise
+
+
+def _missing(exc: Exception) -> bool:
+    """Whether a botocore ClientError says the key does not exist (checked by its code, so botocore is
+    never imported here)."""
+    code = str((getattr(exc, "response", None) or {}).get("Error", {}).get("Code", ""))
+    return code in ("404", "NoSuchKey", "NotFound")
+
 
 def build_storage(cfg: Settings) -> MediaStorage:
     if cfg.media_backend == "s3":
@@ -124,37 +169,91 @@ def use_storage(storage: MediaStorage | None) -> MediaStorage | None:
     return previous
 
 
-async def save_image(upload: UploadFile, folder: str) -> str:
-    data = await upload.read(settings.max_upload_mb * 1024 * 1024 + 1)
-    if len(data) > settings.max_upload_mb * 1024 * 1024:
-        raise AppError(f"Images must be under {settings.max_upload_mb} MB", code="file_too_large")
+
+
+# ------------------------------------------------------------------ decoding and saving
+# Everything below decodes, encodes or calls the storage, so it runs in a worker thread: the upload routes
+# are plain def handlers (FastAPI runs those in its thread pool), never on the event loop.
+
+
+def thumbnail_key(key: str) -> str:
+    """Where a photo's thumbnail lives: the same key with a .thumb suffix (products/<hex>.thumb.webp)."""
+    stem, dot, ext = key.rpartition(".")
+    return f"{stem}{THUMB_SUFFIX}.{ext}" if dot else f"{key}{THUMB_SUFFIX}"
+
+
+def _too_large() -> AppError:
+    return AppError(f"That image is too large: at most {settings.max_image_pixels / 1_000_000:g} megapixels and "
+                    f"{settings.max_image_side:,} px on a side", code="bad_image", status_code=422)
+
+
+def decode_image(data: bytes) -> Image.Image:
+    """Decode an uploaded image to RGB, upright, first frame only, after checking its size from the header.
+
+    Image.open reads only the header, so a canvas over the pixel or side limit is refused before a single
+    pixel is decoded, and Pillow's own decompression-bomb error (above twice Image.MAX_IMAGE_PIXELS, raised
+    by Image.open; not an OSError) gets the same 422. An animated GIF or WebP opens on its first frame, and
+    nothing here seeks, so only that frame is decoded."""
     try:
         img = Image.open(io.BytesIO(data))
         if img.format not in ALLOWED_FORMATS:
             raise AppError("Upload a JPG, PNG or WebP image", code="bad_image")
-        img = ImageOps.exif_transpose(img).convert("RGB")
-    except (UnidentifiedImageError, OSError):
+        width, height = img.size
+        if width * height > settings.max_image_pixels or max(width, height) > settings.max_image_side:
+            raise _too_large()
+        if img.format == "JPEG":
+            # Let the JPEG decoder scale down by a power of two while decoding (at least twice MAX_SIDE).
+            img.draft(img.mode, (2 * MAX_SIDE, 2 * MAX_SIDE))
+        return ImageOps.exif_transpose(img).convert("RGB")
+    except Image.DecompressionBombError:
+        raise _too_large() from None
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError, EOFError):
         raise AppError("That file is not a readable image", code="bad_image") from None
-    img.thumbnail((MAX_SIDE, MAX_SIDE))
-    key = f"{folder}/{uuid.uuid4().hex}.webp"
+
+
+def encode_webp(img: Image.Image, side: int, quality: int) -> bytes:
+    """Shrink img in place to at most side px on its longest side, and encode it as WebP (no metadata)."""
+    img.thumbnail((side, side))
     out = io.BytesIO()
-    img.save(out, "WEBP", quality=82, method=5)
-    # A bucket upload is a network call, and the first one also imports boto3 and builds the client: keep
-    # both off the event loop.
-    await run_in_threadpool(_put, key, out.getvalue())
+    img.save(out, "WEBP", quality=quality, method=5)
+    return out.getvalue()
+
+
+def make_thumbnail(data: bytes) -> bytes:
+    """The thumbnail of a stored photo (thumbnail backfill, database/admin_tasks.py)."""
+    return encode_webp(decode_image(data), THUMB_SIDE, THUMB_QUALITY)
+
+
+def save_image(upload: UploadFile, folder: str) -> str:
+    """Check, re-encode and store an uploaded photo and its thumbnail; returns the photo's key. Blocking:
+    call it from a plain def handler or a worker thread, never on the event loop."""
+    limit = settings.max_upload_mb * 1024 * 1024
+    data = upload.file.read(limit + 1)
+    if len(data) > limit:
+        raise AppError(f"Images must be under {settings.max_upload_mb} MB", code="file_too_large")
+    img = decode_image(data)
+    del data
+    photo = encode_webp(img, MAX_SIDE, PHOTO_QUALITY)
+    thumb = encode_webp(img, THUMB_SIDE, THUMB_QUALITY)  # from the already shrunk image
+    key = f"{folder}/{uuid.uuid4().hex}.webp"
+    storage = get_storage()
+    storage.put(key, photo, CONTENT_TYPE)
+    try:
+        storage.put(thumbnail_key(key), thumb, CONTENT_TYPE)
+    except Exception:
+        delete_image(key)  # no photo without its thumbnail
+        raise
     return key
 
 
-def _put(key: str, data: bytes) -> None:
-    get_storage().put(key, data, CONTENT_TYPE)
-
-
 def delete_image(key: str | None) -> None:
-    """Remove a stored image. A failure is logged and never reaches the user: the new image is already
-    saved, and an orphaned file only costs storage."""
+    """Remove a stored photo and its thumbnail. A failure is logged and never reaches the user: the new
+    image is already saved, and an orphaned file only costs storage. A photo stored before thumbnails
+    existed has none; deleting a missing key is not an error."""
     if not key:
         return
-    try:
-        get_storage().delete(key)
-    except Exception as exc:
-        log.warning("could not delete media %s: %s", key, type(exc).__name__)
+    for k in (key, thumbnail_key(key)):
+        try:
+            get_storage().delete(k)
+        except Exception as exc:
+            log.warning("could not delete media %s: %s", k, type(exc).__name__)

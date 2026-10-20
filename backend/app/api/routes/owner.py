@@ -5,9 +5,9 @@ from typing import Literal
 from fastapi import APIRouter, File, Query, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
-from starlette.concurrency import run_in_threadpool
 
 from app.ai.semantic_index import index
+from app.core.config import settings
 from app.core.database import Database
 from app.core.deps import DB, OwnerShop, OwnerUser
 from app.core.errors import AppError, Conflict, NotFound
@@ -20,7 +20,15 @@ from app.schemas.requests import (
     StockIn,
     TransitionIn,
 )
-from app.schemas.serializers import listing, media_url, order_out, reservation_out, review_out, shop_detail
+from app.schemas.serializers import (
+    listing,
+    media_url,
+    order_out,
+    reservation_out,
+    review_out,
+    shop_detail,
+    thumbnail_url,
+)
 from app.services import analytics, importer
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
@@ -79,12 +87,15 @@ def update_shop(body: ShopUpdateIn, shop: OwnerShop, db: DB):
     return shop_detail(shop, None, shop_reliability(db, shop))
 
 
+# The three upload routes are plain def handlers: FastAPI runs them in its thread pool, so decoding, parsing,
+# storage and database work never blocks the event loop (P2.7). The body was already capped at
+# settings.max_request_body_mb (app/main.py) and spooled by Starlette before the handler runs.
 @router.post("/shop/image")
-async def upload_shop_image(shop: OwnerShop, db: DB, file: UploadFile = File(...)):
-    rel = await save_image(file, "shops")
-    await run_in_threadpool(delete_image, shop.image_path)
+def upload_shop_image(shop: OwnerShop, db: DB, file: UploadFile = File(...)):
+    rel = save_image(file, "shops")
+    delete_image(shop.image_path)
     db.shops.set(shop, image_path=rel)
-    return {"image_url": media_url(rel)}
+    return {"image_url": media_url(rel), "thumbnail_url": thumbnail_url(rel)}
 
 
 @router.get("/overview")
@@ -223,10 +234,10 @@ def delete_product(product_id: int, shop: OwnerShop, db: DB):
 
 
 @router.post("/products/{product_id}/image")
-async def upload_product_image(product_id: int, shop: OwnerShop, db: DB, file: UploadFile = File(...)):
+def upload_product_image(product_id: int, shop: OwnerShop, db: DB, file: UploadFile = File(...)):
     p = _own_product(db, shop, product_id)
-    rel = await save_image(file, "products")
-    await run_in_threadpool(delete_image, p.image_path)
+    rel = save_image(file, "products")
+    delete_image(p.image_path)
     db.products.set(p, image_path=rel)
     return listing(p)
 
@@ -399,8 +410,8 @@ def import_template(_: OwnerShop):
 
 
 @router.post("/import/preview")
-async def import_preview(shop: OwnerShop, db: DB, file: UploadFile = File(...)):
-    data = await file.read(importer.MAX_BYTES + 1)
+def import_preview(shop: OwnerShop, db: DB, file: UploadFile = File(...)):
+    data = file.file.read(settings.import_max_mb * 1024 * 1024 + 1)
     return importer.preview(db, shop, data, file.filename or "upload.csv")
 
 

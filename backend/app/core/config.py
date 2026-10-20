@@ -68,7 +68,32 @@ class Settings(BaseSettings):
     media_s3_secret_access_key: SecretStr = SecretStr("")
     media_s3_region: str = "auto"  # R2 uses auto
     media_public_base_url: str = ""  # https://media.example.com, no trailing slash needed
+
+    # Upload and import limits (P2.7, plan section 8.13). Every request body over max_request_body_mb is
+    # refused with 413 before it is parsed, on every route (app/main.py). Photos: at most max_upload_mb,
+    # and refused from their header, before decoding, above max_image_pixels or max_image_side px on a
+    # side (app/services/media.py). Stock imports (app/services/importer.py): at most import_max_mb; a
+    # .xlsx whose archive expands beyond import_max_uncompressed_mb, or holds an entry compressed more
+    # than import_max_compression_ratio to 1, is refused before parsing; reading stops at
+    # import_max_rows data rows plus one and at the first row wider than import_max_columns.
+    max_request_body_mb: int = 6
     max_upload_mb: int = 5
+    max_image_pixels: int = 25_000_000
+    max_image_side: int = 8000
+    import_max_mb: int = 5
+    import_max_uncompressed_mb: int = 50
+    import_max_compression_ratio: int = 100
+    import_max_rows: int = 2000
+    import_max_columns: int = 100
+
+    @field_validator("max_request_body_mb", "max_upload_mb", "max_image_pixels", "max_image_side", "import_max_mb",
+                     "import_max_uncompressed_mb", "import_max_compression_ratio", "import_max_rows",
+                     "import_max_columns", mode="after")
+    @classmethod
+    def _check_upload_limit(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_MAX_* and NEARSHOP_IMPORT_MAX_* limits must be 1 or more")
+        return value
 
     # Off-site backups (database/backup.py and database/restore.py; docs/runbooks/restore.md). off (the
     # default): the tools refuse to run. local: sets in the directory backup_dir (development and drills

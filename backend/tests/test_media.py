@@ -1,5 +1,6 @@
 """Photos behind the storage interface (app/services/media.py): an in-memory fake stands in for the
-bucket, so no test touches a real one; the local backend keeps today's behaviour."""
+bucket, so no test touches a real one; the local backend keeps today's behaviour. Every photo is stored with
+its thumbnail (P2.7, tests/test_upload_safety.py); photos() leaves the thumbnails out."""
 import asyncio
 import io
 import logging
@@ -12,7 +13,7 @@ from pydantic import ValidationError
 from app.core.config import Settings, settings
 from app.main import serves_local_media
 from app.services import media
-from app.services.media import CACHE_CONTROL, LocalStorage, S3Storage, build_storage, delete_image
+from app.services.media import CACHE_CONTROL, LocalStorage, S3Storage, build_storage, delete_image, thumbnail_key
 from tests.conftest import HEADERS
 
 KEY = re.compile(r"^(products|shops)/[0-9a-f]{32}\.webp$")
@@ -30,6 +31,17 @@ class FakeStorage:
     def delete(self, key):
         self.objects.pop(key, None)
 
+    def get(self, key):
+        return self.objects[key][0] if key in self.objects else None
+
+    def size(self, key):
+        return len(self.objects[key][0]) if key in self.objects else None
+
+
+def photos(storage: FakeStorage) -> list[str]:
+    """The stored photo keys, without their thumbnails."""
+    return [k for k in storage.objects if not k.endswith(media.THUMB_SUFFIX + ".webp")]
+
 
 class BrokenDeleteStorage(FakeStorage):
     def delete(self, key):
@@ -45,6 +57,24 @@ class FakeS3Client:
 
     def delete_object(self, **kwargs):
         self.calls.append(("delete_object", kwargs))
+
+    def get_object(self, **kwargs):
+        self.calls.append(("get_object", kwargs))
+        if kwargs["Key"].startswith("missing/"):
+            raise _client_error("NoSuchKey")
+        return {"Body": io.BytesIO(b"bytes")}
+
+    def head_object(self, **kwargs):
+        self.calls.append(("head_object", kwargs))
+        if kwargs["Key"].startswith("missing/"):
+            raise _client_error("404")
+        return {"ContentLength": 5}
+
+
+def _client_error(code: str) -> Exception:
+    error = Exception(code)
+    error.response = {"Error": {"Code": code}}  # what botocore's ClientError carries
+    return error
 
 
 def png(size=(1800, 900), color=(200, 30, 30)) -> bytes:
@@ -81,7 +111,9 @@ def _upload_product_image(owner, product_id, data=None, name="photo.png", conten
 def test_upload_stores_webp_under_expected_key_and_delete_removes_it(owner_a, ids, fake_storage):
     res = _upload_product_image(owner_a, ids["charger"])
     assert res.status_code == 200, res.text
-    [(key, (data, content_type))] = fake_storage.objects.items()
+    [key] = photos(fake_storage)
+    data, content_type = fake_storage.objects[key]
+    assert set(fake_storage.objects) == {key, thumbnail_key(key)}
     assert KEY.match(key) and key.startswith("products/")
     assert content_type == "image/webp"
     img = Image.open(io.BytesIO(data))
@@ -91,8 +123,8 @@ def test_upload_stores_webp_under_expected_key_and_delete_removes_it(owner_a, id
     # A second upload replaces the first and deletes the old object.
     res = _upload_product_image(owner_a, ids["charger"], png(color=(10, 200, 10)))
     assert res.status_code == 200, res.text
-    assert key not in fake_storage.objects
-    [new_key] = fake_storage.objects
+    assert key not in fake_storage.objects and thumbnail_key(key) not in fake_storage.objects
+    [new_key] = photos(fake_storage)
     assert KEY.match(new_key) and new_key != key
 
     delete_image(new_key)
@@ -103,7 +135,7 @@ def test_shop_image_response_uses_public_base_url(owner_a, fake_storage, monkeyp
     monkeypatch.setattr(settings, "media_public_base_url", "https://media.example.test")
     res = owner_a.post("/api/owner/shop/image", headers=HEADERS, files={"file": ("shop.png", png(), "image/png")})
     assert res.status_code == 200, res.text
-    [key] = fake_storage.objects
+    [key] = photos(fake_storage)
     assert key.startswith("shops/")
     assert res.json()["image_url"] == f"https://media.example.test/{key}"
     shop = owner_a.get("/api/owner/shop", headers=HEADERS).json()
@@ -141,7 +173,7 @@ def test_upload_succeeds_when_old_image_cannot_be_deleted(owner_a, ids):
     finally:
         media.use_storage(previous)
     assert res.status_code == 200, res.text
-    assert len(broken.objects) == 2  # the old object is orphaned, not an error
+    assert len(photos(broken)) == 2  # the old object is orphaned, not an error
 
 
 # ------------------------------------------------------------------ S3 backend (fake client, no bucket)
@@ -157,6 +189,9 @@ def test_s3_backend_puts_webp_with_immutable_cache_header():
                         "ContentType": "image/webp", "CacheControl": CACHE_CONTROL}),
         ("delete_object", {"Bucket": "photos", "Key": "products/abc.webp"}),
     ]
+    # Reads for the thumbnail backfill: a missing key is None, never an error.
+    assert storage.get("products/abc.webp") == b"bytes" and storage.size("products/abc.webp") == 5
+    assert storage.get("missing/abc.webp") is None and storage.size("missing/abc.webp") is None
     assert CACHE_CONTROL == "public, max-age=31536000, immutable"
 
 
@@ -227,7 +262,7 @@ def test_first_upload_builds_the_storage_off_the_event_loop(owner_a, ids, monkey
         assert _upload_product_image(owner_a, ids["tape"]).status_code == 200
     finally:
         media.use_storage(previous)
-    assert built == [False] and len(fake.objects) == 1
+    assert built == [False] and len(photos(fake)) == 1
 
 
 # ------------------------------------------------------------------ serializers
@@ -244,7 +279,7 @@ def test_media_url_is_absolute_when_a_base_url_is_set(monkeypatch, client, ids):
 
 def test_public_pages_use_the_base_url(monkeypatch, owner_a, client, ids, fake_storage):
     assert _upload_product_image(owner_a, ids["charger"]).status_code == 200
-    [key] = fake_storage.objects
+    [key] = photos(fake_storage)
     monkeypatch.setattr(settings, "media_public_base_url", "https://media.example.test")
     product = client.get(f"/api/products/{ids['charger']}", headers=HEADERS)
     assert product.status_code == 200, product.text

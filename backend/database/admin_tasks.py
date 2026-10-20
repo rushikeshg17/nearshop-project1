@@ -5,6 +5,7 @@
     uv run python -m database.admin_tasks deactivate-user 42
     uv run python -m database.admin_tasks list-admins
     uv run python -m database.admin_tasks create-admin --name "Asha Rao" --email asha@example.com
+    uv run python -m database.admin_tasks backfill-thumbnails
 
 They act on the database in NEARSHOP_MONGODB_URI / NEARSHOP_MONGODB_DB, the same one the API uses,
 without wiping anything (the seed is the tool that replaces a database).
@@ -26,9 +27,14 @@ without wiping anything (the seed is the tool that replaces a database).
                    for an authenticator app and 10 single-use recovery codes (stored only as digests). It
                    needs NEARSHOP_TOTP_KEY (the key the TOTP secret is encrypted with, the same value the
                    API has) and refuses to create a fourth active admin.
+  backfill-thumbnails  creates the 320 px thumbnail (P2.7) of every shop and product photo that lacks one,
+                   in the photo storage the API uses (NEARSHOP_MEDIA_BACKEND), reading the photo keys from
+                   the database in batches (--batch-size, default 100). It never changes the database and
+                   skips every photo whose thumbnail exists, so it is safe to run again; at the end it
+                   prints how many photos still lack one and the median thumbnail size.
 
-Commands that write show the database name and ask the operator to type it; anything else changes
-nothing. No command prints an email address or a password hash. Every command that changes a password
+Commands that write (backfill-thumbnails writes to the photo storage, not the database) show the
+database name and ask the operator to type it; anything else changes nothing. No command prints an email address or a password hash. Every command that changes a password
 or deactivates an account also ends that account's sessions (a new token_version, no recorded sessions).
 """
 from __future__ import annotations
@@ -38,6 +44,7 @@ import getpass
 import hashlib
 import os
 import secrets
+import statistics
 import sys
 from collections import Counter
 from collections.abc import Callable
@@ -48,7 +55,9 @@ from pymongo import UpdateOne
 from pymongo.errors import DuplicateKeyError
 from pymongo.results import BulkWriteResult
 
+from app.core.config import settings
 from app.core.database import Database, utcnow
+from app.core.errors import AppError
 from app.core.security import (
     encrypt_totp_secret,
     hash_password,
@@ -61,6 +70,7 @@ from app.core.security import (
     verify_password,
 )
 from app.models import Role, User
+from app.services import media
 from database.seed.seed import RETIRED_DEMO_PASSWORD_SHA256
 
 DEMO_DOMAIN = "nearshop.demo"  # admin@, priya@, owner@nearshop.demo and <shop>@shops.nearshop.demo
@@ -68,6 +78,8 @@ SYNTHETIC_DOMAIN = "example.com"  # the seed's generated customers; a reserved d
 ROTATED_PASSWORD_BYTES = 24  # token_urlsafe(24) is 32 characters
 RETIRED_PASSWORD_ENV = "NEARSHOP_RETIRED_DEMO_PASSWORD"
 MAX_ACTIVE_ADMINS = 3
+THUMBNAIL_BATCH = 100
+PHOTO_COLLECTIONS = ("shops", "products")  # the collections whose documents hold an image_path
 
 Ask = Callable[[str], str]
 Out = Callable[[str], None]
@@ -352,6 +364,82 @@ def create_admin(db: Database, name: str, email: str, ask: Ask = input, out: Out
     return 0
 
 
+# ---------------------------------------------------------------- photo storage
+def photo_keys(db: Database, batch_size: int = THUMBNAIL_BATCH):
+    """Every stored photo key in the database, in batches of at most batch_size, read page by page by _id."""
+    for name in PHOTO_COLLECTIONS:
+        collection = getattr(db, name)
+        last = None
+        while True:
+            query: dict = {"image_path": {"$nin": [None, ""]}}
+            if last is not None:
+                query["_id"] = {"$gt": last}
+            rows = collection.find_raw(query, {"image_path": 1}, sort=[("_id", 1)], limit=batch_size)
+            if not rows:
+                break
+            last = rows[-1]["_id"]
+            yield [r["image_path"] for r in rows if isinstance(r.get("image_path"), str)]
+
+
+def backfill_thumbnails(db: Database, ask: Ask = input, out: Out = print, batch_size: int = THUMBNAIL_BATCH,
+                        storage: media.MediaStorage | None = None) -> int:
+    """Create the missing thumbnail of every stored photo, after the typed confirmation. Idempotent: a photo
+    whose thumbnail already exists is only measured. Returns 1 when a thumbnail could not be made."""
+    if batch_size < 1:
+        out("--batch-size must be 1 or more.")
+        return 1
+    storage = storage or media.get_storage()
+    total = sum(len(batch) for batch in photo_keys(db, batch_size))
+    out(f"Database {db.mongo.name} references {total} photo(s), stored on the {settings.media_backend} backend. "
+        "This creates each missing thumbnail there; the database is not changed.")
+    if not total:
+        return 0
+    if not confirmed(db, ask, out):
+        return 1
+
+    counts = Counter()
+    sizes: list[int] = []
+    seen: set[str] = set()
+    for n, batch in enumerate(photo_keys(db, batch_size), start=1):
+        for key in batch:
+            if key in seen:
+                continue
+            seen.add(key)
+            thumb_key = media.thumbnail_key(key)
+            try:
+                size = storage.size(thumb_key)
+                if size is not None:
+                    counts["existing"] += 1
+                    sizes.append(size)
+                    continue
+                data = storage.get(key)
+                if data is None:
+                    counts["photo_missing"] += 1
+                    continue
+                thumb = media.make_thumbnail(data)
+                storage.put(thumb_key, thumb, media.CONTENT_TYPE)
+            except AppError:
+                counts["unreadable"] += 1
+                out(f"  could not read photo {key}; it has no thumbnail")
+                continue
+            except Exception as exc:
+                counts["failed"] += 1
+                out(f"  could not make the thumbnail of {key}: {type(exc).__name__}")
+                continue
+            counts["created"] += 1
+            sizes.append(len(thumb))
+        out(f"  batch {n}: {counts['created']} created, {counts['existing']} already there so far")
+
+    lacking = counts["photo_missing"] + counts["unreadable"] + counts["failed"]
+    median = statistics.median(sizes) if sizes else 0
+    out("")
+    out(f"Thumbnails: {counts['created']} created, {counts['existing']} already there.")
+    out(f"Photos still without a thumbnail: {lacking} ({counts['photo_missing']} whose photo file is missing, "
+        f"{counts['unreadable']} unreadable, {counts['failed']} failed; run again to retry failures).")
+    out(f"Median thumbnail size: {median / 1024:.1f} KB over {len(sizes)} thumbnail(s).")
+    return 1 if counts["unreadable"] or counts["failed"] else 0
+
+
 # ---------------------------------------------------------------- command line
 def _retired_password_from_operator() -> str | None:
     """The old default, from the environment or hidden input, refused unless it matches the digest."""
@@ -378,6 +466,8 @@ def main(argv: list[str] | None = None, ask: Ask = input, out: Out = print) -> i
     create = sub.add_parser("create-admin", help="create an admin with a second factor (at most 3 active)")
     create.add_argument("--name", required=True)
     create.add_argument("--email", required=True)
+    backfill = sub.add_parser("backfill-thumbnails", help="create missing photo thumbnails; safe to run again")
+    backfill.add_argument("--batch-size", type=int, default=THUMBNAIL_BATCH)
     args = parser.parse_args(argv)
 
     db = Database()
@@ -389,6 +479,8 @@ def main(argv: list[str] | None = None, ask: Ask = input, out: Out = print) -> i
         return deactivate_user(db, args.user_id, ask, out)
     if args.command == "create-admin":
         return create_admin(db, args.name, args.email, ask, out)
+    if args.command == "backfill-thumbnails":
+        return backfill_thumbnails(db, ask, out, args.batch_size)
     return list_admins(db, out)
 
 
