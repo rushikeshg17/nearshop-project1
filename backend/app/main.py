@@ -63,6 +63,9 @@ async def lifespan(_: FastAPI):
         if settings.environment not in ("development", "test"):
             log.warning("photos are stored on this server's disk (NEARSHOP_MEDIA_BACKEND=local) and every "
                         "redeploy deletes them; set NEARSHOP_MEDIA_BACKEND=s3 and the NEARSHOP_MEDIA_S3_* settings")
+    # Background jobs (app/jobs.py): every process ticks every 30 s, but each job runs only in the process
+    # holding its lease in job_leases, so it runs once per tick at any instance count. Training never
+    # runs here: the retrain cron job does it in its own process.
     scheduler = None
     if settings.enable_scheduler:
         from app.jobs import start_scheduler
@@ -87,7 +90,7 @@ async def lifespan(_: FastAPI):
     threading.Thread(target=startup_checks, name="startup-checks", daemon=True).start()
     yield
     if scheduler:
-        scheduler.shutdown(wait=False)
+        scheduler.shutdown()  # gives up its leases, so another process takes the jobs over at once
 
 
 app = FastAPI(title="NearShop API", version="1.0.0", lifespan=lifespan,

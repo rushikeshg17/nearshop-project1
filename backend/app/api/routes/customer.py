@@ -115,6 +115,7 @@ def create_order(body: OrderIn, user: CustomerUser, db: DB):
 
 @router.get("/orders")
 def my_orders(user: CustomerUser, db: DB, scope: Literal["active", "past", "all"] = "all"):
+    order_service.cancel_stale_pending(db)  # lazily, as reservations expire: right even between sweeps
     rows, (_, reviewed) = db.gather(
         lambda: db.orders.find({"customer_id": user.id, **_scope(ORDER_ACTIVE, scope)},
                                sort=[("created_at", -1)], limit=100),
@@ -132,6 +133,7 @@ def _own_order(db: Database, user: User, order_id: int) -> Order:
 
 @router.get("/orders/{order_id}")
 def order_detail(order_id: int, user: CustomerUser, db: DB):
+    order_service.cancel_stale_pending(db)
     o = _own_order(db, user, order_id)
     _, reviewed = _reviewed_ids(db, user.id)
     return _order_json(db, [o], reviewed, with_events=True)[0]

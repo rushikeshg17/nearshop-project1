@@ -1,11 +1,13 @@
-"""AI Lab: model cards, retraining, and a side-by-side comparison of search methods."""
-import threading
+"""AI Lab: model cards, retraining, and a side-by-side comparison of search methods.
 
+Retraining never runs in the API process (it would keep scikit-learn, pandas, gensim and mlxtend in
+the API's memory): POST /ai/retrain only queues a request, which the retrain cron job processes in
+its own process (app/jobs.py, app/ai/pipeline.py --cron). Nothing here imports app.ai.pipeline."""
 from fastapi import APIRouter, Query
 
+from app import jobs
 from app.ai import word2vec_ref
 from app.ai.semantic_index import index
-from app.core.database import Database
 from app.core.deps import DB, AdminUser
 from app.models import ModelRun
 from app.schemas.serializers import iso
@@ -15,8 +17,6 @@ from app.services.search import SearchParams, keyword_scores, run_search
 from app.utils.text import normalize_query
 
 router = APIRouter(prefix="/ai", tags=["ai"])
-
-_training = threading.Event()
 
 MODEL_INFO = {
     "embeddings": {
@@ -42,9 +42,28 @@ MODEL_INFO = {
 }
 
 
+def _request_out(req: dict | None) -> dict | None:
+    if req is None:
+        return None
+    return {**req, **{k: iso(req[k]) for k in ("requested_at", "started_at", "finished_at")}}
+
+
+def _card_status(run: ModelRun | None, state: dict) -> str:
+    """queued or training while a retrain request is; failed when the last finished request failed
+    before this model was trained; otherwise trained or not_trained."""
+    active, finished = state["active"], state["last_finished"]
+    if active is not None:
+        return "training" if active["status"] == "running" else "queued"
+    if finished is not None and finished["status"] == "failed" and (
+            run is None or (finished["started_at"] and run.created_at < finished["started_at"])):
+        return "failed"
+    return "trained" if run is not None else "not_trained"
+
+
 @router.get("/models")
 def models(db: DB):
-    runs = db.model_runs.find(sort=[("created_at", -1)], limit=200)
+    runs, state = db.gather(lambda: db.model_runs.find(sort=[("created_at", -1)], limit=200),
+                            lambda: jobs.retrain_state(db))
     latest: dict[str, ModelRun] = {}
     history: dict[str, list] = {}
     for r in runs:
@@ -52,9 +71,13 @@ def models(db: DB):
         history.setdefault(r.name, []).append({"at": iso(r.created_at), "n_samples": r.n_samples,
                                                "duration_ms": r.duration_ms})
     return {
-        "training": _training.is_set(),
+        # Read from retrain_requests: true while a request is queued or running, in any process.
+        "training": state["active"] is not None,
+        "retrain": {"active": _request_out(state["active"]), "last_finished": _request_out(state["last_finished"]),
+                    "daily_limit": jobs.RETRAIN_DAILY_LIMIT, "cron_every_minutes": jobs.CRON_EVERY_MINUTES},
         "models": [
             {"name": name, **info,
+             "status": _card_status(latest.get(name), state),
              "algorithm": latest[name].algorithm if name in latest else None,
              "trained_at": iso(latest[name].created_at) if name in latest else None,
              "n_samples": latest[name].n_samples if name in latest else 0,
@@ -69,23 +92,14 @@ def models(db: DB):
 
 
 @router.post("/retrain")
-def retrain(_: AdminUser):
-    if _training.is_set():
-        return {"started": False, "message": "Training is already running"}
-
-    def job():
-        # Imported here: the training libraries (scikit-learn, pandas, gensim, mlxtend) are only
-        # loaded when someone actually retrains, not in every API process.
-        from app.ai.pipeline import train_all
-
-        _training.set()
-        try:
-            train_all(Database())
-        finally:
-            _training.clear()
-
-    threading.Thread(target=job, daemon=True).start()
-    return {"started": True}
+def retrain(user: AdminUser, db: DB):
+    """Queue a retrain of every model and return at once. 409 while one is queued or running, 429 after
+    jobs.RETRAIN_DAILY_LIMIT requests in 24 hours. started stays false: the training starts in the retrain
+    cron job's next run, within jobs.CRON_EVERY_MINUTES minutes."""
+    request = jobs.enqueue_retrain(db, user.id)
+    return {"started": False, "queued": True, "request": _request_out(request),
+            "message": f"Retrain queued. It starts within {jobs.CRON_EVERY_MINUTES} minutes and the model "
+                       f"cards update when it finishes."}
 
 
 @router.get("/search-compare")

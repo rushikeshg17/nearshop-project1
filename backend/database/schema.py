@@ -204,6 +204,22 @@ VALIDATORS: dict[str, dict] = {
         direction={"enum": ["high", "low"]}, status=enum(AnomalyStatus), reviewed_by=INT_N, reviewed_at=DATE_N,
         model_run_id=INT, created_at=DATE,
     ),
+    # Background jobs (app/jobs.py). One lease per job, _id the job name: a process runs the job only while
+    # it holds the lease (holder, until expires_at); last_run_at is the job's heartbeat.
+    "job_leases": {"$jsonSchema": {"bsonType": "object", "required": ["_id", "holder", "expires_at"], "properties": {
+        "_id": {"bsonType": STR}, "holder": {"bsonType": STR}, "acquired_at": {"bsonType": DATE},
+        "expires_at": {"bsonType": DATE}, "last_run_at": {"bsonType": DATE_N},
+        "last_result": {"bsonType": ["object", "null"]},
+    }}},
+    # Retraining requests, processed by the retrain cron job outside the API. `active` is set only while a
+    # request is queued or running, and `nightly_for` (the slot's date) only on nightly runs: both unique.
+    "retrain_requests": schema(
+        ["kind", "requested_at", "status"],
+        kind={"enum": ["manual", "nightly"]}, requested_by=INT_N, requested_at=DATE,
+        status={"enum": ["queued", "running", "succeeded", "failed"]}, started_at=DATE_N, finished_at=DATE_N,
+        outcome={"bsonType": ["object", "null"]}, active={"enum": ["retrain"]},
+        nightly_for={"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+    ),
     # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
     "counters": {},
     "text_embeddings": {},
@@ -304,6 +320,15 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("shop_id", A), ("status", A)], name="shop_status"),
     ],
     "text_embeddings": [IndexModel([("model", A)], name="model")],
+    "retrain_requests": [
+        # At most one request queued or running, and one nightly run per night, enforced by the database.
+        IndexModel([("active", A)], unique=True, name="uq_active",
+                   partialFilterExpression={"active": {"$type": "string"}}),
+        IndexModel([("nightly_for", A)], unique=True, name="uq_nightly_for",
+                   partialFilterExpression={"nightly_for": {"$type": "string"}}),
+        IndexModel([("status", A), ("_id", A)], name="status_id"),  # the cron's claim; the active request
+        IndexModel([("kind", A), ("requested_at", D)], name="kind_requested"),  # the daily limit
+    ],
 }
 
 

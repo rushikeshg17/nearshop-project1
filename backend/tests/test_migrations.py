@@ -28,6 +28,7 @@ from database.migrations import (
 )
 
 BASELINE = Migration(m0001_baseline.NUMBER, m0001_baseline.NAME, m0001_baseline.apply)
+ALL = [m.number for m in discover()]  # every migration this code has: a new database gets them all
 CI_EMAIL = IndexModel([("email", ASCENDING)], unique=True, name="uq_email_ci",
                       collation={"locale": "en", "strength": 2})  # one account per email, ignoring case
 
@@ -88,7 +89,7 @@ def user_doc(_id, email):
 
 
 def test_baseline_on_an_empty_database_creates_every_collection_and_index(scratch):
-    assert migrate.run(scratch) == [1]
+    assert migrate.run(scratch) == ALL
 
     collections = set(scratch.list_collection_names())
     assert set(schema.VALIDATORS) <= collections
@@ -124,7 +125,7 @@ def test_baseline_on_todays_database_records_itself_without_changes(scratch, lis
     m0001_baseline.apply(mongo)
     assert commands.names() == ["listCollections"]  # it only looked
 
-    assert migrate.run(scratch) == [1]
+    assert migrate.run(scratch) == ALL
     assert all_indexes(scratch) == indexes
     assert migrate.check_version(scratch).pending == []
 
@@ -155,10 +156,10 @@ def test_index_option_change_builds_the_new_index_before_dropping_the_old(scratc
     # The code now declares the case-insensitive index in place of uq_email, and ships this migration.
     users = [m for m in schema.INDEXES["users"] if m.document["name"] != "uq_email"]
     monkeypatch.setitem(schema.INDEXES, "users", [CI_EMAIL, *users])
-    second = Migration(2, "case_insensitive_email",
+    second = Migration(ALL[-1] + 1, "case_insensitive_email",
                        lambda mongo: replace_index(mongo, "users", "uq_email", CI_EMAIL))
 
-    assert migrate.run(scratch, migrations=[BASELINE, second]) == [2]
+    assert migrate.run(scratch, migrations=[*discover(), second]) == [second.number]
 
     created = steps.index(("create_indexes", ["uq_email_ci"]))
     assert steps.index(("drop_index", "uq_email")) > created
@@ -167,7 +168,7 @@ def test_index_option_change_builds_the_new_index_before_dropping_the_old(scratc
         scratch["users"].insert_one(user_doc(2, "A@Example.COM"))
 
     steps.clear()
-    assert migrate.run(scratch, migrations=[BASELINE, second]) == []
+    assert migrate.run(scratch, migrations=[*discover(), second]) == []
     assert not [s for s in steps if s[0] == "drop_index"]
 
 
@@ -196,14 +197,14 @@ def test_a_second_runner_is_refused_while_the_lock_is_held(scratch):
     assert scratch[migrate.LOCK_COLLECTION].find_one()["owner"] == "first-runner"
 
     migrate.release_lock(scratch, "first-runner")
-    assert migrate.run(scratch) == [1]
+    assert migrate.run(scratch) == ALL
 
 
 def test_an_expired_lock_is_taken_over(scratch):
     past = datetime(2026, 1, 1)
     scratch[migrate.LOCK_COLLECTION].insert_one({"_id": migrate.LOCK_ID, "owner": "crashed", "acquired_at": past,
                                                  "expires_at": past + timedelta(hours=1)})
-    assert migrate.run(scratch) == [1]
+    assert migrate.run(scratch) == ALL
     assert scratch[migrate.LOCK_COLLECTION].count_documents({}) == 0
 
 
@@ -218,7 +219,7 @@ def test_release_lock_clears_a_killed_runners_lock_from_the_command(scratch, mon
     assert migrate.applied_numbers(scratch) == set()  # it applied nothing
     assert migrate.main(["--release-lock"]) == 0
     assert "no migration lock" in capsys.readouterr().out
-    assert migrate.main([]) == 0 and migrate.applied_numbers(scratch) == {1}
+    assert migrate.main([]) == 0 and migrate.applied_numbers(scratch) == set(ALL)
 
 
 def test_release_lock_is_refused_for_a_hosted_database_in_development(monkeypatch, capsys):
@@ -248,7 +249,8 @@ def test_a_failed_migration_is_not_recorded_and_the_lock_is_released(scratch):
 
 def test_a_database_ahead_of_the_code_is_left_alone(scratch, monkeypatch):
     migrate.run(scratch)
-    scratch[migrate.MIGRATIONS_COLLECTION].insert_one({"_id": 2, "number": 2, "name": "newer",
+    newer = ALL[-1] + 1
+    scratch[migrate.MIGRATIONS_COLLECTION].insert_one({"_id": newer, "number": newer, "name": "newer",
                                                        "applied_at": datetime(2026, 10, 20), "duration": 0.1})
     monkeypatch.setattr(migrate, "ensure_schema", lambda _m: pytest.fail("validators of a newer release rewritten"))
     assert migrate.run(scratch, migrations=[BASELINE]) == []

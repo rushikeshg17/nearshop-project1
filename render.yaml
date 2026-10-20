@@ -1,9 +1,11 @@
-# Render Blueprint for the NearShop API (the frontend is deployed on Vercel). Two web services and two
+# Render Blueprint for the NearShop API (the frontend is deployed on Vercel). Two web services and four
 # cron jobs:
-#   nearshop-api-staging        tracks main     NEARSHOP_ENVIRONMENT=staging     Starter  (0.5 CPU, 512 MB)
-#   nearshop-api                tracks release  NEARSHOP_ENVIRONMENT=production  Standard (1 CPU, 2 GB), always on
-#   nearshop-backup-staging     tracks main     nightly off-site backup of the staging database
-#   nearshop-backup-production  tracks release  nightly off-site backup of the production database
+#   nearshop-api-staging         tracks main     NEARSHOP_ENVIRONMENT=staging     Starter  (0.5 CPU, 512 MB)
+#   nearshop-api                 tracks release  NEARSHOP_ENVIRONMENT=production  Standard (1 CPU, 2 GB), always on
+#   nearshop-backup-staging      tracks main     nightly off-site backup of the staging database
+#   nearshop-backup-production   tracks release  nightly off-site backup of the production database
+#   nearshop-retrain-staging     tracks main     model training for the staging database, outside the API
+#   nearshop-retrain-production  tracks release  model training for the production database, outside the API
 # Every change reaches staging first; production deploys only when release is fast-forwarded to a main
 # commit whose staging smoke test passed (docs/runbooks/release-and-rollback.md).
 #
@@ -33,8 +35,9 @@ services:
     # Schema migrations (backend/database/migrate.py) run after the build and before the new version
     # starts, while the previous version still serves. A failure stops the deploy; nothing new goes live.
     preDeployCommand: uv run --no-dev python -m database.migrate
-    # Exactly one worker: the APScheduler sweep and the semantic search index live inside each API
-    # process, so a second worker would run every job twice and hold a second index (until P1.7 and P8.1).
+    # One worker: the semantic search index lives inside each API process, so a second worker would hold
+    # a second index (until P8.1). Background jobs no longer stop a second process or instance: each job
+    # runs only in the process holding its lease in job_leases (app/jobs.py, P1.7).
     startCommand: uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
     # /api/health also reports RENDER_GIT_COMMIT, which tells the smoke workflow which commit it tests.
     healthCheckPath: /api/health
@@ -235,3 +238,64 @@ services:
         sync: false # secret: the production backup token, never the photo token
       - key: NEARSHOP_BACKUP_S3_SECRET_ACCESS_KEY
         sync: false # secret
+
+  # Model training (P1.7, app/ai/pipeline.py --cron and app/jobs.py), never inside the API: the training
+  # libraries (scikit-learn, pandas, gensim, mlxtend) would stay in the API's memory. Every 30 minutes the
+  # job starts, processes one retrain an admin queued (POST /api/ai/retrain, at most 3 a day) or, in the
+  # 21:00 UTC (02:30 IST) run, the nightly retrain, records the outcome in retrain_requests (what the AI
+  # model cards show), and exits. A run with nothing to do never loads the training libraries. Training
+  # needs more memory than a backup, hence Standard; a cron job is billed only while it runs.
+  - type: cron
+    name: nearshop-retrain-staging
+    runtime: python
+    plan: 1c-2g # Standard
+    region: singapore
+    branch: main
+    rootDir: backend
+    schedule: "*/30 * * * *" # every 30 minutes; the 21:00 UTC run is the nightly retrain
+    # The search model is downloaded while building, as for the API: training rebuilds the search index.
+    buildCommand: >-
+      pip install uv && uv sync --frozen --no-dev &&
+      uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"
+    startCommand: uv run --no-dev python -m app.ai.pipeline --cron
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: NEARSHOP_ENVIRONMENT
+        value: staging
+      # The same database as the staging API, read from that service.
+      - key: NEARSHOP_MONGODB_URI
+        fromService:
+          type: web
+          name: nearshop-api-staging
+          envVarKey: NEARSHOP_MONGODB_URI
+      - key: NEARSHOP_MONGODB_DB
+        value: nearshop
+
+  - type: cron
+    name: nearshop-retrain-production
+    runtime: python
+    plan: 1c-2g # Standard
+    region: singapore
+    branch: release
+    rootDir: backend
+    schedule: "*/30 * * * *" # every 30 minutes; the 21:00 UTC run is the nightly retrain
+    buildCommand: >-
+      pip install uv && uv sync --frozen --no-dev &&
+      uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"
+    startCommand: uv run --no-dev python -m app.ai.pipeline --cron
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: NEARSHOP_ENVIRONMENT
+        value: production
+      # The same database as the production API, read from that service.
+      - key: NEARSHOP_MONGODB_URI
+        fromService:
+          type: web
+          name: nearshop-api
+          envVarKey: NEARSHOP_MONGODB_URI
+      - key: NEARSHOP_MONGODB_DB
+        value: nearshop

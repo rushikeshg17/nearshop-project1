@@ -347,6 +347,7 @@ def act_on_reservation(reservation_id: int, action: Literal["confirm", "reject",
 
 @router.get("/orders")
 def shop_orders(shop: OwnerShop, db: DB, scope: Literal["active", "history"] = "active"):
+    order_service.cancel_stale_pending(db)  # lazily, as reservations expire: right even between sweeps
     if scope == "active":
         rows = db.orders.find({"shop_id": shop.id, "status": {"$in": ORDER_OPEN}}, sort=[("created_at", 1)])
     else:
@@ -357,6 +358,7 @@ def shop_orders(shop: OwnerShop, db: DB, scope: Literal["active", "history"] = "
 
 @router.get("/orders/{order_id}")
 def shop_order(order_id: int, shop: OwnerShop, db: DB):
+    order_service.cancel_stale_pending(db)
     return _ord(db, [_shop_order(db, shop, order_id)], with_events=True)[0]
 
 

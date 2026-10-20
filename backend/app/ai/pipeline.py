@@ -1,16 +1,34 @@
-"""Train / refresh every AI component in one call (used by seed, admin 'Retrain', and CLI)."""
-import logging
-import time
+"""Train / refresh every AI component in one call (used by the seed, the retrain cron job and the CLI).
 
-from app.ai import anomaly, demand, recommend, word2vec_ref
-from app.ai.semantic_index import index
+    uv run python -m app.ai.pipeline          # train now (make retrain; the local database)
+    uv run python -m app.ai.pipeline --cron   # the retrain cron job: one queued request or the nightly run
+
+The API never imports this module: POST /api/ai/retrain only queues a request in retrain_requests,
+and the Render cron job (render.yaml, nearshop-retrain-*) runs --cron every 30 minutes in its own
+process, then exits (app/jobs.py, run_retrain_cron). The training libraries (scikit-learn, pandas,
+gensim, mlxtend) are imported only once there is something to train, so a cron run with nothing to
+do stays small and quick.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+import time
+from collections.abc import Sequence
+
 from app.core.database import Database
-from app.models import ModelRun
 
 log = logging.getLogger(__name__)
 
 
 def train_all(db: Database) -> dict:
+    # Imported on use: the training libraries load only in the process that trains.
+    from app.ai import anomaly, demand, recommend, word2vec_ref
+    from app.ai.semantic_index import index
+    from app.models import ModelRun
+
     out: dict = {}
 
     t = time.time()
@@ -42,6 +60,31 @@ def train_all(db: Database) -> dict:
     return out
 
 
+def run_cron(db: Database) -> dict | None:
+    """The retrain cron job's work: one queued request or the nightly run, recorded in retrain_requests."""
+    from app.jobs import run_retrain_cron
+
+    return run_retrain_cron(db, train_all)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m app.ai.pipeline", description=__doc__.split("\n")[0])
+    parser.add_argument("--cron", action="store_true",
+                        help="process one queued retrain request or the nightly run, then exit")
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if not args.cron:
+        print(train_all(Database()))
+        return 0
+    try:
+        done = run_cron(Database())
+    except Exception as exc:  # recorded on the request by run_retrain_cron
+        print(f"Retrain failed ({type(exc).__name__}); recorded in retrain_requests.", file=sys.stderr)
+        return 1
+    print(json.dumps({"request": done["id"], "kind": done["kind"], "status": done["status"],
+                      "outcome": done["outcome"]} if done else {"request": None}, default=str))
+    return 0
+
+
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    print(train_all(Database()))
+    raise SystemExit(main())
