@@ -22,3 +22,6 @@ frontend/*.tsbuildinfo
 .claude/
 .vscode/
 .idea/
+
+# business plans and round terms (confidential; never commit to the public repo)
+business/
