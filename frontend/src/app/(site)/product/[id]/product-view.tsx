@@ -17,7 +17,7 @@ import {
 import { motion } from "motion/react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { Distance, Freshness, OpenBadge, Price, Rating, StockPill, VerifiedMark } from "@/components/common/indicators";
 import { ProductThumb } from "@/components/common/product-thumb";
@@ -38,7 +38,14 @@ import { useLocation } from "@/lib/location";
 import type { ProductDetail, Recommendation } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-export function ProductView({ id }: { id: number }) {
+/**
+ * The product page's content. `initial` is the listing as the server rendered it (page.tsx): the same for every
+ * visitor, without location or session. Once the location is known, the listing is fetched once more in the
+ * browser for live stock, the distance, the delivery quote and the visitor's own reservation, and nearby
+ * alternatives, recommendations and the map appear. `initial` is null only when the server could not reach the
+ * API; the page then loads entirely in the browser, as it did before server rendering.
+ */
+export function ProductView({ id, initial }: { id: number; initial: ProductDetail | null }) {
   const router = useRouter();
   const pathname = usePathname();
   const { location, ready } = useLocation();
@@ -57,10 +64,9 @@ export function ProductView({ id }: { id: number }) {
     enabled: ready,
   });
 
-  const p = q.data;
-  useEffect(() => {
-    if (p) document.title = `${p.name} at ${p.shop.name} · NearShop`;
-  }, [p]);
+  // Server data until the browser's own fetch arrives. The title comes from the page's metadata (page.tsx).
+  const live = q.data;
+  const p = live ?? initial;
 
   function requireCustomer(open: () => void) {
     if (!me) {
@@ -70,10 +76,11 @@ export function ProductView({ id }: { id: number }) {
     open();
   }
 
-  if (q.isError) {
+  const gone = q.error instanceof ApiError && q.error.status === 404;
+  if (q.isError && (!p || gone)) {
     return (
       <div className="mx-auto max-w-3xl px-4 py-16">
-        {q.error instanceof ApiError && q.error.status === 404 ? (
+        {gone ? (
           <EmptyState icon={PackageX} title="This listing is gone" description="The shop may have removed it. Search to find it elsewhere nearby."
             action={<Button asChild><Link href="/search">Search nearby</Link></Button>} />
         ) : (
@@ -133,10 +140,12 @@ export function ProductView({ id }: { id: number }) {
           <section id="compare" className="scroll-mt-20">
             <h2 className="text-xl font-semibold">Compare shops nearby</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              {p.other_offers.length ? `${p.other_offers.length + 1} shops list this item.` : "Only this shop lists this item right now."}
+              {live && (live.other_offers.length ? `${live.other_offers.length + 1} shops list this item.` : "Only this shop lists this item right now.")}
               {insight?.median && ` Typical price ${formatPrice(insight.median)}.`}
             </p>
-            {p.other_offers.length > 0 && (
+            {/* Nearby alternatives are sorted by distance from the visitor, so only the browser's fetch has them. */}
+            {!live && !q.isError && <Skeleton className="mt-4 h-32 rounded-2xl" />}
+            {live && live.other_offers.length > 0 && (
               <div className="mt-4 overflow-hidden rounded-2xl border">
                 <Table>
                   <TableHeader>
@@ -148,7 +157,7 @@ export function ProductView({ id }: { id: number }) {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {[{ ...p, shop: shop as ProductDetail["shop"] }, ...p.other_offers].map((o, i) => (
+                    {[{ ...live, shop: live.shop as ProductDetail["shop"] }, ...live.other_offers].map((o, i) => (
                       <TableRow key={o.id} className={cn(i === 0 && "bg-brand-soft/40 hover:bg-brand-soft/50")}>
                         <TableCell className="max-w-48">
                           <Link href={`/product/${o.id}`} className="block truncate font-medium hover:underline">{o.shop.name}</Link>
@@ -292,6 +301,11 @@ export function ProductView({ id }: { id: number }) {
                   {shop.is_verified && <VerifiedMark />}
                 </Link>
                 <p className="mt-0.5 text-sm text-muted-foreground">{shop.address_line}</p>
+                {shop.opening_hours && (
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    Hours {shop.opening_hours}{shop.closed_on && ` · closed ${shop.closed_on}s`}
+                  </p>
+                )}
               </div>
               <Rating value={shop.rating_avg} count={shop.rating_count} />
             </div>

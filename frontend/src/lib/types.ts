@@ -228,6 +228,13 @@ export interface ProductDetail extends Listing {
   my_reservation: { id: number; code: string; status: ReservationStatus } | null;
 }
 
+/** GET /api/sitemap (P2.8): what customers may see, for src/app/sitemap.ts. Ids, slugs and dates only. */
+export interface SitemapEntries {
+  generated_at: string;
+  shops: { slug: string; updated_at: string | null }[];
+  listings: { id: number; updated_at: string | null }[];
+}
+
 export interface Recommendation {
   confidence: number | null;
   lift: number | null;

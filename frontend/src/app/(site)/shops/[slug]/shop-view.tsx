@@ -4,7 +4,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Bike, Calendar, Clock, Footprints, MapPin, Navigation, Phone, Search, Store } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { AppIcon } from "@/components/common/app-icon";
 import { Freshness, OpenBadge, Rating, StockPill, VerifiedMark } from "@/components/common/indicators";
@@ -26,7 +26,13 @@ import { useLocation } from "@/lib/location";
 import type { Listing, Review, ShopDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-export function ShopView({ slug }: { slug: string }) {
+/**
+ * The shop page's content. `initial` is the shop as the server rendered it (page.tsx): the same for every
+ * visitor, without location. Once the location is known it is fetched once more in the browser, for live stock
+ * counts and the distance; the shelf, reviews and map load in the browser. `initial` is null only when the
+ * server could not reach the API; the page then loads entirely in the browser.
+ */
+export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail | null }) {
   const params = useSearchParams();
   const { data: meta } = useMeta();
   const { location, ready } = useLocation();
@@ -50,14 +56,13 @@ export function ShopView({ slug }: { slug: string }) {
     queryFn: () => api.get<{ reviews: Review[]; distribution: Record<string, number> }>(`/shops/${slug}/reviews`, { page_size: 8 }),
   });
 
-  useEffect(() => {
-    if (shop.data) document.title = `${shop.data.name}, ${shop.data.locality} · NearShop`;
-  }, [shop.data]);
-
-  if (shop.isError) {
+  // Server data until the browser's own fetch arrives. The title comes from the page's metadata (page.tsx).
+  const s = shop.data ?? initial;
+  const gone = shop.error instanceof ApiError && shop.error.status === 404;
+  if (shop.isError && (!s || gone)) {
     return (
       <div className="mx-auto max-w-3xl px-4 py-16">
-        {shop.error instanceof ApiError && shop.error.status === 404 ? (
+        {gone ? (
           <EmptyState icon={Store} title="Shop not found" description="It may have paused its listing." action={<Button asChild><Link href="/shops">Browse shops</Link></Button>} />
         ) : (
           <ErrorState error={shop.error} onRetry={() => shop.refetch()} />
@@ -65,7 +70,6 @@ export function ShopView({ slug }: { slug: string }) {
       </div>
     );
   }
-  const s = shop.data;
   if (!s) {
     return (
       <div className="mx-auto max-w-7xl space-y-6 px-4 pt-8 md:px-6">

@@ -1,16 +1,18 @@
 """Public product and shop pages."""
 import re
-from datetime import timedelta
+import threading
+import time
+from datetime import datetime, timedelta
 from statistics import median
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 
 from app.ai.recommend import bundle_for
 from app.core.database import Database, utcnow
 from app.core.deps import DB, OptionalUser
 from app.core.errors import NotFound
 from app.models import Product, Role, Shop
-from app.schemas.serializers import listing, review_out, shop_brief, shop_detail
+from app.schemas.serializers import iso, listing, review_out, shop_brief, shop_detail
 from app.services import reservations as reservation_service
 from app.services.loaders import (
     category_by_slug,
@@ -27,6 +29,12 @@ from app.services.search import SearchParams, run_search
 from app.utils.geo import haversine_km, within_km
 
 router = APIRouter(tags=["catalog"])
+
+# What customers may see: the filter every catalogue read applies (_shop_by_slug and with_shops(active_only=True)
+# check the same fields on loaded documents). The sitemap queries with these, so a rule added here (P3.3: only
+# shops whose verification an admin approved) hides the same shops and listings from search engines too.
+LIVE_SHOP = {"is_active": True}
+ACTIVE_LISTING = {"is_active": True}
 
 
 def _dist(lat, lng, s: Shop) -> float | None:
@@ -267,3 +275,49 @@ def shop_reviews(slug: str, db: DB, page: int = Query(1, ge=1), page_size: int =
     names = product_names(db, (r.product_id for r in rows))
     return {"reviews": [review_out(r, names.get(r.product_id)) for r in rows],
             "distribution": {str(k): dist.get(k, 0) for k in range(1, 6)}}
+
+
+# ---------------------------------------------------------------- sitemap (P2.8)
+
+SITEMAP_TTL_SECONDS = 3600.0
+_sitemap_cache: dict[str, tuple[float, dict]] = {}
+_sitemap_lock = threading.Lock()
+
+
+def reset_sitemap_cache() -> None:
+    _sitemap_cache.clear()
+
+
+def _latest(*times: datetime | None) -> str | None:
+    return iso(max((t for t in times if t is not None), default=None))
+
+
+def _sitemap_entries(db: Database) -> dict:
+    shops = db.shops.find_raw(LIVE_SHOP, {"_id": 1, "slug": 1, "updated_at": 1, "inventory_updated_at": 1},
+                              sort=[("_id", 1)])
+    listings = db.products.find_raw({**ACTIVE_LISTING, "shop_id": {"$in": [s["_id"] for s in shops]}},
+                                    {"_id": 1, "updated_at": 1, "stock_updated_at": 1},
+                                    sort=[("_id", 1)]) if shops else []
+    return {
+        "generated_at": iso(utcnow()),
+        "shops": [{"slug": s["slug"], "updated_at": _latest(s.get("updated_at"), s.get("inventory_updated_at"))}
+                  for s in shops],
+        "listings": [{"id": p["_id"], "updated_at": _latest(p.get("updated_at"), p.get("stock_updated_at"))}
+                     for p in listings],
+    }
+
+
+@router.get("/sitemap")
+def sitemap_entries(db: DB, response: Response):
+    """The slugs of live shops and the ids of their active listings, each with its last update, for the
+    site's sitemap (frontend/src/app/sitemap.ts). Only what customers may see, and no personal data: no
+    names, addresses, phone numbers or owners. Built at most once an hour per process (one query per
+    collection, ids and dates only), and cacheable for an hour by anything in between."""
+    key = db.mongo.name
+    with _sitemap_lock:
+        hit = _sitemap_cache.get(key)
+        if hit is None or time.monotonic() - hit[0] >= SITEMAP_TTL_SECONDS:
+            hit = (time.monotonic(), _sitemap_entries(db))
+            _sitemap_cache[key] = hit
+    response.headers["Cache-Control"] = f"public, max-age={int(SITEMAP_TTL_SECONDS)}"
+    return hit[1]
