@@ -24,15 +24,22 @@ LIMITS is the one table: each row names a method and a route template (exactly a
 are checked before rows for whole routers, and the first matching row decides, so routes need no edits. A
 rule counts requests per key in fixed windows; its key is the client IP, the signed-in user, the session
 (the session token) or a field of the JSON request body (body:email). A request is not counted by a rule
-whose key it lacks (an anonymous visitor has no user). Every request a rule counted by IP does not also
-counts against DEFAULT, 600 per IP per minute, so no route is unlimited, the table's routes included.
+whose key it lacks (an anonymous visitor has no user), except that a body key fails closed: when the field
+cannot be read (a body over MAX_BODY_BYTES or cut short, not a JSON object, the field missing or not a
+string), the request counts under one fallback key shared by every such request, so padding or mangling the
+body never escapes a per-account limit. A body field is read as the route reads it (BODY_NORMALISERS: an
+email as pydantic's EmailStr normalises it, so a variant spelling of the same address is the same key).
+Every request a rule counted by IP does not also counts against DEFAULT, 600 per IP per minute, so no route
+is unlimited, the table's routes included.
 
   * Over a limit the answer is 429 with code rate_limited and Retry-After in seconds, until the window ends.
     A refused request is taken back from every counter, so it uses up none of its other allowances (a
     refused hourly attempt does not count towards the daily limit).
-  * failures_only rules (password login) count only answers in FAILURE_STATUSES; a request is refused while
-    a counter already holds the limit. A rule with a cooldown, once the limit is reached, blocks its key for
-    the cooldown and starts counting afresh after it.
+  * failures_only rules (password login) count only answers in FAILURE_STATUSES. Every attempt is counted
+    before it is served, with the same atomic $inc, so concurrent attempts cannot all pass the check; one
+    past the limit is refused, and the count is taken back when the answer is not a failure. A rule with a
+    cooldown, once a failure reaches the limit, blocks its key for the cooldown and starts counting afresh
+    after it.
   * admin_exempt rules (search and suggest) do not count signed-in admins; DEFAULT still does.
 
 Counters live in the rate_limits collection, shared by every instance: an atomic upsert and $inc per rule,
@@ -64,6 +71,7 @@ from functools import lru_cache
 from typing import Any
 
 import anyio.to_thread
+from pydantic import EmailStr, TypeAdapter, ValidationError
 from pymongo import ReturnDocument
 from pymongo.collection import Collection as MongoCollection
 from pymongo.errors import DuplicateKeyError, PyMongoError
@@ -85,7 +93,9 @@ _STRIPPED = frozenset({EDGE_HEADER.encode(), CLIENT_IP_HEADER.encode()})
 EXEMPT_PATHS = frozenset({"/api/health", "/api/health/ready"})
 COLLECTION = "rate_limits"
 FAILURE_STATUSES = frozenset({401})  # a failed password login (invalid_credentials)
-MAX_BODY_BYTES = 16 * 1024  # bodies read for a body: key; a larger body leaves that key unset
+MAX_BODY_BYTES = 16 * 1024  # bodies read for a body: key; a larger one counts under UNREADABLE
+# The body: key part of a request whose field cannot be read: one counter shared by all of them (fail closed).
+UNREADABLE = "\x00unreadable"
 
 MINUTE, HOUR, DAY = 60, 60 * 60, 24 * 60 * 60
 
@@ -94,8 +104,26 @@ IP, USER, SESSION = "ip", "user", "session"
 
 
 def body(field: str) -> str:
-    """A key part taken from a field of the JSON request body, compared trimmed and lower-cased."""
+    """A key part taken from a field of the JSON request body, compared trimmed and lower-cased (and as
+    BODY_NORMALISERS has it for that field)."""
     return f"body:{field}"
+
+
+@lru_cache(maxsize=1)
+def _email_adapter() -> TypeAdapter[str]:
+    return TypeAdapter(EmailStr)
+
+
+def _email(value: str) -> str:
+    """An email as the routes' EmailStr reads it (IDNA-normalised domain, NFC), or as given if invalid."""
+    try:
+        return _email_adapter().validate_python(value).lower()
+    except ValidationError:
+        return value
+
+
+# How a body field becomes its key, after trimming and lower-casing: the form the route itself looks up.
+BODY_NORMALISERS: dict[str, Callable[[str], str]] = {"email": _email}
 
 
 @dataclass(frozen=True)
@@ -315,65 +343,66 @@ class Counters:
                     raise
         raise AssertionError("unreachable")
 
-    def count(self, hits: Sequence[Hit], ts: float) -> list[tuple[Rule, int]]:
-        """Count one request against each hit; return the rules now over their limit, with Retry-After."""
-        over = []
-        for hit in hits:
-            count, end = self._incr(hit, ts)
-            if count > hit.rule.limit:
-                over.append((hit.rule, _retry_after(end, ts)))
-        return over
-
     def undo(self, hits: Sequence[Hit], ts: float) -> None:
-        """Take back one count from each hit: a refused request uses up none of its allowances."""
+        """Take back one count from each hit, in the window of ts (when the request was counted)."""
         for hit in hits:
             start, _ = _window(hit.rule, ts)
             self.collection.update_one({"_id": f"{hit.rule.name}:{start}:{hit.digest}", "count": {"$gt": 0}},
                                        {"$inc": {"count": -1}})
 
     def check(self, counted: Sequence[Hit], failures: Sequence[Hit], ts: float, *, refuse: bool
-              ) -> list[tuple[Rule, int]]:
-        """The rules the request is over (failures_only ones first, from their counters as they stand), after
-        counting it against the others. When refuse is set and it is over any, the counts are taken back."""
-        over = self.refused(failures, ts) if failures else []
-        over += self.count(counted, ts)
-        if over and refuse:
-            self.undo(counted, ts)
-        return over
-
-    def refused(self, hits: Sequence[Hit], ts: float) -> list[tuple[Rule, int]]:
-        """The failures_only rules whose counter already holds the limit, or whose cooldown runs."""
-        ids = {}
-        for hit in hits:
-            start, end = _window(hit.rule, ts)
-            ids[f"{hit.rule.name}:{start}:{hit.digest}"] = (hit.rule, end)
-            if hit.rule.cooldown:
-                ids[f"{hit.rule.name}:cooldown:{hit.digest}"] = (hit.rule, None)
+              ) -> tuple[list[tuple[Rule, int]], list[int]]:
+        """Count the request against every hit (against failures_only ones as an attempt, which settle()
+        keeps or takes back once the answer is known) and return the rules it is over, with Retry-After, and
+        the failures' counts. Over means a counter past its limit or a cooldown running. The cooldowns are read
+        after counting, so an attempt racing the failure that starts one either sees it or was counted before
+        it. When refuse is set and the request is over any rule, every count is taken back."""
+        hits = [*counted, *failures]
         over: dict[str, tuple[Rule, int]] = {}
-        for doc in self.collection.find({"_id": {"$in": list(ids)}}):
-            rule, end = ids[doc["_id"]]
-            if end is None:  # a cooldown, until expires_at (the TTL monitor deletes it up to a minute later)
-                until = doc["expires_at"].replace(tzinfo=UTC).timestamp()
-                if until <= ts:
-                    continue
-            elif doc["count"] >= rule.limit:
-                until = end
-            else:
-                continue
-            retry = _retry_after(until, ts)
+
+        def add(rule: Rule, retry: int) -> None:
             if retry > over.get(rule.name, (rule, 0))[1]:
                 over[rule.name] = (rule, retry)
-        return list(over.values())
 
-    def record_failures(self, hits: Sequence[Hit], ts: float) -> None:
-        """Count a failure against each failures_only hit; a rule reaching its limit starts its cooldown."""
+        counts = []
         for hit in hits:
-            count, _ = self._incr(hit, ts)
+            count, end = self._incr(hit, ts)
+            counts.append(count)
+            if count > hit.rule.limit:
+                add(hit.rule, _retry_after(end, ts))
+        for rule, until in self._cooldowns(failures, ts):
+            add(rule, _retry_after(until, ts))
+        if over and refuse:
+            self.undo(hits, ts)
+        return list(over.values()), counts[len(counted):]
+
+    def _cooldowns(self, hits: Sequence[Hit], ts: float) -> list[tuple[Rule, float]]:
+        """The cooldowns running for these hits, with their end."""
+        ids = {f"{hit.rule.name}:cooldown:{hit.digest}": hit.rule for hit in hits if hit.rule.cooldown}
+        if not ids:
+            return []
+        running = []
+        for doc in self.collection.find({"_id": {"$in": list(ids)}}):
+            # Until expires_at: the TTL monitor deletes it up to a minute later.
+            until = doc["expires_at"].replace(tzinfo=UTC).timestamp()
+            if until > ts:
+                running.append((ids[doc["_id"]], until))
+        return running
+
+    def settle(self, hits: Sequence[Hit], counts: Sequence[int], ts: float, *, failed: bool, at: float) -> None:
+        """Once the answer is known: a failure keeps its counts, and one that reached a rule's limit starts its
+        cooldown (from at) and its counting afresh; any other answer takes the counts back (from the window of
+        ts, when they were made)."""
+        if not failed:
+            self.undo(hits, ts)
+            return
+        for hit, count in zip(hits, counts, strict=True):
             if hit.rule.cooldown and count >= hit.rule.limit:
                 start, _ = _window(hit.rule, ts)
+                # The cooldown first, then the counter: an attempt counted in between still sees the cooldown.
                 self.collection.update_one(
                     {"_id": f"{hit.rule.name}:cooldown:{hit.digest}"},
-                    {"$max": {"expires_at": _as_date(ts + hit.rule.cooldown)},
+                    {"$max": {"expires_at": _as_date(at + hit.rule.cooldown)},
                      "$setOnInsert": {"rule": hit.rule.name, "count": 0}}, upsert=True)
                 self.collection.delete_one({"_id": f"{hit.rule.name}:{start}:{hit.digest}"})
 
@@ -443,7 +472,11 @@ def _body_fields(data: bytes | None) -> dict[str, str]:
         return {}
     if not isinstance(parsed, dict):
         return {}
-    return {k: v.strip().lower() for k, v in parsed.items() if isinstance(v, str) and v.strip()}
+    fields = {}
+    for key, value in parsed.items():
+        if isinstance(value, str) and (value := value.strip().lower()):
+            fields[key] = BODY_NORMALISERS.get(key, str)(value)
+    return fields
 
 
 class EdgeRateLimitMiddleware:
@@ -486,7 +519,7 @@ class EdgeRateLimitMiddleware:
             if rule.admin_exempt and identity.admin:
                 continue
             parts = [self._key_part(part, ip, identity, body_values) for part in rule.key]
-            if all(parts):
+            if all(parts):  # a body: part is never empty (UNREADABLE), only a missing user or session is
                 hits.append(Hit(rule, key_digest([rule.name, *parts])))
         if not any(IP in h.rule.key and not h.rule.failures_only for h in hits):
             hits.append(Hit(DEFAULT, key_digest([DEFAULT.name, ip_key(ip)])))
@@ -496,11 +529,11 @@ class EdgeRateLimitMiddleware:
         ts = now()
         try:
             store = self.store()
-            over = await anyio.to_thread.run_sync(
+            over, failure_counts = await anyio.to_thread.run_sync(
                 lambda: store.check(counted, failures, ts, refuse=mode == "enforce"))
         except PyMongoError as exc:
             log.warning("rate limits not checked, request served: %s", type(exc).__name__)
-            store, over = None, []
+            store, over, failure_counts = None, [], []
         if over:
             fields.update(rate_limited=",".join(rule.name for rule, _ in over), rate_limit_mode=mode)
             if mode == "enforce":
@@ -511,16 +544,31 @@ class EdgeRateLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        async def send_counting_failures(message: Message) -> None:
-            # Counted before the answer leaves, so the client's next attempt already sees the failure.
-            if message["type"] == "http.response.start" and message["status"] in FAILURE_STATUSES:
-                try:
-                    await anyio.to_thread.run_sync(store.record_failures, failures, now())
-                except PyMongoError as exc:
-                    log.warning("failed login not counted: %s", type(exc).__name__)
+        # The attempt is already counted; settle it once, when the answer starts (before it leaves, so the
+        # client's next attempt sees the cooldown it may start), or when the app ends without one.
+        settled = False
+
+        async def settle(failed: bool) -> None:
+            nonlocal settled
+            if settled:
+                return
+            settled = True
+            try:
+                await anyio.to_thread.run_sync(
+                    lambda: store.settle(failures, failure_counts, ts, failed=failed, at=now()))
+            except PyMongoError as exc:
+                log.warning("login attempt not settled: %s", type(exc).__name__)
+
+        async def send_settling(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                await settle(message["status"] in FAILURE_STATUSES)
             await send(message)
 
-        await self.app(scope, receive, send_counting_failures)
+        try:
+            await self.app(scope, receive, send_settling)
+        finally:
+            with anyio.CancelScope(shield=True):  # also when the client left and the request was cancelled
+                await settle(False)
 
     @staticmethod
     def _key_part(part: str, ip: str, identity: Identity, body_values: dict[str, str]) -> str | None:
@@ -531,7 +579,7 @@ class EdgeRateLimitMiddleware:
         if part == SESSION:
             return identity.session
         if part.startswith("body:"):
-            return body_values.get(part.removeprefix("body:"))
+            return body_values.get(part.removeprefix("body:")) or UNREADABLE  # fail closed
         raise ValueError(f"unknown rate-limit key part {part!r}")
 
 

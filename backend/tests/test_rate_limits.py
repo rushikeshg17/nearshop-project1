@@ -322,6 +322,85 @@ def test_ten_failures_per_account_per_hour_then_a_30_minute_cooldown(api, limits
     assert _login(api, "cust@example.com", ip="203.0.113.43").status_code == 401  # counting starts afresh
 
 
+def _padded_login(api, email: str, password: str = "wrong-password", ip: str = "203.0.113.20"):
+    """A login whose JSON body is valid but larger than the limiter reads."""
+    content = json.dumps({"email": email, "password": password}) + " " * (ratelimit.MAX_BODY_BYTES + 4000)
+    return api.post("/api/auth/login", content=content,
+                    headers=edge(ip, **{"Content-Type": "application/json"}))
+
+
+def test_a_padded_body_cannot_escape_the_per_account_limits(api, limits):
+    for n in range(10):  # each from its own IP; all count under the one fallback key for unreadable bodies
+        assert _padded_login(api, "cust@example.com", ip=f"203.0.113.{100 + n}").status_code == 401
+    assert_limited(_padded_login(api, "cust@example.com", PASSWORD, ip="203.0.113.120"), 30 * MINUTE)
+    assert_limited(_padded_login(api, "other@example.com", ip="203.0.113.121"), 30 * MINUTE)
+    assert _login(api, "cust@example.com", PASSWORD, ip="203.0.113.122").status_code == 200  # a normal body
+
+
+def test_a_padded_body_counts_per_account_and_ip_too(api, limits):
+    for _ in range(5):
+        assert _padded_login(api, "cust@example.com").status_code == 401
+    assert_limited(_padded_login(api, "someone@example.com"), 15 * MINUTE)
+
+
+def test_a_body_that_is_not_json_still_counts(api, limits):
+    for n in range(10):
+        res = api.post("/api/auth/login", content=b"\xff" * 10, headers=edge(f"203.0.113.{100 + n}"))
+        assert res.status_code == 422
+    # Not failures, so nothing is held against the fallback key.
+    assert _padded_login(api, "cust@example.com", PASSWORD, ip="203.0.113.130").status_code == 200
+
+
+def test_variant_spellings_of_one_email_share_its_counters(api, limits):
+    variants = ["cust@example.com", "CUST@EXAMPLE.COM", "cust@\uff45xample.com", " Cust@Example.com",
+                "cust@ex\uff41mple.com"]
+    for email in variants:  # all of them sign in to the one account
+        assert _login(api, email).status_code == 401
+    assert_limited(_login(api, "cust@\uff45\uff58\uff41\uff4d\uff50\uff4c\uff45.com", PASSWORD), 15 * MINUTE)
+
+
+def test_concurrent_failed_logins_cannot_pass_the_limit_together(api, limits):
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=40) as pool:
+        codes = list(pool.map(lambda n: _login(api, "cust@example.com", ip=f"198.51.100.{n}").status_code,
+                              range(40)))
+    assert codes.count(401) <= 10 and codes.count(401) + codes.count(429) == 40
+    assert_limited(_login(api, "cust@example.com", PASSWORD, ip="198.51.100.200"), 30 * MINUTE)
+
+
+def test_attempts_in_flight_are_counted_before_they_are_served(limits, db):
+    store = ratelimit.Counters(db.mongo[ratelimit.COLLECTION])
+    hit = ratelimit.Hit(ratelimit.LOGIN_ACCOUNT, "digest-of-an-account")
+    ts = limits()
+    attempts = [store.check([], [hit], ts, refuse=True) for _ in range(40)]  # none answered yet
+    admitted = [counts for over, counts in attempts if not over]
+    assert len(admitted) == 10
+    assert all(over[0][0] is ratelimit.LOGIN_ACCOUNT for over, _ in attempts if over)
+    for counts in admitted[:9]:  # nine succeed: taken back
+        store.settle([hit], counts, ts, failed=False, at=ts)
+    over, counts = store.check([], [hit], ts, refuse=True)
+    assert not over  # room again for one more
+    store.settle([hit], admitted[9], ts, failed=True, at=ts)  # the tenth attempt fails: the cooldown starts
+    over, _ = store.check([], [hit], ts, refuse=True)
+    assert over and over[0][1] == 30 * MINUTE
+
+
+def test_an_attempt_that_ends_without_an_answer_is_taken_back(api, limits, monkeypatch):
+    from app.api.routes import auth
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    real = auth.verify_password
+    monkeypatch.setattr(auth, "verify_password", boom)
+    with TestClient(main.app, raise_server_exceptions=False) as client:
+        for _ in range(12):  # past every login limit, had they been kept
+            assert _login(client, "cust@example.com").status_code == 500
+    monkeypatch.setattr(auth, "verify_password", real)
+    assert _login(api, "cust@example.com", PASSWORD).status_code == 200
+
+
 def test_counters_hold_no_address_or_email(api, limits, db):
     _login(api, "cust@example.com", ip="203.0.113.77")
     api.get("/api/search", params={"radius_km": 0}, headers=edge("203.0.113.77"))
@@ -450,8 +529,8 @@ def test_the_request_is_served_when_the_counters_cannot_be_reached(api, limits, 
     def down(*_args, **_kwargs):
         raise PyMongoError("no primary")
 
-    monkeypatch.setattr(ratelimit.Counters, "count", down)
-    monkeypatch.setattr(ratelimit.Counters, "refused", down)
+    monkeypatch.setattr(ratelimit.Counters, "_incr", down)
+    monkeypatch.setattr(ratelimit.Counters, "_cooldowns", down)
     for _ in range(12):
         assert api.get("/api/ai/search-compare", params={"q": "x"}, headers=edge()).status_code == 422
     assert _login(api, "cust@example.com").status_code == 401
