@@ -5,7 +5,8 @@
       "settings": {
         "onlyCategories": [
           "performance"
-        ]
+        ],
+        "pauseAfterLoadMs": 5250
       }
     },
     "assert": {

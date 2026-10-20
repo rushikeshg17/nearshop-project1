@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Navigation, Phone, Search, Star, X } from "lucide-react";
-import { motion } from "motion/react";
+import { motion, MotionConfig } from "motion/react";
 import Link from "next/link";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -56,108 +56,110 @@ export function ReservationView({ id }: { id: number }) {
   const head = HEADLINE[r.status];
 
   return (
-    <div className="mx-auto max-w-5xl px-4 pt-6 md:px-6 md:pt-10">
-      <Link href="/account" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="size-4" /> Your activity
-      </Link>
+    <MotionConfig reducedMotion="user">
+      <div className="mx-auto max-w-5xl px-4 pt-6 md:px-6 md:pt-10">
+        <Link href="/account" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="size-4" /> Your activity
+        </Link>
 
-      <div className="mt-4 grid gap-6 lg:grid-cols-[1fr_360px]">
-        <div className="space-y-6">
-          <motion.section
-            key={r.status}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            className={cn("rounded-3xl border p-6", held ? "border-brand/30 bg-brand-soft/50" : "bg-card")}
-          >
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <StatusBadge status={r.status} kind="reservation" />
-                <h1 className="mt-3 text-2xl font-semibold md:text-3xl">{head.title}</h1>
-                <p className="mt-1 max-w-md text-muted-foreground">{head.body(r)}</p>
+        <div className="mt-4 grid gap-6 lg:grid-cols-[1fr_360px]">
+          <div className="space-y-6">
+            <motion.section
+              key={r.status}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className={cn("rounded-3xl border p-6", held ? "border-brand/30 bg-brand-soft/50" : "bg-card")}
+            >
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <StatusBadge status={r.status} kind="reservation" />
+                  <h1 className="mt-3 text-2xl font-semibold md:text-3xl">{head.title}</h1>
+                  <p className="mt-1 max-w-md text-muted-foreground">{head.body(r)}</p>
+                </div>
+                {live && (
+                  <div className="rounded-2xl bg-card px-5 py-3 text-center shadow-soft">
+                    <p className="text-xs text-muted-foreground">{r.status === "REQUESTED" ? "Shop responds within" : "Held for"}</p>
+                    <p className="font-heading text-3xl font-semibold"><Countdown to={r.expires_at} expiredLabel="0:00" /></p>
+                  </div>
+                )}
               </div>
-              {live && (
-                <div className="rounded-2xl bg-card px-5 py-3 text-center shadow-soft">
-                  <p className="text-xs text-muted-foreground">{r.status === "REQUESTED" ? "Shop responds within" : "Held for"}</p>
-                  <p className="font-heading text-3xl font-semibold"><Countdown to={r.expires_at} expiredLabel="0:00" /></p>
+              {held && (
+                <div className="mt-6 flex items-center justify-between rounded-2xl border border-dashed border-brand/40 bg-card p-4">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Pickup code</p>
+                    <p className="font-mono text-3xl font-semibold tracking-[0.2em]">{r.code.replace("R-", "")}</p>
+                  </div>
+                  <p className="max-w-40 text-right text-xs text-muted-foreground">Show this at the counter. Pay {formatPrice(r.total)} at the shop.</p>
                 </div>
               )}
-            </div>
-            {held && (
-              <div className="mt-6 flex items-center justify-between rounded-2xl border border-dashed border-brand/40 bg-card p-4">
-                <div>
-                  <p className="text-xs text-muted-foreground">Pickup code</p>
-                  <p className="font-mono text-3xl font-semibold tracking-[0.2em]">{r.code.replace("R-", "")}</p>
-                </div>
-                <p className="max-w-40 text-right text-xs text-muted-foreground">Show this at the counter. Pay {formatPrice(r.total)} at the shop.</p>
+              <FulfillmentProgress item={r} className="mt-8" />
+            </motion.section>
+
+            <section className="flex items-center gap-4 rounded-3xl border bg-card p-5">
+              <ProductThumb icon={r.product.icon} imageUrl={r.product.image_url} thumbnailUrl={r.product.thumbnail_url} alt="" size="lg" />
+              <div className="min-w-0 flex-1">
+                <Link href={`/product/${r.product.id}`} className="font-semibold hover:underline">{r.product.name}</Link>
+                <p className="text-sm text-muted-foreground">{r.quantity} x {formatPrice(r.unit_price)}{r.product.unit && ` · ${r.product.unit}`}</p>
+                {r.note && <p className="mt-1 text-sm">Your note: &ldquo;{r.note}&rdquo;</p>}
               </div>
-            )}
-            <FulfillmentProgress item={r} className="mt-8" />
-          </motion.section>
-
-          <section className="flex items-center gap-4 rounded-3xl border bg-card p-5">
-            <ProductThumb icon={r.product.icon} imageUrl={r.product.image_url} thumbnailUrl={r.product.thumbnail_url} alt="" size="lg" />
-            <div className="min-w-0 flex-1">
-              <Link href={`/product/${r.product.id}`} className="font-semibold hover:underline">{r.product.name}</Link>
-              <p className="text-sm text-muted-foreground">{r.quantity} x {formatPrice(r.unit_price)}{r.product.unit && ` · ${r.product.unit}`}</p>
-              {r.note && <p className="mt-1 text-sm">Your note: &ldquo;{r.note}&rdquo;</p>}
-            </div>
-            <p className="text-lg font-semibold tabular">{formatPrice(r.total)}</p>
-          </section>
-
-          <div className="flex flex-wrap gap-2">
-            {r.actions.includes("cancel") && (
-              <ConfirmAction
-                title="Cancel this reservation?"
-                description="The shop will put the item back on the shelf."
-                confirmLabel="Cancel reservation"
-                reasonLabel="Reason (optional, helps the shop)"
-                reasonPlaceholder="e.g. Found it elsewhere"
-                pending={cancel.isPending}
-                onConfirm={(reason) => cancel.mutate(reason)}
-                trigger={(open) => (
-                  <Button variant="outline" onClick={open}><X /> Cancel reservation</Button>
-                )}
-              />
-            )}
-            {r.status === "COMPLETED" && !r.reviewed && (
-              <Button onClick={() => setReviewOpen(true)}><Star /> Rate this pickup</Button>
-            )}
-            {["REJECTED", "EXPIRED", "CANCELLED"].includes(r.status) && (
-              <Button asChild><Link href={`/search?q=${encodeURIComponent(r.product.name)}`}><Search /> Find it at another shop</Link></Button>
-            )}
-          </div>
-
-          {r.timeline && (
-            <section className="rounded-3xl border bg-card p-5">
-              <h2 className="mb-4 font-semibold">Timeline</h2>
-              <EventTimeline events={r.timeline} />
+              <p className="text-lg font-semibold tabular">{formatPrice(r.total)}</p>
             </section>
-          )}
-        </div>
 
-        <aside className="space-y-4 lg:sticky lg:top-20 lg:self-start">
-          <div className="overflow-hidden rounded-3xl border bg-card">
-            <div className="h-44">
-              <ShopMap className="h-full" center={r.shop} zoom={15} fitToPoints={false} interactive={false}
-                points={[{ id: r.shop.id, lat: r.shop.lat, lng: r.shop.lng, label: r.shop.name, title: r.shop.name }]} selected={r.shop.id} />
+            <div className="flex flex-wrap gap-2">
+              {r.actions.includes("cancel") && (
+                <ConfirmAction
+                  title="Cancel this reservation?"
+                  description="The shop will put the item back on the shelf."
+                  confirmLabel="Cancel reservation"
+                  reasonLabel="Reason (optional, helps the shop)"
+                  reasonPlaceholder="e.g. Found it elsewhere"
+                  pending={cancel.isPending}
+                  onConfirm={(reason) => cancel.mutate(reason)}
+                  trigger={(open) => (
+                    <Button variant="outline" onClick={open}><X /> Cancel reservation</Button>
+                  )}
+                />
+              )}
+              {r.status === "COMPLETED" && !r.reviewed && (
+                <Button onClick={() => setReviewOpen(true)}><Star /> Rate this pickup</Button>
+              )}
+              {["REJECTED", "EXPIRED", "CANCELLED"].includes(r.status) && (
+                <Button asChild><Link href={`/search?q=${encodeURIComponent(r.product.name)}`}><Search /> Find it at another shop</Link></Button>
+              )}
             </div>
-            <div className="p-5">
-              <Link href={`/shops/${r.shop.slug}`} className="font-semibold hover:underline">{r.shop.name}</Link>
-              <p className="mt-0.5 text-sm text-muted-foreground">{r.shop.address_line}</p>
-              <p className="mt-1 text-xs text-muted-foreground">{r.shop.hours_label}</p>
-              <div className="mt-4 grid grid-cols-2 gap-2">
-                <Button asChild variant="outline" size="sm">
-                  <a href={`https://www.openstreetmap.org/directions?to=${r.shop.lat}%2C${r.shop.lng}`} target="_blank" rel="noreferrer"><Navigation /> Directions</a>
-                </Button>
-                {r.shop.phone && (
-                  <Button asChild variant="outline" size="sm"><a href={`tel:${r.shop.phone}`}><Phone /> Call</a></Button>
-                )}
+
+            {r.timeline && (
+              <section className="rounded-3xl border bg-card p-5">
+                <h2 className="mb-4 font-semibold">Timeline</h2>
+                <EventTimeline events={r.timeline} />
+              </section>
+            )}
+          </div>
+
+          <aside className="space-y-4 lg:sticky lg:top-20 lg:self-start">
+            <div className="overflow-hidden rounded-3xl border bg-card">
+              <div className="h-44">
+                <ShopMap className="h-full" center={r.shop} zoom={15} fitToPoints={false} interactive={false}
+                  points={[{ id: r.shop.id, lat: r.shop.lat, lng: r.shop.lng, label: r.shop.name, title: r.shop.name }]} selected={r.shop.id} />
+              </div>
+              <div className="p-5">
+                <Link href={`/shops/${r.shop.slug}`} className="font-semibold hover:underline">{r.shop.name}</Link>
+                <p className="mt-0.5 text-sm text-muted-foreground">{r.shop.address_line}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{r.shop.hours_label}</p>
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <Button asChild variant="outline" size="sm">
+                    <a href={`https://www.openstreetmap.org/directions?to=${r.shop.lat}%2C${r.shop.lng}`} target="_blank" rel="noreferrer"><Navigation /> Directions</a>
+                  </Button>
+                  {r.shop.phone && (
+                    <Button asChild variant="outline" size="sm"><a href={`tel:${r.shop.phone}`}><Phone /> Call</a></Button>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        </aside>
+          </aside>
+        </div>
+        {reviewOpen && <ReviewDialog item={r} open onOpenChange={setReviewOpen} />}
       </div>
-      {reviewOpen && <ReviewDialog item={r} open onOpenChange={setReviewOpen} />}
-    </div>
+    </MotionConfig>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { Check } from "lucide-react";
-import { motion } from "motion/react";
+import { motion, MotionConfig } from "motion/react";
 
 import { formatTime } from "@/lib/format";
 import type { Order, Reservation, TimelineEvent } from "@/lib/types";
@@ -34,37 +34,39 @@ export function FulfillmentProgress({ item, className }: { item: Reservation | O
   const failed = !steps.some((s) => s.status === item.status);
 
   return (
-    <ol className={cn("flex items-start", className)} aria-label="Progress">
-      {steps.map((s, i) => {
-        const done = i < current || (i === current && (s.status === "COMPLETED" || s.status === "DELIVERED"));
-        const active = i === current && !done && !failed;
-        return (
-          <li key={s.status} className="relative flex flex-1 flex-col items-center text-center">
-            {i > 0 && (
-              <span className="absolute top-3.5 right-1/2 h-0.5 w-full -translate-y-1/2 bg-muted" aria-hidden>
-                <motion.span
-                  className="block h-full origin-left bg-brand"
-                  initial={{ scaleX: 0 }}
-                  animate={{ scaleX: i <= current ? 1 : 0 }}
-                  transition={{ duration: 0.5, delay: i * 0.08 }}
-                />
-              </span>
-            )}
-            <span
-              className={cn(
-                "relative z-10 grid size-7 place-items-center rounded-full border-2 text-xs font-semibold transition-colors",
-                done ? "border-brand bg-brand text-brand-foreground" : active ? "border-brand bg-card text-brand-ink" : "border-muted bg-card text-muted-foreground",
+    <MotionConfig reducedMotion="user">
+      <ol className={cn("flex items-start", className)} aria-label="Progress">
+        {steps.map((s, i) => {
+          const done = i < current || (i === current && (s.status === "COMPLETED" || s.status === "DELIVERED"));
+          const active = i === current && !done && !failed;
+          return (
+            <li key={s.status} className="relative flex flex-1 flex-col items-center text-center">
+              {i > 0 && (
+                <span className="absolute top-3.5 right-1/2 h-0.5 w-full -translate-y-1/2 bg-muted" aria-hidden>
+                  <motion.span
+                    className="block h-full origin-left bg-brand"
+                    initial={{ scaleX: 0 }}
+                    animate={{ scaleX: i <= current ? 1 : 0 }}
+                    transition={{ duration: 0.5, delay: i * 0.08 }}
+                  />
+                </span>
               )}
-            >
-              {done ? <Check className="size-3.5" strokeWidth={3} /> : i + 1}
-              {active && <span className="absolute inset-0 animate-ping rounded-full border-2 border-brand/50" aria-hidden />}
-            </span>
-            <span className={cn("mt-2 text-xs font-medium", i <= current ? "text-foreground" : "text-muted-foreground")}>{s.label}</span>
-            {reached.get(s.status) && <span className="text-[11px] text-muted-foreground tabular">{formatTime(reached.get(s.status))}</span>}
-          </li>
-        );
-      })}
-    </ol>
+              <span
+                className={cn(
+                  "relative z-10 grid size-7 place-items-center rounded-full border-2 text-xs font-semibold transition-colors",
+                  done ? "border-brand bg-brand text-brand-foreground" : active ? "border-brand bg-card text-brand-ink" : "border-muted bg-card text-muted-foreground",
+                )}
+              >
+                {done ? <Check className="size-3.5" strokeWidth={3} /> : i + 1}
+                {active && <span className="absolute inset-0 animate-ping rounded-full border-2 border-brand/50" aria-hidden />}
+              </span>
+              <span className={cn("mt-2 text-xs font-medium", i <= current ? "text-foreground" : "text-muted-foreground")}>{s.label}</span>
+              {reached.get(s.status) && <span className="text-[11px] text-muted-foreground tabular">{formatTime(reached.get(s.status))}</span>}
+            </li>
+          );
+        })}
+      </ol>
+    </MotionConfig>
   );
 }
 

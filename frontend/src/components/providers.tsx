@@ -56,9 +56,10 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
       <QueryClientProvider client={client}>
-        {/* No MotionConfig and no TooltipProvider on every page (P2.9): shared screens animate with CSS, and
-            globals.css honours the reduced-motion setting; a screen that uses a Radix tooltip wraps it in its
-            own TooltipProvider. */}
+        {/* No MotionConfig and no TooltipProvider on every page (P2.9): shared screens animate with CSS, which
+            globals.css stops for the reduced-motion setting. That rule does not reach motion's JavaScript
+            animations, so each screen that still uses motion wraps itself in its own MotionConfig with
+            reducedMotion "user"; a screen that uses a Radix tooltip wraps it in its own TooltipProvider. */}
         <LocationProvider>{children}</LocationProvider>
         <IdleToaster />
       </QueryClientProvider>

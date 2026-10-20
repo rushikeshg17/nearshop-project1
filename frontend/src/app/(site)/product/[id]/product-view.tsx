@@ -6,6 +6,7 @@ import {
   Bike,
   ChevronRight,
   Footprints,
+  Loader2,
   MapPin,
   Navigation,
   PackageX,
@@ -14,10 +15,9 @@ import {
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
-import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 
 import { Distance, Freshness, OpenBadge, Price, Rating, StockPill, VerifiedMark } from "@/components/common/indicators";
 import { ProductThumb } from "@/components/common/product-thumb";
@@ -36,10 +36,27 @@ import { useLocation } from "@/lib/location";
 import type { ProductDetail, Recommendation } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-// The reserve and delivery dialogs (Radix dialog, vaul drawer) load when the customer first opens one, not
-// with the page's first-load JavaScript (P2.9).
-const ReserveDialog = dynamic(() => import("@/components/product/reserve-dialog").then((m) => m.ReserveDialog), { ssr: false });
-const DeliveryDialog = dynamic(() => import("@/components/product/delivery-dialog").then((m) => m.DeliveryDialog), { ssr: false });
+// The reserve and delivery dialogs (Radix dialog, vaul drawer) are not first-load JavaScript (P2.9). Their code
+// starts loading when the pointer or keyboard focus reaches a button that opens one (or the finger touches it),
+// and, for a signed-in customer, once the page has loaded and the browser is idle. A tap before it has arrived
+// shows a spinner over the page at once (DialogLoading) until the dialog opens.
+const loadReserveDialog = () => import("@/components/product/reserve-dialog");
+const loadDeliveryDialog = () => import("@/components/product/delivery-dialog");
+const ReserveDialog = lazy(() => loadReserveDialog().then((m) => ({ default: m.ReserveDialog })));
+const DeliveryDialog = lazy(() => loadDeliveryDialog().then((m) => ({ default: m.DeliveryDialog })));
+const preloadReserve = { onPointerEnter: () => void loadReserveDialog(), onPointerDown: () => void loadReserveDialog(), onFocus: () => void loadReserveDialog() };
+const preloadDelivery = { onPointerEnter: () => void loadDeliveryDialog(), onPointerDown: () => void loadDeliveryDialog(), onFocus: () => void loadDeliveryDialog() };
+
+/** Feedback for the first tap on slow 4G while a dialog's code is still on its way; it also stops repeated taps. */
+function DialogLoading() {
+  return (
+    <div role="status" className="fixed inset-0 z-50 grid place-items-center bg-black/30">
+      <span className="inline-flex items-center gap-2 rounded-full bg-card px-4 py-2 text-sm font-medium shadow-soft">
+        <Loader2 className="size-4 animate-spin text-brand" aria-hidden /> Opening…
+      </span>
+    </div>
+  );
+}
 
 /**
  * The product page's content. `initial` is the listing as the server rendered it (page.tsx): the same for every
@@ -65,6 +82,22 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
     setDialogsUsed((u) => ({ ...u, delivery: true }));
     setDeliveryOpen(true);
   };
+  // A signed-in customer is likely to reserve: fetch the reserve dialog once the page has loaded and is idle.
+  const signedInCustomer = me?.role === "customer";
+  useEffect(() => {
+    if (!signedInCustomer) return;
+    let idleId: number | undefined;
+    const idle = () => {
+      if ("requestIdleCallback" in window) idleId = window.requestIdleCallback(() => void loadReserveDialog(), { timeout: 3000 });
+      else void loadReserveDialog();
+    };
+    if (document.readyState === "complete") idle();
+    else window.addEventListener("load", idle, { once: true });
+    return () => {
+      window.removeEventListener("load", idle);
+      if (idleId !== undefined) window.cancelIdleCallback(idleId);
+    };
+  }, [signedInCustomer]);
 
   const q = useQuery({
     queryKey: ["product", id, location?.lat, location?.lng],
@@ -279,6 +312,7 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                   className="h-12 w-full rounded-xl bg-brand text-base text-brand-foreground hover:bg-brand/90"
                   disabled={out || !shop.offers_pickup || !isCustomer}
                   onClick={() => requireCustomer(openReserve)}
+                  {...preloadReserve}
                 >
                   <Footprints /> Reserve for pickup
                 </Button>
@@ -288,6 +322,7 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                   className="h-12 w-full rounded-xl text-base"
                   disabled={out || !shop.offers_delivery || !isCustomer || (delivery !== null && !delivery.eligible)}
                   onClick={() => requireCustomer(openDelivery)}
+                  {...preloadDelivery}
                 >
                   <Bike /> Request delivery
                 </Button>
@@ -373,16 +408,22 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
               <p className="text-lg font-semibold tabular">{formatPrice(p.price)}</p>
               <p className="truncate text-xs text-muted-foreground">{p.quantity} in stock · {shop.name}</p>
             </div>
-            <Button className="ml-auto h-11 rounded-xl bg-brand px-5 text-brand-foreground hover:bg-brand/90" onClick={() => requireCustomer(openReserve)}>
+            <Button className="ml-auto h-11 rounded-xl bg-brand px-5 text-brand-foreground hover:bg-brand/90" onClick={() => requireCustomer(openReserve)} {...preloadReserve}>
               <Footprints /> Reserve
             </Button>
           </div>
         </div>
       )}
 
-      {dialogsUsed.reserve && <ReserveDialog product={p} open={reserveOpen} onOpenChange={setReserveOpen} />}
+      {dialogsUsed.reserve && (
+        <Suspense fallback={reserveOpen ? <DialogLoading /> : null}>
+          <ReserveDialog product={p} open={reserveOpen} onOpenChange={setReserveOpen} />
+        </Suspense>
+      )}
       {shop.offers_delivery && dialogsUsed.delivery && (
-        <DeliveryDialog product={p} open={deliveryOpen} onOpenChange={setDeliveryOpen} />
+        <Suspense fallback={deliveryOpen ? <DialogLoading /> : null}>
+          <DeliveryDialog product={p} open={deliveryOpen} onOpenChange={setDeliveryOpen} />
+        </Suspense>
       )}
     </div>
   );

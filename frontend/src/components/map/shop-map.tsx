@@ -51,23 +51,35 @@ function afterLoadWhenIdle(load: () => void): () => void {
 
 /**
  * OpenStreetMap vector map of shops (map-canvas.tsx), loaded only when it is wanted (P2.9,
- * docs/perf/frontend-budget.md). An interactive map (search, shops) loads when it comes within 200 px of the
- * screen, once the page has loaded and the browser is idle; a small static map (interactive false: a shop's
- * or a reservation's location) loads only when the customer taps "Show map", since its MapLibre code, style and
- * tiles cost a phone on slow 4G several hundred kilobytes and its start-up blocks the main thread. Until then a
- * placeholder fills the same frame, so nothing shifts. A map hidden with display: none (the search page's map
- * on a phone, until its Map button is tapped) never intersects, so it loads when it is shown.
+ * docs/perf/frontend-budget.md): when it scrolls into view, once the page has loaded and the browser is idle, or
+ * at once when the customer taps "Show map". MapLibre's code, style and tiles cost a phone on slow 4G several
+ * hundred kilobytes and its start-up blocks the main thread. An interactive map (search, shops), the page's
+ * main feature, starts loading when it comes within 200 px of the screen. A small static map (interactive
+ * false: a shop's, a reservation's or an order's location) loads when the customer has scrolled the page and
+ * it is on screen: one already on screen at load (the shop page's, on a phone) waits for the first scroll or
+ * the tap, so its start-up never lands on the visitor's first interactions. Until then a placeholder fills the
+ * same frame, so nothing shifts. A map hidden with display: none (the search page's map on a phone, until its
+ * Map button is tapped) never intersects, so it loads when it is shown.
  */
 export function ShopMap({ className, ...props }: ShopMapProps) {
-  const tapToLoad = props.interactive === false;
+  const staticMap = props.interactive === false;
   const frame = useRef<HTMLDivElement>(null);
   // waiting: off screen; near: on or near the screen, waiting for the page to load and go idle; show: load it.
   const [stage, setStage] = useState<"waiting" | "near" | "show">("waiting");
+  // A static map watches the screen only once the page has been scrolled.
+  const [scrolled, setScrolled] = useState(false);
+
+  useEffect(() => {
+    if (!staticMap || scrolled) return;
+    const onScroll = () => setScrolled(true);
+    window.addEventListener("scroll", onScroll, { passive: true, once: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [staticMap, scrolled]);
 
   // Watch for the map coming near the screen.
   useEffect(() => {
     const el = frame.current;
-    if (!el || stage !== "waiting" || tapToLoad) return;
+    if (!el || stage !== "waiting" || (staticMap && !scrolled)) return;
     if (!("IntersectionObserver" in window)) return afterLoadWhenIdle(() => setStage("show"));
     const observer = new IntersectionObserver(
       (entries) => {
@@ -76,11 +88,11 @@ export function ShopMap({ className, ...props }: ShopMapProps) {
           setStage("near");
         }
       },
-      { rootMargin: "200px" },
+      { rootMargin: staticMap ? "0px" : "200px" },
     );
     observer.observe(el);
     return () => observer.disconnect();
-  }, [stage, tapToLoad]);
+  }, [stage, staticMap, scrolled]);
 
   // Near the screen: start once the page has loaded and the browser is idle.
   useEffect(() => {

@@ -14,11 +14,12 @@ export function ActivityCard({ item, href, className }: { item: Reservation | Or
   const title = isRes ? item.product.name : item.items.map((i) => `${i.quantity} x ${i.name}`).join(", ");
   const icon = isRes ? item.product.icon : item.items[0]?.icon ?? "Package";
   const image = isRes ? item.product.image_url : item.items[0]?.image_url;
+  const thumbnail = isRes ? item.product.thumbnail_url : item.items[0]?.thumbnail_url;
   const live = isRes && ["REQUESTED", "CONFIRMED", "READY_FOR_PICKUP"].includes(item.status);
 
   return (
     <Link href={href} className={cn("group flex items-center gap-4 rounded-2xl border bg-card p-4 transition-shadow hover:shadow-lift", className)}>
-      <ProductThumb icon={icon} imageUrl={image} alt="" size="md" />
+      <ProductThumb icon={icon} imageUrl={image} thumbnailUrl={thumbnail} alt="" size="md" />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={item.status} kind={item.kind} />

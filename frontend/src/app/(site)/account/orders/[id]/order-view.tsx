@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Banknote, MapPin, Phone, Star, X } from "lucide-react";
-import { motion } from "motion/react";
+import { motion, MotionConfig } from "motion/react";
 import Link from "next/link";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -53,78 +53,80 @@ export function OrderView({ id }: { id: number }) {
   const moving = o.status === "OUT_FOR_DELIVERY";
 
   return (
-    <div className="mx-auto max-w-5xl px-4 pt-6 md:px-6 md:pt-10">
-      <Link href="/account" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="size-4" /> Your activity
-      </Link>
-      <div className="mt-4 grid gap-6 lg:grid-cols-[1fr_360px]">
-        <div className="space-y-6">
-          <motion.section key={o.status} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
-            className={cn("rounded-3xl border p-6", moving ? "border-brand/30 bg-brand-soft/50" : "bg-card")}>
-            <div className="flex flex-wrap items-center gap-2">
-              <StatusBadge status={o.status} kind="order" />
-              <span className="font-mono text-xs text-muted-foreground">{o.code}</span>
+    <MotionConfig reducedMotion="user">
+      <div className="mx-auto max-w-5xl px-4 pt-6 md:px-6 md:pt-10">
+        <Link href="/account" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="size-4" /> Your activity
+        </Link>
+        <div className="mt-4 grid gap-6 lg:grid-cols-[1fr_360px]">
+          <div className="space-y-6">
+            <motion.section key={o.status} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+              className={cn("rounded-3xl border p-6", moving ? "border-brand/30 bg-brand-soft/50" : "bg-card")}>
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusBadge status={o.status} kind="order" />
+                <span className="font-mono text-xs text-muted-foreground">{o.code}</span>
+              </div>
+              <h1 className="mt-3 text-2xl font-semibold md:text-3xl">{HEADLINE[o.status]}</h1>
+              {o.close_reason && <p className="mt-1 text-muted-foreground">Reason: {o.close_reason}</p>}
+              {moving && <p className="mt-1 text-muted-foreground">Keep {formatPrice(o.total)} ready. {o.shop.name} is delivering it themselves.</p>}
+              <FulfillmentProgress item={o} className="mt-8" />
+            </motion.section>
+
+            <section className="rounded-3xl border bg-card p-5">
+              <ul className="divide-y">
+                {o.items.map((i) => (
+                  <li key={i.product_id} className="flex items-center gap-3 py-3 first:pt-0">
+                    <ProductThumb icon={i.icon} imageUrl={i.image_url} thumbnailUrl={i.thumbnail_url} alt="" size="sm" />
+                    <Link href={`/product/${i.product_id}`} className="min-w-0 flex-1 truncate text-sm font-medium hover:underline">{i.name}</Link>
+                    <span className="text-sm text-muted-foreground tabular">{i.quantity} x {formatPrice(i.unit_price)}</span>
+                  </li>
+                ))}
+              </ul>
+              <dl className="mt-3 space-y-1.5 border-t pt-3 text-sm">
+                <div className="flex justify-between"><dt className="text-muted-foreground">Items</dt><dd className="tabular">{formatPrice(o.subtotal)}</dd></div>
+                <div className="flex justify-between"><dt className="text-muted-foreground">Delivery ({formatDistance(o.distance_km)})</dt><dd className="tabular">{o.delivery_fee ? formatPrice(o.delivery_fee) : "Free"}</dd></div>
+                <div className="flex justify-between font-semibold"><dt className="inline-flex items-center gap-1.5"><Banknote className="size-4" /> {o.payment_status === "paid" ? "Paid on delivery" : "Pay on delivery"}</dt><dd className="tabular">{formatPrice(o.total)}</dd></div>
+              </dl>
+            </section>
+
+            <div className="flex flex-wrap gap-2">
+              {o.actions.includes("cancel") && (
+                <ConfirmAction title="Cancel this order?" description="The shop will be notified straight away." confirmLabel="Cancel order"
+                  reasonLabel="Reason (optional)" pending={cancel.isPending} onConfirm={(r) => cancel.mutate(r)}
+                  trigger={(open) => <Button variant="outline" onClick={open}><X /> Cancel order</Button>} />
+              )}
+              {o.status === "DELIVERED" && !o.reviewed && <Button onClick={() => setReviewOpen(true)}><Star /> Rate this delivery</Button>}
             </div>
-            <h1 className="mt-3 text-2xl font-semibold md:text-3xl">{HEADLINE[o.status]}</h1>
-            {o.close_reason && <p className="mt-1 text-muted-foreground">Reason: {o.close_reason}</p>}
-            {moving && <p className="mt-1 text-muted-foreground">Keep {formatPrice(o.total)} ready. {o.shop.name} is delivering it themselves.</p>}
-            <FulfillmentProgress item={o} className="mt-8" />
-          </motion.section>
 
-          <section className="rounded-3xl border bg-card p-5">
-            <ul className="divide-y">
-              {o.items.map((i) => (
-                <li key={i.product_id} className="flex items-center gap-3 py-3 first:pt-0">
-                  <ProductThumb icon={i.icon} imageUrl={i.image_url} thumbnailUrl={i.thumbnail_url} alt="" size="sm" />
-                  <Link href={`/product/${i.product_id}`} className="min-w-0 flex-1 truncate text-sm font-medium hover:underline">{i.name}</Link>
-                  <span className="text-sm text-muted-foreground tabular">{i.quantity} x {formatPrice(i.unit_price)}</span>
-                </li>
-              ))}
-            </ul>
-            <dl className="mt-3 space-y-1.5 border-t pt-3 text-sm">
-              <div className="flex justify-between"><dt className="text-muted-foreground">Items</dt><dd className="tabular">{formatPrice(o.subtotal)}</dd></div>
-              <div className="flex justify-between"><dt className="text-muted-foreground">Delivery ({formatDistance(o.distance_km)})</dt><dd className="tabular">{o.delivery_fee ? formatPrice(o.delivery_fee) : "Free"}</dd></div>
-              <div className="flex justify-between font-semibold"><dt className="inline-flex items-center gap-1.5"><Banknote className="size-4" /> {o.payment_status === "paid" ? "Paid on delivery" : "Pay on delivery"}</dt><dd className="tabular">{formatPrice(o.total)}</dd></div>
-            </dl>
-          </section>
-
-          <div className="flex flex-wrap gap-2">
-            {o.actions.includes("cancel") && (
-              <ConfirmAction title="Cancel this order?" description="The shop will be notified straight away." confirmLabel="Cancel order"
-                reasonLabel="Reason (optional)" pending={cancel.isPending} onConfirm={(r) => cancel.mutate(r)}
-                trigger={(open) => <Button variant="outline" onClick={open}><X /> Cancel order</Button>} />
+            {o.timeline && (
+              <section className="rounded-3xl border bg-card p-5">
+                <h2 className="mb-4 font-semibold">Timeline</h2>
+                <EventTimeline events={o.timeline} />
+              </section>
             )}
-            {o.status === "DELIVERED" && !o.reviewed && <Button onClick={() => setReviewOpen(true)}><Star /> Rate this delivery</Button>}
           </div>
 
-          {o.timeline && (
-            <section className="rounded-3xl border bg-card p-5">
-              <h2 className="mb-4 font-semibold">Timeline</h2>
-              <EventTimeline events={o.timeline} />
-            </section>
-          )}
-        </div>
-
-        <aside className="space-y-4 lg:sticky lg:top-20 lg:self-start">
-          <div className="overflow-hidden rounded-3xl border bg-card">
-            <div className="h-48">
-              <ShopMap className="h-full" center={o.shop} interactive={false}
-                points={[
-                  { id: o.shop.id, lat: o.shop.lat, lng: o.shop.lng, label: o.shop.name, title: o.shop.name },
-                  { id: -1, lat: o.delivery_lat, lng: o.delivery_lng, label: "You", title: "Delivery address" },
-                ]} selected={-1} />
-            </div>
-            <div className="space-y-3 p-5 text-sm">
-              <p className="flex gap-2"><MapPin className="mt-0.5 size-4 shrink-0 text-muted-foreground" /> {o.delivery_address}</p>
-              <div className="flex items-center justify-between gap-2 border-t pt-3">
-                <Link href={`/shops/${o.shop.slug}`} className="font-medium hover:underline">{o.shop.name}</Link>
-                {o.shop.phone && <Button asChild size="sm" variant="outline"><a href={`tel:${o.shop.phone}`}><Phone /> Call shop</a></Button>}
+          <aside className="space-y-4 lg:sticky lg:top-20 lg:self-start">
+            <div className="overflow-hidden rounded-3xl border bg-card">
+              <div className="h-48">
+                <ShopMap className="h-full" center={o.shop} interactive={false}
+                  points={[
+                    { id: o.shop.id, lat: o.shop.lat, lng: o.shop.lng, label: o.shop.name, title: o.shop.name },
+                    { id: -1, lat: o.delivery_lat, lng: o.delivery_lng, label: "You", title: "Delivery address" },
+                  ]} selected={-1} />
+              </div>
+              <div className="space-y-3 p-5 text-sm">
+                <p className="flex gap-2"><MapPin className="mt-0.5 size-4 shrink-0 text-muted-foreground" /> {o.delivery_address}</p>
+                <div className="flex items-center justify-between gap-2 border-t pt-3">
+                  <Link href={`/shops/${o.shop.slug}`} className="font-medium hover:underline">{o.shop.name}</Link>
+                  {o.shop.phone && <Button asChild size="sm" variant="outline"><a href={`tel:${o.shop.phone}`}><Phone /> Call shop</a></Button>}
+                </div>
               </div>
             </div>
-          </div>
-        </aside>
+          </aside>
+        </div>
+        {reviewOpen && <ReviewDialog item={o} open onOpenChange={setReviewOpen} />}
       </div>
-      {reviewOpen && <ReviewDialog item={o} open onOpenChange={setReviewOpen} />}
-    </div>
+    </MotionConfig>
   );
 }
