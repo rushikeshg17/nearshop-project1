@@ -10,7 +10,8 @@
 # values only when a service is first created, and later Blueprint syncs leave them as set in the dashboard.
 #
 # Plan IDs are Render's current names for the instance types: 0.5c-512mb is Starter and 1c-2g is Standard.
-# Both deploy a push only after its GitHub checks pass (.github/workflows/ci.yml).
+# Both deploy a push only after its GitHub checks pass (.github/workflows/ci.yml), and both run the schema
+# migrations as their pre-deploy step (paid instance types only; see docs/runbooks/release-and-rollback.md).
 services:
   - type: web
     name: nearshop-api-staging
@@ -23,6 +24,9 @@ services:
     buildCommand: >-
       pip install uv && uv sync --frozen --no-dev &&
       uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"
+    # Schema migrations (backend/database/migrate.py) run after the build and before the new version
+    # starts, while the previous version still serves. A failure stops the deploy; nothing new goes live.
+    preDeployCommand: uv run --no-dev python -m database.migrate
     # Exactly one worker: the APScheduler sweep and the semantic search index live inside each API
     # process, so a second worker would run every job twice and hold a second index (until P1.7 and P8.1).
     startCommand: uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
@@ -64,6 +68,7 @@ services:
     buildCommand: >-
       pip install uv && uv sync --frozen --no-dev &&
       uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"
+    preDeployCommand: uv run --no-dev python -m database.migrate
     startCommand: uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /api/health
     autoDeployTrigger: checksPass

@@ -1,4 +1,4 @@
-.PHONY: setup db-up db-down schema seed api web test retrain lint lint-backend lint-frontend build audit \
+.PHONY: setup db-up db-down schema migrate seed api web test retrain lint lint-backend lint-frontend build audit \
 	audit-waived-ghsas secret-scan ci smoke
 
 # The local MongoDB from docker-compose.yml: a single-node replica set on localhost:27017.
@@ -35,6 +35,14 @@ db-down:
 
 schema:
 	cd backend && uv run python -m database.schema
+
+# Applies pending schema migrations, then creates missing collections, validators and indexes
+# (backend/database/migrate.py). Always the local database, whatever backend/.env points at: staging and
+# production migrate in their Render pre-deploy step. MIGRATE_ARGS=--status only reports.
+MIGRATE_ARGS ?=
+migrate: db-up
+	cd backend && NEARSHOP_MONGODB_URI='$(LOCAL_MONGODB_URI)' NEARSHOP_MONGODB_DB='$(LOCAL_MONGODB_DB)' \
+		uv run python -m database.migrate $(MIGRATE_ARGS)
 
 # Always seeds the local database, whatever backend/.env points at. To seed a demo cluster, run the seed
 # module yourself with NEARSHOP_ENVIRONMENT=demo and --confirm-db (see README).

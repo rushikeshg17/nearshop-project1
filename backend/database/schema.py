@@ -1,6 +1,8 @@
 """MongoDB schema for NearShop: collections, validation rules and indexes.
 
-    uv run python -m database.schema          # create / update collections and indexes (idempotent)
+    uv run python -m database.migrate         # apply pending migrations, then create / update collections,
+                                              # validators and indexes (what deploys run; see migrate.py)
+    uv run python -m database.schema          # only the create / update step (idempotent, never drops)
 
 `reset` drops every collection, so it is guarded: see `check_reset_allowed`. The seed and the
 test suite are its only callers, and both pass a confirmation that repeats the database name.
@@ -305,8 +307,24 @@ INDEXES: dict[str, list[IndexModel]] = {
 }
 
 
+# MongoDB's codes for an index that clashes with one already built: IndexOptionsConflict (same name or
+# keys, other options; or the same index under another name) and IndexKeySpecsConflict (same name, other keys).
+INDEX_CONFLICT_CODES = (85, 86)
+
+
+class SchemaConflict(RuntimeError):
+    """An index declared in INDEXES clashes with one already in the database. Nothing was dropped."""
+
+
 def ensure_schema(mongo: MongoDatabase) -> None:
-    """Create missing collections, apply validators and build indexes. Safe to run repeatedly."""
+    """Create missing collections, apply validators and build missing indexes. Safe to run repeatedly.
+
+    It only adds: it never drops an index, and an index the code no longer declares stays until a
+    migration removes it. A declared index that clashes with an existing one (same name with other keys
+    or options, or the same keys and options under another name) raises SchemaConflict naming the
+    collection and the index, and every existing index stays in place. To change an index, give it a
+    new name and write a migration with replace_index (database/migrations). The migration runner
+    (database/migrate.py) calls this after applying pending migrations; nothing else should need to."""
     existing = set(mongo.list_collection_names())
     for name, validator in VALIDATORS.items():
         if name not in existing:
@@ -314,14 +332,20 @@ def ensure_schema(mongo: MongoDatabase) -> None:
                                               "validationAction": "error"} if validator else {}))
         elif validator:
             mongo.command("collMod", name, validator=validator, validationLevel="strict", validationAction="error")
-        if name in INDEXES:
+        for model in INDEXES.get(name, ()):
+            # One index per command, so a conflict names the index that caused it.
             try:
-                mongo[name].create_indexes(INDEXES[name])
-            except OperationFailure as exc:  # an index changed shape: rebuild that collection's indexes
-                if exc.code not in (85, 86):  # IndexOptionsConflict / IndexKeySpecsConflict
+                mongo[name].create_indexes([model])
+            except OperationFailure as exc:
+                if exc.code not in INDEX_CONFLICT_CODES:
                     raise
-                mongo[name].drop_indexes()
-                mongo[name].create_indexes(INDEXES[name])
+                index_name = model.document["name"]
+                reason = (exc.details or {}).get("errmsg") or str(exc)
+                raise SchemaConflict(
+                    f"Index {index_name!r} on collection {name!r} conflicts with an index already in the "
+                    f"database (MongoDB error {exc.code}: {reason}). No index was dropped. To change an "
+                    f"index's keys or options, declare it under a new name and add a migration that uses "
+                    f"replace_index (see database/migrations).") from exc
 
 
 # Environments in which reset (and the seed through it) may run. Staging and production never may.
@@ -432,16 +456,19 @@ def reset_problem(db_name: str, confirm: str | None, *, client: MongoClient | No
 
 
 def reset(mongo: MongoDatabase, *, confirm: str | None) -> None:
-    """Drop every NearShop collection and recreate the empty schema (used by the seed script and tests).
+    """Drop every NearShop collection, the migration records and the migration lock, then rebuild the
+    empty schema with the migration runner (used by the seed script and tests).
 
     Raises ResetRefused, before any write, unless `check_reset_allowed` passes for this database, the
     hosts of the client behind `mongo` and the configured URI, with `confirm` as the operator's
     confirmation."""
     if problem := reset_problem(mongo.name, confirm, client=mongo.client):
         raise ResetRefused(f"Reset refused; nothing was written. {problem}")
-    for name in VALIDATORS:
+    from database import migrate  # imports this module
+
+    for name in (*VALIDATORS, migrate.MIGRATIONS_COLLECTION, migrate.LOCK_COLLECTION):
         mongo.drop_collection(name)
-    ensure_schema(mongo)
+    migrate.run(mongo)  # the empty database gets every migration recorded, as a deployed one would
 
 
 if __name__ == "__main__":
