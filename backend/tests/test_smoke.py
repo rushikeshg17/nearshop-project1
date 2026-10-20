@@ -189,6 +189,27 @@ def test_waits_for_the_expected_commit(server, creds, capsys):
     assert "ok    wait for commit" in capsys.readouterr().out
 
 
+def test_checks_the_commit_again_after_the_last_step(server, creds, capsys):
+    assert run(server, "--mode", "full", "--expect-commit", COMMIT, "--wait-seconds", "0") == 0
+    out = capsys.readouterr().out
+    assert f"ok    still on commit {COMMIT[:12]}" in out
+    assert server.calls[0] == ("GET", "/api/health") and server.calls[-1] == ("GET", "/api/health")
+
+
+def test_print_commit_prints_only_the_served_commit(server, creds, capsys):
+    assert run(server, "--print-commit") == 0
+    assert capsys.readouterr().out == f"{COMMIT}\n"
+    assert server.calls == [("GET", "/api/health")]
+
+
+@pytest.mark.parametrize("status,payload", [(200, {"ok": True, "commit": None}), (503, {"ok": False})])
+def test_print_commit_fails_without_a_commit(server, creds, capsys, status, payload):
+    server.overrides[("GET", "/api/health")] = (status, payload)
+    assert run(server, "--print-commit") == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and "commit not reported" in captured.err
+
+
 # ------------------------------------------------------------------ failing runs
 
 
@@ -227,6 +248,21 @@ def test_commit_that_never_arrives_fails(server, creds, capsys):
     out = capsys.readouterr().out
     assert "not live after" in out
     assert ("GET", "/api/meta") not in server.calls  # nothing else runs against the old version
+
+
+def test_waiting_zero_seconds_checks_once(server, creds, capsys):
+    server.commits = ["oldcommit000"]
+    assert run(server, "--expect-commit", COMMIT, "--poll-seconds", "5", "--wait-seconds", "0") == 1
+    assert server.calls == [("GET", "/api/health")]
+
+
+def test_a_new_deploy_during_the_run_is_inconclusive(server, creds, capsys):
+    # wait-for-commit and the health step see COMMIT; the check after the last step sees a newer deploy.
+    server.commits = [COMMIT, COMMIT, "fedcba9876543210fedcba9876543210fedcba98"]
+    assert run(server, "--mode", "full", "--expect-commit", COMMIT, "--wait-seconds", "0") == 3
+    out = capsys.readouterr().out
+    assert "Smoke test INCONCLUSIVE" in out and "belongs to neither commit" in out
+    assert "Smoke test FAILED" not in out
 
 
 def test_full_mode_without_credentials_fails(server, monkeypatch):

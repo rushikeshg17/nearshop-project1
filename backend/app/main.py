@@ -82,7 +82,7 @@ async def validation_handler(_: Request, exc: RequestValidationError):
 
 @app.get("/api/health")
 def health():
-    # Render sets RENDER_GIT_COMMIT on each deploy; the smoke workflow waits for it to show the new commit.
+    # Render sets RENDER_GIT_COMMIT on each deploy; the smoke workflow reads it to know which commit it tests.
     return {"ok": True, "commit": os.environ.get("RENDER_GIT_COMMIT") or None}
 
 

@@ -1,30 +1,41 @@
 # Smoke test of a deployed environment (backend/scripts/smoke.py, docs/runbooks/release-and-rollback.md).
 #
-# Every push to main: once CI has passed for that push, Render deploys it to nearshop-api-staging. This
-# workflow waits up to 10 minutes for staging's /api/health to report the pushed commit, then runs the
-# full smoke test (searches, sign-in, reserve and cancel) against staging. Its result is what the
-# release log records before release is fast-forwarded.
+# Staging, automatically: every 10 minutes the staging job asks staging's /api/health which commit it
+# serves. When that commit has no "Smoke / staging" commit status yet, it runs the full smoke test
+# (searches, sign-in, reserve and cancel) against it and records the result as that commit status, with a
+# link to the run. So every push to main that Render deploys to staging is smoke-tested within about 10
+# minutes of going live; a commit that staging skipped (a newer push deployed first) is never tested and
+# is never promoted. The commit status is what promotion and the release log read.
 #
-# It starts from CI's completion (workflow_run) rather than from the push itself on purpose: Render's
-# checksPass deploys a commit only after every GitHub check on it has finished, so a smoke job started by
-# the push would be an unfinished check on the very commit it waits for, and staging would never deploy.
+# Why a sweep and not a run per push: Render's checksPass deploys a commit only after the GitHub checks
+# on it pass, and every Actions run (push, workflow_run, repository_dispatch, schedule or manual) is
+# itself a check on a commit of main, usually the newest one. A run that waited for the newest commit to
+# go live could hold up the very deploy it waits for, and then fail, and the failed check would stop that
+# commit from deploying at all. So no run here ever waits for a deploy, and a run fails only when the
+# commit it tested is its own commit (github.sha), which is then already live on staging. A failure that
+# belongs to another commit goes to that commit's status and the run summary, and the run passes, so it
+# never holds back a newer commit. There is no concurrency group either, so no run is ever cancelled
+# (two overlapping runs are harmless: the smoke test retries another listing when one is reserved).
 #
-# By hand (Actions > Smoke > Run workflow): production runs read-only mode (GET requests only), staging
-# runs full mode against whatever staging serves now.
+# By hand (Actions > Smoke > Run workflow): staging runs full mode against whatever staging serves now,
+# even when that commit already has a result (use this to re-test after a fix to staging itself);
+# production runs read-only mode (GET requests only). Run production from the release branch ("Use
+# workflow from: release") so the run's own commit is the one production serves.
 #
 # Settings (repository > Settings > Secrets and variables > Actions):
-#   variables NEARSHOP_STAGING_URL (staging's Vercel URL: the main branch's preview alias) and
-#             NEARSHOP_PRODUCTION_URL (default https://nearshop-umber.vercel.app)
+#   variables NEARSHOP_STAGING_URL (staging's Vercel URL: the main branch's preview alias; until it is
+#             set, the scheduled runs skip the staging job) and NEARSHOP_PRODUCTION_URL (default
+#             https://nearshop-umber.vercel.app)
 #   secrets   NEARSHOP_SMOKE_EMAIL, NEARSHOP_SMOKE_PASSWORD (the staging smoke account; staging only)
 #             NEARSHOP_SMOKE_VERCEL_BYPASS (optional: Vercel's protection bypass for automation, needed
 #             when preview deployments are behind Vercel Authentication)
+# GitHub turns scheduled workflows off after 60 days without activity in the repository; Actions > Smoke
+# then shows a button to turn it back on.
 name: Smoke
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
+  schedule:
+    - cron: "*/10 * * * *"
   workflow_dispatch:
     inputs:
       target:
@@ -36,42 +47,81 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: smoke-${{ github.event_name == 'workflow_dispatch' && inputs.target || 'staging' }}
-  cancel-in-progress: false
-
 jobs:
   staging:
     name: staging (full)
-    # A push to main whose CI passed (not CI's pull-request or weekly runs), or a manual staging run.
     if: >-
-      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'schedule' && vars.NEARSHOP_STAGING_URL != '') ||
       (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      statuses: write # the "Smoke / staging" commit status on the commit that was tested
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
 
-      - name: Smoke test staging (waits up to 10 minutes for the new commit)
+      - name: Smoke test the commit staging serves
         env:
           BASE_URL: ${{ vars.NEARSHOP_STAGING_URL }}
-          EXPECT_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           NEARSHOP_SMOKE_EMAIL: ${{ secrets.NEARSHOP_SMOKE_EMAIL }}
           NEARSHOP_SMOKE_PASSWORD: ${{ secrets.NEARSHOP_SMOKE_PASSWORD }}
           NEARSHOP_SMOKE_VERCEL_BYPASS: ${{ secrets.NEARSHOP_SMOKE_VERCEL_BYPASS }}
         run: |
+          set -uo pipefail
+          context="Smoke / staging"
+          # A problem that is not a smoke failure of this run's own commit never fails the run (see top).
+          report() { echo "::error::$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
           if [ -z "$BASE_URL" ]; then
-            echo "Set the repository variable NEARSHOP_STAGING_URL to staging's Vercel URL." >&2
-            exit 1
+            report "Set the repository variable NEARSHOP_STAGING_URL to staging's Vercel URL."
+            exit 0
           fi
-          if [ -n "$EXPECT_COMMIT" ]; then
-            python3 backend/scripts/smoke.py "$BASE_URL" --mode full --expect-commit "$EXPECT_COMMIT" --wait-seconds 600
-          else
-            python3 backend/scripts/smoke.py "$BASE_URL" --mode full
+          if ! commit=$(python3 backend/scripts/smoke.py "$BASE_URL" --print-commit); then
+            report "Staging's /api/health did not report a commit; nothing was tested."
+            exit 0
+          fi
+          if ! printf '%s' "$commit" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            report "Staging reported an unexpected commit value; nothing was tested."
+            exit 0
+          fi
+          if ! known=$(gh api "repos/$GITHUB_REPOSITORY/commits/$commit/statuses?per_page=100" \
+                --jq "[.[] | select(.context == \"$context\")] | length"); then
+            report "Could not read the commit statuses of ${commit:0:12}; nothing was tested."
+            exit 0
+          fi
+          if [ "$EVENT" = schedule ] && [ "$known" != 0 ]; then
+            echo "Staging serves ${commit:0:12}, which already has a \"$context\" result. Nothing to do."
+            exit 0
+          fi
+
+          # Actions runs this with bash -e -o pipefail: "|| rc=$?" keeps smoke.py's exit code (tee's is 0).
+          rc=0
+          python3 backend/scripts/smoke.py "$BASE_URL" --mode full --expect-commit "$commit" --wait-seconds 0 \
+            | tee smoke-output.txt || rc=$?
+          { echo "### Staging smoke, commit \`${commit:0:12}\`"; echo '```'; cat smoke-output.txt; echo '```'; } \
+            >> "$GITHUB_STEP_SUMMARY"
+          case "$rc" in
+            0) state=success; description="Full smoke test passed on staging" ;;
+            1) state=failure; description="Full smoke test failed on staging" ;;
+            3) echo "Staging deployed another commit during the run; no result recorded. The next run tests it."
+               exit 0 ;;
+            *) report "smoke.py exited with $rc; no result recorded for ${commit:0:12}."
+               exit 0 ;;
+          esac
+          if ! gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$commit" -f state="$state" \
+                -f context="$context" -f description="$description" -f target_url="$RUN_URL" > /dev/null; then
+            report "Could not record the \"$context\" status ($state) on ${commit:0:12}."
+          fi
+          if [ "$state" = failure ]; then
+            if [ "$commit" = "$GITHUB_SHA" ]; then
+              exit 1 # this run's own commit failed; it is already live on staging, so failing holds back nothing new
+            fi
+            report "Staging smoke FAILED for ${commit:0:12} (recorded on that commit). This run passes because its own commit is ${GITHUB_SHA:0:12}."
           fi
 
   production:
@@ -84,8 +134,24 @@ jobs:
         with:
           persist-credentials: false
 
-      # Read-only mode sends GET requests only, and no smoke credentials are passed to it.
+      # Read-only mode sends GET requests only, and no smoke credentials are passed to it. Like the staging
+      # job, the run fails only when production serves the run's own commit (run it from release).
       - name: Smoke test production (read-only)
         env:
           BASE_URL: ${{ vars.NEARSHOP_PRODUCTION_URL || 'https://nearshop-umber.vercel.app' }}
-        run: python3 backend/scripts/smoke.py "$BASE_URL" --mode read-only
+        run: |
+          set -uo pipefail
+          commit=$(python3 backend/scripts/smoke.py "$BASE_URL" --print-commit) || commit=""
+          printf '%s' "$commit" | grep -Eq '^[0-9a-f]{7,40}$' || commit=""
+          rc=0
+          python3 backend/scripts/smoke.py "$BASE_URL" --mode read-only | tee smoke-output.txt || rc=$?
+          { echo "### Production smoke (read-only), commit \`${commit:0:12}\`"; echo '```'; cat smoke-output.txt; echo '```'; } \
+            >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" != 0 ]; then
+            if [ "$commit" = "$GITHUB_SHA" ]; then
+              exit 1
+            fi
+            message="Production smoke FAILED (production serves ${commit:0:12}; this run's commit is ${GITHUB_SHA:0:12}, so the run passes)."
+            echo "::error::$message"
+            echo "$message" >> "$GITHUB_STEP_SUMMARY"
+          fi

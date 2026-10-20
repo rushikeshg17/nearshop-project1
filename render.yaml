@@ -26,7 +26,7 @@ services:
     # Exactly one worker: the APScheduler sweep and the semantic search index live inside each API
     # process, so a second worker would run every job twice and hold a second index (until P1.7 and P8.1).
     startCommand: uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
-    # /api/health also reports RENDER_GIT_COMMIT, which the smoke workflow waits for.
+    # /api/health also reports RENDER_GIT_COMMIT, which tells the smoke workflow which commit it tests.
     healthCheckPath: /api/health
     autoDeployTrigger: checksPass
     envVars:
@@ -39,7 +39,9 @@ services:
       - key: NEARSHOP_MONGODB_URI
         sync: false # secret: the staging Atlas cluster's connection string, never production's
       - key: NEARSHOP_PROTECTED_HOSTS
-        sync: false # the staging and production Atlas project domains, comma-separated
+        # the staging and production Atlas project domains, comma-separated. The seed refuses both; the
+        # one-time load of staging's data is in the runbook (One-time set-up, step 5).
+        sync: false
       - key: NEARSHOP_MONGODB_DB
         value: nearshop
       - key: NEARSHOP_COOKIE_SECURE

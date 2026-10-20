@@ -10,12 +10,15 @@ full: everything in read-only, then signs in with the staging smoke account (NEA
 NEARSHOP_SMOKE_PASSWORD), reserves one unit of an in-stock pickup listing from the search results and
 cancels that reservation. Staging only.
 
---expect-commit first waits (up to --wait-seconds) until /api/health reports that git commit, which Render
-sets on each deploy. NEARSHOP_SMOKE_VERCEL_BYPASS, when set, is sent as Vercel's deployment-protection
-bypass header, for preview deployments behind Vercel Authentication.
+--expect-commit first waits (up to --wait-seconds; 0 checks once) until /api/health reports that git
+commit, which Render sets on each deploy, and checks again after the last step that the environment still
+serves it, so the result belongs to that commit. --print-commit only prints the commit /api/health reports
+(the smoke workflow uses it to pick the commit to test). NEARSHOP_SMOKE_VERCEL_BYPASS, when set, is sent
+as Vercel's deployment-protection bypass header, for preview deployments behind Vercel Authentication.
 
-Prints the timing of each step. Exits 0 when every step passes and 1 on the first failure or timeout
-(2 for bad arguments). Uses only the standard library, so it runs without the backend's dependencies.
+Prints the timing of each step. Exits 0 when every step passes, 1 on the first failure or timeout, 3 when
+the environment started serving another commit during the run (the result belongs to neither commit), and
+2 for bad arguments. Uses only the standard library, so it runs without the backend's dependencies.
 It never prints the smoke account's credentials, the session cookie or a response's personal fields.
 """
 import argparse
@@ -36,8 +39,17 @@ SMOKE_NOTE = "Automated smoke test; cancelled straight away."
 MAX_RESERVE_ATTEMPTS = 5
 
 
+EXIT_PASSED, EXIT_FAILED, EXIT_COMMIT_CHANGED = 0, 1, 3
+
+
 class StepFailed(Exception):
-    pass
+    exit_code = EXIT_FAILED
+
+
+class CommitChanged(StepFailed):
+    """The environment deployed another commit mid-run, so the result belongs to neither commit."""
+
+    exit_code = EXIT_COMMIT_CHANGED
 
 
 class Client:
@@ -147,6 +159,24 @@ class Smoke:
                 raise StepFailed(f"commit {want[:12]} not live after {self.wait_seconds:g} s (last: {last})")
             time.sleep(self.poll_seconds)
 
+    def served_commit(self) -> str:
+        """The commit /api/health reports, lower-case; StepFailed when it reports none."""
+        status, payload = self.client.request("GET", "/api/health")
+        got = str((payload or {}).get("commit") or "").strip().lower() if isinstance(payload, dict) else ""
+        if status != 200 or not got:
+            raise StepFailed(f"GET /api/health returned HTTP {status} and commit {got[:12] or 'not reported'}")
+        return got
+
+    def still_on_commit(self) -> str:
+        want = self.expect_commit.strip().lower()
+        try:
+            got = self.served_commit()
+        except StepFailed as exc:
+            raise CommitChanged(f"could not confirm commit {want[:12]} after the run: {exc}") from exc
+        if not (got.startswith(want) or want.startswith(got)):
+            raise CommitChanged(f"now serving {got[:12]}, not {want[:12]}; this result belongs to neither commit")
+        return f"serving {got[:12]}"
+
     def health(self) -> str:
         payload = expect_ok(*self.client.request("GET", "/api/health"), "GET /api/health")
         if payload.get("ok") is not True:
@@ -230,6 +260,8 @@ class Smoke:
         steps += [(f"search {q!r}", lambda q=q: self.search(q)) for q in SEARCHES]
         if self.mode == "full":
             steps += [("sign in", self.sign_in), ("reserve", self.reserve), ("cancel", self.cancel)]
+        if self.expect_commit:
+            steps.append((f"still on commit {self.expect_commit[:12]}", self.still_on_commit))
         return steps
 
     def run(self) -> int:
@@ -239,10 +271,14 @@ class Smoke:
             t0 = time.perf_counter()
             try:
                 detail = step()
+            except CommitChanged as exc:
+                self.say(f"STOP  {name:<28} {(time.perf_counter() - t0) * 1000:8.0f} ms  {exc}")
+                self.say(f"Smoke test INCONCLUSIVE after {time.perf_counter() - started:.1f} s.")
+                return exc.exit_code
             except StepFailed as exc:
                 self.say(f"FAIL  {name:<28} {(time.perf_counter() - t0) * 1000:8.0f} ms  {exc}")
                 self.say(f"Smoke test FAILED after {time.perf_counter() - started:.1f} s.")
-                return 1
+                return exc.exit_code
             except Exception as exc:  # an unexpected response shape is a failure, not a crash
                 self.say(f"FAIL  {name:<28} {(time.perf_counter() - t0) * 1000:8.0f} ms  "
                          f"{type(exc).__name__}: {str(exc)[:200]}")
@@ -261,12 +297,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expect-commit", help="first wait until /api/health reports this git commit")
     parser.add_argument("--wait-seconds", type=float, default=600, help="how long to wait for it (default 600)")
     parser.add_argument("--poll-seconds", type=float, default=15, help="pause between health checks (default 15)")
+    parser.add_argument("--print-commit", action="store_true",
+                        help="only print the commit /api/health reports (exit 1 when it reports none)")
     args = parser.parse_args(argv)
     if urllib.parse.urlsplit(args.base_url).scheme not in ("http", "https"):
         parser.error("base_url must start with https:// (or http:// for a local server)")
     bypass = os.environ.get("NEARSHOP_SMOKE_VERCEL_BYPASS")
     client = Client(args.base_url, args.timeout,
                     {"x-vercel-protection-bypass": bypass} if bypass else None)
+    if args.print_commit:
+        try:
+            print(Smoke(client, "read-only").served_commit())
+        except StepFailed as exc:
+            print(f"smoke.py: {exc}", file=sys.stderr)
+            return EXIT_FAILED
+        return EXIT_PASSED
     return Smoke(client, args.mode, expect_commit=args.expect_commit, wait_seconds=args.wait_seconds,
                  poll_seconds=args.poll_seconds, email=os.environ.get("NEARSHOP_SMOKE_EMAIL"),
                  password=os.environ.get("NEARSHOP_SMOKE_PASSWORD")).run()
