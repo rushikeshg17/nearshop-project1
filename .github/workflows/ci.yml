@@ -1,5 +1,6 @@
-# Continuous integration: every pull request and every push to main runs four checks. main is
-# protected on all four (backend, frontend, secret-scan, dependency-audit), and Render deploys only a
+# Continuous integration: every pull request and every push to main runs four checks (backend,
+# frontend, secret-scan, dependency-audit). They block merging only once main's branch protection
+# requires all four, which the tech lead sets up in the repository settings. Render deploys only a
 # commit whose checks passed (render.yaml, autoDeployTrigger: checksPass). make ci runs the same
 # checks locally, apart from GitHub's dependency review.
 #
