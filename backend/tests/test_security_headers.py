@@ -3,17 +3,21 @@ import os
 import secrets
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 
 from app import main
 from app.api.routes import admin, ai, auth, customer, owner
+from app.core import ratelimit
 from app.core.config import settings
+from app.core.database import Database
 from app.core.security_headers import (
     API_CSP,
     NO_STORE,
@@ -72,6 +76,40 @@ def test_errors_carry_the_headers_too(client, boom_route):
         response = c.get("/api/test-security-boom")  # an unhandled exception's 500
     assert response.status_code == 500
     assert_api_headers(response)
+
+
+EDGE_SECRET = "edge-secret-for-security-headers-" + "x" * 24
+
+
+@pytest.fixture
+def edge_and_limits(ids, monkeypatch):
+    """The edge check required and the rate limits enforced, as on staging and production. The limiter's clock
+    is frozen 30 days ahead, so every request falls in one window and MongoDB's TTL monitor removes nothing."""
+    monkeypatch.setattr(settings, "rate_limit_mode", "enforce")
+    monkeypatch.setattr(settings, "edge_secret", SecretStr(EDGE_SECRET))
+    monkeypatch.setattr(settings, "edge_secret_required", True)
+    frozen = time.time() + 30 * 86400
+    monkeypatch.setattr(ratelimit, "now", lambda: frozen)
+    Database().mongo[ratelimit.COLLECTION].delete_many({})
+    yield
+    Database().mongo[ratelimit.COLLECTION].delete_many({})
+
+
+def test_the_edge_403_and_the_rate_limit_429_carry_the_headers(edge_and_limits):
+    edge = {"X-NearShop-Edge": EDGE_SECRET, "X-NearShop-Client-IP": "203.0.113.20", **HEADERS}
+    with TestClient(main.app) as c:
+        for path, private in (("/api/meta", False), ("/api/auth/me", True), ("/media/x.webp", False)):
+            refused = c.get(path, headers=HEADERS)  # no edge secret
+            assert refused.status_code == 403, path
+            assert_api_headers(refused)
+            assert refused.headers.get("cache-control") == (NO_STORE if private else None), path
+        compare = ("/api/ai/search-compare", {"q": "x"})  # 10 a minute per IP (plan section 8.3)
+        for _ in range(10):
+            assert c.get(compare[0], params=compare[1], headers=edge).status_code != 429
+        limited = c.get(compare[0], params=compare[1], headers=edge)
+        assert limited.status_code == 429
+        assert_api_headers(limited)
+        assert limited.headers["cache-control"] == NO_STORE  # /api/ai is a private prefix
 
 
 def test_media_files_carry_the_headers(client):

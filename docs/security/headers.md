@@ -49,7 +49,7 @@ Variables, per environment):
 | Placeholder | Variable | Value today |
 |---|---|---|
 | <media domain> | NEARSHOP_MEDIA_PUBLIC_BASE_URL (its origin) | Left out while unset: photos then come from /media, which 'self' covers. |
-| <map tile host> | NEARSHOP_MAP_TILE_ORIGIN | https://tiles.openfreemap.org when unset: the host of the map styles in frontend/src/components/map/shop-map.tsx. Set it if that host changes. |
+| <map tile host> | NEARSHOP_MAP_TILE_ORIGIN | https://tiles.openfreemap.org when unset: the host of the map styles in frontend/src/components/map/shop-map.tsx. Set it if that host changes. The default is a known exception to "hosts come from the environment": it mirrors the host shop-map.tsx still hard-codes, which P2.6 may not touch. When shop-map.tsx reads its style URLs from the same variable (the first prompt that edits it, P2.9, or its own follow-up), remove the default from next.config.ts and set the variable in Vercel for every environment. |
 | <Sentry ingest host> | NEXT_PUBLIC_SENTRY_DSN (its origin) | Left out while unset, with report-uri, report-to and Reporting-Endpoints. |
 | <the Sentry security-report URL> | NEXT_PUBLIC_SENTRY_DSN | https://<ingest host>/api/<project id>/security/?sentry_key=<public key>&sentry_environment=<environment>&sentry_release=<commit>. The key is the DSN's public key, which the browser bundle already carries. |
 
@@ -76,12 +76,20 @@ Every response of the API, on Render directly and through Vercel at /api and /me
 | Cache-Control | private, no-store | Every response to a request carrying a session (the session cookie, or a bearer token, valid or not), and every response under /api/auth, /api/me, /api/reservations, /api/orders, /api/reviews, /api/notifications, /api/owner, /api/admin and /api/ai, signed in or not. It replaces any Cache-Control a route set. | Signed-in JSON carries names, phone numbers and addresses: neither the browser nor Vercel nor any proxy may keep it. |
 
 Not no-store: /media files, even for a signed-in visitor. They are the same public photo for everyone, nothing
-personal is served there, and re-downloading every photo on every page would cost slow-4G users. Public
+personal is served there, and re-downloading every photo on every page would cost slow-4G users. This is a
+deliberate exception to the prompt's "every response to a request that carries a session": the session cookie
+(path /) rides along on every same-origin /media request, though the photo does not depend on it. Once photos
+come from the media domain (NEARSHOP_MEDIA_PUBLIC_BASE_URL, P1.5), the cookie is never sent with them at all. Public
 routes requested without a session carry no Cache-Control from this layer (P2.8 adds caching for public pages).
 
-/api/auth/me, fetched through Vercel by a signed-in browser, therefore carries exactly: X-Content-Type-Options
-nosniff, Content-Security-Policy default-src 'none'; frame-ancestors 'none', Referrer-Policy no-referrer and
-Cache-Control private, no-store (plus the API's X-Request-Id and Server-Timing, from P2.1).
+/api/auth/me, fetched through Vercel by a signed-in browser, therefore carries exactly these security headers:
+X-Content-Type-Options nosniff, Content-Security-Policy default-src 'none'; frame-ancestors 'none',
+Referrer-Policy no-referrer and Cache-Control private, no-store from the API, and Strict-Transport-Security
+max-age=63072000; includeSubDomains; preload from Vercel, which adds it to every response it serves, passed
+through or not (decision below). Fetched from Render directly, it carries the same set without
+Strict-Transport-Security. Besides these it carries the API's X-Request-Id and Server-Timing (P2.1) and the
+ordinary response headers (content-type, content-length, date, and Vercel's own server, cache and id headers),
+which the release check does not compare.
 
 ## Cookies
 

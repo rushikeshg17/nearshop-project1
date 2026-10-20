@@ -74,6 +74,10 @@ function origin(name: string, value: string): string {
   }
 }
 
+// The fallback is a deliberate, temporary exception to "hosts come from the environment": it mirrors the host
+// that src/components/map/shop-map.tsx still hard-codes in its style URLs, so the policy always allows what the
+// map really loads. When shop-map.tsx reads the same variable, remove the fallback and set the variable in
+// Vercel for every environment (docs/security/headers.md, the hosts table).
 const MAP_TILE_ORIGIN = origin(
   "NEARSHOP_MAP_TILE_ORIGIN",
   process.env.NEARSHOP_MAP_TILE_ORIGIN?.trim() || "https://tiles.openfreemap.org",
