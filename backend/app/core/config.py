@@ -2,7 +2,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     access_token_minutes: int = 60 * 24 * 7
     cookie_name: str = "nearshop_session"
     cookie_secure: bool = False
+
+    # Launch lockdown. Sign-ups default to closed when environment is production and open elsewhere;
+    # NEARSHOP_SIGNUPS_OPEN overrides that either way.
+    signups_open: bool | None = None
+    # The site runs on generated data: every site page shows a banner asking visitors not to enter
+    # real personal details.
+    demo_mode: bool = False
 
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
@@ -45,6 +52,12 @@ class Settings(BaseSettings):
     model_dir: Path = BACKEND_DIR / "ml_artifacts"
     enable_scheduler: bool = True
     warm_on_startup: bool = True  # check the schema and build the semantic index when the API starts
+
+    @model_validator(mode="after")
+    def _default_signups_open(self) -> "Settings":
+        if self.signups_open is None:
+            self.signups_open = self.environment.strip().lower() != "production"
+        return self
 
 
 @lru_cache

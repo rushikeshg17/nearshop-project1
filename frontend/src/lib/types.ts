@@ -43,6 +43,10 @@ export interface Meta {
   };
   categories: Category[];
   stats: { shops: number; listings: number; in_stock: number };
+  /** False until launch: the sign-up screens show a paused state and the API refuses sign-ups. */
+  signups_open: boolean;
+  /** The site runs on generated data; site pages show a banner saying so. */
+  demo_mode: boolean;
 }
 
 export interface ShopBrief {

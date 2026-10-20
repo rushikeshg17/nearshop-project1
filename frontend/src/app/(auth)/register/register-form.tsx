@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
+import { Loader2, PauseCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
@@ -10,10 +10,40 @@ import { safeNext } from "@/app/(auth)/login/login-form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useMeta } from "@/hooks/use-session";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import type { User } from "@/lib/types";
 
+/** Shown on both sign-up screens while /api/meta reports signups_open: false. */
+export function SignupsPaused({ signInHref = "/login" }: { signInHref?: string }) {
+  return (
+    <div role="status">
+      <div className="mb-5 grid size-12 place-items-center rounded-2xl bg-warning-soft text-warning-ink">
+        <PauseCircle className="size-6" aria-hidden />
+      </div>
+      <h1 className="text-3xl font-semibold">Sign-ups are paused while we prepare for launch</h1>
+      <p className="mt-3 text-sm text-muted-foreground">
+        New accounts cannot be created right now. You can still search what nearby shops have in stock.
+      </p>
+      <div className="mt-8 flex flex-wrap gap-3">
+        <Button asChild size="lg" className="h-11">
+          <Link href="/search">Search nearby</Link>
+        </Button>
+        <Button asChild variant="outline" size="lg" className="h-11">
+          <Link href={signInHref}>Sign in</Link>
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function RegisterForm() {
+  const { data: meta } = useMeta();
+  if (meta?.signups_open === false) return <SignupsPaused />;
+  return <OpenRegisterForm />;
+}
+
+function OpenRegisterForm() {
   const router = useRouter();
   const params = useSearchParams();
   const qc = useQueryClient();

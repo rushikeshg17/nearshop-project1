@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.core.config import settings
 from app.core.deps import DB
 from app.schemas.serializers import category_out
 from app.services.loaders import categories
@@ -32,4 +33,7 @@ def meta(db: DB):
             "listings": sum(r["listings"] for r in by_category),
             "in_stock": sum(r["in_stock"] for r in by_category),
         },
+        # Launch lockdown: the sign-up screens show a paused state, and site pages a demo-data banner.
+        "signups_open": bool(settings.signups_open),
+        "demo_mode": settings.demo_mode,
     }

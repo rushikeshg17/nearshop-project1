@@ -7,6 +7,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { SignupsPaused } from "@/app/(auth)/register/register-form";
 import {
   ShopBasicsFields,
   type ShopFormState,
@@ -61,6 +62,8 @@ export function ShopSignup() {
     shop.address_line.trim().length >= 5 && !!shop.locality,
     true,
   ];
+
+  if (meta?.signups_open === false) return <SignupsPaused signInHref="/login?next=/shop" />;
 
   return (
     <div>

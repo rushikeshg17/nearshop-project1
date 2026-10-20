@@ -29,3 +29,9 @@ services:
         value: "true"
       - key: NEARSHOP_SEED_CITY
         value: ballari
+      # Launch lockdown (P0.2): sign-ups stay closed until launch, and the site shows a banner saying
+      # it runs on generated data.
+      - key: NEARSHOP_SIGNUPS_OPEN
+        value: "false"
+      - key: NEARSHOP_DEMO_MODE
+        value: "true"

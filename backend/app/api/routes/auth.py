@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Depends, Response
 from pymongo.errors import DuplicateKeyError
 
 from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.core.deps import DB, CurrentUser, OptionalUser
-from app.core.errors import AppError, Conflict
+from app.core.errors import AppError, Conflict, Forbidden
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models import Role, Shop, User
 from app.schemas.requests import LoginIn, ProfileUpdateIn, RegisterIn, RegisterShopIn
@@ -48,12 +48,19 @@ def _start_session(response: Response, user: User) -> None:
     )
 
 
+def require_open_signups() -> None:
+    """Close both sign-up endpoints until launch (settings.signups_open). FastAPI resolves route
+    dependencies before it validates the body, so a closed endpoint answers 403 to any payload."""
+    if not settings.signups_open:
+        raise Forbidden("Sign-ups are paused while we prepare for launch.", code="signups_closed")
+
+
 def _ensure_email_free(db: Database, email: str) -> None:
     if db.users.exists({"email": email.lower()}):
         raise EMAIL_TAKEN
 
 
-@router.post("/register")
+@router.post("/register", dependencies=[Depends(require_open_signups)])
 def register(body: RegisterIn, response: Response, db: DB):
     _ensure_email_free(db, body.email)
     try:
@@ -65,7 +72,7 @@ def register(body: RegisterIn, response: Response, db: DB):
     return user_out(user, db)
 
 
-@router.post("/register-shop")
+@router.post("/register-shop", dependencies=[Depends(require_open_signups)])
 def register_shop(body: RegisterShopIn, response: Response, db: DB):
     _ensure_email_free(db, body.owner.email)
     cats = [c for c in categories(db).values() if c.slug in set(body.shop.category_slugs)]

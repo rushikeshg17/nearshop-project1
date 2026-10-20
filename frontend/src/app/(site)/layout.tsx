@@ -1,3 +1,4 @@
+import { DemoBanner } from "@/components/site/demo-banner";
 import { MobileTabBar } from "@/components/site/mobile-tab-bar";
 import { SiteFooter } from "@/components/site/site-footer";
 import { SiteHeader } from "@/components/site/site-header";
@@ -11,6 +12,7 @@ export default function SiteLayout({ children }: LayoutProps<"/">) {
       >
         Skip to content
       </a>
+      <DemoBanner />
       <SiteHeader />
       <main id="main" className="min-h-[calc(100dvh-4rem)] pb-20 md:pb-0">
         {children}
