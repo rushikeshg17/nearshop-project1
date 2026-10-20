@@ -93,6 +93,10 @@ services:
       # that already exists, add it in the dashboard (Environment): a Blueprint sync does not prompt for it.
       - key: NEARSHOP_SENTRY_DSN
         sync: false # the Sentry project's DSN (Settings > Client Keys); the same project for both services
+      # Storage budget (P2.2): the Atlas tier's storage limit, for the admin storage card and the daily
+      # snapshot's 70% and 85% warnings. Staging is on M0 (512 MB). Alerts: docs/runbooks/monitoring.md.
+      - key: NEARSHOP_STORAGE_LIMIT_MB
+        value: "512"
 
   - type: web
     name: nearshop-api
@@ -147,6 +151,9 @@ services:
       # Error tracking (P2.1): on only when set; see the staging service.
       - key: NEARSHOP_SENTRY_DSN
         sync: false # the Sentry project's DSN
+      # Storage budget (P2.2): Atlas Flex, 5 GB (plan step 1-A). Set 512 while production is still on M0.
+      - key: NEARSHOP_STORAGE_LIMIT_MB
+        value: "5120"
 
   # Nightly off-site backup of the staging database (P1.6, backend/database/backup.py): every collection as
   # gzipped BSON plus a manifest, in the private backup bucket under staging/<set id>/, then sets older than
@@ -162,7 +169,14 @@ services:
     rootDir: backend
     schedule: "30 21 * * *" # 21:30 UTC, 03:00 IST
     buildCommand: pip install uv && uv sync --frozen --no-dev
-    startCommand: uv run --no-dev python -m database.backup
+    # After a successful run only, the Better Stack heartbeat is pinged (P2.2, docs/runbooks/monitoring.md):
+    # Better Stack alerts when no ping arrives for 26 hours. Blank NEARSHOP_BACKUP_HEARTBEAT_URL: no ping. A
+    # failed ping is reported but does not fail a backup that succeeded; the missing ping alerts on its own.
+    startCommand: >-
+      uv run --no-dev python -m database.backup &&
+      { [ -z "$NEARSHOP_BACKUP_HEARTBEAT_URL" ] ||
+      curl -fsS -m 30 --retry 3 -o /dev/null "$NEARSHOP_BACKUP_HEARTBEAT_URL" ||
+      echo "backup heartbeat ping failed" >&2; }
     autoDeployTrigger: checksPass
     envVars:
       - key: PYTHON_VERSION
@@ -193,6 +207,8 @@ services:
         sync: false # s3
       - key: NEARSHOP_BACKUP_S3_ENDPOINT
         sync: false # https://<account id>.r2.cloudflarestorage.com
+      - key: NEARSHOP_BACKUP_HEARTBEAT_URL
+        sync: false # Better Stack > Heartbeats > nearshop-backup-staging: its URL (period 24 h, grace 2 h)
       - key: NEARSHOP_BACKUP_S3_BUCKET
         sync: false # the staging backup bucket
       - key: NEARSHOP_BACKUP_S3_ACCESS_KEY_ID
@@ -214,7 +230,14 @@ services:
     rootDir: backend
     schedule: "30 21 * * *" # 21:30 UTC, 03:00 IST
     buildCommand: pip install uv && uv sync --frozen --no-dev
-    startCommand: uv run --no-dev python -m database.backup
+    # After a successful run only, the Better Stack heartbeat is pinged (P2.2, docs/runbooks/monitoring.md):
+    # Better Stack alerts when no ping arrives for 26 hours. Blank NEARSHOP_BACKUP_HEARTBEAT_URL: no ping. A
+    # failed ping is reported but does not fail a backup that succeeded; the missing ping alerts on its own.
+    startCommand: >-
+      uv run --no-dev python -m database.backup &&
+      { [ -z "$NEARSHOP_BACKUP_HEARTBEAT_URL" ] ||
+      curl -fsS -m 30 --retry 3 -o /dev/null "$NEARSHOP_BACKUP_HEARTBEAT_URL" ||
+      echo "backup heartbeat ping failed" >&2; }
     autoDeployTrigger: checksPass
     envVars:
       - key: PYTHON_VERSION
@@ -245,6 +268,8 @@ services:
         sync: false # s3
       - key: NEARSHOP_BACKUP_S3_ENDPOINT
         sync: false # https://<account id>.r2.cloudflarestorage.com
+      - key: NEARSHOP_BACKUP_HEARTBEAT_URL
+        sync: false # Better Stack > Heartbeats > nearshop-backup-production: its URL (period 24 h, grace 2 h)
       - key: NEARSHOP_BACKUP_S3_BUCKET
         sync: false # the production backup bucket
       - key: NEARSHOP_BACKUP_S3_ACCESS_KEY_ID

@@ -3,10 +3,17 @@
 Each figure is one aggregation pipeline that runs inside MongoDB; the independent ones for a
 page are sent together (db.gather), so a dashboard costs about one network round trip.
 """
-from datetime import datetime, timedelta
+import logging
+import math
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
+from pymongo.database import Database as MongoDatabase
+from pymongo.errors import DuplicateKeyError, OperationFailure
+
 from app.ai.semantic_index import index
+from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.models import AnomalyStatus, InventoryReason, OrderStatus, ReservationStatus, Role, Shop
 from app.schemas.serializers import iso, listing
@@ -352,4 +359,151 @@ def admin_overview(db: Database) -> dict:
                              for r in popular],
         "zero_result_searches": [{"query": r["_id"], "count": r["n"]} for r in zero],
         "activity": activity,
+    }
+
+
+# ------------------------------------------------------------------ storage budget (P2.2)
+#
+# The Atlas tier's storage limit (M0 512 MB, Flex 5 GB) counts the uncompressed BSON of every document
+# plus every index. Once a day (the snapshot_storage job in app/jobs.py, under a lease) each collection's
+# data size and index size are recorded in storage_snapshots, one document per IST day: _id (the day,
+# YYYY-MM-DD), taken_at, limit_mb, data_bytes, index_bytes, total_bytes and collections (name, documents,
+# data_bytes, index_bytes for each). storage_report projects from them when 85% of
+# NEARSHOP_STORAGE_LIMIT_MB is reached. Alerts: docs/runbooks/monitoring.md.
+
+STORAGE_SNAPSHOTS = "storage_snapshots"
+MB = 1024 * 1024
+STORAGE_WARN_PCT = 70  # plan section 8.10: alert at 70% and 85% of the tier limit
+STORAGE_ALERT_PCT = 85
+GROWTH_WINDOW_DAYS = 30
+PROJECTION_HORIZON_DAYS = 3650  # growth so slow that 85% is more than 10 years away has no date
+NAMESPACE_NOT_FOUND = 26  # MongoDB's error code for a collection that does not exist
+
+storage_log = logging.getLogger("nearshop.storage")
+
+
+def ist_date(moment: datetime) -> date:
+    """The IST calendar day of a naive UTC timestamp."""
+    return moment.replace(tzinfo=UTC).astimezone(IST).date()
+
+
+def collection_sizes(mongo: MongoDatabase) -> list[dict]:
+    """Each collection's document count, data size (uncompressed BSON) and index size, largest first.
+    Views and system collections are left out; a collection dropped while it is being read is skipped."""
+    names = sorted(c["name"] for c in mongo.list_collections(filter={"type": "collection"})
+                   if not c["name"].startswith("system."))
+    out = []
+    for name in names:
+        try:
+            rows = list(mongo[name].aggregate([{"$collStats": {"storageStats": {}}}]))
+            stats = rows[0]["storageStats"] if rows else None
+        except OperationFailure:  # a server without $collStats storageStats: the older command
+            try:
+                stats = mongo.command("collStats", name)
+            except OperationFailure as exc:
+                if exc.code != NAMESPACE_NOT_FOUND:
+                    raise
+                stats = None
+        if not stats:
+            continue
+        out.append({"name": name, "documents": int(stats.get("count") or 0),
+                    "data_bytes": int(stats.get("size") or 0), "index_bytes": int(stats.get("totalIndexSize") or 0)})
+    out.sort(key=lambda c: (-(c["data_bytes"] + c["index_bytes"]), c["name"]))
+    return out
+
+
+def record_storage_snapshot(mongo: MongoDatabase, now: datetime, limit_mb: int | None = None) -> dict[str, Any]:
+    """Record today's (IST) snapshot unless it exists. Cheap when it does: one lookup by _id, so the job
+    can be called on every scheduler tick. Logs a warning at 70% of the limit and an error (an error
+    tracker issue) at 85%. Returns what the lease records as the job's last result."""
+    day = ist_date(now).isoformat()
+    coll = mongo[STORAGE_SNAPSHOTS]
+    if coll.find_one({"_id": day}, {"_id": 1}) is not None:
+        return {"snapshot": day, "recorded": False}
+    limit_mb = limit_mb or settings.storage_limit_mb
+    sizes = collection_sizes(mongo)
+    data = sum(c["data_bytes"] for c in sizes)
+    index_bytes = sum(c["index_bytes"] for c in sizes)
+    doc = {"_id": day, "taken_at": now, "limit_mb": limit_mb, "data_bytes": data, "index_bytes": index_bytes,
+           "total_bytes": data + index_bytes, "collections": sizes}
+    try:
+        coll.insert_one(doc)
+    except DuplicateKeyError:  # another process recorded today's at the same moment
+        return {"snapshot": day, "recorded": False}
+    pct = 100 * doc["total_bytes"] / (limit_mb * MB)
+    if pct >= STORAGE_ALERT_PCT:
+        storage_log.error("database storage is above 85%% of the %d MB limit: %.1f%% used", limit_mb, pct)
+    elif pct >= STORAGE_WARN_PCT:
+        storage_log.warning("database storage is above 70%% of the %d MB limit: %.1f%% used", limit_mb, pct)
+    return {"snapshot": day, "recorded": True, "total_mb": round(doc["total_bytes"] / MB, 1), "used_pct": round(pct, 1)}
+
+
+def project_storage(points: list[tuple[date, int]], limit_bytes: int, pct: float = STORAGE_ALERT_PCT) -> dict[str, Any]:
+    """Growth per day over the last GROWTH_WINDOW_DAYS days, and the day `pct`% of limit_bytes is reached.
+
+    points are (day, total bytes), in any order. Growth is the change from the oldest point in the
+    window to the latest, divided by the days between them. projection is one of:
+      reached          the latest total is already at or above the threshold; the date is the latest day
+      projected        the date the threshold is reached at the current growth
+      not_growing      growth is zero or negative: no date
+      beyond_horizon   the threshold is more than PROJECTION_HORIZON_DAYS away: no date
+      insufficient     fewer than two days of snapshots in the window: no growth and no date
+      no_data          no snapshot at all"""
+    if not points:
+        return {"growth_bytes_per_day": None, "growth_days": 0, "projection": "no_data", "projected_date": None}
+    points = sorted(points)
+    latest_day, latest = points[-1]
+    window = [p for p in points if (latest_day - p[0]).days <= GROWTH_WINDOW_DAYS]
+    base_day, base = window[0]
+    days = (latest_day - base_day).days
+    growth = (latest - base) / days if days > 0 else None
+    target = limit_bytes * pct / 100
+    if latest >= target:
+        status, when = "reached", latest_day
+    elif growth is None:
+        status, when = "insufficient", None
+    elif growth <= 0:
+        status, when = "not_growing", None
+    else:
+        days_left = math.ceil((target - latest) / growth)
+        status, when = ("projected", latest_day + timedelta(days=days_left)) if days_left <= PROJECTION_HORIZON_DAYS \
+            else ("beyond_horizon", None)
+    return {"growth_bytes_per_day": growth, "growth_days": days, "projection": status,
+            "projected_date": when.isoformat() if when else None}
+
+
+def storage_report(mongo: MongoDatabase, limit_mb: int | None = None) -> dict[str, Any]:
+    """The admin storage card: the latest total against the limit, the 30-day growth per day, the
+    projected date of reaching 85%, and the five largest collections."""
+    limit_mb = limit_mb or settings.storage_limit_mb
+    limit_bytes = limit_mb * MB
+    coll = mongo[STORAGE_SNAPSHOTS]
+    latest = coll.find_one(sort=[("_id", -1)])
+    points: list[tuple[date, int]] = []
+    if latest is not None:
+        since = date.fromisoformat(latest["_id"]) - timedelta(days=GROWTH_WINDOW_DAYS)
+        points = [(date.fromisoformat(s["_id"]), int(s["total_bytes"]))
+                  for s in coll.find({"_id": {"$gte": since.isoformat()}}, {"total_bytes": 1})]
+    projection = project_storage(points, limit_bytes)
+    growth = projection["growth_bytes_per_day"]
+    total = int(latest["total_bytes"]) if latest else None
+    return {
+        "limit_mb": limit_mb,
+        "snapshot_day": latest["_id"] if latest else None,
+        "taken_at": iso(latest["taken_at"]) if latest else None,
+        "total_bytes": total,
+        "total_mb": round(total / MB, 1) if total is not None else None,
+        "data_mb": round(latest["data_bytes"] / MB, 1) if latest else None,
+        "index_mb": round(latest["index_bytes"] / MB, 1) if latest else None,
+        "used_pct": round(100 * total / limit_bytes, 1) if total is not None else None,
+        "thresholds": [{"pct": p, "mb": round(limit_mb * p / 100, 1)} for p in (STORAGE_WARN_PCT, STORAGE_ALERT_PCT)],
+        "growth_mb_per_day": round(growth / MB, 3) if growth is not None else None,
+        "growth_days": projection["growth_days"],
+        "projection": projection["projection"],
+        "projected_85_date": projection["projected_date"],
+        "largest_collections": [
+            {"name": c["name"], "documents": c["documents"], "data_mb": round(c["data_bytes"] / MB, 2),
+             "index_mb": round(c["index_bytes"] / MB, 2), "total_mb": round((c["data_bytes"] + c["index_bytes"]) / MB, 2)}
+            for c in (latest["collections"] if latest else [])[:5]
+        ],
     }

@@ -109,6 +109,18 @@ class Settings(BaseSettings):
     # edge's own id first), else a new random one. Comma-separated, case-insensitive.
     request_id_headers: str = "x-vercel-id,x-request-id"
 
+    # Storage budget (P2.2, app/services/analytics.py): the Atlas tier's storage limit in MB (MiB), which counts
+    # uncompressed documents plus indexes. M0 (staging, demo) 512; Flex (production after plan step 1-A) 5120.
+    # The admin storage card and the daily snapshot's 70% and 85% warnings are measured against it.
+    storage_limit_mb: int = 512
+
+    @field_validator("storage_limit_mb", mode="after")
+    @classmethod
+    def _check_storage_limit(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_STORAGE_LIMIT_MB must be 1 or more")
+        return value
+
     @field_validator("sentry_traces_sample_rate", "sentry_search_traces_sample_rate", mode="after")
     @classmethod
     def _check_sample_rate(cls, value: float) -> float:

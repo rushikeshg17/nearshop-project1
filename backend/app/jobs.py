@@ -1,4 +1,4 @@
-"""Background jobs: the expiry sweep under a lease, and the retraining queue.
+"""Background jobs: the expiry sweep and the storage snapshot under a lease, and the retraining queue.
 
 The expiry sweep
 ----------------
@@ -14,7 +14,11 @@ it holds the lease, so at any instance count each job runs once per tick.
     once: shutdown waits for a tick in progress before giving the leases up, so that tick cannot renew
     a lease after its release.
   * last_run_at is the heartbeat: it is never older than 90 s while some process is running
-    (scorecard check 4.2). P2.2 alerts on it.
+    (scorecard check 4.2). /api/health/ready reports it, and an uptime monitor alerts on it
+    (docs/runbooks/monitoring.md).
+
+The leased jobs are sweep_expired, every tick, and snapshot_storage (P2.2), which records each
+collection's data and index size in storage_snapshots once a day (app/services/analytics.py).
 
 Reservation and order lists also expire reservations and cancel stale orders lazily when read, so a
 page is right even between ticks.
@@ -144,7 +148,16 @@ def sweep_expired() -> dict[str, int]:
     return {"expired_reservations": n, "cancelled_orders": m}
 
 
-JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {"sweep_expired": sweep_expired}
+def snapshot_storage() -> dict[str, Any]:
+    """Daily storage snapshot (P2.2): records today's (IST) collection sizes in storage_snapshots once,
+    on the first tick of the day; every later tick that day is one lookup by _id."""
+    from app.services.analytics import record_storage_snapshot  # analytics loads the search code
+
+    return record_storage_snapshot(Database().mongo, utcnow())
+
+
+JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {
+    "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage}
 
 
 class SearchIndexRefresher:

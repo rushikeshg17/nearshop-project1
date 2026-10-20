@@ -220,6 +220,23 @@ VALIDATORS: dict[str, dict] = {
         outcome={"bsonType": ["object", "null"]}, active={"enum": ["retrain"]},
         nightly_for={"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
     ),
+    # Storage budget (P2.2, app/services/analytics.py): one snapshot per IST day, _id the day (YYYY-MM-DD),
+    # recorded by the snapshot_storage job under its lease. Sizes in bytes; collections lists each
+    # collection's documents, data_bytes (uncompressed BSON) and index_bytes, largest first.
+    "storage_snapshots": {"$jsonSchema": {
+        "bsonType": "object",
+        "required": ["_id", "taken_at", "limit_mb", "data_bytes", "index_bytes", "total_bytes", "collections"],
+        "properties": {
+            "_id": {"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}, "taken_at": {"bsonType": DATE},
+            "limit_mb": POSITIVE_INT, "data_bytes": {"bsonType": INT, "minimum": 0},
+            "index_bytes": {"bsonType": INT, "minimum": 0}, "total_bytes": {"bsonType": INT, "minimum": 0},
+            "collections": {"bsonType": "array", "items": {
+                "bsonType": "object", "required": ["name", "documents", "data_bytes", "index_bytes"],
+                "properties": {"name": {"bsonType": STR}, "documents": {"bsonType": INT, "minimum": 0},
+                               "data_bytes": {"bsonType": INT, "minimum": 0},
+                               "index_bytes": {"bsonType": INT, "minimum": 0}}}},
+        },
+    }},
     # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
     "counters": {},
     "text_embeddings": {},

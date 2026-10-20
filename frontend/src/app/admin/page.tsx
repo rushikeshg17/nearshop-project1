@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { ClipboardList, IndianRupee, Info, Package, Scale, Search, Store, Users } from "lucide-react";
+import { ClipboardList, Database, IndianRupee, Info, Package, Scale, Search, Store, Users } from "lucide-react";
 import Link from "next/link";
 import { Bar, BarChart, CartesianGrid, XAxis } from "recharts";
 
@@ -12,6 +12,7 @@ import { SalesChart } from "@/components/dashboard/sales-chart";
 import { type ChartConfig, ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { api } from "@/lib/api";
 import { formatCompactPrice, formatNumber, formatPrice } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import type { AdminOverview } from "@/lib/types";
 
 const activityConfig = {
@@ -30,6 +31,103 @@ function StatusBars({ data, labels }: { data: Record<string, number>; labels: Re
         </li>
       ))}
     </ul>
+  );
+}
+
+/** GET /api/admin/storage: the latest daily storage snapshot against the Atlas tier's limit (P2.2). */
+type StorageReport = {
+  limit_mb: number;
+  snapshot_day: string | null;
+  taken_at: string | null;
+  total_mb: number | null;
+  data_mb: number | null;
+  index_mb: number | null;
+  used_pct: number | null;
+  thresholds: { pct: number; mb: number }[];
+  growth_mb_per_day: number | null;
+  growth_days: number;
+  projection: "projected" | "reached" | "not_growing" | "beyond_horizon" | "insufficient" | "no_data";
+  projected_85_date: string | null;
+  largest_collections: { name: string; documents: number; data_mb: number; index_mb: number; total_mb: number }[];
+};
+
+const mb = (value: number) => (value >= 1024 ? `${(value / 1024).toFixed(2)} GB` : `${value.toFixed(1)} MB`);
+const day = (iso: string) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+
+function projectionText(s: StorageReport) {
+  switch (s.projection) {
+    case "projected":
+      return `Reaches 85% on ${day(s.projected_85_date!)}`;
+    case "reached":
+      return "Already above 85%: move to a larger tier or archive (runbook)";
+    case "not_growing":
+      return "Not growing over the last 30 days: no date";
+    case "beyond_horizon":
+      return "85% is more than 10 years away at this rate";
+    case "insufficient":
+      return "A projected date needs snapshots from two different days";
+    default:
+      return "No snapshot yet: the first is taken within a minute of the API starting";
+  }
+}
+
+function StorageCard() {
+  const q = useQuery({ queryKey: ["admin", "storage"], queryFn: () => api.get<StorageReport>("/admin/storage") });
+  const s = q.data;
+  const pct = s?.used_pct ?? 0;
+  const [warn, alert] = s?.thresholds ?? [];
+  const tone = alert && pct >= alert.pct ? "bg-destructive" : warn && pct >= warn.pct ? "bg-warning" : "bg-chart-1";
+  return (
+    <section className="mt-6 rounded-2xl border bg-card p-5" aria-labelledby="storage-heading">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id="storage-heading" className="flex items-center gap-2 font-semibold"><Database className="size-4 text-muted-foreground" /> Database storage</h2>
+        {s?.snapshot_day && <span className="text-xs text-muted-foreground">Snapshot of {day(s.snapshot_day)}</span>}
+      </div>
+      {q.isError ? (
+        <p className="mt-3 text-sm text-muted-foreground">Storage figures could not be loaded. <button type="button" className="underline" onClick={() => q.refetch()}>Retry</button></p>
+      ) : !s ? (
+        <div className="mt-4 h-24 animate-pulse rounded-xl bg-muted" />
+      ) : (
+        <div className="mt-4 grid gap-6 lg:grid-cols-2">
+          <div>
+            <p className="text-sm">
+              {s.total_mb === null ? "No snapshot yet" : <><span className="text-2xl font-semibold tabular">{mb(s.total_mb)}</span> <span className="text-muted-foreground">of {mb(s.limit_mb)} ({s.used_pct}%)</span></>}
+            </p>
+            <div className="relative mt-3 h-2.5 overflow-hidden rounded-full bg-muted" role="img" aria-label={`${pct}% of the storage limit used`}>
+              <div className={cn("h-full rounded-full", tone)} style={{ width: `${Math.min(pct, 100)}%` }} />
+              {s.thresholds.map((t) => <span key={t.pct} className="absolute inset-y-0 w-px bg-foreground/40" style={{ left: `${t.pct}%` }} />)}
+            </div>
+            <p className="mt-1.5 text-xs text-muted-foreground">Alerts at {s.thresholds.map((t) => `${t.pct}% (${mb(t.mb)})`).join(" and ")}</p>
+            <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <dt className="text-xs text-muted-foreground">Growth per day{s.growth_days ? `, last ${s.growth_days} days` : ""}</dt>
+                <dd className="tabular">{s.growth_mb_per_day === null ? "Not enough data" : `${s.growth_mb_per_day >= 0 ? "+" : ""}${s.growth_mb_per_day.toFixed(2)} MB`}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">Data and indexes</dt>
+                <dd className="tabular">{s.data_mb === null || s.index_mb === null ? "–" : `${mb(s.data_mb)} + ${mb(s.index_mb)}`}</dd>
+              </div>
+            </dl>
+            <p className={cn("mt-4 rounded-xl px-3 py-2 text-sm", s.projection === "reached" ? "bg-destructive/10 text-destructive" : "bg-info-soft text-info-ink")}>
+              {projectionText(s)}
+            </p>
+          </div>
+          <div>
+            <h3 className="mb-2 text-sm font-medium">Largest collections</h3>
+            {s.largest_collections.length === 0 ? <p className="text-sm text-muted-foreground">None recorded yet.</p> : (
+              <ol className="space-y-2">
+                {s.largest_collections.map((c) => (
+                  <li key={c.name} className="text-sm">
+                    <div className="flex justify-between gap-3"><span className="truncate font-mono text-xs">{c.name}</span><span className="shrink-0 text-muted-foreground tabular">{mb(c.total_mb)} · {formatNumber(c.documents)} docs</span></div>
+                    <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-chart-2" style={{ width: `${s.total_mb ? Math.min(100, (c.total_mb / s.total_mb) * 100) : 0}%` }} /></div>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -58,6 +156,8 @@ export default function AdminOverviewPage() {
         <StatTile label="Searches, 30 days" value={formatNumber(t.searches_30d)} icon={Search} />
         <StatTile label="Prices to review" value={t.open_price_flags} icon={Scale} tone="warning" href="/admin/anomalies" />
       </div>
+
+      <StorageCard />
 
       <div className="mt-6 grid gap-6 xl:grid-cols-2">
         <section className="rounded-2xl border bg-card p-5">

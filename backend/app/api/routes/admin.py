@@ -24,6 +24,13 @@ def overview(_: AdminUser, db: DB):
     return analytics.admin_overview(db)
 
 
+@router.get("/storage")
+def storage(_: AdminUser, db: DB):
+    """The storage budget: the latest daily snapshot against NEARSHOP_STORAGE_LIMIT_MB, the 30-day growth
+    per day, the projected date of reaching 85%, and the five largest collections."""
+    return analytics.storage_report(db.mongo)
+
+
 @router.get("/anomalies")
 def anomalies(_: AdminUser, db: DB, status: Literal["open", "reviewed", "dismissed"] = "open"):
     rows = db.price_anomalies.find({"status": AnomalyStatus(status)}, sort=[("score", -1)])

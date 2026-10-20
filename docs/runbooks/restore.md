@@ -36,7 +36,8 @@ so).
 **Heartbeat.** Every run writes a row to `backup_runs` in the database it backs up: `_id` (the set id),
 `started_at`, `finished_at`, `outcome` (running, succeeded or failed), `size_bytes`, `documents`,
 `collections`, `deleted_sets` and, on failure, `error`. Alert when the newest `succeeded` row is more than
-26 hours old (plan section 8.10; wired up in P2.2). To look by hand: Atlas > the cluster > Browse
+26 hours old (plan section 8.10). The alert is a Better Stack heartbeat that the cron job pings only after a
+run succeeds (NEARSHOP_BACKUP_HEARTBEAT_URL; docs/runbooks/monitoring.md, alert 12). To look by hand: Atlas > the cluster > Browse
 Collections > nearshop > backup_runs, sorted by `started_at` descending.
 
 ## One-time set-up (plan step 1-A, R2)

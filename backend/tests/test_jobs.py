@@ -172,9 +172,9 @@ def test_a_failing_job_is_recorded_and_keeps_its_lease(mongo):
 
 
 def test_the_default_scheduler_runs_the_real_sweep(mongo):
-    mongo[jobs.LEASES].delete_one({"_id": "sweep_expired"})
+    mongo[jobs.LEASES].delete_many({"_id": {"$in": ["sweep_expired", "snapshot_storage"]}})
     s = jobs.Scheduler(mongo, holder="process-real")
-    assert s.tick() == {"sweep_expired": True}
+    assert s.tick() == {"sweep_expired": True, "snapshot_storage": True}  # the storage snapshot: P2.2
     result = mongo[jobs.LEASES].find_one({"_id": "sweep_expired"})["last_result"]
     assert result["ok"] is True and {"expired_reservations", "cancelled_orders"} <= set(result)
     s.shutdown()
