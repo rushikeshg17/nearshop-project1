@@ -4,6 +4,7 @@
     uv run python -m database.admin_tasks rotate-demo
     uv run python -m database.admin_tasks deactivate-user 42
     uv run python -m database.admin_tasks list-admins
+    uv run python -m database.admin_tasks create-admin --name "Asha Rao" --email asha@example.com
 
 They act on the database in NEARSHOP_MONGODB_URI / NEARSHOP_MONGODB_DB, the same one the API uses,
 without wiping anything (the seed is the tool that replaces a database).
@@ -18,11 +19,17 @@ without wiping anything (the seed is the tool that replaces a database).
   rotate-demo      gives every account on the nearshop.demo domain (or a subdomain of it, such as
                    shops.nearshop.demo) its own random password and prints each one once, with the
                    account's id, role and name, for the team password manager.
-  deactivate-user  sets is_active to false on one user id; the API rejects that user's sessions at once.
-  list-admins      ids, created dates and status of admin accounts.
+  deactivate-user  sets is_active to false on one user id and ends every session of that user at once.
+  list-admins      ids, created dates, status and second-factor enrolment of admin accounts.
+  create-admin     the only way to make an admin (P2.4). Creates the account with a random password and
+                   enrols its second factor: it prints, once, the password, the otpauth:// provisioning URI
+                   for an authenticator app and 10 single-use recovery codes (stored only as digests). It
+                   needs NEARSHOP_TOTP_KEY (the key the TOTP secret is encrypted with, the same value the
+                   API has) and refuses to create a fourth active admin.
 
 Commands that write show the database name and ask the operator to type it; anything else changes
-nothing. No command prints an email address or a password hash.
+nothing. No command prints an email address or a password hash. Every command that changes a password
+or deactivates an account also ends that account's sessions (a new token_version, no recorded sessions).
 """
 from __future__ import annotations
 
@@ -36,18 +43,31 @@ from collections import Counter
 from collections.abc import Callable
 from datetime import datetime
 
+from pydantic import EmailStr, TypeAdapter, ValidationError
 from pymongo import UpdateOne
+from pymongo.errors import DuplicateKeyError
 from pymongo.results import BulkWriteResult
 
 from app.core.database import Database, utcnow
-from app.core.security import hash_password, verify_password
-from app.models import Role
+from app.core.security import (
+    encrypt_totp_secret,
+    hash_password,
+    hash_recovery_code,
+    new_recovery_codes,
+    new_totp_secret,
+    provisioning_uri,
+    revoke_all_update,
+    totp_configured,
+    verify_password,
+)
+from app.models import Role, User
 from database.seed.seed import RETIRED_DEMO_PASSWORD_SHA256
 
 DEMO_DOMAIN = "nearshop.demo"  # admin@, priya@, owner@nearshop.demo and <shop>@shops.nearshop.demo
 SYNTHETIC_DOMAIN = "example.com"  # the seed's generated customers; a reserved domain, so never a real inbox
 ROTATED_PASSWORD_BYTES = 24  # token_urlsafe(24) is 32 characters
 RETIRED_PASSWORD_ENV = "NEARSHOP_RETIRED_DEMO_PASSWORD"
+MAX_ACTIVE_ADMINS = 3
 
 Ask = Callable[[str], str]
 Out = Callable[[str], None]
@@ -106,6 +126,10 @@ def _ids(rows: list[dict]) -> str:
     return ", ".join(str(r["_id"]) for r in rows) or "none"
 
 
+def _enrolled(row: dict) -> bool:
+    return bool(row.get("totp_secret_enc"))
+
+
 def _by_role(rows: list[dict]) -> dict[str, list[dict]]:
     grouped: dict[str, list[dict]] = {}
     for r in rows:
@@ -116,8 +140,8 @@ def _by_role(rows: list[dict]) -> dict[str, list[dict]]:
 # ---------------------------------------------------------------- report
 def report(db: Database, retired_password: str | None, out: Out = print) -> int:
     """Print the exposure report. Read-only. Never prints an email address or a hash."""
-    rows = db.users.find_raw({}, {"email": 1, "role": 1, "is_active": 1, "last_login_at": 1, "password_hash": 1},
-                            sort=[("_id", 1)])
+    rows = db.users.find_raw({}, {"email": 1, "role": 1, "is_active": 1, "last_login_at": 1, "password_hash": 1,
+                                  "totp_secret_enc": 1}, sort=[("_id", 1)])
     demo = [r for r in rows if is_demo_email(r.get("email", ""))]
     demo_ids = {r["_id"] for r in demo}
     last_demo_id = max((i for i in demo_ids if isinstance(i, int)), default=None)
@@ -141,10 +165,15 @@ def report(db: Database, retired_password: str | None, out: Out = print) -> int:
 
     out("")
     admins = [r for r in rows if r.get("role") == Role.ADMIN.value]
-    out(f"Admins: {len(admins)}")
+    active = [r for r in admins if r.get("is_active", True)]
+    enrolled = [r for r in active if _enrolled(r)]
+    share = f"{round(100 * len(enrolled) / len(active))}%" if active else "n/a"
+    out(f"Admins: {len(admins)} ({len(active)} active; second factor enrolled on {len(enrolled)} of {len(active)} "
+        f"active, {share})")
     for r in admins:
         kind = "demo" if r["_id"] in demo_ids else "not demo"
-        out(f"  id {r['_id']}  {kind}  active {r.get('is_active', True)}  last sign-in {_when(r.get('last_login_at'))}")
+        out(f"  id {r['_id']}  {kind}  active {r.get('is_active', True)}  TOTP {'enrolled' if _enrolled(r) else 'NOT enrolled'}"
+            f"  last sign-in {_when(r.get('last_login_at'))}")
 
     out("")
     out(f"Demo accounts ({DEMO_DOMAIN}): {len(demo)}")
@@ -196,8 +225,9 @@ def rotate_demo(db: Database, ask: Ask = input, out: Out = print,
     now = utcnow()
     # Each update matches only while the account still has the email that was read above, so an account
     # changed in between is never given a password meant for someone else.
+    # A new password also ends every session of the account (revoke_all_update: a new token_version).
     ops = [UpdateOne({"_id": r["_id"], "email": r["email"]},
-                     {"$set": {"password_hash": hash_password(passwords[r["_id"]]), "updated_at": now}})
+                     revoke_all_update({"password_hash": hash_password(passwords[r["_id"]]), "updated_at": now}))
            for r in rows]
 
     def write() -> None:
@@ -219,8 +249,7 @@ def rotate_demo(db: Database, ask: Ask = input, out: Out = print,
     for r in rows:
         out(f"  id {r['_id']}  {r.get('role')}  {r.get('name', '')}  {passwords[r['_id']]}")
     out("")
-    out("Sessions signed in before this keep working until they expire. To end them all now, change "
-        "NEARSHOP_SECRET_KEY on the API service.")
+    out("Every session these accounts had is ended: they must sign in again with the new passwords.")
     return 0
 
 
@@ -236,16 +265,90 @@ def deactivate_user(db: Database, user_id: int, ask: Ask = input, out: Out = pri
         "They can no longer sign in, and their current sessions stop working.")
     if not confirmed(db, ask, out):
         return 1
-    db.users.set(user, is_active=False)
-    out(f"User {user_id} deactivated.")
+    db.users.update_one({"_id": user.id}, revoke_all_update({"is_active": False}))
+    out(f"User {user_id} deactivated; every session of theirs has ended.")
     return 0
 
 
 def list_admins(db: Database, out: Out = print) -> int:
-    rows = db.users.find_raw({"role": Role.ADMIN.value}, {"created_at": 1, "is_active": 1}, sort=[("_id", 1)])
+    rows = db.users.find_raw({"role": Role.ADMIN.value}, {"created_at": 1, "is_active": 1, "totp_secret_enc": 1},
+                             sort=[("_id", 1)])
     out(f"Admins in database {db.mongo.name}: {len(rows)}")
     for r in rows:
-        out(f"  id {r['_id']}  created {_when(r.get('created_at'))}  active {r.get('is_active', True)}")
+        out(f"  id {r['_id']}  created {_when(r.get('created_at'))}  active {r.get('is_active', True)}"
+            f"  TOTP {'enrolled' if _enrolled(r) else 'NOT enrolled'}")
+    return 0
+
+
+def _valid_email(email: str) -> str | None:
+    try:
+        return TypeAdapter(EmailStr).validate_python(email.strip()).lower()
+    except ValidationError:
+        return None
+
+
+def create_admin(db: Database, name: str, email: str, ask: Ask = input, out: Out = print,
+                 new_password: Callable[[], str] = lambda: secrets.token_urlsafe(ROTATED_PASSWORD_BYTES)) -> int:
+    """Create an admin account with its second factor enrolled, after the typed confirmation. Prints the
+    password, the provisioning URI and the recovery codes once; stores the TOTP secret encrypted with
+    NEARSHOP_TOTP_KEY and the recovery codes as digests. Refuses a fourth active admin."""
+    if not totp_configured():
+        out("NEARSHOP_TOTP_KEY is missing or invalid, so a second factor cannot be enrolled; no admin was created. "
+            "Set it to the same value the API service has.")
+        return 1
+    name = name.strip()
+    if len(name) < 2:
+        out("Give the admin's name (two or more characters).")
+        return 1
+    address = _valid_email(email)
+    if address is None:
+        out("That is not a valid email address; no admin was created.")
+        return 1
+    active = db.users.find_raw({"role": Role.ADMIN.value, "is_active": True}, {"_id": 1}, sort=[("_id", 1)])
+    if len(active) >= MAX_ACTIVE_ADMINS:
+        out(f"Refusing to create a fourth active admin: database {db.mongo.name} already has {len(active)} "
+            f"(ids {_ids(active)}). Deactivate one first with deactivate-user.")
+        return 1
+    if db.users.exists({"email": address}):
+        out("An account with that email already exists; no admin was created.")
+        return 1
+    out(f"This creates admin account '{name}' in database {db.mongo.name}, with a second factor.")
+    if not confirmed(db, ask, out):
+        return 1
+
+    password = new_password()
+    if len(password) < 24:
+        raise SystemExit("Refusing to set an admin password shorter than 24 characters.")
+    secret, codes = new_totp_secret(), new_recovery_codes()
+
+    def write() -> User | None:
+        # Counted again inside the transaction, so the limit holds against a change since the check above.
+        if db.users.count({"role": Role.ADMIN.value, "is_active": True}) >= MAX_ACTIVE_ADMINS:
+            return None
+        return db.users.insert(User(
+            name=name, email=address, password_hash=hash_password(password), role=Role.ADMIN,
+            totp_secret_enc=encrypt_totp_secret(secret), totp_enrolled_at=utcnow(),
+            totp_recovery_hashes=[hash_recovery_code(c) for c in codes]))
+
+    try:
+        user = db.transaction(write)
+    except DuplicateKeyError:
+        out("An account with that email already exists; no admin was created.")
+        return 1
+    if user is None:
+        out(f"Refusing to create a fourth active admin: database {db.mongo.name} reached {MAX_ACTIVE_ADMINS} "
+            "active admins meanwhile.")
+        return 1
+
+    out("")
+    out(f"Admin created: id {user.id}. The following is shown once and saved nowhere else; give it to the admin "
+        "privately and store the password and recovery codes in the team password manager.")
+    out(f"  Password: {password}")
+    out("  Second factor: add this to an authenticator app (most apps also accept it as a QR code):")
+    out(f"    {provisioning_uri(secret, f'admin-{user.id}')}")
+    out("  Recovery codes, each usable once instead of an authenticator code:")
+    for code in codes:
+        out(f"    {code}")
     return 0
 
 
@@ -271,7 +374,10 @@ def main(argv: list[str] | None = None, ask: Ask = input, out: Out = print) -> i
     sub.add_parser("rotate-demo", help="new random password for every nearshop.demo account")
     deactivate = sub.add_parser("deactivate-user", help="stop one user from signing in")
     deactivate.add_argument("user_id", type=int)
-    sub.add_parser("list-admins", help="ids and created dates of admin accounts")
+    sub.add_parser("list-admins", help="ids, created dates and second-factor enrolment of admin accounts")
+    create = sub.add_parser("create-admin", help="create an admin with a second factor (at most 3 active)")
+    create.add_argument("--name", required=True)
+    create.add_argument("--email", required=True)
     args = parser.parse_args(argv)
 
     db = Database()
@@ -281,6 +387,8 @@ def main(argv: list[str] | None = None, ask: Ask = input, out: Out = print) -> i
         return rotate_demo(db, ask, out)
     if args.command == "deactivate-user":
         return deactivate_user(db, args.user_id, ask, out)
+    if args.command == "create-admin":
+        return create_admin(db, args.name, args.email, ask, out)
     return list_admins(db, out)
 
 

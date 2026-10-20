@@ -4,8 +4,8 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, Request, status
 
 from app.core.config import settings
-from app.core.database import Database, get_db
-from app.core.security import decode_access_token
+from app.core.database import Database, get_db, utcnow
+from app.core.security import LAST_SEEN_EVERY, decode_access_token
 from app.models import Role, Shop, User
 from app.services.loaders import with_categories
 
@@ -34,19 +34,41 @@ def get_client_ip(request: Request) -> str:
 ClientIP = Annotated[str, Depends(get_client_ip)]
 
 
-def get_optional_user(request: Request, db: DB) -> User | None:
+def session_token(request: Request) -> str | None:
+    """The session token: the cookie, else a bearer token."""
     token = request.cookies.get(settings.cookie_name)
     if not token:
         auth = request.headers.get("authorization", "")
         token = auth[7:] if auth.lower().startswith("bearer ") else None
+    return token or None
+
+
+def get_optional_user(request: Request, db: DB) -> User | None:
+    """The signed-in user, or None. A token counts only while its user is active, its role and token_version
+    match the user document and its session (sid) is still recorded there (P2.4): logout, sign-out-everywhere,
+    a password or phone change, a role change and deactivation all end sessions at once. Everything is checked
+    against the one user read this dependency always made; the only write is last_seen_at, at most once an
+    hour per session. The session id is left on request.state.session_id for the session routes."""
+    token = session_token(request)
     if not token:
         return None
     payload = decode_access_token(token)
-    if not payload:
+    if not payload or not str(payload.get("sub", "")).isdigit():
         return None
     user = db.users.get(int(payload["sub"]))
     if not user or not user.is_active:
         return None
+    sid = payload.get("sid")
+    if payload.get("ver") != user.token_version or payload.get("role") != user.role.value or not sid:
+        return None
+    session = next((s for s in user.sessions if s.id == sid), None)
+    now = utcnow()
+    if session is None or session.expires_at <= now:
+        return None
+    if now - session.last_seen_at >= LAST_SEEN_EVERY:
+        db.users.update_one({"_id": user.id, "sessions.id": sid}, {"$set": {"sessions.$.last_seen_at": now}})
+        session.last_seen_at = now
+    request.state.session_id = sid
     return user
 
 

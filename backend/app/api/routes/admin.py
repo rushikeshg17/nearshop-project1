@@ -2,6 +2,7 @@ import re
 from typing import Literal
 
 from fastapi import APIRouter, Query
+from pydantic import BaseModel, Field
 
 from app.core.database import utcnow
 from app.core.deps import DB, AdminUser
@@ -17,6 +18,18 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 def _contains(q: str) -> dict:
     return {"$regex": re.escape(q.strip()), "$options": "i"}
+
+
+def mask_email(email: str) -> str:
+    """An email as admin lists show it: the first letter and the domain (r***@example.com)."""
+    local, at, domain = (email or "").partition("@")
+    return f"{local[:1]}***@{domain}" if at else "***"
+
+
+class RevealEmailIn(BaseModel):
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    reason: str = Field(min_length=10, max_length=500)
 
 
 @router.get("/overview")
@@ -69,7 +82,7 @@ def shops(_: AdminUser, db: DB, q: str | None = Query(None, max_length=80)):
     )
     owners = db.users.by_ids(s.owner_id for s in rows)
     return [{**shop_brief(s), "is_active": s.is_active, "owner": owners[s.owner_id].name,
-             "owner_email": owners[s.owner_id].email, "listings": counts.get(s.id, 0), "created_at": iso(s.created_at)}
+             "owner_email": mask_email(owners[s.owner_id].email), "listings": counts.get(s.id, 0), "created_at": iso(s.created_at)}
             for s in rows if s.owner_id in owners]
 
 
@@ -92,6 +105,20 @@ def users(_: AdminUser, db: DB, role: Literal["customer", "owner", "admin"] | No
         query["role"] = Role(role)
     if q:
         query["$or"] = [{"name": _contains(q)}, {"email": _contains(q)}]
-    return [{"id": u.id, "name": u.name, "email": u.email, "role": u.role.value, "is_active": u.is_active,
-             "created_at": iso(u.created_at), "last_login_at": iso(u.last_login_at)}
+    # Emails are masked; the full address takes the reveal action below, which is audited.
+    return [{"id": u.id, "name": u.name, "email": mask_email(u.email), "role": u.role.value,
+             "is_active": u.is_active, "created_at": iso(u.created_at), "last_login_at": iso(u.last_login_at)}
             for u in db.users.find(query, sort=[("created_at", -1)], limit=limit)]
+
+
+@router.post("/users/{user_id}/reveal-email")
+def reveal_email(user_id: int, body: RevealEmailIn, admin: AdminUser, db: DB):
+    """One user's full email, for a written reason. Who asked, when, for which user and why is recorded in
+    admin_audit (kept for a year) before the address is returned."""
+    user = db.users.get(user_id)
+    if user is None:
+        raise NotFound("User not found")
+    db.mongo["admin_audit"].insert_one(
+        {"_id": db.next_id("admin_audit"), "admin_id": admin.id, "action": "reveal_email",
+         "target_user_id": user.id, "reason": body.reason, "created_at": utcnow()}, session=db.session)
+    return {"id": user.id, "email": user.email}

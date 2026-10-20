@@ -8,6 +8,7 @@ NEARSHOP_MONGODB_URI (environment or backend/.env). Tests never reach Atlas.
 Each run uses its own database (`nearshop_test_<random>`) on that server, dropped when the run ends.
 Settings are read at import time, so the environment is configured before importing the app.
 """
+import base64
 import os
 import secrets
 import sys
@@ -74,13 +75,22 @@ os.environ["NEARSHOP_MEDIA_PUBLIC_BASE_URL"] = ""
 os.environ["NEARSHOP_MODEL_DIR"] = str(_tmp / "models")
 # Error tracking stays off whatever backend/.env or the shell says: no test error reaches a real project.
 os.environ["NEARSHOP_SENTRY_DSN"] = ""
+# The admin second factor's encryption key (P2.4): a fresh one per run, never the one from backend/.env.
+os.environ["NEARSHOP_TOTP_KEY"] = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
 
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.ai.semantic_index import index  # noqa: E402
 from app.core.database import Database  # noqa: E402
 from app.core.database import client as mongo_client  # noqa: E402
-from app.core.security import hash_password  # noqa: E402
+from app.core.security import (  # noqa: E402
+    current_step,
+    encrypt_totp_secret,
+    hash_password,
+    hash_recovery_code,
+    new_totp_secret,
+    totp_at,
+)
 from app.main import app  # noqa: E402
 from app.models import CatalogItem, Category, Product, Role, Shop, User  # noqa: E402
 from database import schema  # noqa: E402
@@ -88,6 +98,14 @@ from database import schema  # noqa: E402
 PASSWORD = "test-password-1"
 CENTER = (12.3052, 76.6552)
 HEADERS = {"X-NearShop-Client": "web"}
+# The seeded admin's second factor (P2.4): its TOTP secret and recovery codes.
+ADMIN_TOTP_SECRET = new_totp_secret()
+ADMIN_RECOVERY_CODES = [f"test{n:02d}-recov" for n in range(10)]
+
+
+def admin_code(step_offset: int = 0) -> str:
+    """The seeded admin's authenticator code for now (or a step either side)."""
+    return totp_at(ADMIN_TOTP_SECRET, current_step() + step_offset)
 
 
 def _seed() -> dict:
@@ -114,7 +132,9 @@ def _seed() -> dict:
         user("Other Customer", "other@example.com", Role.CUSTOMER),
         user("Owner A", "a@example.com", Role.OWNER),
         user("Owner B", "b@example.com", Role.OWNER),
-        user("Admin", "admin@example.com", Role.ADMIN),
+        user("Admin", "admin@example.com", Role.ADMIN).model_copy(update={
+            "totp_secret_enc": encrypt_totp_secret(ADMIN_TOTP_SECRET),
+            "totp_recovery_hashes": [hash_recovery_code(c) for c in ADMIN_RECOVERY_CODES]}),
     ])
 
     shop_a, shop_b = db.shops.insert_many([
@@ -158,7 +178,13 @@ def client(ids):
 
 
 def login(client: TestClient, email: str) -> TestClient:
-    res = client.post("/api/auth/login", json={"email": email, "password": PASSWORD}, headers=HEADERS)
+    body = {"email": email, "password": PASSWORD}
+    if email == "admin@example.com":
+        # A TOTP code is accepted once only, and tests sign the admin in many times within one 30-second step.
+        Database().users.update_one({"email": email}, {"$set": {"totp_last_step": 0, "totp_failures": 0,
+                                                                "totp_locked_until": None}})
+        body["code"] = admin_code()
+    res = client.post("/api/auth/login", json=body, headers=HEADERS)
     assert res.status_code == 200, res.text
     return client
 

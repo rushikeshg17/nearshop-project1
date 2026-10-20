@@ -96,6 +96,18 @@ VALIDATORS: dict[str, dict] = {
         name=STR, email={"bsonType": STR, "pattern": "^[^@\\s]+@[^@\\s]+$"}, phone=STR_N, password_hash=STR,
         role=enum(Role), is_active=BOOL, last_login_at=DATE_N, home_lat=NUM_N, home_lng=NUM_N, home_label=STR_N,
         created_at=DATE, updated_at=DATE,
+        # Revocable sessions and the admin second factor (P2.4, app/core/security.py). All optional: documents
+        # written before them read the model's defaults.
+        token_version={"bsonType": INT, "minimum": 0},
+        sessions={"bsonType": "array", "maxItems": 10, "items": {
+            "bsonType": "object", "required": ["id", "created_at", "last_seen_at", "expires_at"],
+            "properties": {"id": {"bsonType": STR}, "created_at": {"bsonType": DATE},
+                           "last_seen_at": {"bsonType": DATE}, "expires_at": {"bsonType": DATE},
+                           "device": {"bsonType": STR, "maxLength": 60}}}},
+        totp_secret_enc=STR_N, totp_enrolled_at=DATE_N,
+        totp_recovery_hashes={"bsonType": "array", "maxItems": 10, "items": {"bsonType": STR}},
+        totp_last_step={"bsonType": INT, "minimum": 0}, totp_failures={"bsonType": INT, "minimum": 0},
+        totp_locked_until=DATE_N,
     ),
     "categories": schema(["slug", "name", "icon", "sort_order"], slug=STR, name=STR, icon=STR, sort_order=INT),
     "catalog_items": schema(
@@ -246,12 +258,21 @@ VALIDATORS: dict[str, dict] = {
         "_id": {"bsonType": STR}, "rule": {"bsonType": STR}, "count": {"bsonType": INT, "minimum": 0},
         "expires_at": {"bsonType": DATE},
     }}},
+    # Admin audit trail (P2.4): one row per sensitive admin action, such as revealing a user's email
+    # (action reveal_email). Who (admin_id), when (created_at), which user (target_user_id) and why (reason).
+    # The TTL index on created_at removes a row after a year.
+    "admin_audit": schema(
+        ["admin_id", "action", "target_user_id", "reason", "created_at"],
+        admin_id=INT, action={"enum": ["reveal_email"]}, target_user_id=INT,
+        reason={"bsonType": STR, "minLength": 10, "maxLength": 500}, created_at=DATE,
+    ),
     # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
     "counters": {},
     "text_embeddings": {},
 }
 
 A, D = ASCENDING, DESCENDING
+ADMIN_AUDIT_KEEP_SECONDS = 365 * 24 * 60 * 60  # admin_audit rows are kept for one year
 IS_INT = {"$type": "number"}  # partial-index filter: "this optional reference is set"
 
 INDEXES: dict[str, list[IndexModel]] = {
@@ -358,6 +379,11 @@ INDEXES: dict[str, list[IndexModel]] = {
     # MongoDB's TTL monitor deletes a counter about a minute after its window ends; the limiter never relies on
     # that, because a new window has a new _id and a cooldown is checked against expires_at.
     "rate_limits": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
+    "admin_audit": [
+        IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),
+        IndexModel([("target_user_id", A), ("created_at", D)], name="target_created"),
+        IndexModel([("admin_id", A), ("created_at", D)], name="admin_created"),
+    ],
 }
 
 

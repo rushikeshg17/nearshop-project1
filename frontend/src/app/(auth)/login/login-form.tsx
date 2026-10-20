@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Eye, EyeOff, Loader2 } from "lucide-react";
+import { Eye, EyeOff, Loader2, ShieldCheck } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { homeFor } from "@/hooks/use-session";
-import { api, errorMessage } from "@/lib/api";
+import { ApiError, api, errorMessage } from "@/lib/api";
 import type { User } from "@/lib/types";
 
 // Build-time flag, off by default (next.config.ts gives it the value "false"). Only a demo
@@ -32,10 +32,23 @@ export function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
+  // Admins confirm the password with a second factor: the API answers totp_required, and the form then
+  // asks for an authenticator code (or a recovery code) and sends it with the same email and password.
+  const [needsCode, setNeedsCode] = useState(false);
+  const [code, setCode] = useState("");
+
+  const changeEmail = (value: string) => {
+    setEmail(value);
+    setNeedsCode(false);
+    setCode("");
+  };
 
   const login = useMutation({
-    mutationFn: () => api.post<User>("/auth/login", { email, password }),
+    mutationFn: () => api.post<User>("/auth/login", needsCode ? { email, password, code: code.trim() } : { email, password }),
     meta: { silent: true },
+    onError: (error) => {
+      if (error instanceof ApiError && error.code === "totp_required") setNeedsCode(true);
+    },
     onSuccess: (user) => {
       qc.setQueryData(["me"], user);
       qc.invalidateQueries({ refetchType: "none" });
@@ -59,7 +72,7 @@ export function LoginForm() {
       >
         <div className="space-y-1.5">
           <Label htmlFor="email">Email</Label>
-          <Input id="email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="h-11" />
+          <Input id="email" type="email" autoComplete="email" required value={email} onChange={(e) => changeEmail(e.target.value)} className="h-11" />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="password">Password</Label>
@@ -70,7 +83,11 @@ export function LoginForm() {
               autoComplete="current-password"
               required
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                setNeedsCode(false);
+                setCode("");
+              }}
               className="h-11 pr-11"
             />
             <button
@@ -83,13 +100,36 @@ export function LoginForm() {
             </button>
           </div>
         </div>
-        {login.isError && (
+        {needsCode && (
+          <div className="space-y-1.5 rounded-lg border p-3">
+            <Label htmlFor="code" className="flex items-center gap-1.5">
+              <ShieldCheck className="size-4" aria-hidden /> Authentication code
+            </Label>
+            <p id="code-hint" className="text-xs text-muted-foreground">
+              Enter the 6-digit code from your authenticator app, or one of your recovery codes.
+            </p>
+            <Input
+              id="code"
+              autoComplete="one-time-code"
+              autoCapitalize="off"
+              spellCheck={false}
+              autoFocus
+              required
+              maxLength={32}
+              aria-describedby="code-hint"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              className="h-11 font-mono tracking-widest"
+            />
+          </div>
+        )}
+        {login.isError && !(login.error instanceof ApiError && login.error.code === "totp_required") && (
           <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {errorMessage(login.error)}
           </p>
         )}
         <Button type="submit" size="lg" className="h-11 w-full" disabled={login.isPending}>
-          {login.isPending && <Loader2 className="animate-spin" />} Sign in
+          {login.isPending && <Loader2 className="animate-spin" />} {needsCode ? "Verify and sign in" : "Sign in"}
         </Button>
       </form>
 
@@ -102,7 +142,7 @@ export function LoginForm() {
         <Link href="/register/shop" className="font-medium text-foreground underline underline-offset-4">list your shop</Link>
       </p>
 
-      {DemoAccounts && <DemoAccounts onPick={setEmail} />}
+      {DemoAccounts && <DemoAccounts onPick={changeEmail} />}
     </div>
   );
 }

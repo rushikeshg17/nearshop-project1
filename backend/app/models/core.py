@@ -7,12 +7,29 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from app.core.database import utcnow
-from app.models.base import Document, GeoPoint, Timestamps
+from app.models.base import Document, Embedded, GeoPoint, Timestamps
 from app.models.enums import InventoryReason, Role
 
 
+class UserSession(Embedded):
+    """One signed-in device (P2.4, app/core/security.py). Its id is the token's sid; last_seen_at is
+    written at most once an hour; device is a short label from the user agent, never the raw string."""
+
+    id: str
+    created_at: datetime
+    last_seen_at: datetime
+    expires_at: datetime
+    device: str = "Unknown device"
+
+
 class User(Document, Timestamps):
-    """Collection `users`. Unique on email."""
+    """Collection `users`. Unique on email.
+
+    Sessions (P2.4): a token is valid only while its ver equals token_version and its sid is in sessions
+    (at most 10, newest last). Bumping token_version and clearing sessions ends every session at once.
+    Admins also hold a second factor: totp_secret_enc (encrypted with NEARSHOP_TOTP_KEY), the SHA-256
+    digests of their unused recovery codes, the last time step accepted (a code is never accepted twice)
+    and the failed-code counter and lock."""
 
     name: str
     email: str
@@ -25,6 +42,20 @@ class User(Document, Timestamps):
     home_lat: float | None = None
     home_lng: float | None = None
     home_label: str | None = None
+    # Revocable sessions (P2.4). Defaults cover documents written before them.
+    token_version: int = 0
+    sessions: list[UserSession] = Field(default_factory=list)
+    # Admin second factor (P2.4), set only by database/admin_tasks.py create-admin.
+    totp_secret_enc: str | None = None
+    totp_enrolled_at: datetime | None = None
+    totp_recovery_hashes: list[str] = Field(default_factory=list)
+    totp_last_step: int = 0
+    totp_failures: int = 0
+    totp_locked_until: datetime | None = None
+
+    @property
+    def totp_enrolled(self) -> bool:
+        return bool(self.totp_secret_enc)
 
 
 class Category(Document):
