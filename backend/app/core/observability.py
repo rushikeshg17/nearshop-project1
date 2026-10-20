@@ -26,11 +26,13 @@ RequestObservabilityMiddleware wraps every HTTP request:
     unhandled exception has the headers as well, and the server's traceback line keeps the request id;
   * a Server-Timing header: app (time in the app until the response starts), db (wall time with database
     work in flight: Collection calls plus waits in the mongo-io gather pool's queue, overlapping work
-    counted once) and dbq (the longest wait in that queue).
+    counted once) and dbq (the total time the request's gathered tasks waited in that queue before a pool
+    thread picked them up, summed over the tasks; the log line's db_queue_ms).
 
 Database time is measured by instrument_database, which wraps the methods of app.core.database.Collection,
-Database.next_ids and Database.gather from here (no change to the database module). Outside a request
-the wrappers only read a context variable and call through.
+Database.next_ids and Database.gather from here. Outside a request the wrappers only read a context
+variable and call through. The queue waits are measured by Database.gather itself, which reports each one
+to app.core.database.queue_wait_sink; the gather wrapper points that at the request's timer.
 """
 from __future__ import annotations
 
@@ -255,7 +257,7 @@ class RequestTimer:
         self._lock = threading.Lock()
         self._spans: list[tuple[float, float]] = []
         self.calls = 0
-        self.queue_wait = 0.0  # the longest wait in the gather pool's queue, in seconds
+        self.queue_wait = 0.0  # the total wait of the request's tasks in the gather pool's queue, in seconds
 
     def add_call(self, start: float, end: float) -> None:
         with self._lock:
@@ -265,7 +267,7 @@ class RequestTimer:
     def add_queue_wait(self, submitted: float, started: float) -> None:
         with self._lock:
             self._spans.append((submitted, started))
-            self.queue_wait = max(self.queue_wait, started - submitted)
+            self.queue_wait += max(0.0, started - submitted)
 
     def db_seconds(self) -> float:
         """Wall time with any database call or queue wait in flight; overlapping spans count once."""
@@ -307,19 +309,19 @@ def _timed(fn: Callable) -> Callable:
 
 
 def _timed_gather(gather: Callable) -> Callable:
+    from app.core.database import queue_wait_sink
+
     @wraps(gather)
     def wrapper(self: Any, *fns: Callable[[], Any]) -> list[Any]:
         timer = _timer.get()
         if timer is None:
             return gather(self, *fns)
         submitter = threading.current_thread()
-        submitted = time.perf_counter()
 
         def bind(fn: Callable[[], Any]) -> Callable[[], Any]:
             def run() -> Any:
                 if threading.current_thread() is submitter:  # ran inline (a transaction, one query, nested)
                     return fn()
-                timer.add_queue_wait(submitted, time.perf_counter())
                 token = _timer.set(timer)  # pool threads do not inherit the request's context
                 try:
                     return fn()
@@ -328,14 +330,19 @@ def _timed_gather(gather: Callable) -> Callable:
 
             return run
 
-        return gather(self, *(bind(fn) for fn in fns))
+        sink_token = queue_wait_sink.set(timer.add_queue_wait)  # gather measures each task's wait itself
+        try:
+            return gather(self, *(bind(fn) for fn in fns))
+        finally:
+            queue_wait_sink.reset(sink_token)
 
     wrapper.__nearshop_timed__ = True
     return wrapper
 
 
 def instrument_database() -> None:
-    """Time every public Collection method, Database.next_ids and the gather pool's queue. Idempotent."""
+    """Time every public Collection method and Database.next_ids, and carry the request's timer into the
+    gather pool's threads (gather reports the queue waits itself, to queue_wait_sink). Idempotent."""
     from app.core.database import Collection, Database
 
     for name, attr in list(vars(Collection).items()):

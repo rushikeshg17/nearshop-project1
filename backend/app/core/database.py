@@ -10,8 +10,10 @@ the public API, and remain readable at a shop counter ("order 512").
 """
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
+import time
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -42,6 +44,20 @@ log = logging.getLogger(__name__)
 _POOL_PREFIX = "mongo-io"
 _pool = ThreadPoolExecutor(max_workers=24, thread_name_prefix=_POOL_PREFIX)
 
+# The pool is shared by every request, so under load a gathered query can wait in its queue before a thread
+# picks it up. When this is set, gather calls it once per pooled task with (submitted, started), both
+# time.perf_counter() seconds, from the pool thread as the task starts. During a request, app.core.observability
+# sets it around each gather, sums the request's waits and reports the total in Server-Timing (dbq).
+queue_wait_sink: contextvars.ContextVar[Callable[[float, float], None] | None] = contextvars.ContextVar(
+    "nearshop_queue_wait_sink", default=None)
+
+
+def _queued(fn: Callable[[], Any], sink: Callable[[float, float], None], submitted: float) -> Callable[[], Any]:
+    def run() -> Any:
+        sink(submitted, time.perf_counter())
+        return fn()
+
+    return run
 
 
 def utcnow() -> datetime:
@@ -183,11 +199,17 @@ class Database:
     # ---- concurrency
     def gather(self, *fns: Callable[[], Any]) -> list[Any]:
         """Run independent queries concurrently and return their results in order. Inside a
-        transaction they run one after another (a session belongs to a single thread)."""
+        transaction they run one after another (a session belongs to a single thread). Each pooled task's
+        wait in the pool's queue goes to queue_wait_sink, when one is set; inline calls never wait."""
         nested = threading.current_thread().name.startswith(_POOL_PREFIX)  # never wait on our own pool
         if self.session is not None or len(fns) < 2 or nested:
             return [fn() for fn in fns]
-        return [f.result() for f in [_pool.submit(fn) for fn in fns]]
+        sink = queue_wait_sink.get()
+        if sink is None:
+            futures = [_pool.submit(fn) for fn in fns]
+        else:
+            futures = [_pool.submit(_queued(fn, sink, time.perf_counter())) for fn in fns]
+        return [f.result() for f in futures]
 
     @staticmethod
     def background(fn: Callable[[], Any]) -> None:
