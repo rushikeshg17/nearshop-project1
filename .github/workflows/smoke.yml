@@ -1,0 +1,91 @@
+# Smoke test of a deployed environment (backend/scripts/smoke.py, docs/runbooks/release-and-rollback.md).
+#
+# Every push to main: once CI has passed for that push, Render deploys it to nearshop-api-staging. This
+# workflow waits up to 10 minutes for staging's /api/health to report the pushed commit, then runs the
+# full smoke test (searches, sign-in, reserve and cancel) against staging. Its result is what the
+# release log records before release is fast-forwarded.
+#
+# It starts from CI's completion (workflow_run) rather than from the push itself on purpose: Render's
+# checksPass deploys a commit only after every GitHub check on it has finished, so a smoke job started by
+# the push would be an unfinished check on the very commit it waits for, and staging would never deploy.
+#
+# By hand (Actions > Smoke > Run workflow): production runs read-only mode (GET requests only), staging
+# runs full mode against whatever staging serves now.
+#
+# Settings (repository > Settings > Secrets and variables > Actions):
+#   variables NEARSHOP_STAGING_URL (staging's Vercel URL: the main branch's preview alias) and
+#             NEARSHOP_PRODUCTION_URL (default https://nearshop-umber.vercel.app)
+#   secrets   NEARSHOP_SMOKE_EMAIL, NEARSHOP_SMOKE_PASSWORD (the staging smoke account; staging only)
+#             NEARSHOP_SMOKE_VERCEL_BYPASS (optional: Vercel's protection bypass for automation, needed
+#             when preview deployments are behind Vercel Authentication)
+name: Smoke
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Environment (production runs read-only mode, staging runs full mode)"
+        type: choice
+        options: [production, staging]
+        default: production
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.event_name == 'workflow_dispatch' && inputs.target || 'staging' }}
+  cancel-in-progress: false
+
+jobs:
+  staging:
+    name: staging (full)
+    # A push to main whose CI passed (not CI's pull-request or weekly runs), or a manual staging run.
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && inputs.target == 'staging')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+
+      - name: Smoke test staging (waits up to 10 minutes for the new commit)
+        env:
+          BASE_URL: ${{ vars.NEARSHOP_STAGING_URL }}
+          EXPECT_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          NEARSHOP_SMOKE_EMAIL: ${{ secrets.NEARSHOP_SMOKE_EMAIL }}
+          NEARSHOP_SMOKE_PASSWORD: ${{ secrets.NEARSHOP_SMOKE_PASSWORD }}
+          NEARSHOP_SMOKE_VERCEL_BYPASS: ${{ secrets.NEARSHOP_SMOKE_VERCEL_BYPASS }}
+        run: |
+          if [ -z "$BASE_URL" ]; then
+            echo "Set the repository variable NEARSHOP_STAGING_URL to staging's Vercel URL." >&2
+            exit 1
+          fi
+          if [ -n "$EXPECT_COMMIT" ]; then
+            python3 backend/scripts/smoke.py "$BASE_URL" --mode full --expect-commit "$EXPECT_COMMIT" --wait-seconds 600
+          else
+            python3 backend/scripts/smoke.py "$BASE_URL" --mode full
+          fi
+
+  production:
+    name: production (read-only)
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'production'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Read-only mode sends GET requests only, and no smoke credentials are passed to it.
+      - name: Smoke test production (read-only)
+        env:
+          BASE_URL: ${{ vars.NEARSHOP_PRODUCTION_URL || 'https://nearshop-umber.vercel.app' }}
+        run: python3 backend/scripts/smoke.py "$BASE_URL" --mode read-only

@@ -1,20 +1,69 @@
-# Render Blueprint for the NearShop API (the frontend is deployed on Vercel).
-# Render dashboard > New > Blueprint > pick this repository. It asks for NEARSHOP_MONGODB_URI.
+# Render Blueprint for the NearShop API (the frontend is deployed on Vercel). Two services:
+#   nearshop-api-staging  tracks main     NEARSHOP_ENVIRONMENT=staging     Starter  (0.5 CPU, 512 MB)
+#   nearshop-api          tracks release  NEARSHOP_ENVIRONMENT=production  Standard (1 CPU, 2 GB), always on
+# Every change reaches staging first; production deploys only when release is fast-forwarded to a main
+# commit whose staging smoke test passed (docs/runbooks/release-and-rollback.md).
+#
+# Render dashboard > New > Blueprint > pick this repository. Each service asks for its own
+# NEARSHOP_MONGODB_URI, NEARSHOP_SECRET_KEY and NEARSHOP_PROTECTED_HOSTS (sync: false): staging and
+# production never share a database, a signing key or a value of any secret. Render prompts for sync: false
+# values only when a service is first created, and later Blueprint syncs leave them as set in the dashboard.
+#
+# Plan IDs are Render's current names for the instance types: 0.5c-512mb is Starter and 1c-2g is Standard.
+# Both deploy a push only after its GitHub checks pass (.github/workflows/ci.yml).
 services:
   - type: web
-    name: nearshop-api
+    name: nearshop-api-staging
     runtime: python
-    plan: free
+    plan: 0.5c-512mb # Starter
     region: singapore
+    branch: main
     rootDir: backend
     # The search model (90 MB) is downloaded while building, so a cold start does not wait for it.
     buildCommand: >-
       pip install uv && uv sync --frozen --no-dev &&
       uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"
-    startCommand: uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    # Exactly one worker: the APScheduler sweep and the semantic search index live inside each API
+    # process, so a second worker would run every job twice and hold a second index (until P1.7 and P8.1).
+    startCommand: uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    # /api/health also reports RENDER_GIT_COMMIT, which the smoke workflow waits for.
     healthCheckPath: /api/health
-    # Deploy a push to main only after its GitHub checks pass (.github/workflows/ci.yml). Replaces the
-    # deprecated autoDeploy: true, which deployed every push untested.
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: NEARSHOP_ENVIRONMENT
+        value: staging
+      - key: NEARSHOP_SECRET_KEY
+        sync: false # secret: staging's own key, python3 -c "import secrets;print(secrets.token_urlsafe(48))"
+      - key: NEARSHOP_MONGODB_URI
+        sync: false # secret: the staging Atlas cluster's connection string, never production's
+      - key: NEARSHOP_PROTECTED_HOSTS
+        sync: false # the staging and production Atlas project domains, comma-separated
+      - key: NEARSHOP_MONGODB_DB
+        value: nearshop
+      - key: NEARSHOP_COOKIE_SECURE
+        value: "true"
+      - key: NEARSHOP_SEED_CITY
+        value: ballari
+      # Same lockdown as production, so staging tests what production runs.
+      - key: NEARSHOP_SIGNUPS_OPEN
+        value: "false"
+      - key: NEARSHOP_DEMO_MODE
+        value: "true"
+
+  - type: web
+    name: nearshop-api
+    runtime: python
+    plan: 1c-2g # Standard: always on (a free instance sleeps after 15 idle minutes and must not serve production)
+    region: singapore
+    branch: release
+    rootDir: backend
+    buildCommand: >-
+      pip install uv && uv sync --frozen --no-dev &&
+      uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"
+    startCommand: uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /api/health
     autoDeployTrigger: checksPass
     envVars:
       - key: PYTHON_VERSION
@@ -22,9 +71,11 @@ services:
       - key: NEARSHOP_ENVIRONMENT
         value: production
       - key: NEARSHOP_SECRET_KEY
-        generateValue: true # signs login cookies; Render creates a random one
+        sync: false # secret: production's own key (an existing service keeps the key it already has)
       - key: NEARSHOP_MONGODB_URI
-        sync: false # secret: paste your Atlas connection string in the dashboard
+        sync: false # secret: the production Atlas cluster's connection string
+      - key: NEARSHOP_PROTECTED_HOSTS
+        sync: false # the staging and production Atlas project domains, comma-separated
       - key: NEARSHOP_MONGODB_DB
         value: nearshop
       - key: NEARSHOP_COOKIE_SECURE

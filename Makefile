@@ -1,5 +1,5 @@
 .PHONY: setup db-up db-down schema seed api web test retrain lint lint-backend lint-frontend build audit \
-	audit-waived-ghsas secret-scan ci
+	audit-waived-ghsas secret-scan ci smoke
 
 # The local MongoDB from docker-compose.yml: a single-node replica set on localhost:27017.
 LOCAL_MONGODB_URI ?= mongodb://localhost:27017/?replicaSet=rs0
@@ -13,6 +13,12 @@ NEARSHOP_TEST_MONGODB_URI ?= mongodb://127.0.0.1:27017/?directConnection=true
 DB_UP ?= docker compose up -d --wait mongo
 # make build only needs an API origin for the proxy rewrites it writes into the build; CI uses a dummy.
 NEARSHOP_API_ORIGIN ?= http://api.invalid
+# make smoke: the smoke test (backend/scripts/smoke.py) against a deployed environment's Vercel URL.
+# Read-only by default (GET requests only, safe against production). SMOKE_MODE=full also signs in and
+# reserves and cancels an item, so run it only against staging, with NEARSHOP_SMOKE_EMAIL and
+# NEARSHOP_SMOKE_PASSWORD in the environment (never in backend/.env).
+SMOKE_URL ?= https://nearshop-umber.vercel.app
+SMOKE_MODE ?= read-only
 # The audit reads the waivers file with this exact PyYAML, in CI and locally alike.
 PYYAML_VERSION := 6.0.3
 WAIVERS_FILE := .github/dependency-waivers.yml
@@ -48,10 +54,13 @@ test: db-up
 retrain:
 	cd backend && uv run python -m app.ai.pipeline
 
+smoke:
+	cd backend && uv run python scripts/smoke.py '$(SMOKE_URL)' --mode '$(SMOKE_MODE)'
+
 lint: lint-backend lint-frontend
 
 lint-backend:
-	cd backend && uv run ruff check app database tests
+	cd backend && uv run ruff check app database scripts tests
 
 lint-frontend:
 	cd frontend && npx tsc --noEmit && npx eslint src

@@ -1,5 +1,6 @@
 """NearShop API entry point."""
 import logging
+import os
 import re
 import threading
 from contextlib import asynccontextmanager
@@ -81,7 +82,8 @@ async def validation_handler(_: Request, exc: RequestValidationError):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    # Render sets RENDER_GIT_COMMIT on each deploy; the smoke workflow waits for it to show the new commit.
+    return {"ok": True, "commit": os.environ.get("RENDER_GIT_COMMIT") or None}
 
 
 @app.get("/api/health/db")
