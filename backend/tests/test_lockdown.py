@@ -56,7 +56,18 @@ def test_register_endpoints_return_403_when_signups_closed(client, db, signups, 
     assert not db.users.exists({"email": {"$in": ["closed@example.com", "lock-owner@example.com"]}})
 
 
-def test_register_works_when_signups_open(client, db, signups):
+@pytest.fixture
+def cleanup_signups(db):
+    """Remove the accounts and shop the open sign-up tests create, so later tests see the shared data
+    unchanged."""
+    yield
+    emails = ["open@example.com", SHOP_BODY["owner"]["email"]]
+    owner_ids = [u["_id"] for u in db.users.find_raw({"email": {"$in": emails}}, {"_id": 1})]
+    db.shops.delete_many({"owner_id": {"$in": owner_ids}})
+    db.users.delete_many({"_id": {"$in": owner_ids}})
+
+
+def test_register_works_when_signups_open(client, db, signups, cleanup_signups):
     signups(True)
     res = client.post("/api/auth/register", json={"name": "Open Person", "email": "open@example.com",
                                                   "password": "longenough1"}, headers=HEADERS)
@@ -64,7 +75,7 @@ def test_register_works_when_signups_open(client, db, signups):
     assert res.json()["role"] == "customer"
 
 
-def test_register_shop_works_when_signups_open(client, db, signups):
+def test_register_shop_works_when_signups_open(client, db, signups, cleanup_signups):
     signups(True)
     res = client.post("/api/auth/register-shop", json=SHOP_BODY, headers=HEADERS)
     assert res.status_code == 200, res.text
@@ -92,6 +103,18 @@ def test_default_password_check_false_otherwise():
     assert admin_tasks.uses_retired_password("not-a-hash", OLD_DEFAULT) is False
 
 
+@pytest.mark.parametrize("email, demo", [
+    ("admin@nearshop.demo", True),
+    ("Owner@NearShop.Demo ", True),
+    ("hardware@shops.nearshop.demo", True),
+    ("x@notnearshop.demo", False),  # a look-alike domain is not a demo account
+    ("nearshop.demo@gmail.com", False),
+    ("x@nearshop.demo.example.com", False),
+])
+def test_is_demo_email_matches_the_domain_and_its_subdomains_only(email, demo):
+    assert admin_tasks.is_demo_email(email) is demo
+
+
 def test_retired_password_is_recognised_by_its_digest():
     assert admin_tasks.is_retired_password(OLD_DEFAULT)
     assert not admin_tasks.is_retired_password("nearshop1234")
@@ -117,13 +140,14 @@ def test_rotate_demo_does_nothing_when_confirmation_does_not_match(db, demo_user
     code = admin_tasks.rotate_demo(db, ask=lambda _prompt: "production", out=lines.append)
     assert code != 0
     assert db.users.get(demo_user.id).password_hash == before
-    assert not any("lock-demo@" in line for line in lines)  # no password list was printed
+    assert not any(line.startswith("  id ") for line in lines)  # no password list was printed
 
 
 def test_rotate_demo_sets_long_random_passwords_when_confirmed(db, demo_user, lines):
     code = admin_tasks.rotate_demo(db, ask=lambda _prompt: db.mongo.name, out=lines.append)
     assert code == 0
-    printed = next(line for line in lines if "lock-demo@" in line)
+    printed = next(line for line in lines if line.startswith(f"  id {demo_user.id} "))
+    assert "@" not in "\n".join(lines)  # ids, roles and names only: no email address
     new_password = printed.split()[-1]
     assert len(new_password) >= 24
     stored = db.users.get(demo_user.id).password_hash
@@ -131,6 +155,20 @@ def test_rotate_demo_sets_long_random_passwords_when_confirmed(db, demo_user, li
     assert not verify_password(OLD_DEFAULT, stored)
     customer = db.users.find_one({"email": "cust@example.com"})
     assert not verify_password(new_password, customer.password_hash)  # only demo accounts change
+
+
+def test_rotate_demo_changes_nothing_when_an_account_changes_meanwhile(db, demo_user, lines):
+    before = db.users.get(demo_user.id).password_hash
+
+    def password_after_email_change() -> str:  # runs between the read and the write
+        db.users.raw.update_one({"_id": demo_user.id}, {"$set": {"email": "lock-moved@nearshop.demo"}})
+        return "a-replacement-password-of-32-chars"
+
+    code = admin_tasks.rotate_demo(db, ask=lambda _prompt: db.mongo.name, out=lines.append,
+                                   new_password=password_after_email_change)
+    assert code != 0
+    assert db.users.get(demo_user.id).password_hash == before
+    assert not any("a-replacement-password" in line for line in lines)  # no wrong password handed out
 
 
 def test_deactivate_user_does_nothing_when_confirmation_does_not_match(db, demo_user, lines):
@@ -173,6 +211,23 @@ def test_report_lists_other_accounts_by_id_and_role(db, lines):
     assert "@" not in text and "gmail" not in text
     assert any(f"id {real.id}  role owner" in line for line in lines)
     assert "default-password check was skipped" in text
+
+
+def test_report_lists_seed_generated_accounts_by_role_and_later_sign_ups_as_other(db, demo_user, lines):
+    late = db.users.insert(User(name="Late Sign-up", email="late@example.com", role=Role.CUSTOMER,
+                                password_hash=hash_password("whatever-password-1")))
+    try:
+        admin_tasks.report(db, None, out=lines.append)
+    finally:
+        db.users.delete_many({"_id": late.id})
+    text = "\n".join(lines)
+    assert "@" not in text
+    seeded = db.users.find_raw({"email": {"$regex": "@example\\.com$"}, "_id": {"$lt": demo_user.id}},
+                               {"role": 1})
+    for role in {r["role"] for r in seeded}:
+        assert any(line.strip().startswith(f"role {role}: ") for line in lines)
+    other = lines.index(next(line for line in lines if "Other, possibly real people" in line))
+    assert any(f"id {late.id}  role customer" in line for line in lines[other:])
 
 
 def test_list_admins_prints_ids_without_email(db, lines):

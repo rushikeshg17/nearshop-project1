@@ -14,7 +14,22 @@ import { useMeta } from "@/hooks/use-session";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import type { User } from "@/lib/types";
 
-/** Shown on both sign-up screens while /api/meta reports signups_open: false. */
+/** True when the API refused a sign-up because sign-ups are closed (403 signups_closed). */
+export function isSignupsClosed(error: unknown) {
+  return error instanceof ApiError && error.code === "signups_closed";
+}
+
+/** Shown on both sign-up screens while /api/meta is loading, so no form appears before we know. */
+export function SignupsChecking() {
+  return (
+    <div role="status" className="flex items-center gap-2 py-16 text-sm text-muted-foreground">
+      <Loader2 className="size-4 animate-spin" aria-hidden /> Loading sign-up…
+    </div>
+  );
+}
+
+/** Shown on both sign-up screens while /api/meta reports signups_open: false, or when the API
+ * refuses a sign-up with signups_closed (for example if /api/meta could not be loaded). */
 export function SignupsPaused({ signInHref = "/login" }: { signInHref?: string }) {
   return (
     <div role="status">
@@ -38,8 +53,11 @@ export function SignupsPaused({ signInHref = "/login" }: { signInHref?: string }
 }
 
 export function RegisterForm() {
-  const { data: meta } = useMeta();
+  const { data: meta, isPending } = useMeta();
   if (meta?.signups_open === false) return <SignupsPaused />;
+  if (isPending) return <SignupsChecking />;
+  // If /api/meta failed, show the form: the API still refuses a closed sign-up, and the form then
+  // switches to the paused state.
   return <OpenRegisterForm />;
 }
 
@@ -60,6 +78,8 @@ function OpenRegisterForm() {
   });
   const fieldError = (f: string) => register.error instanceof ApiError && register.error.field === f;
   const strong = form.password.length >= 8;
+
+  if (isSignupsClosed(register.error)) return <SignupsPaused />;
 
   return (
     <div>

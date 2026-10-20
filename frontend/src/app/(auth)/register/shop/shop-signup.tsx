@@ -7,7 +7,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
-import { SignupsPaused } from "@/app/(auth)/register/register-form";
+import { isSignupsClosed, SignupsChecking, SignupsPaused } from "@/app/(auth)/register/register-form";
 import {
   ShopBasicsFields,
   type ShopFormState,
@@ -28,7 +28,7 @@ const STEPS = ["Your account", "Your shop", "Location", "Hours and delivery"];
 export function ShopSignup() {
   const router = useRouter();
   const qc = useQueryClient();
-  const { data: meta } = useMeta();
+  const { data: meta, isPending: metaPending } = useMeta();
   const [step, setStep] = useState(0);
   const [owner, setOwner] = useState({ name: "", email: "", password: "" });
   const [shop, setShop] = useState<ShopFormState>({
@@ -63,7 +63,10 @@ export function ShopSignup() {
     true,
   ];
 
-  if (meta?.signups_open === false) return <SignupsPaused signInHref="/login?next=/shop" />;
+  if (meta?.signups_open === false || isSignupsClosed(submit.error)) {
+    return <SignupsPaused signInHref="/login?next=/shop" />;
+  }
+  if (metaPending) return <SignupsChecking />;
 
   return (
     <div>
