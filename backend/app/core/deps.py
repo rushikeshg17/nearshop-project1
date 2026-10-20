@@ -1,4 +1,4 @@
-"""FastAPI dependencies: database handle, current user, role guards, CSRF check."""
+"""FastAPI dependencies: database handle, client address, current user, role guards, CSRF check."""
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
@@ -21,6 +21,17 @@ def csrf_guard(request: Request) -> None:
     and cross-site fetch cannot send without passing our CORS allow-list."""
     if request.method not in SAFE_METHODS and request.headers.get(CSRF_HEADER) != "web":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Missing client header")
+
+
+def get_client_ip(request: Request) -> str:
+    """The visitor's address, as app/core/ratelimit.py found it: X-NearShop-Client-IP when the request carries
+    the edge secret (through Vercel, or a server-rendered page's call), else the TCP peer. Never a header the
+    visitor could set directly."""
+    ip = getattr(request.state, "client_ip", None)
+    return ip or (request.client.host if request.client else "unknown")
+
+
+ClientIP = Annotated[str, Depends(get_client_ip)]
 
 
 def get_optional_user(request: Request, db: DB) -> User | None:

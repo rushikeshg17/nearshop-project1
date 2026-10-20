@@ -12,6 +12,8 @@ Environment = Literal["development", "test", "staging", "production", "demo"]
 ENVIRONMENTS: tuple[str, ...] = get_args(Environment)
 MediaBackend = Literal["local", "s3"]
 BackupBackend = Literal["off", "local", "s3"]
+RateLimitMode = Literal["enforce", "log_only", "off"]
+EDGE_SECRET_MIN_LENGTH = 32
 
 
 class Settings(BaseSettings):
@@ -108,6 +110,20 @@ class Settings(BaseSettings):
     # The request id comes from the first of these incoming headers that holds a well-formed id (the
     # edge's own id first), else a new random one. Comma-separated, case-insensitive.
     request_id_headers: str = "x-vercel-id,x-request-id"
+
+    # Edge-only access (P2.3, app/core/ratelimit.py). Vercel's proxy (frontend/src/proxy.ts) sends edge_secret in
+    # X-NearShop-Edge on every /api and /media request, with the visitor's address in X-NearShop-Client-IP. The
+    # same value is set on Render (NEARSHOP_EDGE_SECRET, sync: false) and Vercel (NEARSHOP_EDGE_SECRET, server
+    # only, never NEXT_PUBLIC_): 32 or more random characters. edge_secret_required defaults to true in staging
+    # and production, where the API then refuses to start without the secret and answers 403 to any request
+    # without it (/api/health and /api/health/ready excepted); NEARSHOP_EDGE_SECRET_REQUIRED overrides it.
+    edge_secret: SecretStr = SecretStr("")
+    edge_secret_required: bool | None = None
+    # Rate limits (plan section 8.3). enforce: over a limit the API answers 429; log_only: it logs what it
+    # would have limited and serves the request; off: nothing is counted. The default is log_only in staging
+    # and production (48 hours of it before NEARSHOP_RATE_LIMIT_MODE=enforce is set), off in test (the rate
+    # limit tests switch it on) and enforce in development and demo.
+    rate_limit_mode: RateLimitMode | None = None
 
     # Storage budget (P2.2, app/services/analytics.py): the Atlas tier's storage limit in MB (MiB), which counts
     # uncompressed documents plus indexes. M0 (staging, demo) 512; Flex (production after plan step 1-A) 5120.
@@ -211,6 +227,34 @@ class Settings(BaseSettings):
     def _default_signups_open(self) -> "Settings":
         if self.signups_open is None:
             self.signups_open = self.environment != "production"
+        return self
+
+    @field_validator("rate_limit_mode", mode="before")
+    @classmethod
+    def _check_rate_limit_mode(cls, value: object) -> object:
+        # An empty value (a Render variable left blank) means the environment's default.
+        normalised = (value.strip().lower().replace("-", "_") or None) if isinstance(value, str) else value
+        if normalised is not None and normalised not in get_args(RateLimitMode):
+            raise ValueError(f"NEARSHOP_RATE_LIMIT_MODE must be enforce, log_only or off; got {value!r}")
+        return normalised
+
+    @field_validator("edge_secret", mode="after")
+    @classmethod
+    def _check_edge_secret(cls, value: SecretStr) -> SecretStr:
+        secret = value.get_secret_value().strip()
+        if secret and len(secret) < EDGE_SECRET_MIN_LENGTH:
+            raise ValueError(f"NEARSHOP_EDGE_SECRET must be {EDGE_SECRET_MIN_LENGTH} or more characters")
+        return SecretStr(secret)
+
+    @model_validator(mode="after")
+    def _default_edge_and_rate_limits(self) -> "Settings":
+        # Not an error here when the secret is missing: migrations, backups and cron jobs load these settings
+        # too and never need it. The API checks it when it starts (app/main.py).
+        if self.edge_secret_required is None:
+            self.edge_secret_required = self.environment in ("staging", "production")
+        if self.rate_limit_mode is None:
+            self.rate_limit_mode = {"staging": "log_only", "production": "log_only", "test": "off"}.get(
+                self.environment, "enforce")
         return self
 
 

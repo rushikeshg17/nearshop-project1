@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.ai.semantic_index import index
 from app.api.router import api_router
-from app.core import observability
+from app.core import observability, ratelimit
 from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.core.errors import AppError
@@ -61,6 +61,13 @@ def serves_local_media(environment: str, media_backend: str) -> bool:
 async def lifespan(_: FastAPI):
     if settings.environment != "development" and settings.secret_key == "dev-only-change-me":
         raise RuntimeError("Set NEARSHOP_SECRET_KEY before running outside development")
+    if settings.edge_secret_required and not settings.edge_secret.get_secret_value():
+        # Without it every request would get 403: refuse to start instead, so the deploy fails and the
+        # previous version keeps serving.
+        raise RuntimeError("Set NEARSHOP_EDGE_SECRET (the same value as on Vercel) before running in "
+                           f"{settings.environment}, or set NEARSHOP_EDGE_SECRET_REQUIRED=false")
+    if settings.rate_limit_mode != "enforce":
+        log.info("rate limits: %s (NEARSHOP_RATE_LIMIT_MODE)", settings.rate_limit_mode)
     if settings.media_backend == "local":
         settings.media_dir.mkdir(parents=True, exist_ok=True)
         if settings.environment not in ("development", "test"):
@@ -99,6 +106,9 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="NearShop API", version="1.0.0", lifespan=lifespan,
               description="Hyperlocal inventory discovery: find it nearby, reserve, pick up or get it delivered.")
 
+# Edge-only access, the client's address and rate limits (app/core/ratelimit.py). Added before CORS, so it runs
+# inside it: its 403 and 429 answers carry the CORS headers too.
+ratelimit.install(app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,

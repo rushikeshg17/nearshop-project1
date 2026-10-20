@@ -237,6 +237,15 @@ VALIDATORS: dict[str, dict] = {
                                "index_bytes": {"bsonType": INT, "minimum": 0}}}},
         },
     }},
+    # Rate-limit counters (P2.3, app/core/ratelimit.py; plan section 8.3). One document per rule, key and fixed
+    # window: _id "<rule>:<window start, epoch seconds>:<keyed hash of the key>", count, and expires_at, the
+    # window's end, after which the TTL index removes it. A cooldown is "<rule>:cooldown:<hash>" with count 0,
+    # blocking until expires_at. The key itself (an IP address, a user id, an email) is never stored.
+    "rate_limits": {"$jsonSchema": {"bsonType": "object", "required": ["_id", "rule", "count", "expires_at"],
+                                    "properties": {
+        "_id": {"bsonType": STR}, "rule": {"bsonType": STR}, "count": {"bsonType": INT, "minimum": 0},
+        "expires_at": {"bsonType": DATE},
+    }}},
     # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
     "counters": {},
     "text_embeddings": {},
@@ -346,6 +355,9 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("status", A), ("_id", A)], name="status_id"),  # the cron's claim; the active request
         IndexModel([("kind", A), ("requested_at", D)], name="kind_requested"),  # the daily limit
     ],
+    # MongoDB's TTL monitor deletes a counter about a minute after its window ends; the limiter never relies on
+    # that, because a new window has a new _id and a cooldown is checked against expires_at.
+    "rate_limits": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
 }
 
 
