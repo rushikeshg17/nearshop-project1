@@ -98,6 +98,25 @@ class Settings(BaseSettings):
     enable_scheduler: bool = True
     warm_on_startup: bool = True  # build the semantic index when the API starts (the schema version check always runs)
 
+    # Observability (app/core/observability.py). Error tracking is on only when sentry_dsn is set, from the
+    # environment (Render: NEARSHOP_SENTRY_DSN, a sync: false secret), never from code. release is the git
+    # commit events carry; blank means Render's RENDER_GIT_COMMIT. Trace sample rates are 0 to 1.
+    sentry_dsn: SecretStr = SecretStr("")
+    sentry_traces_sample_rate: float = 0.1
+    sentry_search_traces_sample_rate: float = 0.25
+    release: str = ""
+    # The request id comes from the first of these incoming headers that holds a well-formed id (the
+    # edge's own id first), else a new random one. Comma-separated, case-insensitive.
+    request_id_headers: str = "x-vercel-id,x-request-id"
+
+    @field_validator("sentry_traces_sample_rate", "sentry_search_traces_sample_rate", mode="after")
+    @classmethod
+    def _check_sample_rate(cls, value: float) -> float:
+        if not 0 <= value <= 1:
+            raise ValueError("NEARSHOP_SENTRY_TRACES_SAMPLE_RATE and NEARSHOP_SENTRY_SEARCH_TRACES_SAMPLE_RATE "
+                             "must be between 0 and 1")
+        return value
+
     @field_validator("environment", mode="before")
     @classmethod
     def _check_environment(cls, value: object) -> object:

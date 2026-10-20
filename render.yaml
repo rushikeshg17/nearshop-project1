@@ -39,7 +39,11 @@ services:
     # a second index (until P8.1). Background jobs no longer stop a second process or instance: each job
     # runs only in the process holding its lease in job_leases (app/jobs.py, P1.7).
     startCommand: uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
-    # /api/health also reports RENDER_GIT_COMMIT, which tells the smoke workflow which commit it tests.
+    # /api/health is liveness only (it also reports RENDER_GIT_COMMIT, which tells the smoke workflow which
+    # commit it tests). Uptime monitors use /api/health/ready instead (plan section 8.10): booleans for the
+    # database ping, the schema migrations, the search index and the sweep heartbeat, 503 when the database
+    # or the migrations fail. Render's health check stays on /api/health, so a database outage does not make
+    # Render restart an API that is otherwise fine.
     healthCheckPath: /api/health
     autoDeployTrigger: checksPass
     envVars:
@@ -83,6 +87,12 @@ services:
         sync: false # secret
       - key: NEARSHOP_MEDIA_PUBLIC_BASE_URL
         sync: false # the staging bucket's public custom domain, for example https://media-staging.<domain>
+      # Error tracking (P2.1, app/core/observability.py): on only when this DSN is set. Events are tagged with
+      # NEARSHOP_ENVIRONMENT and carry RENDER_GIT_COMMIT as the release; cookies, the authorization header,
+      # request bodies, phone numbers, emails and street addresses are removed before sending. On a service
+      # that already exists, add it in the dashboard (Environment): a Blueprint sync does not prompt for it.
+      - key: NEARSHOP_SENTRY_DSN
+        sync: false # the Sentry project's DSN (Settings > Client Keys); the same project for both services
 
   - type: web
     name: nearshop-api
@@ -96,7 +106,7 @@ services:
       uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"
     preDeployCommand: uv run --no-dev python -m database.migrate
     startCommand: uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
-    healthCheckPath: /api/health
+    healthCheckPath: /api/health # liveness; monitors use /api/health/ready (see the staging service)
     autoDeployTrigger: checksPass
     envVars:
       - key: PYTHON_VERSION
@@ -134,6 +144,9 @@ services:
         sync: false # secret
       - key: NEARSHOP_MEDIA_PUBLIC_BASE_URL
         sync: false # the production bucket's public custom domain, for example https://media.<domain>
+      # Error tracking (P2.1): on only when set; see the staging service.
+      - key: NEARSHOP_SENTRY_DSN
+        sync: false # the Sentry project's DSN
 
   # Nightly off-site backup of the staging database (P1.6, backend/database/backup.py): every collection as
   # gzipped BSON plus a manifest, in the private backup bucket under staging/<set id>/, then sets older than

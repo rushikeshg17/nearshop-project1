@@ -1,9 +1,9 @@
 """NearShop API entry point."""
 import logging
 import os
-import re
 import threading
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -13,16 +13,19 @@ from fastapi.staticfiles import StaticFiles
 
 from app.ai.semantic_index import index
 from app.api.router import api_router
+from app.core import observability
 from app.core.config import settings
-from app.core.database import Database
+from app.core.database import Database, utcnow
 from app.core.errors import AppError
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# JSON lines on stdout, one per request from the middleware below (app/core/observability.py), and error
+# tracking when NEARSHOP_SENTRY_DSN is set, before the app is created.
+observability.configure_logging()
+observability.init_error_tracking()
 log = logging.getLogger("nearshop")
-logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 
-# The schema version this process found at startup. P2.1 turns "behind" into a readiness failure.
+# The schema version this process found at startup (logged); /api/health/ready checks it again live.
 schema_status: dict = {"checked": False}
 
 
@@ -103,6 +106,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["content-type", "x-nearshop-client", "authorization"],
 )
+# Added last, so it is the outermost of the app's middleware: every response, CORS ones included, gets
+# its request id and Server-Timing, and every request its one log line.
+observability.install(app)
 
 
 @app.exception_handler(AppError)
@@ -124,20 +130,63 @@ async def validation_handler(_: Request, exc: RequestValidationError):
 
 @app.get("/api/health")
 def health():
+    """Liveness only: the process answers. Monitors use /api/health/ready."""
     # Render sets RENDER_GIT_COMMIT on each deploy; the smoke workflow reads it to know which commit it tests.
     return {"ok": True, "commit": os.environ.get("RENDER_GIT_COMMIT") or None}
 
 
+SWEEP_JOB = "sweep_expired"
+SWEEP_MAX_AGE = timedelta(seconds=90)  # the expiry sweep runs every 30 s (app/jobs.py)
+
+
+def ping_database(mongo) -> None:
+    mongo.command("ping")
+
+
+def readiness(mongo) -> dict[str, bool]:
+    """The readiness checks, as booleans only: the database answers a ping, its schema migrations are
+    current (a database ahead of the code, after a rollback, is compatible: expand-then-contract), this
+    process's semantic search index is built, and the expiry sweep ran in the last 90 s."""
+    from app.jobs import LEASES
+    from database.migrate import check_version
+
+    checks = {"database": False, "migrations": False, "search_index": index.built_at > 0, "sweep": False}
+    try:
+        ping_database(mongo)
+        checks["database"] = True
+    except Exception:
+        return checks
+    try:
+        checks["migrations"] = not check_version(mongo).behind
+    except Exception:
+        pass
+    try:
+        lease = mongo[LEASES].find_one({"_id": SWEEP_JOB}, {"last_run_at": 1}) or {}
+        last_run = lease.get("last_run_at")
+        checks["sweep"] = last_run is not None and utcnow() - last_run < SWEEP_MAX_AGE
+    except Exception:
+        pass
+    return checks
+
+
+@app.get("/api/health/ready")
+def health_ready():
+    """Readiness for monitors: 503 when the database or its migrations fail. A search index still warming
+    or a late sweep is degraded with a 200: keyword search and every page still work."""
+    checks = readiness(Database().mongo)
+    if not (checks["database"] and checks["migrations"]):
+        return JSONResponse({"status": "unavailable", "checks": checks}, status_code=503)
+    return {"status": "ok" if all(checks.values()) else "degraded", "checks": checks}
+
+
 @app.get("/api/health/db")
 def health_db():
-    """Can the API reach MongoDB? Reports the kind of failure, never the connection string."""
+    """Can the API reach MongoDB? Only ok, or the kind of failure: never a name, a count or a message."""
     try:
-        db = Database()
-        db.mongo.command("ping")
-        return {"ok": True, "database": db.mongo.name, "shops": db.shops.count()}
+        ping_database(Database().mongo)
+        return {"ok": True}
     except Exception as exc:
-        detail = re.sub(r"//[^@/\s]*@", "//***@", str(exc))[:300]  # never echo credentials
-        return JSONResponse({"ok": False, "error": type(exc).__name__, "detail": detail}, status_code=503)
+        return JSONResponse({"ok": False, "error": type(exc).__name__}, status_code=503)
 
 
 app.include_router(api_router)
