@@ -13,9 +13,11 @@
 # value of any secret. Render prompts for sync: false values only when a service is first created, and
 # later Blueprint syncs leave them as set in the dashboard.
 #
-# Plan IDs are Render's current names for the instance types: 0.5c-512mb is Starter and 1c-2g is Standard.
-# Both deploy a push only after its GitHub checks pass (.github/workflows/ci.yml), and both run the schema
-# migrations as their pre-deploy step (paid instance types only; see docs/runbooks/release-and-rollback.md).
+# Plan IDs are Render's current names for the instance types, for web services and cron jobs alike:
+# 0.5c-512mb is Starter and 1c-2g is Standard.
+# Both web services deploy a push only after its GitHub checks pass (.github/workflows/ci.yml), and both
+# run the schema migrations as their pre-deploy step (paid instance types only; see
+# docs/runbooks/release-and-rollback.md).
 services:
   - type: web
     name: nearshop-api-staging
@@ -138,7 +140,7 @@ services:
   - type: cron
     name: nearshop-backup-staging
     runtime: python
-    plan: starter
+    plan: 0.5c-512mb # Starter
     region: singapore
     branch: main
     rootDir: backend
@@ -162,6 +164,13 @@ services:
         value: nearshop
       - key: NEARSHOP_BACKUP_PREFIX
         value: staging
+      # The API's photo bucket, read from that service, only so backup.py can refuse a
+      # NEARSHOP_BACKUP_S3_BUCKET that names it (blank while the API keeps photos on its disk).
+      - key: NEARSHOP_MEDIA_S3_BUCKET
+        fromService:
+          type: web
+          name: nearshop-api-staging
+          envVarKey: NEARSHOP_MEDIA_S3_BUCKET
       # The private backup bucket (never a photo bucket) and an R2 API token scoped to it, Object Read &
       # Write. Until NEARSHOP_BACKUP_BACKEND is s3 every run fails with "NEARSHOP_BACKUP_BACKEND is off".
       - key: NEARSHOP_BACKUP_BACKEND
@@ -183,7 +192,7 @@ services:
   - type: cron
     name: nearshop-backup-production
     runtime: python
-    plan: starter
+    plan: 0.5c-512mb # Starter
     region: singapore
     branch: release
     rootDir: backend
@@ -207,6 +216,13 @@ services:
         value: nearshop
       - key: NEARSHOP_BACKUP_PREFIX
         value: production
+      # The API's photo bucket, read from that service, only so backup.py can refuse a
+      # NEARSHOP_BACKUP_S3_BUCKET that names it (blank while the API keeps photos on its disk).
+      - key: NEARSHOP_MEDIA_S3_BUCKET
+        fromService:
+          type: web
+          name: nearshop-api
+          envVarKey: NEARSHOP_MEDIA_S3_BUCKET
       # The private backup bucket (never a photo bucket) and an R2 API token scoped to it, Object Read &
       # Write. Until NEARSHOP_BACKUP_BACKEND is s3 every run fails with "NEARSHOP_BACKUP_BACKEND is off".
       - key: NEARSHOP_BACKUP_BACKEND

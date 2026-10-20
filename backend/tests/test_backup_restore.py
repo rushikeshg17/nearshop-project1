@@ -137,7 +137,7 @@ def test_round_trip_restores_counts_documents_counters_and_schema(scratch_dbs, t
     restore.fetch_files(store, PREFIX, manifest, tmp_path)
     summary = restore_set(target, manifest, tmp_path, batch_size=2)  # several batches per collection
 
-    assert summary["counters_raised"] == {} and summary["created_from_manifest"] == []
+    assert summary["counters_raised"] == {} and summary["indexes_built"] > 0
     for name in [*with_docs, *[n for n in source.list_collection_names() if n not in with_docs]]:
         if name in (RUNS_COLLECTION, migrate.LOCK_COLLECTION):
             continue
@@ -244,6 +244,54 @@ def test_restore_applies_migrations_newer_than_the_set(scratch_dbs, tmp_path):
     assert calls == [target.name]  # on the restored documents, after the count check
     assert summary["migrations_applied_after"] == [newer[-1].number]
     assert target["products"].count_documents({"flag": True}) == 4
+
+
+def test_restore_builds_the_sets_schema_before_the_codes_newer_indexes(scratch_dbs, tmp_path, monkeypatch):
+    """A set at migration N, restored by code at N+1 whose migration removes duplicates before its schema
+    declares a new unique index: the documents go in under the set's schema, the migration runs on them,
+    and only then is the new index built."""
+    from pymongo import ASCENDING, IndexModel
+
+    from database import schema
+
+    source, target = scratch_dbs("bk_src"), scratch_dbs("bk_dst")
+    seed_small(source)
+    assert source["products"].count_documents({"keywords": "loose"}) == 3  # duplicates for the new index
+    store = FakeStore()
+    manifest = create_backup(source, store, prefix=PREFIX, set_id="2026-10-20T213000Z", environment="test", commit="x")
+
+    def dedupe_keywords(mongo):
+        for doc in mongo["products"].find({"keywords": "loose"}, {"_id": 1}):
+            mongo["products"].update_one({"_id": doc["_id"]}, {"$set": {"keywords": f"loose {doc['_id']}"}})
+
+    newer = [*discover(), Migration(len(discover()) + 1, "dedupe_keywords", dedupe_keywords)]
+    unique = IndexModel([("keywords", ASCENDING)], unique=True, name="uq_keywords")
+    monkeypatch.setattr(schema, "INDEXES", {**schema.INDEXES, "products": [*schema.INDEXES["products"], unique]})
+
+    summary = _fetch_and_restore_with(store, manifest["set_id"], target, tmp_path, migrations=newer)
+    assert summary["migrations_applied_after"] == [newer[-1].number]
+    assert target["products"].count_documents({}) == 4
+    assert target["products"].index_information()["uq_keywords"]["unique"] is True
+    assert target["products"].count_documents({"keywords": "loose"}) == 0
+
+
+def test_restore_refuses_a_target_with_an_empty_collection(scratch_dbs, tmp_path):
+    source, target = scratch_dbs("bk_src"), scratch_dbs("bk_dst")
+    seed_small(source)
+    store = FakeStore()
+    manifest = create_backup(source, store, prefix=PREFIX, set_id="2026-10-20T213000Z", environment="test", commit="x")
+    target.create_collection("products")  # empty, but it could carry another schema's indexes
+
+    with pytest.raises(RestoreRefused, match="not empty.*all empty"):
+        _fetch_and_restore(store, manifest["set_id"], target, tmp_path)
+    assert target.list_collection_names() == ["products"]
+    assert target["products"].count_documents({}) == 0
+
+
+def _fetch_and_restore_with(store, set_id, target, tmp: Path, **kwargs):
+    manifest = restore.fetch_manifest(store, PREFIX, set_id, tmp)
+    restore.fetch_files(store, PREFIX, manifest, tmp)
+    return restore_set(target, manifest, tmp, **kwargs)
 
 
 def test_production_name_needs_the_emergency_flag_and_the_typed_name():
@@ -468,6 +516,21 @@ def test_backup_settings():
                 backup_s3_secret_access_key=SecretStr("secret"))
     assert store_problem(Settings(**base, **full)) is None
     assert "photo bucket" in store_problem(Settings(**base, **full, media_s3_bucket="nearshop-backups"))
+
+
+def test_backup_cron_jobs_read_the_photo_bucket_they_must_not_use():
+    """store_problem refuses a backup bucket equal to NEARSHOP_MEDIA_S3_BUCKET, so each cron job must
+    have its API's photo bucket; and its plan must be one of Render's instance type ids."""
+    yaml = pytest.importorskip("yaml")
+    blueprint = yaml.safe_load((Path(__file__).resolve().parents[2] / "render.yaml").read_text(encoding="utf-8"))
+    services = {s["name"]: s for s in blueprint["services"]}
+    for job, api in (("nearshop-backup-staging", "nearshop-api-staging"), ("nearshop-backup-production", "nearshop-api")):
+        cron = services[job]
+        assert cron["type"] == "cron" and cron["plan"] == services["nearshop-api-staging"]["plan"]
+        env = {v["key"]: v for v in cron["envVars"]}
+        assert env["NEARSHOP_MEDIA_S3_BUCKET"]["fromService"] == {
+            "type": "web", "name": api, "envVarKey": "NEARSHOP_MEDIA_S3_BUCKET"}
+        assert env["NEARSHOP_MONGODB_URI"]["fromService"]["name"] == api
 
 
 def test_restore_failure_after_writing_says_to_drop_the_target(scratch_dbs, tmp_path):

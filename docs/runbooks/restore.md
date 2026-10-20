@@ -47,7 +47,9 @@ Collections > nearshop > backup_runs, sorted by `started_at` descending.
    keeps a single backup bucket, the prefixes still separate the sets, but staging's token can then read
    production's sets, so give staging its own bucket before production holds real customer data.
 2. **Render.** Sync the Blueprint (render.yaml). It creates nearshop-backup-staging (branch main) and
-   nearshop-backup-production (branch release). Each reads NEARSHOP_MONGODB_URI from its API service. For
+   nearshop-backup-production (branch release). Each reads NEARSHOP_MONGODB_URI and
+   NEARSHOP_MEDIA_S3_BUCKET from its API service; the tool refuses a backup bucket equal to that photo
+   bucket. For
    each, enter NEARSHOP_BACKUP_BACKEND=s3 and its own NEARSHOP_BACKUP_S3_ENDPOINT
    (`https://<account id>.r2.cloudflarestorage.com`), NEARSHOP_BACKUP_S3_BUCKET,
    NEARSHOP_BACKUP_S3_ACCESS_KEY_ID and NEARSHOP_BACKUP_S3_SECRET_ACCESS_KEY. On a service that already
@@ -83,16 +85,21 @@ shops affected afterwards which reservations and stock changes to re-enter.
 
 The tool is backend/database/restore.py. It restores into a database on the cluster in NEARSHOP_MONGODB_URI,
 named by `--target-db`, and it refuses, before writing anything:
-- a target that holds any document;
+- a target that has any collection, even an empty one: name a database that does not exist yet (MongoDB
+  creates it on the first write; do not create it in Atlas first);
 - the production database name (NEARSHOP_PRODUCTION_MONGODB_DB, and in production NEARSHOP_MONGODB_DB, the
   database the API serves), unless `--emergency` is given and the operator types the name when asked;
 - a production set anywhere but in production (NEARSHOP_ENVIRONMENT=production);
 - a file whose size or SHA-256 differs from the manifest, and a set whose migration is newer than the code.
 
-It then restores the set's schema (the migration runner brings the empty target to the set's migration),
-inserts the documents in batches, restores counters, checks every collection's count against the manifest
-(any difference: exit 1, "Restore FAILED"), applies any newer migrations, and prints a JSON summary with
-`total_seconds`. Exit 2 means refused, nothing written.
+It then rebuilds the database as it was at the set's migration, never with the code's newer schema: it
+creates each collection with the options in the manifest (validators included), inserts the documents in
+batches (counters and schema_migrations included), checks every collection's count against the manifest
+(any difference: exit 1, "Restore FAILED"), builds the set's indexes from the manifest, raises any counter
+behind its collection, and only then runs the migration runner: migrations newer than the set, then the
+code's validators and indexes, as a deploy would. A new unique or TTL index in newer code is therefore
+built after the old documents are in and migrated. It prints a JSON summary with `total_seconds`. Exit 2
+means refused, nothing written.
 
 Restores run as **Render one-off jobs** on the backup cron job of the environment (Render docs, "One-off
 jobs"): a job uses the service's build and settings, so the database URI and the backup token never leave
@@ -197,10 +204,14 @@ backup or restore tools.
   error leaves an incomplete set, deleted a day later. Fix it and Trigger Run.
 - **A run takes longer than usual or the set grows fast**: check the sizes in the manifest; the largest
   collections are usually sales_history and text_embeddings (P8.3 archives old sales).
-- **"is not empty"**: restore into a new database name, or drop the target first if it is a failed attempt.
+- **"is not empty"**: restore into a new database name (one that does not exist yet, so no collection in
+  it, not even an empty one), or drop the target first if it is a failed attempt.
 - **"is at migration N but this code knows migrations up to M"**: the set comes from newer code. Run the
   restore on a service at the commit in the manifest (the `commit` field), or wait for that release.
 - **The tool is unavailable** (the code cannot run): each file can also be loaded with mongorestore,
   `mongorestore --uri <target uri> --gzip --db <target db> --collection <name> <name>.bson.gz`, collection by
-  collection, after creating the schema with `python -m database.migrate` against the target. Check the counts
-  against the manifest by hand.
+  collection (schema_migrations and counters too), into a database that does not exist yet. Check the counts
+  against the manifest by hand, and only then run `python -m database.migrate` against the target: it applies
+  migrations newer than the set and builds the code's validators and indexes. Never migrate the empty target
+  first, or a newer unique or TTL index meets the old documents before their migration has run. Indexes the
+  set has and the code no longer declares are not rebuilt this way; the manifest lists them.

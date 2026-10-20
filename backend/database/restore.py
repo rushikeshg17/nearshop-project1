@@ -10,7 +10,9 @@ default. The sets come from the store in the NEARSHOP_BACKUP_* settings, under N
 (default: the environment name). The step-by-step procedure and the drill log: docs/runbooks/restore.md.
 
 Safeguards, all checked before anything is written:
-  * the target must be empty: no collection in it may hold a document;
+  * the target must be empty: it may hold no collection at all, not even an empty one (one made by the
+    code's schema would carry this code's indexes and validators), so name a database that does not
+    exist yet; MongoDB creates it on the first write;
   * the production database name is refused (NEARSHOP_PRODUCTION_MONGODB_DB, and with
     NEARSHOP_ENVIRONMENT=production also NEARSHOP_MONGODB_DB, the database the API serves) unless
     --emergency is given and the operator types the database name when asked;
@@ -20,18 +22,21 @@ Safeguards, all checked before anything is written:
   * every file must match the size and SHA-256 in the manifest, and the set's migration number must be
     one this code knows.
 
-Then, in order:
-  1. the set's schema_migrations records are inserted, and the migration runner brings the empty target
-     to the set's migration (its collections, validators and indexes); collections and indexes that
-     the set has and the code does not declare are created from the manifest;
-  2. every other collection's documents, counters among them, are inserted in batches, byte for byte,
-     skipping validation (they passed the validators when they were written; a restore must bring all
-     of them back);
+Then, in order, so the documents meet the schema they were written under and never this code's newer one:
+  1. every collection of the set is created with the options in the manifest (its validator among
+     them): the schema at the set's migration;
+  2. every collection's documents, schema_migrations and counters among them, are inserted in batches,
+     byte for byte, skipping validation (they passed the validators when they were written; a restore
+     must bring all of them back);
   3. each collection's document count is checked against the manifest, and any difference fails the
      restore (exit 1);
-  4. any counter below the largest id of its collection is raised to it (none should be: backup.py
+  4. the set's indexes are built from the manifest, after the documents as mongorestore does (faster,
+     and a TTL index cannot remove a document before it is counted);
+  5. any counter below the largest id of its collection is raised to it (none should be: backup.py
      reads counters last);
-  5. the runner applies migrations newer than the set, if the code has any.
+  6. the migration runner applies the migrations newer than the set, if the code has any, and then
+     ensure_schema brings validators, indexes and new collections to this code's schema, exactly as a
+     deploy of this code would on the database the set was taken from.
 It prints a JSON summary with the time taken, the figure the drill log records.
 """
 from __future__ import annotations
@@ -50,7 +55,6 @@ from typing import Any
 import bson
 from bson.raw_bson import RawBSONDocument
 from pymongo.database import Database as MongoDatabase
-from pymongo.errors import OperationFailure
 
 from database import migrate
 from database.backup import (
@@ -68,7 +72,7 @@ from database.backup import (
     sha256_file,
 )
 from database.migrations import Migration, discover
-from database.schema import INDEX_CONFLICT_CODES, VALIDATORS
+from database.schema import VALIDATORS
 
 log = logging.getLogger("nearshop.restore")
 
@@ -119,10 +123,19 @@ def name_problem(target_db: str, protected: Iterable[str], *, emergency: bool, a
     return None
 
 
-def non_empty_collections(target: MongoDatabase) -> list[str]:
-    """Collections of the target that hold at least one document (system collections aside)."""
-    return sorted(name for name in target.list_collection_names()
-                  if not name.startswith("system.") and target[name].find_one({}, {"_id": 1}) is not None)
+def existing_collections(target: MongoDatabase) -> list[str]:
+    """Collections of the target (system collections aside), empty or not. A restore needs none."""
+    return sorted(name for name in target.list_collection_names() if not name.startswith("system."))
+
+
+def not_empty_problem(target: MongoDatabase) -> str | None:
+    if not (names := existing_collections(target)):
+        return None
+    held = [n for n in names if target[n].find_one({}, {"_id": 1}) is not None]
+    listed = ", ".join(names[:5]) + ("..." if len(names) > 5 else "")
+    what = (f"{len(held)} of them {'holds' if len(held) == 1 else 'hold'} documents" if held else "all empty")
+    return (f"Database {target.name!r} is not empty: it has collections ({listed}; {what}). Restore into a "
+            f"database name that does not exist yet.")
 
 
 def environment_problem(manifest: dict[str, Any], environment: str) -> str | None:
@@ -189,28 +202,21 @@ def insert_file(target: MongoDatabase, name: str, path: Path, batch_size: int = 
     return inserted
 
 
-def create_missing_from_manifest(target: MongoDatabase, manifest: dict[str, Any]) -> list[str]:
-    """Create collections and indexes the set has and the migrated target lacks. Returns what was made."""
-    made = []
-    existing = set(target.list_collection_names())
+def create_collections(target: MongoDatabase, manifest: dict[str, Any]) -> None:
+    """Create every collection of the set with its options from the manifest, validators among them."""
     for name, entry in manifest["collections"].items():
-        if name not in existing:
-            target.create_collection(name, **entry.get("options", {}))
-            made.append(name)
-        present = set(target[name].index_information())
-        for spec in entry.get("indexes", []):
-            if spec["name"] in present:
-                continue
-            try:
-                target.command("createIndexes", name, indexes=[spec])
-                made.append(f"{name}.{spec['name']}")
-            except OperationFailure as exc:
-                if exc.code not in INDEX_CONFLICT_CODES:
-                    raise
-                # The code declares the same index under another name (a migration renamed it).
-                log.warning("index %s.%s from the set clashes with one the code declares; kept the code's",
-                            name, spec["name"])
-    return made
+        target.create_collection(name, **entry.get("options", {}))
+
+
+def build_indexes(target: MongoDatabase, manifest: dict[str, Any]) -> int:
+    """Build the set's indexes from the manifest, one command per collection. Returns how many were built."""
+    built = 0
+    for name, entry in manifest["collections"].items():
+        present = set(target[name].index_information())  # the _id index, made with the collection
+        if specs := [spec for spec in entry.get("indexes", []) if spec["name"] not in present]:
+            target.command("createIndexes", name, indexes=specs)
+            built += len(specs)
+    return built
 
 
 def restore_counters(target: MongoDatabase) -> dict[str, int]:
@@ -250,33 +256,28 @@ def restore_set(target: MongoDatabase, manifest: dict[str, Any], files_dir: Path
     ordered = list(migrations) if migrations is not None else discover()
     if problem := manifest_problem(manifest, ordered):
         raise RestoreRefused(f"Restore refused; nothing was written. {problem}")
-    if busy := non_empty_collections(target):
-        raise RestoreRefused(f"Restore refused; nothing was written. Database {target.name!r} is not empty "
-                             f"({', '.join(busy[:5])}{'...' if len(busy) > 5 else ''} hold documents). "
-                             f"Restore into a new database name.")
+    if problem := not_empty_problem(target):
+        raise RestoreRefused(f"Restore refused; nothing was written. {problem}")
     started = time.perf_counter()
     collections = manifest["collections"]
     set_migration = int(manifest.get("migration", 0))
     try:
-        # 1. The set's migration records, then the schema at the set's migration.
-        if migrate.MIGRATIONS_COLLECTION in collections:
-            entry = collections[migrate.MIGRATIONS_COLLECTION]
-            insert_file(target, migrate.MIGRATIONS_COLLECTION, files_dir / entry["file"], batch_size)
-        migrate.run(target, migrations=[m for m in ordered if m.number <= set_migration])
-        created = create_missing_from_manifest(target, manifest)
-        # 2. The documents, the counters among them.
+        # 1. The collections at the set's migration: the set's own options, never this code's schema.
+        create_collections(target, manifest)
+        # 2. The documents, schema_migrations and counters among them (counters last, as in the set).
         restored = {}
         for name, entry in collections.items():
-            if name != migrate.MIGRATIONS_COLLECTION:
-                restored[name] = insert_file(target, name, files_dir / entry["file"], batch_size)
-                log.info("restored %s: %d documents", name, restored[name])
-        # 3. Counts against the manifest, before anything else writes.
+            restored[name] = insert_file(target, name, files_dir / entry["file"], batch_size)
+            log.info("restored %s: %d documents", name, restored[name])
+        # 3. Counts against the manifest, before anything else writes or removes a document.
         if mismatches := count_mismatches(target, manifest):
             detail = ", ".join(f"{n} {want} expected, {got} restored" for n, (want, got) in mismatches.items())
             raise RestoreFailed(f"counts do not match the manifest: {detail}. Drop {target.name!r} before "
                                 f"trying again.")
+        # 4. The set's indexes; 5. any counter behind its collection.
+        indexes = build_indexes(target, manifest)
         raised = restore_counters(target)
-        # 4 and 5. Any counter behind its collection, then migrations newer than the set.
+        # 6. Migrations newer than the set, then this code's ensure_schema, as a deploy would run them.
         later = migrate.run(target, migrations=ordered)
     except RestoreFailed:
         raise
@@ -286,7 +287,7 @@ def restore_set(target: MongoDatabase, manifest: dict[str, Any], files_dir: Path
     return {
         "set_id": manifest["set_id"], "source_database": manifest.get("database"), "target_database": target.name,
         "documents": sum(c["documents"] for c in collections.values()), "collections": len(collections),
-        "migration": set_migration, "migrations_applied_after": later, "created_from_manifest": created,
+        "migration": set_migration, "migrations_applied_after": later, "indexes_built": indexes,
         "counters_raised": raised, "seconds": round(time.perf_counter() - started, 1),
     }
 
@@ -329,9 +330,8 @@ def main(argv: Sequence[str] | None = None, ask: Ask = input) -> int:
 
     started = time.perf_counter()
     target = client[args.target_db]
-    if busy := non_empty_collections(target):
-        return refuse(f"database {target.name!r} is not empty ({', '.join(busy[:5])} hold documents). "
-                      f"Restore into a new database name.")
+    if problem := not_empty_problem(target):
+        return refuse(problem)
     set_id = latest_complete_set(store, prefix) if args.set == "latest" else args.set
     if not set_id:
         return refuse(f"no complete backup set under {prefix}/.")
