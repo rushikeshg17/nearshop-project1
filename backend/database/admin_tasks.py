@@ -34,8 +34,9 @@ without wiping anything (the seed is the tool that replaces a database).
                    prints how many photos still lack one and the median thumbnail size.
 
 Commands that write (backfill-thumbnails writes to the photo storage, not the database) show the
-database name and ask the operator to type it; anything else changes nothing. No command prints an email address or a password hash. Every command that changes a password
-or deactivates an account also ends that account's sessions (a new token_version, no recorded sessions).
+database name and ask the operator to type it; anything else changes nothing. No command prints an email
+address or a password hash. Every command that changes a password or deactivates an account also ends that
+account's sessions (a new token_version, no recorded sessions).
 """
 from __future__ import annotations
 

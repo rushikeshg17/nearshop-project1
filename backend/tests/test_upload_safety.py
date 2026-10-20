@@ -6,6 +6,8 @@ the in-memory fake storage from tests/test_media.py, so nothing reaches a bucket
 import asyncio
 import csv
 import io
+import json
+import logging
 import struct
 import threading
 import time
@@ -18,13 +20,14 @@ from PIL import Image, ImageFile, features
 from pydantic import ValidationError
 
 from app.api.routes import owner as owner_routes
+from app.core import observability
 from app.core.config import Settings, settings
 from app.core.errors import AppError
 from app.main import app
 from app.services import importer, media
 from app.services.media import THUMB_SIDE, thumbnail_key
 from database import admin_tasks
-from tests.conftest import HEADERS, PASSWORD
+from tests.conftest import CENTER, HEADERS, PASSWORD
 from tests.test_media import FakeStorage, photos, png
 
 MB = 1024 * 1024
@@ -138,7 +141,37 @@ def test_a_streamed_body_without_a_length_is_counted(ids, monkeypatch):
     assert calls == []
 
 
+def test_a_refused_body_is_logged_under_its_route(owner_a, ids):
+    buffer = io.StringIO()
+    handler = logging.StreamHandler(buffer)
+    handler.setFormatter(observability.JsonFormatter())
+    logger = logging.getLogger("nearshop.request")
+    logger.addHandler(handler)
+    try:
+        res = owner_a.post(f"/api/owner/products/{ids['charger']}/image", content=b"x" * (6 * MB + 1),
+                           headers={**HEADERS, "Content-Type": "multipart/form-data; boundary=nearshop"})
+    finally:
+        logger.removeHandler(handler)
+    assert res.status_code == 413
+    [record] = [json.loads(line) for line in buffer.getvalue().splitlines()]
+    assert record["status"] == 413 and record["method"] == "POST"
+    assert record["route"] == "/api/owner/products/{product_id}/image"  # the template, not "unmatched"
+
+
 # ------------------------------------------------------------------ images
+
+
+def test_only_the_allowed_formats_readers_see_an_upload(monkeypatch):
+    Image.init()  # every plugin registered, so the patch below is not overwritten
+    called: list[str] = []
+    factory, accept = Image.OPEN["BMP"]
+    monkeypatch.setitem(Image.OPEN, "BMP", (_fail_if_called("BMP reader", called), accept))
+    buf = io.BytesIO()
+    Image.new("RGB", (20, 20)).save(buf, "BMP")
+    with pytest.raises(AppError) as err:
+        media.decode_image(buf.getvalue())
+    assert err.value.code == "bad_image" and "JPG, PNG, WebP or GIF" in err.value.message
+    assert called == []
 
 
 def test_a_huge_canvas_is_refused_from_its_header_without_decoding(owner_a, ids, fake_storage, monkeypatch):
@@ -407,6 +440,16 @@ def test_a_thumbnail_is_stored_beside_the_photo_and_deleted_with_it(owner_a, cli
     assert set(fake_storage.objects) == {new_key, thumbnail_key(new_key)}
     media.delete_image(new_key)
     assert fake_storage.objects == {}
+
+
+def test_search_groups_carry_a_thumbnail_url(owner_a, client, ids, fake_storage):
+    assert upload(owner_a, ids["charger"], png((600, 300))).status_code == 200
+    [key] = photos(fake_storage)
+    res = client.get("/api/search", params={"q": "phone charging adaptor", "lat": CENTER[0], "lng": CENTER[1]})
+    [group] = [g for g in res.json()["groups"] if g["best_offer"]["id"] == ids["charger"]]
+    assert group["image_url"] == f"/media/{key}" and group["thumbnail_url"] == f"/media/{thumbnail_key(key)}"
+    others = [g for g in res.json()["groups"] if g is not group]
+    assert all("thumbnail_url" in g for g in others)
 
 
 def test_shop_photo_thumbnail(owner_a, fake_storage):

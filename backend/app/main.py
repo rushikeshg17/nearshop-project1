@@ -4,12 +4,16 @@ import os
 import threading
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from functools import cache
+from types import SimpleNamespace
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.routing import iter_route_contexts
 from fastapi.staticfiles import StaticFiles
+from starlette.routing import compile_path
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.ai.semantic_index import index
@@ -139,6 +143,7 @@ class BodySizeLimitMiddleware:
             except ValueError:
                 too_large = False  # the server refuses a malformed length itself; counting still applies
             if too_large:
+                _note_route(scope)  # refused before routing: name the route for the request log anyway
                 await self.refuse(scope, send)
                 return
 
@@ -176,6 +181,29 @@ class BodySizeLimitMiddleware:
 
 async def _no_receive() -> Message:
     return {"type": "http.disconnect"}
+
+
+@cache
+def _route_patterns() -> tuple[tuple, ...]:
+    """Every route's full path pattern, template and methods, in the router's order (built on first use,
+    once every route is registered)."""
+    patterns = []
+    for route in iter_route_contexts(app.routes):
+        if isinstance(route.path, str) and route.path.startswith("/"):
+            regex, template, _ = compile_path(route.path)
+            patterns.append((regex, template, frozenset(route.methods or ())))
+    return tuple(patterns)
+
+
+def _note_route(scope: Scope) -> None:
+    """Put the matching route's template where the request log reads it (observability.route_template), for
+    a request refused before the router ran, so an oversized upload is logged under its route, not as
+    unmatched. Only the template is recorded, never the raw path."""
+    path, method = scope.get("path", ""), scope.get("method")
+    for regex, template, methods in _route_patterns():
+        if regex.match(path) and (not methods or method in methods):
+            scope["route"] = SimpleNamespace(path_format=template)
+            return
 
 
 app = FastAPI(title="NearShop API", version="1.0.0", lifespan=lifespan,

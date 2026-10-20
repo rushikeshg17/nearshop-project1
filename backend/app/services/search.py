@@ -156,6 +156,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         offers = sorted(items, key=lambda x: (x.quantity <= 0, shops[x.shop_id][1]))
         head = best
         category_counts[head.category.slug] += 1
+        pictured = next((listing(x) for x in items if x.image_path), None)  # the group's photo, any offer's
         group_rows.append(
             {
                 "key": key,
@@ -164,7 +165,8 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
                 "brand": head.brand,
                 "unit": head.unit,
                 "icon": head.icon,
-                "image_url": next((listing(x)["image_url"] for x in items if x.image_path), None),
+                "image_url": pictured["image_url"] if pictured else None,
+                "thumbnail_url": pictured["thumbnail_url"] if pictured else None,
                 "category": head.category.slug,
                 "min_price": min(x.price for x in pool),
                 "max_price": max(x.price for x in pool),

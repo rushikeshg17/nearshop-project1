@@ -32,7 +32,7 @@ THUMB_SIDE = 320
 THUMB_SUFFIX = ".thumb"
 PHOTO_QUALITY = 82
 THUMB_QUALITY = 75
-ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP", "GIF"}
+ALLOWED_FORMATS = ("JPEG", "PNG", "WEBP", "GIF")
 CONTENT_TYPE = "image/webp"
 # Every key holds a fresh uuid and is never rewritten, so browsers and the CDN may keep it for a year.
 CACHE_CONTROL = "public, max-age=31536000, immutable"
@@ -125,19 +125,22 @@ class S3Storage:
             raise
 
     def size(self, key: str) -> int | None:
+        """None also on 403: AWS S3 answers a HEAD for a missing key with 403 when the credentials lack
+        s3:ListBucket, so without this the thumbnail backfill would count every older photo as failed. A
+        real permission problem still shows, as a failure on the get or put that follows."""
         try:
             return int(self.client.head_object(Bucket=self.bucket, Key=key)["ContentLength"])
         except Exception as exc:
-            if _missing(exc):
+            if _missing(exc, forbidden_too=True):
                 return None
             raise
 
 
-def _missing(exc: Exception) -> bool:
+def _missing(exc: Exception, forbidden_too: bool = False) -> bool:
     """Whether a botocore ClientError says the key does not exist (checked by its code, so botocore is
-    never imported here)."""
+    never imported here). forbidden_too also counts 403 (see S3Storage.size)."""
     code = str((getattr(exc, "response", None) or {}).get("Error", {}).get("Code", ""))
-    return code in ("404", "NoSuchKey", "NotFound")
+    return code in ("404", "NoSuchKey", "NotFound") or (forbidden_too and code in ("403", "AccessDenied", "Forbidden"))
 
 
 def build_storage(cfg: Settings) -> MediaStorage:
@@ -169,8 +172,6 @@ def use_storage(storage: MediaStorage | None) -> MediaStorage | None:
     return previous
 
 
-
-
 # ------------------------------------------------------------------ decoding and saving
 # Everything below decodes, encodes or calls the storage, so it runs in a worker thread: the upload routes
 # are plain def handlers (FastAPI runs those in its thread pool), never on the event loop.
@@ -195,9 +196,8 @@ def decode_image(data: bytes) -> Image.Image:
     by Image.open; not an OSError) gets the same 422. An animated GIF or WebP opens on its first frame, and
     nothing here seeks, so only that frame is decoded."""
     try:
-        img = Image.open(io.BytesIO(data))
-        if img.format not in ALLOWED_FORMATS:
-            raise AppError("Upload a JPG, PNG or WebP image", code="bad_image")
+        # Only the allowed formats' readers ever see the bytes; anything else is UnidentifiedImageError.
+        img = Image.open(io.BytesIO(data), formats=ALLOWED_FORMATS)
         width, height = img.size
         if width * height > settings.max_image_pixels or max(width, height) > settings.max_image_side:
             raise _too_large()
@@ -207,7 +207,9 @@ def decode_image(data: bytes) -> Image.Image:
         return ImageOps.exif_transpose(img).convert("RGB")
     except Image.DecompressionBombError:
         raise _too_large() from None
-    except (UnidentifiedImageError, OSError, ValueError, SyntaxError, EOFError):
+    except UnidentifiedImageError:
+        raise AppError("Upload a JPG, PNG, WebP or GIF image", code="bad_image") from None
+    except (OSError, ValueError, SyntaxError, EOFError):
         raise AppError("That file is not a readable image", code="bad_image") from None
 
 

@@ -68,6 +68,10 @@ class FakeS3Client:
         self.calls.append(("head_object", kwargs))
         if kwargs["Key"].startswith("missing/"):
             raise _client_error("404")
+        if kwargs["Key"].startswith("unlisted/"):
+            raise _client_error("403")  # AWS S3, for a missing key, to credentials without s3:ListBucket
+        if kwargs["Key"].startswith("broken/"):
+            raise _client_error("500")
         return {"ContentLength": 5}
 
 
@@ -193,6 +197,13 @@ def test_s3_backend_puts_webp_with_immutable_cache_header():
     assert storage.get("products/abc.webp") == b"bytes" and storage.size("products/abc.webp") == 5
     assert storage.get("missing/abc.webp") is None and storage.size("missing/abc.webp") is None
     assert CACHE_CONTROL == "public, max-age=31536000, immutable"
+
+
+def test_s3_size_treats_403_as_missing_so_the_backfill_works_without_list_permission():
+    storage = S3Storage("photos", FakeS3Client())
+    assert storage.size("unlisted/abc.thumb.webp") is None
+    with pytest.raises(Exception, match="500"):
+        storage.size("broken/abc.thumb.webp")  # any other error still surfaces
 
 
 def _s3_settings(**overrides) -> Settings:
