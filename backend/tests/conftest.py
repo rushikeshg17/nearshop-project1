@@ -1,23 +1,74 @@
 """Test fixtures: an isolated, throwaway MongoDB database with a tiny, known dataset.
 
-Tests use the cluster from NEARSHOP_MONGODB_URI (backend/.env) but their own database
-(`nearshop_test_<random>`), which is dropped when the run ends. Your real data is never touched.
+Tests read only NEARSHOP_TEST_MONGODB_URI, a local MongoDB replica set (make test starts one with
+docker compose and sets it). Before anything is imported or connected, the run stops when that URI
+is missing, names a host other than localhost, 127.0.0.1 or the CI service host mongo, or equals
+NEARSHOP_MONGODB_URI (environment or backend/.env). Tests never reach Atlas.
+
+Each run uses its own database (`nearshop_test_<random>`) on that server, dropped when the run ends.
 Settings are read at import time, so the environment is configured before importing the app.
 """
 import os
+import secrets
+import sys
 import tempfile
 import uuid
 from pathlib import Path
 
+import pytest
+from dotenv import dotenv_values
+
+TEST_URI_VAR = "NEARSHOP_TEST_MONGODB_URI"
+TEST_HOSTS = frozenset({"localhost", "127.0.0.1", "mongo"})
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+
+
+def _uri_hosts(uri: str) -> list[str]:
+    # Same parsing as database.schema.uri_hosts, repeated here because importing the app would read
+    # the settings before this guard has pointed them at the test database.
+    rest = uri.strip().split("://", 1)[-1].replace("?", "/", 1).split("/", 1)[0].rsplit("@", 1)[-1]
+    return [p.strip().lower().split(":", 1)[0] for p in rest.split(",") if p.strip()]
+
+
+def check_test_database(test_uri: str | None, app_uri: str | None) -> str | None:
+    """Say why the suite must not run against `test_uri`, or return None. Pure: nothing is connected."""
+    if not test_uri or not test_uri.strip():
+        return (f"{TEST_URI_VAR} is not set. Start the local replica set with make db-up and run make test, "
+                f"or set {TEST_URI_VAR}=mongodb://127.0.0.1:27017/?directConnection=true")
+    if not test_uri.startswith("mongodb://"):
+        return f"{TEST_URI_VAR} must be a mongodb:// URI for a local server (mongodb+srv is never local)."
+    hosts = _uri_hosts(test_uri)
+    if not hosts or any(h not in TEST_HOSTS for h in hosts):
+        return (f"{TEST_URI_VAR} names host(s) {', '.join(hosts) or '(none)'}; tests run only against "
+                f"{', '.join(sorted(TEST_HOSTS))}.")
+    if app_uri and test_uri.strip() == app_uri.strip():
+        return f"{TEST_URI_VAR} equals NEARSHOP_MONGODB_URI; give the tests their own URI."
+    return None
+
+
+def _configured_app_uri() -> str | None:
+    if "NEARSHOP_MONGODB_URI" in os.environ:
+        return os.environ["NEARSHOP_MONGODB_URI"]
+    env_file = BACKEND_DIR / ".env"
+    return dotenv_values(env_file).get("NEARSHOP_MONGODB_URI") if env_file.is_file() else None
+
+
+_test_uri = os.environ.get(TEST_URI_VAR)
+if _problem := check_test_database(_test_uri, _configured_app_uri()):
+    print(f"Tests stopped before connecting to any database: {_problem}", file=sys.stderr)
+    raise SystemExit(4)  # exits pytest during startup, before the app is imported
+
 _tmp = Path(tempfile.mkdtemp(prefix="nearshop-test-"))
+os.environ["NEARSHOP_ENVIRONMENT"] = "test"
+os.environ["NEARSHOP_MONGODB_URI"] = _test_uri
 os.environ["NEARSHOP_MONGODB_DB"] = f"nearshop_test_{uuid.uuid4().hex[:10]}"
+os.environ["NEARSHOP_SECRET_KEY"] = secrets.token_urlsafe(32)  # never the real key from backend/.env
 os.environ["NEARSHOP_ENABLE_SCHEDULER"] = "false"
 os.environ["NEARSHOP_WARM_ON_STARTUP"] = "false"  # the fixture below creates the schema
 os.environ["NEARSHOP_EMBEDDING_PROVIDER"] = "tfidf"  # fast and offline for tests
 os.environ["NEARSHOP_MEDIA_DIR"] = str(_tmp / "media")
 os.environ["NEARSHOP_MODEL_DIR"] = str(_tmp / "models")
 
-import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.ai.semantic_index import index  # noqa: E402
@@ -35,7 +86,7 @@ HEADERS = {"X-NearShop-Client": "web"}
 
 def _seed() -> dict:
     db = Database()
-    schema.reset(db.mongo)
+    schema.reset(db.mongo, confirm=db.mongo.name)
     pw = hash_password(PASSWORD)
     mobile = db.categories.insert(Category(slug="mobile-accessories", name="Mobile Accessories", icon="Smartphone",
                                            color_hue=280))

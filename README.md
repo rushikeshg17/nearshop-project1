@@ -54,11 +54,12 @@ The browser only talks to the Next.js origin. API calls and uploaded images are 
 
 ## Run it locally
 
-Requirements: Node 20.9+, [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 for you), and a MongoDB database: a free [Atlas](https://www.mongodb.com/atlas) cluster works. After `make setup`, put your connection string in `backend/.env` as `NEARSHOP_MONGODB_URI` (that file is gitignored; never commit it) and allow your IP address under Atlas > Network Access. Also set `NEARSHOP_DEMO_PASSWORD` there to a random value of at least 16 characters; the seed refuses to run without one. The login page shows demo-account shortcuts only in a frontend built with `NEXT_PUBLIC_NEARSHOP_DEMO_MODE=true`.
+Requirements: Node 20.9+, [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 for you), and Docker with Compose v2 for the local MongoDB. `make setup` copies `backend/.env.example` to `backend/.env` (gitignored; never commit it). Set `NEARSHOP_DEMO_PASSWORD` there to a random value of at least 16 characters; the seed refuses to run without one. The login page shows demo-account shortcuts only in a frontend built with `NEXT_PUBLIC_NEARSHOP_DEMO_MODE=true`.
 
 ```bash
 make setup     # install backend + frontend dependencies
-make seed      # reset the MongoDB database, generate the demo city, train all models (~3 min on Atlas; first run downloads a 90 MB model)
+make db-up     # start the local MongoDB (docker-compose.yml) and wait until it is ready
+make seed      # reset the local database, generate the demo city, train all models (first run downloads a 90 MB model)
 make api       # FastAPI on http://localhost:8000  (API docs at /docs)
 make web       # Next.js on http://localhost:3000  (in a second terminal)
 ```
@@ -66,9 +67,27 @@ make web       # Next.js on http://localhost:3000  (in a second terminal)
 Without make:
 
 ```bash
-cd backend && uv sync && cp .env.example .env && uv run python -m database.seed.seed && uv run uvicorn app.main:app --reload
+docker compose up -d --wait mongo
+cd backend && uv sync && cp .env.example .env && uv run python -m database.seed.seed --confirm-db nearshop && uv run uvicorn app.main:app --reload
 cd frontend && npm install && npm run dev
 ```
+
+### Local MongoDB
+
+NearShop uses multi-document transactions, so every MongoDB it talks to runs as a replica set. `docker-compose.yml` runs one `mongo:7.0` container as a single-node replica set named `rs0`, listening on 127.0.0.1:27017 only, with its data in the `nearshop-mongo` volume. Its health check initialises the replica set on first start, and `make db-up` waits until the node is a writable primary. `make db-down` stops it and keeps the data; `docker compose down -v` deletes it.
+
+- Development (`backend/.env`): `NEARSHOP_MONGODB_URI=mongodb://localhost:27017/?replicaSet=rs0`, database `nearshop`.
+- Tests: `make test` sets `NEARSHOP_TEST_MONGODB_URI=mongodb://127.0.0.1:27017/?directConnection=true`, the same server written differently. Each run creates and drops its own `nearshop_test_<random>` database.
+
+No laptop holds staging or production credentials. Their connection strings live only in the hosting dashboards.
+
+### Environment guard
+
+`NEARSHOP_ENVIRONMENT` is one of `development`, `test`, `staging`, `production` or `demo`; any other value stops the API, the seed and the tools at startup.
+
+The seed resets the database, so it (and `schema.reset`) refuses, before it opens any connection, unless all of these hold: the environment is `development`, `test` or `demo`; the database name differs from `NEARSHOP_PRODUCTION_MONGODB_DB` (default `nearshop_prod`); no host in the URI is, or is under, one of the comma-separated `NEARSHOP_PROTECTED_HOSTS` (the staging and production cluster hosts); and `--confirm-db` repeats the database name. `make seed` always seeds the local database and passes the confirmation for it.
+
+The test suite reads only `NEARSHOP_TEST_MONGODB_URI`. pytest stops at startup, before any connection, when it is missing, when its host is not `localhost`, `127.0.0.1` or the CI service host `mongo`, or when it equals `NEARSHOP_MONGODB_URI`. Where MongoDB already runs (a CI service container), skip the Docker step with `make test DB_UP=`.
 
 ### Demo accounts
 
@@ -110,7 +129,8 @@ backend/
   database/
     schema.py       MongoDB collections, validation rules and indexes (+ how tables map to documents)
     seed/           seed.py and data/*.json (catalogue, cities, shops, co-purchase baskets)
-  tests/            pytest: auth, CSRF, search, state machines, permissions
+  tests/            pytest: auth, CSRF, search, state machines, permissions, lockdown, environment guard
+docker-compose.yml  local MongoDB: a single-node replica set for development and tests
 frontend/
   src/app/          (site) customer pages, (auth) sign-in/up, shop/ owner console, admin/
   src/components/   ui (shadcn), site shell, search, product, map, fulfilment, owner, dashboard
@@ -130,10 +150,10 @@ frontend/
 ## Tests
 
 ```bash
-make test        # backend: 36 tests
+make test        # backend: 94 tests, against the local MongoDB replica set (starts it first)
 cd frontend && npx tsc --noEmit && npx eslint src && npm run build
 ```
 
 ## Roadmap (designed for, not built)
 
-PostgreSQL + PostGIS (the geo helpers are isolated), Redis cache, OpenSearch or pgvector (the embedding provider is an interface), S3 (the media service is an interface), Razorpay UPI (the order has `payment_method` and `payment_status`), push and email notifications (a single `notify()` seam), a NearShop rider network, and multi-city.
+Redis cache, Atlas Vector Search or OpenSearch (the embedding provider is an interface), S3 (the media service is an interface), Razorpay UPI (the order has `payment_method` and `payment_status`), push and email notifications (a single `notify()` seam), a NearShop rider network, and multi-city.

@@ -2,6 +2,9 @@
 
     uv run python -m database.schema          # create / update collections and indexes (idempotent)
 
+`reset` drops every collection, so it is guarded: see `check_reset_allowed`. The seed and the
+test suite are its only callers, and both pass a confirmation that repeats the database name.
+
 MongoDB does not need migrations to add a field, but the rules that keep data correct still
 live in the database, not only in application code:
 
@@ -29,6 +32,7 @@ exactly when embedding is the wrong choice.
 from __future__ import annotations
 
 import logging
+import re
 
 from pymongo import ASCENDING, DESCENDING, GEOSPHERE, TEXT, IndexModel
 from pymongo.database import Database as MongoDatabase
@@ -319,8 +323,78 @@ def ensure_schema(mongo: MongoDatabase) -> None:
                 mongo[name].create_indexes(INDEXES[name])
 
 
-def reset(mongo: MongoDatabase) -> None:
-    """Drop every NearShop collection and recreate the empty schema (used by the seed script and tests)."""
+# Environments in which reset (and the seed through it) may run. Staging and production never may.
+RESET_ENVIRONMENTS = ("development", "test", "demo")
+
+
+class ResetRefused(RuntimeError):
+    """reset was asked to wipe a database the environment guard protects. Nothing was written."""
+
+
+def uri_hosts(uri: str) -> list[str]:
+    """Host names in a MongoDB connection string: lower-case, without credentials, ports or options.
+
+    A mongodb+srv URI gives its SRV name (cluster0.abcd.mongodb.net). Pure: nothing is resolved."""
+    rest = uri.strip().split("://", 1)[-1]
+    # Credentials cannot hold an unescaped / ? or @, so the host list ends at the first / or ?.
+    rest = re.split(r"[/?]", rest, maxsplit=1)[0].rsplit("@", 1)[-1]
+    hosts = []
+    for part in rest.split(","):
+        part = part.strip().lower()
+        if part.startswith("["):  # IPv6: [::1]:27017
+            hosts.append(part[1:].split("]", 1)[0])
+        elif part:
+            hosts.append(part.split(":", 1)[0])
+    return hosts
+
+
+def _is_protected(host: str, protected_hosts: list[str]) -> bool:
+    return any(host == p or host.endswith("." + p) for p in protected_hosts)
+
+
+def check_reset_allowed(*, environment: str, mongodb_uri: str, db_name: str, production_db: str,
+                        protected_hosts: list[str], confirm: str | None) -> str | None:
+    """Say why `db_name` must not be wiped, or return None when reset may run.
+
+    All four must hold: the environment is development, test or demo; the database is not the
+    production database name; no host of the URI is (a subdomain of) a protected host; and the
+    operator's confirmation repeats the database name. Pure: it reads no settings and touches no
+    database, so callers check it before creating any database handle."""
+    if environment not in RESET_ENVIRONMENTS:
+        return (f"NEARSHOP_ENVIRONMENT is {environment!r}; reset and the seed run only in "
+                f"{', '.join(RESET_ENVIRONMENTS)}.")
+    if db_name == production_db:
+        return f"database {db_name!r} is the production database name (NEARSHOP_PRODUCTION_MONGODB_DB)."
+    protected = [h.strip().lower() for h in protected_hosts if h.strip()]
+    hosts = uri_hosts(mongodb_uri)
+    if not hosts:
+        return "NEARSHOP_MONGODB_URI names no host."
+    for host in hosts:
+        if _is_protected(host, protected):
+            return f"MongoDB host {host!r} is listed in NEARSHOP_PROTECTED_HOSTS (a staging or production cluster)."
+    if not confirm:
+        return f"no confirmation given. Repeat the database name to wipe it: --confirm-db {db_name}"
+    if confirm != db_name:
+        return f"the confirmation {confirm!r} does not match the database name {db_name!r}."
+    return None
+
+
+def reset_problem(db_name: str, confirm: str | None) -> str | None:
+    """`check_reset_allowed` for the configured environment, URI and protected hosts."""
+    from app.core.config import settings
+
+    return check_reset_allowed(environment=settings.environment, mongodb_uri=settings.mongodb_uri,
+                               db_name=db_name, production_db=settings.production_mongodb_db,
+                               protected_hosts=settings.protected_host_list, confirm=confirm)
+
+
+def reset(mongo: MongoDatabase, *, confirm: str | None) -> None:
+    """Drop every NearShop collection and recreate the empty schema (used by the seed script and tests).
+
+    Raises ResetRefused, before any write, unless `check_reset_allowed` passes for this database
+    with `confirm` as the operator's confirmation."""
+    if problem := reset_problem(mongo.name, confirm):
+        raise ResetRefused(f"Reset refused; nothing was written. {problem}")
     for name in VALIDATORS:
         mongo.drop_collection(name)
     ensure_schema(mongo)

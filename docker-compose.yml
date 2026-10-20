@@ -1,0 +1,39 @@
+# Local MongoDB for development and tests: one mongod running as a single-node replica set
+# (NearShop uses multi-document transactions, which need a replica set).
+#
+#   make db-up     # start it and wait until it is healthy (docker compose up -d --wait mongo)
+#   make db-down   # stop it; the data stays in the nearshop-mongo volume
+#   docker compose down -v   # stop it and delete the local data
+#
+# Connect from the laptop with mongodb://localhost:27017/?replicaSet=rs0 (development) or
+# mongodb://127.0.0.1:27017/?directConnection=true (tests). It listens on 127.0.0.1 only and has no
+# users: it never holds staging or production data.
+name: nearshop
+
+services:
+  mongo:
+    image: mongo:7.0
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--port", "27017"]
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - nearshop-mongo:/data/db
+    # Initialises the replica set on first start (rs.status() fails until then), and reports healthy
+    # only once this node is a writable primary.
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - >-
+          try { rs.status() } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }) }
+          quit(db.hello().isWritablePrimary ? 0 : 1)
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  nearshop-mongo:

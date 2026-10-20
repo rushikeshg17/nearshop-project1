@@ -1,10 +1,14 @@
 """Seed NearShop with a realistic, clearly-labelled demo city.
 
-    uv run python -m database.seed.seed
+    make seed                                                  # the local database (docker-compose.yml)
+    uv run python -m database.seed.seed --confirm-db <database name>
 
 It writes to the MongoDB database in NEARSHOP_MONGODB_URI / NEARSHOP_MONGODB_DB and REPLACES what is
-there. Documents are built in memory and sent with bulk inserts, so a hosted cluster is seeded in
-about a minute. The city comes from NEARSHOP_SEED_CITY (default ballari; see cities.json for options).
+there, so it runs only when the environment guard in database/schema.py (check_reset_allowed) allows
+it: environment development, test or demo; not the production database name; no host listed in
+NEARSHOP_PROTECTED_HOSTS; and --confirm-db repeating the database name. Otherwise it stops before
+it touches any database. Documents are built in memory and sent with bulk inserts, so a hosted
+cluster is seeded in about a minute. The city comes from NEARSHOP_SEED_CITY (default ballari; see cities.json for options).
 
 What it creates (all demo data; sales are flagged is_demo=True so AI outputs say so):
   - categories + ~300 catalog items, ~48 shops spread over real localities
@@ -19,13 +23,16 @@ no default: the seed stops before it touches any database unless that is a rando
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import math
 import os
 import random
+import sys
 import time
 from collections import defaultdict
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -168,9 +175,21 @@ def check_demo_password(password: str | None) -> str | None:
     return None
 
 
-def main() -> None:
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="python -m database.seed.seed",
+                                     description="Replace the configured MongoDB database with the demo city.")
+    parser.add_argument("--confirm-db", metavar="NAME",
+                        help="repeat the database name (NEARSHOP_MONGODB_DB) to confirm that it is wiped")
+    return parser.parse_args(list(argv))
+
+
+def main(argv: Sequence[str] = ()) -> None:
+    args = parse_args(argv)
     demo_password = settings.demo_password.get_secret_value()
     if problem := check_demo_password(demo_password):
+        raise SystemExit(f"Seed stopped; no database was touched. {problem}")
+    # The environment guard runs before any database handle exists; schema.reset checks it again.
+    if problem := schema.reset_problem(settings.mongodb_db, args.confirm_db):
         raise SystemExit(f"Seed stopped; no database was touched. {problem}")
     city_slug = settings.seed_city
     started = time.time()
@@ -185,7 +204,7 @@ def main() -> None:
 
     db = Database()
     print(f"Resetting MongoDB database '{db.mongo.name}' and seeding {city['name']}...")
-    schema.reset(db.mongo)
+    schema.reset(db.mongo, confirm=args.confirm_db)
     reset_category_cache()
     now = utcnow()
     nid = Ids()
@@ -630,4 +649,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])
