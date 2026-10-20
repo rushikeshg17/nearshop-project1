@@ -3,7 +3,8 @@
 Every alert in plan section 8.10 that can exist before Phase 4 is listed here with its exact threshold,
 the tool that raises it and who it reaches, and each is test-fired once and logged at the end. Scorecard
 check 5.4; plan section 8.10 and manual step 2-A (R2, by 6 Dec 2026). The OTP-spend and WhatsApp alerts
-are added at step 4-A, and the content security policy alert by P2.6.
+are added at step 4-A. The content security policy alert (#15) was added by P2.6 and is switched on when
+the policy is enforced (docs/security/headers.md).
 
 Every production alert, and the staging uptime monitors #1 to #3, go to the person on call (rota below)
 by email and to the team Slack channel #nearshop-alerts; every other staging alert goes to the channel only.
@@ -16,7 +17,7 @@ notification: email to the on-call address and the Slack integration).
 | Kind | Examples | Acknowledge and start work within |
 |---|---|---|
 | Outage | An uptime monitor down (home page, /api/health/ready through Vercel, /api/health direct), storage at 85%, connections above 80% | 15 minutes |
-| Everything else | A new error issue, error rate, latency, storage at 70%, sweep heartbeat, backup heartbeat | 4 hours |
+| Everything else | A new error issue, error rate, latency, storage at 70%, sweep heartbeat, backup heartbeat, a content security policy violation | 4 hours |
 
 Within on-call hours (9:00 to 21:00 IST) the person on call acknowledges in the tool that raised the
 alert, then posts in #nearshop-alerts what they found and did. An outage outside those hours is
@@ -38,7 +39,7 @@ outage is still answered within the 4-hour target, not 15 minutes.
 | 2 | API not ready, through Vercel | Better Stack monitor, Status check | GET `https://<vercel-url>/api/health/ready` ; down on any status other than 2xx (the API answers 503 when the database or the migrations fail) or no answer in 30 s. Interval and confirmation as #1. | Outage: 15 minutes |
 | 3 | API down, direct | Better Stack monitor, Status check | GET `https://<render-service>.onrender.com/api/health` ; down on any status other than 2xx or no answer in 30 s. Interval and confirmation as #1. Tells a Vercel problem (#2 down, #3 up) from an API problem (both down). | Outage: 15 minutes |
 | 4 | Expiry sweep heartbeat older than 90 s | Better Stack monitor, Keyword check | GET `https://<vercel-url>/api/health/ready` ; down when the body does not contain the exact text `"sweep":true`. The API reports sweep true only while job_leases.sweep_expired.last_run_at is less than 90 s old (backend/app/main.py, readiness). Interval and confirmation as #1: a deploy's lease hand-over (up to 90 s) never alerts on its own. | 4 hours |
-| 5 | Any new error issue | Sentry issue alert, project nearshop (backend and frontend events) | When a new issue is created, and when an issue changes from resolved to unresolved (a regression); environment = production (a copy of the rule with environment = staging posts to Slack only). Includes the storage job's 85% error (alert #10). | 4 hours |
+| 5 | Any new error issue | Sentry issue alert, project nearshop (backend and frontend events) | When a new issue is created, and when an issue changes from resolved to unresolved (a regression); environment = production (a copy of the rule with environment = staging posts to Slack only). Filter: the event's type does not equal csp (security reports are alert #15). Includes the storage job's 85% error (alert #10). | 4 hours |
 | 6 | Error rate above 1% | Sentry metric alert, Transactions | failure_rate() above 1% over a 5-minute window, filter: event.type:transaction !transaction:/api/health* and transaction.status not one of not_found, unauthenticated, permission_denied, invalid_argument, already_exists, failed_precondition, resource_exhausted (4xx answers are the user's, not the server's). Resolve below 1%. | 4 hours |
 | 7 | Search server p95 above 800 ms | Sentry metric alert, Transactions | p95(transaction.duration) above 800 ms over a 10-minute window, filter: transaction:/api/search. Resolve below 600 ms (the target, plan section 8.11). Search requests are sampled at 25% (NEARSHOP_SENTRY_SEARCH_TRACES_SAMPLE_RATE). | 4 hours |
 | 8 | Any route p95 above 1,500 ms | Sentry metric alert, Transactions | p95(transaction.duration) above 1,500 ms over a 10-minute window, one rule per route of the load-test mix (plan section 8.11): /api/search, /api/search/suggest, /api/products/{product_id}, /api/owner/overview, /api/reservations and /api/reservations/{reservation_id}/cancel; plus one catch-all over every transaction except /api/health*. Use the route templates exactly as Sentry's Performance page lists them (transaction_style url). | 4 hours |
@@ -48,7 +49,7 @@ outage is still answered within the 4-hour target, not 15 minutes.
 | 12 | No successful backup for more than 26 hours | Better Stack heartbeat, one per environment (nearshop-backup-staging, nearshop-backup-production) | Period 24 hours, grace 2 hours: alert when no ping has arrived for 26 hours. The backup cron job pings the heartbeat URL (NEARSHOP_BACKUP_HEARTBEAT_URL, set in the Render dashboard) only after python -m database.backup exits 0 (render.yaml startCommand), that is after a succeeded row is written to backup_runs. A failed run, a run that never starts and a cron job that is gone all leave the heartbeat silent. | 4 hours |
 | 13 | OTP spend above 80% of the daily cap | **Pending: P4.1** | Configured and test-fired when P4.1 reaches production (plan step 4-A, by 14 Feb 2027). | 4 hours |
 | 14 | WhatsApp failure rate above 5% over 1 hour | **Pending: P4.3** | Configured and test-fired when P4.3 reaches production (plan step 4-A). | 4 hours |
-| 15 | New content security policy violation from the site's own pages | **Added by P2.6** | Sentry security reports, after enforcement (plan section 8.13). | 4 hours |
+| 15 | New content security policy violation from the site's own pages | Sentry issue alert, project nearshop (security reports, which the site's policy sends to Sentry: docs/security/headers.md) | When a new issue is created, and when an issue changes from resolved to unresolved; filters: the event's type equals csp, and the event's http.url (the page that was blocked) starts with the environment's site URL (https://<vercel-url>/), so reports from other pages and from browser extensions (their sources listed in Project Settings > Security Headers > Additional ignored sources) never alert; environment = production (a staging copy posts to Slack only). Switched on when the policy is enforced (plan section 8.13); during the 7 days of report-only mode the reports are reviewed by hand in Sentry (event.type:csp) instead. | 4 hours |
 
 Better Stack's free plan has 10 monitors: #1 to #4 for each environment use 8. The two heartbeats (#12)
 count separately.
@@ -65,7 +66,9 @@ with R2: those three alerts are then not met, and scorecard check 5.4 stays fail
    ping, and the heartbeat alerts after 26 hours. Trigger one run of each cron job (Render > Trigger Run)
    and check the heartbeat turns green.
 2. **Sentry.** With NEARSHOP_SENTRY_DSN set on both Render services (P2.1), create rules #5 to #8 for
-   production, and staging copies that post to Slack only.
+   production, and staging copies that post to Slack only. When the content security policy is enforced
+   (docs/security/headers.md), create rule #15 the same way. Security reports reach Sentry only when the
+   site's build has NEXT_PUBLIC_SENTRY_DSN (Vercel).
 3. **Atlas.** In each project (staging and production), Project > Alerts > Add: alerts #9 and #11, with
    the values for that cluster's tier. When production moves from M0 to Flex, change both storage values
    and NEARSHOP_STORAGE_LIMIT_MB together.
@@ -91,6 +94,7 @@ Restore every changed threshold or setting straight after, and say so in the log
 | 10 | On the staging service, set NEARSHOP_STORAGE_LIMIT_MB to a value below the database's current size (the admin storage card shows it), redeploy, and wait for the next IST day's snapshot (00:00 IST). Set it back to 512. | The snapshot logs the 85% error: a new Sentry issue and alert #5. |
 | 11 | In the staging project, temporarily change the connections alert's value to 1. | Atlas sends the alert (the API holds more than one connection). Restore 400. |
 | 12 | In Better Stack, temporarily set the staging heartbeat's period and grace to their minimums. Set them back to 24 hours and 2 hours, then Render > nearshop-backup-staging > Trigger Run. | The heartbeat alerts, then turns green after the triggered run. |
+| 15 | On staging, after enforcement: open any page, then in the browser's developer console run `fetch("https://example.com/p26-test-fire")` (connect-src blocks it). Resolve the issue afterwards. | A new security issue (blocked connect-src example.com) for that staging page, and the staging rule's Slack message within a few minutes. Repeat once on production to reach the on-call person. |
 
 ## On-call rota
 
@@ -117,6 +121,7 @@ One person per day, 9:00 to 21:00 IST. Swap by editing this table in a pull requ
 | Storage (#9, #10) | Admin overview > Database storage: the largest collections and the projected date | Move up a tier (M0 to Flex), or archive (P8.3). Never delete production data to make room |
 | Connections (#11) | Atlas > the cluster > Metrics > Connections | A connection leak after a release: roll back |
 | Backup (#12) | Render > the backup cron job > its last run's log; backup_runs in Atlas | docs/runbooks/restore.md |
+| Content security policy (#15) | The Sentry issue: the blocked URI, the directive and the page; whether the release that started it added a host or an inline handler | A legitimate new source: add its host to the policy through its environment variable (docs/security/headers.md) and release. An injected or unknown script: treat it as a security incident. If the site is broken for users, set NEARSHOP_CSP_MODE=report-only for Production in Vercel and redeploy while it is fixed |
 
 ## Test-fire log
 
@@ -138,3 +143,4 @@ One row per alert and environment. Date in IST. Minutes: from firing to the aler
 | 12 | Backup heartbeat | staging | not yet | | | | |
 | 13 | OTP spend (P4.1) | production | pending, step 4-A | | | | |
 | 14 | WhatsApp failures (P4.3) | production | pending, step 4-A | | | | |
+| 15 | Content security policy violation (P2.6) | staging and production | pending, after enforcement | | | | |

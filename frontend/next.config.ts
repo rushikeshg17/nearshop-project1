@@ -43,6 +43,105 @@ function sentryEnvironment(): string {
 }
 const SENTRY_RELEASE = process.env.VERCEL_GIT_COMMIT_SHA ?? "";
 
+// Content security policy (P2.6, plan section 8.13; every header and the reasons: docs/security/headers.md).
+// Header-only, without nonces: nonces would make every page render dynamically, which turns off static output,
+// ISR and CDN caching. So inline scripts, which hydration needs without nonces, are allowed, and eval only in
+// next dev (React's debugging needs it). Every host comes from the build's environment:
+// - the media domain: NEARSHOP_MEDIA_PUBLIC_BASE_URL (above), the same value the API has;
+// - the map's tile host: NEARSHOP_MAP_TILE_ORIGIN, the origin of the map styles in
+//   src/components/map/shop-map.tsx, whose style, tiles, sprites and glyphs all come from that one host;
+// - the error tracker's ingest host and security-report endpoint: from NEXT_PUBLIC_SENTRY_DSN.
+// NEARSHOP_CSP_MODE: report-only (the default until the 7 days of report-only mode on production are over)
+// sends the policy as Content-Security-Policy-Report-Only, so nothing is blocked and violations are reported;
+// enforce sends it as Content-Security-Policy. Reports go to Sentry in both modes when the DSN is set.
+type CspMode = "report-only" | "enforce";
+const CSP_MODES: readonly CspMode[] = ["report-only", "enforce"];
+const DEV = process.env.NODE_ENV === "development";
+
+function cspMode(): CspMode {
+  const mode = (process.env.NEARSHOP_CSP_MODE?.trim().toLowerCase() || "report-only") as CspMode;
+  if (!CSP_MODES.includes(mode)) throw new Error("NEARSHOP_CSP_MODE must be report-only or enforce");
+  return mode;
+}
+
+function origin(name: string, value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error();
+    return url.origin;
+  } catch {
+    throw new Error(`${name} must be an https:// (or, in development, http://) URL`);
+  }
+}
+
+const MAP_TILE_ORIGIN = origin(
+  "NEARSHOP_MAP_TILE_ORIGIN",
+  process.env.NEARSHOP_MAP_TILE_ORIGIN?.trim() || "https://tiles.openfreemap.org",
+);
+
+/** The Sentry ingest origin and its security-report URL for a DSN (https://<key>@<host>/<project id>). */
+function sentryReporting(dsn: string): { origin: string; reportUri: string } | undefined {
+  if (!dsn) return undefined;
+  let url: URL;
+  try {
+    url = new URL(dsn);
+  } catch {
+    throw new Error("NEXT_PUBLIC_SENTRY_DSN is not a valid DSN");
+  }
+  const segments = url.pathname.split("/").filter(Boolean);
+  const projectId = segments.pop();
+  if (!url.username || !projectId) throw new Error("NEXT_PUBLIC_SENTRY_DSN is not a valid DSN");
+  const query = new URLSearchParams({ sentry_key: url.username, sentry_environment: sentryEnvironment() });
+  if (SENTRY_RELEASE) query.set("sentry_release", SENTRY_RELEASE);
+  const prefix = segments.length ? `/${segments.join("/")}` : "";
+  return { origin: url.origin, reportUri: `${url.origin}${prefix}/api/${projectId}/security/?${query}` };
+}
+
+const SENTRY_REPORTING = sentryReporting(process.env.NEXT_PUBLIC_SENTRY_DSN?.trim() ?? "");
+const CSP_REPORT_GROUP = "csp";
+
+function contentSecurityPolicy(mode: CspMode): string {
+  const media = MEDIA_BASE_URL ? [origin("NEARSHOP_MEDIA_PUBLIC_BASE_URL", MEDIA_BASE_URL)] : [];
+  const sentry = SENTRY_REPORTING ? [SENTRY_REPORTING.origin] : [];
+  const directives: string[][] = [
+    ["default-src", "'self'"],
+    ["script-src", "'self'", "'unsafe-inline'", ...(DEV ? ["'unsafe-eval'"] : [])],
+    ["style-src", "'self'", "'unsafe-inline'"],
+    ["img-src", "'self'", "data:", "blob:", ...media, MAP_TILE_ORIGIN],
+    ["connect-src", "'self'", MAP_TILE_ORIGIN, ...sentry],
+    ["worker-src", "'self'", "blob:"],
+    ["font-src", "'self'"],
+    ["object-src", "'none'"],
+    ["base-uri", "'self'"],
+    ["form-action", "'self'"],
+    ["frame-ancestors", "'none'"],
+    // Only when enforcing (browsers ignore it in a report-only policy, with a console warning), and not in
+    // next dev, which is plain http on localhost.
+    ...(mode === "enforce" && !DEV ? [["upgrade-insecure-requests"]] : []),
+    ...(SENTRY_REPORTING ? [["report-uri", SENTRY_REPORTING.reportUri], ["report-to", CSP_REPORT_GROUP]] : []),
+  ];
+  return directives.map((d) => [...new Set(d)].join(" ")).join("; ");
+}
+
+/** The site's headers on every page and static file (not /api or /media: the API sets its own). */
+function siteHeaders(): { key: string; value: string }[] {
+  const mode = cspMode();
+  return [
+    { key: "X-Content-Type-Options", value: "nosniff" },
+    { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+    { key: "X-Frame-Options", value: "DENY" },
+    { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(self)" },
+    { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+    {
+      key: mode === "enforce" ? "Content-Security-Policy" : "Content-Security-Policy-Report-Only",
+      value: contentSecurityPolicy(mode),
+    },
+    ...(SENTRY_REPORTING
+      ? [{ key: "Reporting-Endpoints", value: `${CSP_REPORT_GROUP}="${SENTRY_REPORTING.reportUri}"` }]
+      : []),
+  ];
+}
+
 const nextConfig: NextConfig = {
   reactCompiler: true,
   // Off unless the build sets it to "true". A default is needed so the flag is always inlined as a
@@ -66,18 +165,11 @@ const nextConfig: NextConfig = {
       { source: "/media/:path*", destination: `${API_ORIGIN}/media/:path*` },
     ];
   },
+  // Strict-Transport-Security is left to Vercel, which sends a two-year max-age with includeSubDomains and
+  // preload on every response (docs/security/headers.md). /api and /media are proxied to the API, whose
+  // responses carry its own set (backend/app/core/security_headers.py), so they are left out here.
   async headers() {
-    return [
-      {
-        source: "/:path*",
-        headers: [
-          { key: "X-Content-Type-Options", value: "nosniff" },
-          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-          { key: "X-Frame-Options", value: "DENY" },
-          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(self)" },
-        ],
-      },
-    ];
+    return [{ source: "/((?!api(?:/|$)|media(?:/|$)).*)", headers: siteHeaders() }];
   },
 };
 

@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.ai.semantic_index import index
 from app.api.router import api_router
-from app.core import observability, ratelimit
+from app.core import observability, ratelimit, security_headers
 from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.core.errors import AppError
@@ -61,6 +61,9 @@ def serves_local_media(environment: str, media_backend: str) -> bool:
 async def lifespan(_: FastAPI):
     if settings.environment != "development" and settings.secret_key == "dev-only-change-me":
         raise RuntimeError("Set NEARSHOP_SECRET_KEY before running outside development")
+    if problem := settings.insecure_cookie_problem():
+        # A deploy with it false fails here, and the previous version keeps serving (P2.6).
+        raise RuntimeError(problem)
     if settings.edge_secret_required and not settings.edge_secret.get_secret_value():
         # Without it every request would get 403: refuse to start instead, so the deploy fails and the
         # previous version keeps serving.
@@ -116,6 +119,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["content-type", "x-nearshop-client", "authorization"],
 )
+# Security headers on every response, the edge, rate-limit and error answers included, and no-store on
+# signed-in and private responses (app/core/security_headers.py, docs/security/headers.md).
+security_headers.install(app)
 # Wraps the whole middleware stack (CORS and Starlette's own error handling included): every response,
 # the 500 of an unhandled exception included, gets its request id and Server-Timing, and every request its
 # one log line.

@@ -14,6 +14,8 @@ MediaBackend = Literal["local", "s3"]
 BackupBackend = Literal["off", "local", "s3"]
 RateLimitMode = Literal["enforce", "log_only", "off"]
 EDGE_SECRET_MIN_LENGTH = 32
+# The deployed environments, served over https: the API refuses to start in them with cookie_secure false.
+SECURE_COOKIE_ENVIRONMENTS: tuple[str, ...] = ("staging", "production", "demo")
 
 
 class Settings(BaseSettings):
@@ -39,6 +41,10 @@ class Settings(BaseSettings):
     secret_key: str = "dev-only-change-me"
     access_token_minutes: int = 60 * 24 * 7
     cookie_name: str = "nearshop_session"
+    # Secure on the session cookie: browsers then send it over https only. False suits http://localhost in
+    # development and test; the API refuses to start with it false in staging, production and demo
+    # (insecure_cookie_problem, checked in app/main.py). Not checked here: migrations, backups and cron jobs
+    # load these settings too and never set a cookie.
     cookie_secure: bool = False
 
     # Launch lockdown. Sign-ups default to closed when environment is production and open elsewhere;
@@ -216,6 +222,13 @@ class Settings(BaseSettings):
             if missing := [name for name, value in required.items() if not value.strip()]:
                 raise ValueError(f"NEARSHOP_MEDIA_BACKEND=s3 needs {', '.join(missing)}")
         return self
+
+    def insecure_cookie_problem(self) -> str | None:
+        """Why the API must not start with these cookie settings, or None (P2.6)."""
+        if self.environment in SECURE_COOKIE_ENVIRONMENTS and not self.cookie_secure:
+            return (f"Set NEARSHOP_COOKIE_SECURE=true before running in {self.environment}: the session cookie "
+                    "must never be sent over plain http")
+        return None
 
     @property
     def protected_host_list(self) -> list[str]:
