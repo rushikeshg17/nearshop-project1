@@ -71,8 +71,11 @@ def models(db: DB):
         history.setdefault(r.name, []).append({"at": iso(r.created_at), "n_samples": r.n_samples,
                                                "duration_ms": r.duration_ms})
     return {
-        # Read from retrain_requests: true while a request is queued or running, in any process.
-        "training": state["active"] is not None,
+        # Read from retrain_requests, whichever process trains. training is true only while a request is
+        # running (the page polls every 3 s while it is); queued, while one waits for the cron job's next
+        # run, up to jobs.CRON_EVERY_MINUTES minutes.
+        "training": state["active"] is not None and state["active"]["status"] == "running",
+        "queued": state["active"] is not None and state["active"]["status"] == "queued",
         "retrain": {"active": _request_out(state["active"]), "last_finished": _request_out(state["last_finished"]),
                     "daily_limit": jobs.RETRAIN_DAILY_LIMIT, "cron_every_minutes": jobs.CRON_EVERY_MINUTES},
         "models": [

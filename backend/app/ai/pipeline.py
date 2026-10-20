@@ -8,12 +8,17 @@ and the Render cron job (render.yaml, nearshop-retrain-*) runs --cron every 30 m
 process, then exits (app/jobs.py, run_retrain_cron). The training libraries (scikit-learn, pandas,
 gensim, mlxtend) are imported only once there is something to train, so a cron run with nothing to
 do stays small and quick.
+
+Training rebuilds the semantic search index in this process's memory only (and caches the embeddings
+in text_embeddings). Each API process rebuilds its own index on its next search after a retrain has
+succeeded (app/jobs.py, SearchIndexRefresher), from those cached embeddings.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import signal
 import sys
 import time
 from collections.abc import Sequence
@@ -67,6 +72,11 @@ def run_cron(db: Database) -> dict | None:
     return run_retrain_cron(db, train_all)
 
 
+def _stop_on_sigterm(signum, _frame) -> None:
+    # SystemExit, not the default silent exit: run_retrain_cron records the stopped request as failed.
+    raise SystemExit(f"stopped by signal {signum} (a deploy or the cron job's run time limit)")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.ai.pipeline", description=__doc__.split("\n")[0])
     parser.add_argument("--cron", action="store_true",
@@ -76,11 +86,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.cron:
         print(train_all(Database()))
         return 0
+    from app.jobs import RetrainFailed
+
+    previous = signal.signal(signal.SIGTERM, _stop_on_sigterm)
     try:
         done = run_cron(Database())
-    except Exception as exc:  # recorded on the request by run_retrain_cron
-        print(f"Retrain failed ({type(exc).__name__}); recorded in retrain_requests.", file=sys.stderr)
+    except RetrainFailed as exc:  # recorded on the request by run_retrain_cron
+        print(f"Retrain failed ({type(exc.__cause__).__name__}); recorded on retrain request {exc.request_id} "
+              f"in retrain_requests.", file=sys.stderr)
         return 1
+    except Exception as exc:  # outside the training: the database unreachable, most likely
+        print(f"Retrain cron run failed outside the training ({type(exc).__name__}); its outcome is not "
+              f"recorded; a request it had claimed stays running until the next cron run marks it failed.", file=sys.stderr)
+        return 1
+    finally:
+        signal.signal(signal.SIGTERM, previous)
     print(json.dumps({"request": done["id"], "kind": done["kind"], "status": done["status"],
                       "outcome": done["outcome"]} if done else {"request": None}, default=str))
     return 0

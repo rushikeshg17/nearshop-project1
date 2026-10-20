@@ -17,8 +17,9 @@ production), 5.2 (staging first, release log) and 5.5 (rollback rehearsal); plan
 | Smoke test | full mode, automatic within about 10 minutes of each deploy | read-only mode, by hand after each release |
 
 Both services deploy only after a commit's GitHub checks pass (autoDeployTrigger: checksPass) and run
-exactly one uvicorn worker: the scheduler and the search index live in each API process until P1.7 and
-P8.1. /api/health reports the deployed commit (RENDER_GIT_COMMIT), so anyone can see which version an
+exactly one uvicorn worker: the search index lives in each API process until P8.1. Background jobs
+run under leases in job_leases (P1.7), so a second process or instance would not run them twice, and
+model training runs in the retrain cron jobs, never in the API. /api/health reports the deployed commit (RENDER_GIT_COMMIT), so anyone can see which version an
 environment serves: open https://<vercel-url>/api/health.
 
 Secrets live only in the Render dashboard, per service: NEARSHOP_MONGODB_URI, NEARSHOP_SECRET_KEY and

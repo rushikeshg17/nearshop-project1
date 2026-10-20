@@ -334,6 +334,7 @@ def shop_reservations(shop: OwnerShop, db: DB, scope: Literal["active", "history
 
 @router.get("/reservations/{reservation_id}")
 def shop_reservation(reservation_id: int, shop: OwnerShop, db: DB):
+    reservation_service.expire_due(db)
     return _res(db, [_shop_reservation(db, shop, reservation_id)], with_events=True)[0]
 
 

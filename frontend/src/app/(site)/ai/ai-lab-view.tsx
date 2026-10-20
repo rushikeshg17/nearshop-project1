@@ -68,8 +68,9 @@ export function AiLabView() {
 
   const models = useQuery({
     queryKey: ["ai", "models"],
-    queryFn: () => api.get<{ training: boolean; models: AiModel[] }>("/ai/models"),
-    refetchInterval: (q) => (q.state.data?.training ? 3000 : false),
+    queryFn: () => api.get<{ training: boolean; queued?: boolean; models: AiModel[] }>("/ai/models"),
+    // Every 3 s while a retrain runs; once a minute while one waits for the retrain job (up to 30 minutes).
+    refetchInterval: (q) => (q.state.data?.training ? 3000 : q.state.data?.queued ? 60000 : false),
   });
   const compare = useQuery({
     queryKey: ["ai", "compare", query],
@@ -77,9 +78,9 @@ export function AiLabView() {
     enabled: query.length >= 2,
   });
   const retrain = useMutation({
-    mutationFn: () => api.post<{ started: boolean; message?: string }>("/ai/retrain"),
+    mutationFn: () => api.post<{ queued: boolean; message?: string }>("/ai/retrain"),
     onSuccess: (r) => {
-      toast[r.started ? "success" : "info"](r.started ? "Retraining all models. This takes about 20 seconds." : r.message ?? "Already running");
+      toast.info(r.message ?? "Retrain queued. The model cards update when it finishes.");
       qc.invalidateQueries({ queryKey: ["ai", "models"] });
     },
   });
@@ -153,8 +154,9 @@ export function AiLabView() {
             <p className="mt-1 text-muted-foreground">Live from the last training run.</p>
           </div>
           {me?.role === "admin" && (
-            <Button onClick={() => retrain.mutate()} disabled={retrain.isPending || models.data?.training}>
-              {models.data?.training ? <Loader2 className="animate-spin" /> : <RefreshCw />} {models.data?.training ? "Training..." : "Retrain all models"}
+            <Button onClick={() => retrain.mutate()} disabled={retrain.isPending || models.data?.training || models.data?.queued}>
+              {models.data?.training || models.data?.queued ? <Loader2 className="animate-spin" /> : <RefreshCw />}{" "}
+              {models.data?.training ? "Training..." : models.data?.queued ? "Queued..." : "Retrain all models"}
             </Button>
           )}
         </div>

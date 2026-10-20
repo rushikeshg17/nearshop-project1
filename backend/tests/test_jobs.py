@@ -2,8 +2,10 @@
 
 Time is a controllable clock: no test sleeps."""
 import os
+import signal
 import subprocess
 import sys
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -105,6 +107,58 @@ def test_a_clean_shutdown_hands_the_lease_over_at_once(mongo):
     assert runs == ["a", "b"]
 
 
+def test_shutdown_waits_for_a_tick_in_progress_before_releasing(mongo, monkeypatch):
+    """A tick still running at shutdown must not take or renew a lease after the release (it would make
+    the next process wait for the lease to expire): shutdown waits for it, then releases every lease."""
+    clock, entered, go_on, released = Clock(), threading.Event(), threading.Event(), threading.Event()
+
+    def slow():
+        entered.set()
+        go_on.wait(10)
+
+    real_release = jobs.release_lease
+
+    def release(*args):
+        released.set()
+        real_release(*args)
+
+    monkeypatch.setattr(jobs, "release_lease", release)
+    for job in ("sweep_slow", "sweep_after"):
+        mongo[jobs.LEASES].delete_one({"_id": job})
+    s = jobs.Scheduler(mongo, jobs={"sweep_slow": slow, "sweep_after": lambda: None}, holder="process-a",
+                       clock=clock).start(seconds=3600)  # one tick, at once
+    assert entered.wait(10)
+    stopper = threading.Thread(target=s.shutdown)
+    stopper.start()
+    assert not released.wait(0.3)  # nothing released while the tick (and its next lease) is still to come
+    go_on.set()
+    stopper.join(10)
+    assert not stopper.is_alive() and released.is_set()
+    for job in ("sweep_slow", "sweep_after"):  # both free at once: another process takes them on its next tick
+        assert mongo[jobs.LEASES].find_one({"_id": job})["expires_at"] <= clock.now
+    b = jobs.Scheduler(mongo, jobs={"sweep_slow": lambda: None, "sweep_after": lambda: None}, holder="process-b",
+                       clock=clock)
+    assert b.tick() == {"sweep_slow": True, "sweep_after": True}
+
+
+def test_each_process_marks_its_search_index_stale_after_a_retrain(ids, requests_coll, monkeypatch):
+    from app.ai.semantic_index import index
+
+    marked = []
+    monkeypatch.setattr(index, "mark_dirty", lambda: marked.append(True))
+    db = Database()
+    refresh = jobs.SearchIndexRefresher()
+    assert refresh(db.mongo) is False  # the first tick only notes the latest retrain
+    jobs.enqueue_retrain(db, 5, now=T0)
+    assert refresh(db.mongo) is False and not marked  # queued: nothing new yet
+    jobs.run_retrain_cron(db, fake_train([]), clock=lambda: T0 + timedelta(minutes=30))
+    assert refresh(db.mongo) is True and marked == [True]  # rebuilt on this process's next search
+    assert refresh(db.mongo) is False and marked == [True]  # once per retrain
+    # The default scheduler runs it on every tick, in every process, without a lease.
+    assert set(jobs.Scheduler(db.mongo).local) == {"refresh_search_index"}
+    assert jobs.Scheduler(db.mongo, jobs={"x": lambda: None}).local == {}
+
+
 def test_a_failing_job_is_recorded_and_keeps_its_lease(mongo):
     clock = Clock()
 
@@ -203,7 +257,9 @@ def test_retrain_endpoint_enqueues_returns_at_once_and_refuses_duplicates_and_a_
         assert len(calls) == n and requests_coll.count_documents({"status": "queued"}) == 1  # not trained yet
 
         cards = admin.get("/api/ai/models", headers=HEADERS).json()
-        assert cards["training"] is True and {m["status"] for m in cards["models"]} == {"queued"}
+        # queued, not training: the page polls every 3 s only while a retrain runs.
+        assert cards["training"] is False and cards["queued"] is True
+        assert {m["status"] for m in cards["models"]} == {"queued"}
 
         dup = admin.post("/api/ai/retrain", headers=HEADERS)
         assert dup.status_code == 409 and dup.json()["error"]["code"] == "retrain_in_progress"
@@ -220,7 +276,8 @@ def test_a_running_request_also_blocks_a_new_one(admin, requests_coll):
     assert admin.post("/api/ai/retrain", headers=HEADERS).status_code == 200
     requests_coll.update_one({"status": "queued"}, {"$set": {"status": "running", "started_at": utcnow()}})
     cards = admin.get("/api/ai/models", headers=HEADERS).json()
-    assert cards["training"] is True and {m["status"] for m in cards["models"]} == {"training"}
+    assert cards["training"] is True and cards["queued"] is False
+    assert {m["status"] for m in cards["models"]} == {"training"}
     assert admin.post("/api/ai/retrain", headers=HEADERS).status_code == 409
 
 
@@ -266,7 +323,7 @@ def test_the_cron_records_a_failed_training_and_exits_non_zero(ids, requests_col
     row = requests_coll.find_one({"_id": queued["id"]})
     assert row["status"] == "failed" and "active" not in row
     assert row["outcome"]["error"].startswith("ValueError: not enough sales") and "secret" not in row["outcome"]["error"]
-    assert "Retrain failed" in capsys.readouterr().err
+    assert f"recorded on retrain request {queued['id']}" in capsys.readouterr().err
     assert _card_status(None, jobs.retrain_state(Database())) == "failed"  # what the model cards show
 
 
@@ -289,16 +346,86 @@ def test_the_cron_runs_the_nightly_retrain_once_per_night(ids, requests_coll):
     assert requests_coll.count_documents({"kind": "nightly"}) == 2
 
 
-def test_an_abandoned_run_is_failed_so_retraining_is_not_blocked_forever(ids, requests_coll):
+def test_a_run_killed_outright_is_failed_by_the_next_cron_run(ids, requests_coll):
+    """Render never overlaps runs of one cron job, so a request still running when a cron run starts was
+    left by a run killed outright (out of memory, the run time limit): the next run fails it at once."""
     db, calls = Database(), []
     jobs.enqueue_retrain(db, 5, now=T0)
     requests_coll.update_one({"status": "queued"}, {"$set": {"status": "running", "started_at": T0}})
     with pytest.raises(Conflict):
         jobs.enqueue_retrain(db, 5, now=T0 + timedelta(minutes=10))
-    assert jobs.run_retrain_cron(db, fake_train(calls), clock=lambda: T0 + timedelta(hours=3)) is None
+    next_run = T0 + timedelta(minutes=jobs.CRON_EVERY_MINUTES)
+    assert jobs.run_retrain_cron(db, fake_train(calls), clock=lambda: next_run) is None
     row = requests_coll.find_one()
     assert row["status"] == "failed" and "abandoned" in row["outcome"]["error"] and "active" not in row
-    assert jobs.enqueue_retrain(db, 5, now=T0 + timedelta(hours=3))["status"] == "queued"
+    assert jobs.enqueue_retrain(db, 5, now=next_run)["status"] == "queued"
+    assert not calls
+
+
+def test_a_nightly_slot_after_a_killed_run_still_trains(ids, requests_coll):
+    db, calls = Database(), []
+    jobs.enqueue_retrain(db, 5, now=datetime(2026, 10, 20, 20, 30))
+    # The 20:30 run claimed it and was killed outright (out of memory): it recorded nothing.
+    requests_coll.update_one({"status": "queued"}, {"$set": {"status": "running",
+                                                              "started_at": datetime(2026, 10, 20, 20, 30)}})
+    done = jobs.run_retrain_cron(db, fake_train(calls), clock=lambda: datetime(2026, 10, 20, 21, 0))
+    assert done["kind"] == "nightly" and done["status"] == "succeeded" and len(calls) == 1
+    assert requests_coll.find_one({"kind": "manual"})["status"] == "failed"
+
+
+def test_a_stopped_training_is_recorded_as_failed(ids, requests_coll):
+    db = Database()
+    queued = jobs.enqueue_retrain(db, 5, now=T0)
+
+    def stopped(_db):
+        raise SystemExit("stopped by signal 15")
+
+    with pytest.raises(SystemExit):
+        jobs.run_retrain_cron(db, stopped, clock=lambda: T0 + timedelta(minutes=30))
+    row = requests_coll.find_one({"_id": queued["id"]})
+    assert row["status"] == "failed" and "active" not in row and row["outcome"]["error"].startswith("SystemExit")
+
+
+def test_the_cron_entry_point_turns_sigterm_into_a_recorded_failure(ids, requests_coll, monkeypatch):
+    from app.ai import pipeline
+
+    class Unhandled(BaseException):
+        pass
+
+    def outer(_signum, _frame):  # what SIGTERM would do here if the cron entry point did not handle it
+        raise Unhandled
+
+    def killed(_db):
+        os.kill(os.getpid(), signal.SIGTERM)
+        for _ in range(1000):  # the handler runs at the next bytecode boundary
+            pass
+        raise AssertionError("SIGTERM was not delivered")
+
+    previous = signal.signal(signal.SIGTERM, outer)
+    try:
+        monkeypatch.setattr(pipeline, "train_all", killed)
+        queued = jobs.enqueue_retrain(Database(), 5)
+        with pytest.raises(SystemExit):
+            pipeline.main(["--cron"])
+        assert signal.getsignal(signal.SIGTERM) is outer  # restored afterwards
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    row = requests_coll.find_one({"_id": queued["id"]})
+    assert row["status"] == "failed" and "signal" in row["outcome"]["error"]
+
+
+def test_the_cron_says_when_a_failure_was_not_recorded(ids, requests_coll, monkeypatch, capsys):
+    from pymongo.errors import ServerSelectionTimeoutError
+
+    from app.ai import pipeline
+
+    def unreachable(_db, _now):
+        raise ServerSelectionTimeoutError("no servers")
+
+    monkeypatch.setattr(jobs, "_claim", unreachable)
+    assert pipeline.main(["--cron"]) == 1
+    err = capsys.readouterr().err
+    assert "outside the training" in err and "recorded on retrain request" not in err
 
 
 def test_the_database_keeps_at_most_one_request_active(ids, requests_coll):

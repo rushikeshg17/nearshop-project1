@@ -11,12 +11,19 @@ it holds the lease, so at any instance count each job runs once per tick.
   * A lease is taken atomically when it is free or expired, and lasts LEASE_TTL (60 s). The holder
     renews it on every tick, so it never lapses while the holder is alive; when the holder stops (a
     deploy, a crash), another process takes over within 60 s. A clean shutdown gives the lease up at
-    once.
+    once: shutdown waits for a tick in progress before giving the leases up, so that tick cannot renew
+    a lease after its release.
   * last_run_at is the heartbeat: it is never older than 90 s while some process is running
     (scorecard check 4.2). P2.2 alerts on it.
 
 Reservation and order lists also expire reservations and cancel stale orders lazily when read, so a
 page is right even between ticks.
+
+Besides the leased jobs, every process also runs its local jobs on each tick, without a lease. The one
+local job, SearchIndexRefresher, marks the process's own semantic search index stale when a retrain
+has succeeded since the last tick: the retrain cron job rebuilds the index only in its own memory, so
+each API process rebuilds its copy on its next search (cheaply: the embeddings are cached in
+text_embeddings). Sharing one index across processes is P8.1.
 
 Retraining
 ----------
@@ -25,6 +32,12 @@ would stay in the API's memory. POST /api/ai/retrain only enqueues a request (en
 Render cron job (render.yaml, nearshop-retrain-*) runs python -m app.ai.pipeline --cron every 30
 minutes in its own process: it processes a queued request, or the nightly run in the slot at
 NIGHTLY_AT (21:00 UTC, 02:30 IST), then exits (run_retrain_cron).
+
+Render runs at most one run of a cron job at a time, and each database has exactly one retrain cron
+job, so a request still "running" when a cron run starts belongs to a run that was killed outright (out
+of memory, Render's run time limit, a deploy): the new run marks it failed before anything else, so the
+queue and the nightly slot are blocked for at most one cron interval. A run stopped by SIGTERM records
+its own failure (pipeline.py turns SIGTERM into SystemExit).
 
 retrain_requests holds one document per request: _id (from counters), kind (manual or nightly),
 requested_by (the admin's user id; null for the nightly run), requested_at, status (queued, running,
@@ -66,7 +79,6 @@ RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
 RETRAIN_WINDOW = timedelta(hours=24)
 RETRAIN_ACTIVE = "retrain"  # the value of active while a request is queued or running
-RETRAIN_ABANDONED_AFTER = timedelta(hours=2)  # a run still "running" after this died with its process
 NIGHTLY_AT = time(21, 0)  # UTC: 02:30 IST
 NIGHTLY_GRACE = timedelta(hours=3)  # a nightly slot missed (a busy queue, a failed cron run) is caught up this late
 CRON_EVERY_MINUTES = 30  # render.yaml schedule of the retrain cron jobs
@@ -135,13 +147,40 @@ def sweep_expired() -> dict[str, int]:
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {"sweep_expired": sweep_expired}
 
 
+class SearchIndexRefresher:
+    """Local job: marks this process's semantic search index stale when a retrain succeeded since the
+    last tick, so the next search rebuilds it from the listings (the retrain cron job rebuilt only its
+    own copy). The first tick only notes the latest retrain: the index was just built at startup."""
+
+    def __init__(self) -> None:
+        self.seen: int | None = None
+
+    def __call__(self, mongo: MongoDatabase) -> bool:
+        latest = mongo[RETRAIN_REQUESTS].find_one({"status": "succeeded"}, {"_id": 1}, sort=[("_id", -1)])
+        latest_id = latest["_id"] if latest is not None else 0
+        refresh = self.seen is not None and latest_id != self.seen
+        if refresh:
+            from app.ai.semantic_index import index
+
+            index.mark_dirty()
+            log.info("retrain %s succeeded: this process's search index rebuilds on the next search", latest_id)
+        self.seen = latest_id
+        return refresh
+
+
 class Scheduler:
-    """Runs each job of `jobs` on every tick, only while this process holds the job's lease."""
+    """Runs each job of `jobs` on every tick, only while this process holds the job's lease, and each
+    of `local` (given the database) in this process on every tick, without a lease. With no jobs given,
+    the jobs are JOBS and the local job is a SearchIndexRefresher."""
 
     def __init__(self, mongo: MongoDatabase, *, jobs: Mapping[str, Callable[[], Mapping[str, Any] | None]] | None = None,
+                 local: Mapping[str, Callable[[MongoDatabase], Any]] | None = None,
                  holder: str | None = None, clock: Clock = utcnow, ttl: timedelta = LEASE_TTL):
         self.mongo = mongo
         self.jobs = dict(JOBS if jobs is None else jobs)
+        if local is None:
+            local = {"refresh_search_index": SearchIndexRefresher()} if jobs is None else {}
+        self.local = dict(local)
         self.holder = holder or default_holder()
         self.clock = clock
         self.ttl = ttl
@@ -156,6 +195,11 @@ class Scheduler:
             except Exception as exc:  # the database unreachable: try again next tick
                 log.warning("job %s: could not take its lease (%s)", job, type(exc).__name__)
                 ran[job] = False
+        for job, fn in self.local.items():
+            try:
+                fn(self.mongo)
+            except Exception as exc:
+                log.warning("local job %s failed (%s)", job, type(exc).__name__)
         return ran
 
     def start(self, seconds: int = TICK_SECONDS) -> Scheduler:
@@ -169,7 +213,7 @@ class Scheduler:
 
     def shutdown(self) -> None:
         if self._background is not None:
-            self._background.shutdown(wait=False)
+            self._background.shutdown(wait=True)  # a tick in progress finishes first: it cannot renew after the release
             self._background = None
         for job in self.jobs:
             try:
@@ -190,6 +234,15 @@ ACTIVE_STATUSES = ("queued", "running")
 class RetrainRefused(AppError):
     status_code = 429
     code = "retrain_limit"
+
+
+class RetrainFailed(Exception):
+    """The training of a claimed request failed; the failure is recorded on that request. __cause__ is
+    the training's own error."""
+
+    def __init__(self, request_id: int):
+        super().__init__(f"retrain request {request_id} failed")
+        self.request_id = request_id
 
 
 def _public(doc: Mapping[str, Any] | None) -> dict | None:
@@ -241,8 +294,11 @@ def nightly_slot(now: datetime) -> datetime:
 
 
 def _fail_abandoned(coll, now: datetime) -> int:
+    """Mark every request still running as failed. Called only when a cron run starts: Render never
+    overlaps two runs of one cron job and each database has one retrain cron job, so any such request
+    was left by a run killed outright (see the module docstring)."""
     res = coll.update_many(
-        {"status": "running", "started_at": {"$lt": now - RETRAIN_ABANDONED_AFTER}},
+        {"status": "running"},
         {"$set": {"status": "failed", "finished_at": now,
                   "outcome": {"ok": False, "error": "abandoned: the training process stopped before finishing"}},
          "$unset": {"active": ""}})
@@ -280,9 +336,11 @@ def _error_text(exc: BaseException) -> str:
 
 
 def run_retrain_cron(db: Database, train: Callable[[Database], Mapping[str, Any]], clock: Clock = utcnow) -> dict | None:
-    """One cron run: fail runs abandoned by a dead process, then train for one queued request or the
+    """One cron run: fail runs abandoned by a killed process, then train for one queued request or the
     nightly slot, and record the outcome. Returns the finished request, or None when there was nothing
-    to do. The training's own error is recorded and re-raised, so the cron run shows as failed."""
+    to do. A training error is recorded and raised as RetrainFailed (from the error), so the cron run
+    shows as failed; SystemExit and KeyboardInterrupt are recorded too, and re-raised as they are. Any
+    other exception (the database unreachable before a claim, or while recording) recorded nothing."""
     coll = db.mongo[RETRAIN_REQUESTS]
     _fail_abandoned(coll, clock())
     request = _claim(db, clock())
@@ -293,11 +351,13 @@ def run_retrain_cron(db: Database, train: Callable[[Database], Mapping[str, Any]
     started = clock()
     try:
         result = train(db)
-    except Exception as exc:
+    except BaseException as exc:  # SystemExit too: pipeline.py turns SIGTERM into one
         coll.update_one({"_id": request["_id"]}, {"$set": {
             "status": "failed", "finished_at": clock(), "outcome": {"ok": False, "error": _error_text(exc)}},
             "$unset": {"active": ""}})
         log.exception("retrain: request %s failed", request["_id"])
+        if isinstance(exc, Exception):
+            raise RetrainFailed(request["_id"]) from exc
         raise
     finished = clock()
     outcome = {"ok": True, "models": sorted(result), "seconds": round((finished - started).total_seconds(), 1)}
