@@ -1,0 +1,24 @@
+/* MapLibre's stylesheet and the theme tweaks for it. Imported by map-canvas.tsx, so it loads with the map
+   and is not render-blocking CSS on every page (P2.9); the tweaks follow MapLibre's rules so they win. */
+@import "maplibre-gl/dist/maplibre-gl.css";
+
+/* MapLibre tweaks so popups and controls follow the theme */
+.maplibregl-popup-content {
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border-radius: calc(var(--radius) * 1.2);
+  box-shadow: var(--shadow-lift);
+  padding: 0;
+  border: 1px solid var(--border);
+}
+.maplibregl-popup-tip {
+  display: none;
+}
+.maplibregl-ctrl-group {
+  border-radius: calc(var(--radius) * 0.8) !important;
+  overflow: hidden;
+  box-shadow: var(--shadow-soft) !important;
+}
+.maplibregl-ctrl-attrib {
+  font-size: 10px;
+}

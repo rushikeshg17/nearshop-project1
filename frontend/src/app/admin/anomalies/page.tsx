@@ -53,7 +53,7 @@ export default function AnomaliesPage() {
         <ul className="divide-y rounded-2xl border bg-card">
           {q.data.map((f) => (
             <li key={f.id} className="flex flex-wrap items-center gap-4 p-4 sm:flex-nowrap">
-              <ProductThumb icon={f.product.icon} category={f.product.category} imageUrl={f.product.image_url} alt="" size="sm" />
+              <ProductThumb icon={f.product.icon} category={f.product.category} imageUrl={f.product.image_url} thumbnailUrl={f.product.thumbnail_url} alt="" size="sm" />
               <div className="min-w-0 flex-1 basis-60">
                 <Link href={`/product/${f.product.id}`} className="block truncate font-medium hover:underline">{f.product.name}</Link>
                 <p className="text-sm text-muted-foreground">

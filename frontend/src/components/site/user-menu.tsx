@@ -111,19 +111,3 @@ export function UserMenu({ user }: { user: User }) {
     </DropdownMenu>
   );
 }
-
-export function ThemeToggle() {
-  const { resolvedTheme, setTheme } = useTheme();
-  return (
-    <Button
-      variant="ghost"
-      size="icon-lg"
-      className="rounded-full"
-      onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
-      aria-label="Toggle dark mode"
-    >
-      <Sun className="size-[18px] dark:hidden" />
-      <Moon className="hidden size-[18px] dark:block" />
-    </Button>
-  );
-}

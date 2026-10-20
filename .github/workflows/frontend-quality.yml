@@ -1,0 +1,254 @@
+# Frontend quality (P2.9; budgets and method: docs/perf/frontend-budget.md, plan section 8.14). On every pull
+# request that touches frontend/, this job builds the site against a seeded throwaway database and checks the
+# customer pages against the mobile performance budgets:
+#   - first-load JavaScript of 200 KB gzip or less per route (the scripts each page's HTML loads, gzip level 9);
+#   - Lighthouse (pinned, run through npx, never an app dependency) with its default mobile emulation, slow-4G
+#     and CPU throttling, 3 runs per URL, median: performance 85 or more, LCP 2.5 s or less, Total Blocking
+#     Time 200 ms or less, CLS 0.1 or less.
+# Pages: home, search with a query, a product page and a shop page. Any missed budget fails the job.
+# P2.10 (accessibility) and P7.10 (Kannada interface audit) add their checks to this job.
+#
+# How the site runs here: MongoDB as the single-node replica set from docker-compose.yml, the demo city
+# seeded with a demo password generated for this run, the API (uvicorn) and the production frontend build
+# (next start). next start speaks HTTP/1.1, and Lighthouse's simulated throttling then models six connections
+# per origin; the deployed site is served over HTTP/2 (Vercel), so Lighthouse loads the pages through a small
+# local HTTP/2 TLS proxy in front of next start, with a certificate made for the run. The build has a
+# placeholder error-tracking DSN (port 9, which browsers refuse), so the lab includes the Sentry SDK's cost as
+# staging and production load it, and nothing is sent anywhere.
+#
+# CI never receives a MongoDB Atlas URI or any other secret: every value below is made for the run.
+name: Frontend quality
+
+on:
+  pull_request:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-quality.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.12.19" # as in ci.yml
+  NODE_VERSION: "24"
+  LHCI_VERSION: "0.15.1" # Lighthouse CI; bundles Lighthouse 12.6.1
+  FIRST_LOAD_BUDGET_KB: "200"
+  API_ORIGIN: http://127.0.0.1:8000
+  SITE: http://127.0.0.1:3000
+  LAB_SITE: https://127.0.0.1:3443 # the HTTP/2 proxy in front of SITE
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  lab:
+    name: frontend-quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      UV_LOCKED: "1"
+      # The API and the seed: the local database, development settings, no scheduler, the light embedding
+      # provider (no model download), rate limits off (every lab request comes from one address).
+      NEARSHOP_MONGODB_URI: mongodb://127.0.0.1:27017/?replicaSet=rs0
+      NEARSHOP_MONGODB_DB: nearshop_lab
+      NEARSHOP_ENVIRONMENT: development
+      NEARSHOP_EMBEDDING_PROVIDER: tfidf
+      NEARSHOP_ENABLE_SCHEDULER: "false"
+      NEARSHOP_RATE_LIMIT_MODE: "off"
+      NEARSHOP_MEDIA_BACKEND: local
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install the locked dependencies
+        run: |
+          (cd backend && uv sync --locked)
+          (cd frontend && npm ci)
+
+      - name: Secrets for this run only
+        run: |
+          for name in NEARSHOP_DEMO_PASSWORD NEARSHOP_SECRET_KEY; do
+            value=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+            echo "::add-mask::$value"
+            echo "$name=$value" >> "$GITHUB_ENV"
+          done
+          echo "NEARSHOP_MEDIA_DIR=$RUNNER_TEMP/media" >> "$GITHUB_ENV"
+          echo "NEARSHOP_MODEL_DIR=$RUNNER_TEMP/models" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/media" "$RUNNER_TEMP/models"
+
+      # docker-compose.yml runs mongo:7.0 as the single-node replica set rs0; --wait returns once it is primary.
+      - name: Start MongoDB
+        run: make db-up
+
+      - name: Seed the demo city
+        run: make seed DB_UP= LOCAL_MONGODB_URI="$NEARSHOP_MONGODB_URI" LOCAL_MONGODB_DB="$NEARSHOP_MONGODB_DB"
+
+      - name: Start the API
+        working-directory: backend
+        run: |
+          nohup uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 > "$RUNNER_TEMP/api.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -fsS "$API_ORIGIN/api/health" > /dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          echo "The API did not start." >&2
+          exit 1
+
+      - name: Build the frontend (production)
+        env:
+          NEARSHOP_API_ORIGIN: ${{ env.API_ORIGIN }}
+          NEXT_PUBLIC_SENTRY_DSN: http://lighthouse@127.0.0.1:9/1 # placeholder: see the top of this file
+        run: make build
+
+      - name: Start the frontend, and the HTTP/2 proxy in front of it
+        working-directory: frontend
+        env:
+          NEARSHOP_API_ORIGIN: ${{ env.API_ORIGIN }}
+        run: |
+          nohup npx next start -H 127.0.0.1 -p 3000 > "$RUNNER_TEMP/web.log" 2>&1 &
+          cd "$RUNNER_TEMP"
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout lab-key.pem -out lab-cert.pem -days 1 \
+            -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1" 2> /dev/null
+          cat > h2-proxy.mjs <<'EOF'
+          import fs from "node:fs";
+          import http from "node:http";
+          import http2 from "node:http2";
+          const HOP = new Set(["connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection", "http2-settings"]);
+          const server = http2.createSecureServer({ key: fs.readFileSync("lab-key.pem"), cert: fs.readFileSync("lab-cert.pem"), allowHTTP1: true });
+          server.on("request", (req, res) => {
+            const headers = {};
+            for (const [k, v] of Object.entries(req.headers)) if (!k.startsWith(":") && !HOP.has(k)) headers[k] = v;
+            headers.host = req.headers[":authority"] ?? req.headers.host;
+            const upstream = http.request({ host: "127.0.0.1", port: 3000, method: req.method, path: req.url, headers }, (r) => {
+              const out = {};
+              for (const [k, v] of Object.entries(r.headers)) if (!HOP.has(k)) out[k] = v;
+              res.writeHead(r.statusCode, out);
+              r.pipe(res);
+            });
+            upstream.on("error", () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+            req.pipe(upstream);
+          });
+          server.listen(3443, "127.0.0.1");
+          EOF
+          nohup node h2-proxy.mjs > "$RUNNER_TEMP/h2.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -fsS "$SITE/" > /dev/null 2>&1 && curl -fsSk --http2 "$LAB_SITE/" > /dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          echo "The frontend or the proxy did not start." >&2
+          exit 1
+
+      # A product page and a shop page from the seeded city: the first result for a query every seed has.
+      - name: Pick the pages
+        run: |
+          result=$(curl -fsS "$API_ORIGIN/api/search?q=umbrella&page_size=1")
+          product=$(echo "$result" | jq -r '.groups[0].best_offer.id')
+          shop=$(echo "$result" | jq -r '.groups[0].best_offer.shop.slug')
+          test -n "$product" && test "$product" != null && test -n "$shop" && test "$shop" != null
+          {
+            echo "LAB_PATHS<<EOF"
+            echo "/"
+            echo "/search?q=umbrella"
+            echo "/product/$product"
+            echo "/shops/$shop"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: First-load JavaScript per route (budget ${{ env.FIRST_LOAD_BUDGET_KB }} KB gzip)
+        run: |
+          cat > "$RUNNER_TEMP/first-load.mjs" <<'EOF'
+          // The gzip size (level 9) of every script the page's HTML loads (script tags with a src, not the
+          // nomodule polyfills modern browsers skip), summed per route. Plan section 14 describes the method.
+          import { gzipSync } from "node:zlib";
+          const site = process.env.SITE;
+          const budget = Number(process.env.FIRST_LOAD_BUDGET_KB);
+          const paths = process.env.LAB_PATHS.split("\n").filter(Boolean);
+          const sizes = new Map();
+          async function gz(url) {
+            if (!sizes.has(url)) {
+              const r = await fetch(url, { headers: { "accept-encoding": "identity" } });
+              if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
+              sizes.set(url, gzipSync(Buffer.from(await r.arrayBuffer()), { level: 9 }).length);
+            }
+            return sizes.get(url);
+          }
+          let failed = false;
+          const rows = ["| Route | First-load JS (KB gzip) | Scripts | Budget |", "|---|---:|---:|---|"];
+          for (const path of paths) {
+            const r = await fetch(site + path);
+            if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+            const html = await r.text();
+            const srcs = [...new Set([...html.matchAll(/<script(?![^>]*nomodule)[^>]*\ssrc="([^"]+)"/gi)].map((m) => m[1].replace(/&amp;/g, "&")))];
+            let total = 0;
+            for (const src of srcs) total += await gz(new URL(src, site).href);
+            const kb = total / 1024;
+            const ok = kb <= budget;
+            failed ||= !ok;
+            rows.push(`| ${path} | ${kb.toFixed(1)} | ${srcs.length} | ${ok ? "pass" : `FAIL (over ${budget})`} |`);
+            console.log(`${path}: ${kb.toFixed(1)} KB gzip in ${srcs.length} scripts ${ok ? "ok" : "OVER BUDGET"}`);
+          }
+          const fs = await import("node:fs");
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### First-load JavaScript\n\n${rows.join("\n")}\n\n`);
+          process.exit(failed ? 1 : 0);
+          EOF
+          node "$RUNNER_TEMP/first-load.mjs"
+
+      - name: Lighthouse (3 runs per page, median)
+        if: ${{ !cancelled() }}
+        working-directory: frontend
+        run: |
+          urls=()
+          while read -r path; do [ -n "$path" ] && urls+=("--url=$LAB_SITE$path"); done <<< "$LAB_PATHS"
+          lhci="npx --yes @lhci/cli@$LHCI_VERSION"
+          $lhci collect --config=lighthouserc.json "${urls[@]}" \
+            --collect.settings.chromeFlags="--no-sandbox --ignore-certificate-errors"
+          status=0
+          $lhci assert --config=lighthouserc.json || status=$?
+          $lhci upload --config=lighthouserc.json > /dev/null || true
+          python3 - <<'EOF'
+          import glob, json, os, statistics
+          runs = {}
+          for f in glob.glob(".lighthouseci/lhr-*.json"):
+              lhr = json.load(open(f))
+              a = lhr["audits"]
+              runs.setdefault(lhr["requestedUrl"], []).append((
+                  lhr["categories"]["performance"]["score"] * 100,
+                  a["largest-contentful-paint"]["numericValue"],
+                  a["total-blocking-time"]["numericValue"],
+                  a["cumulative-layout-shift"]["numericValue"],
+              ))
+          rows = ["| Page | Performance | LCP (ms) | TBT (ms) | CLS | Runs |", "|---|---:|---:|---:|---:|---:|"]
+          for url, values in sorted(runs.items()):
+              score, lcp, tbt, cls = (statistics.median(v) for v in zip(*values))
+              path = url.split("127.0.0.1:3443", 1)[-1]
+              rows.append(f"| {path} | {score:.0f} | {lcp:.0f} | {tbt:.0f} | {cls:.3f} | {len(values)} |")
+          budgets = "Budgets: performance 85 or more, LCP 2500 ms or less, TBT 200 ms or less, CLS 0.1 or less."
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+              out.write("### Lighthouse, median of 3 (mobile, slow 4G, 4x CPU)\n\n" + "\n".join(rows) + f"\n\n{budgets}\n")
+          print("\n".join(rows))
+          EOF
+          exit $status
+
+      - name: Logs (on failure)
+        if: failure()
+        run: |
+          for log in api web h2; do echo "::group::$log"; tail -n 200 "$RUNNER_TEMP/$log.log" || true; echo "::endgroup::"; done
+          docker compose logs --tail 100 mongo || true

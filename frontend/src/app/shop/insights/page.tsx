@@ -62,7 +62,7 @@ export default function InsightsPage() {
                 <TableRow key={r.id}>
                   <TableCell>
                     <Link href={`/shop/inventory?focus=${r.id}`} className="flex items-center gap-2 hover:underline">
-                      <ProductThumb icon={r.icon} imageUrl={r.image_url} category={r.category} alt="" size="sm" className="size-8 [&_svg]:size-4" />
+                      <ProductThumb icon={r.icon} imageUrl={r.image_url} thumbnailUrl={r.thumbnail_url} category={r.category} alt="" size="sm" className="size-8 [&_svg]:size-4" />
                       <span className="max-w-60 truncate">{r.name}</span>
                     </Link>
                   </TableCell>

@@ -15,7 +15,6 @@ import {
   Store,
   TrendingUp,
 } from "lucide-react";
-import { motion } from "motion/react";
 import Link from "next/link";
 
 import { AppIcon } from "@/components/common/app-icon";
@@ -31,22 +30,13 @@ import { api } from "@/lib/api";
 import { formatDistance, formatNumber, formatPrice } from "@/lib/format";
 import { useLocation } from "@/lib/location";
 import type { SearchResponse, ShopBrief } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 const QUICK = ["phone charger", "PVC elbow joint", "school shoes", "9W LED bulb", "umbrella", "bike engine oil"];
 
-// Above the fold: animate on mount (never depend on scroll to reveal the hero).
-const fadeUpNow = {
-  initial: { opacity: 0, y: 16 },
-  animate: { opacity: 1, y: 0 },
-  transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1] as const },
-};
-
-const fadeUp = {
-  initial: { opacity: 0, y: 16 },
-  whileInView: { opacity: 1, y: 0 },
-  viewport: { once: true, margin: "-60px" },
-  transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1] as const },
-};
+// Entrance animations are CSS (tw-animate-css), not an animation library, so none of it is first-load
+// JavaScript (P2.9). The hero's heading and text are not animated: they are the page's largest paint.
+const ENTER = "animate-in fade-in fill-mode-both duration-500 ease-out";
 
 export function HomeView() {
   const { data: meta } = useMeta();
@@ -72,26 +62,20 @@ export function HomeView() {
         <div className="bg-dots absolute inset-0 [mask-image:radial-gradient(ellipse_at_30%_20%,black,transparent_70%)]" aria-hidden />
         <div className="relative mx-auto grid max-w-7xl gap-12 px-4 pt-12 pb-16 md:px-6 md:pt-20 md:pb-24 lg:grid-cols-[1.15fr_1fr] lg:items-center">
           <div>
-            <motion.div {...fadeUpNow} className="mb-5">
+            <div className="mb-5">
               <LocationPicker />
-            </motion.div>
-            <motion.h1
-              {...fadeUpNow}
-              transition={{ ...fadeUpNow.transition, delay: 0.05 }}
-              className="text-[2.6rem] leading-[1.02] font-semibold sm:text-6xl lg:text-[3.6rem] xl:text-7xl"
+            </div>
+            <h1 className="text-[2.6rem] leading-[1.02] font-semibold sm:text-6xl lg:text-[3.6rem] xl:text-7xl"
             >
               Find it nearby.
               <span className="block text-muted-foreground">Skip the five-shop hunt.</span>
-            </motion.h1>
-            <motion.p
-              {...fadeUpNow}
-              transition={{ ...fadeUpNow.transition, delay: 0.1 }}
-              className="mt-5 max-w-xl text-base text-muted-foreground md:text-lg"
+            </h1>
+            <p className="mt-5 max-w-xl text-base text-muted-foreground md:text-lg"
             >
               See which shops around you have it on the shelf right now, what they charge, and how fresh that stock count is.
               Reserve it and walk in, or let the shop deliver.
-            </motion.p>
-            <motion.div {...fadeUpNow} transition={{ ...fadeUpNow.transition, delay: 0.15 }} className="mt-8 max-w-xl">
+            </p>
+            <div className="mt-8 max-w-xl">
               <SearchBox size="lg" placeholder="Try 'phone charging adapter' or 'tap leaking'" />
               <div className="mt-4 flex flex-wrap gap-2">
                 {QUICK.map((q) => (
@@ -104,33 +88,24 @@ export function HomeView() {
                   </Link>
                 ))}
               </div>
-            </motion.div>
-            {meta && (
-              <motion.dl
-                {...fadeUpNow}
-                transition={{ ...fadeUpNow.transition, delay: 0.2 }}
-                className="mt-10 flex flex-wrap gap-x-8 gap-y-3 text-sm"
-              >
-                {[
-                  [formatNumber(meta.stats.shops), `local shops in ${meta.city.name}`],
-                  [formatNumber(meta.stats.in_stock), "items in stock right now"],
-                  ["0", "delivery riders needed"],
-                ].map(([n, l]) => (
-                  <div key={l} className="flex items-baseline gap-2">
-                    <dt className="font-heading text-2xl font-semibold tabular">{n}</dt>
-                    <dd className="text-muted-foreground">{l}</dd>
-                  </div>
-                ))}
-              </motion.dl>
-            )}
+            </div>
+            {/* Always laid out, invisible until the city's numbers arrive, so nothing below it moves (P2.9). */}
+            <dl className={cn("mt-10 flex flex-wrap gap-x-8 gap-y-3 text-sm", !meta && "invisible")} aria-hidden={!meta}>
+              {[
+                [meta ? formatNumber(meta.stats.shops) : "00", `local shops in ${meta?.city.name ?? "your city"}`],
+                [meta ? formatNumber(meta.stats.in_stock) : "0,000", "items in stock right now"],
+                ["0", "delivery riders needed"],
+              ].map(([n, l], i) => (
+                <div key={i} className="flex items-baseline gap-2">
+                  <dt className="font-heading text-2xl font-semibold tabular">{n}</dt>
+                  <dd className="text-muted-foreground">{l}</dd>
+                </div>
+              ))}
+            </dl>
           </div>
 
           {/* Live proof: real results from the API, not a mockup */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.97, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            transition={{ duration: 0.7, delay: 0.2, ease: [0.22, 1, 0.36, 1] }}
-            className="relative hidden lg:block"
+          <div className={`${ENTER} relative hidden zoom-in-97 slide-in-from-bottom-5 delay-200 duration-700 lg:block`}
           >
             <div className="absolute -inset-6 rounded-[2.5rem] bg-gradient-to-b from-brand/10 to-transparent blur-2xl" aria-hidden />
             <div className="relative rounded-3xl border bg-card/90 p-4 shadow-lift backdrop-blur">
@@ -145,17 +120,12 @@ export function HomeView() {
                 {live.isLoading || !live.data
                   ? Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-[88px] rounded-2xl" />)
                   : live.data.groups.map((g, i) => (
-                      <motion.li
-                        key={g.key}
-                        initial={{ opacity: 0, x: 16 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: 0.4 + i * 0.12, duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
-                      >
+                      <li key={g.key} className={`${ENTER} slide-in-from-right-4`} style={{ animationDelay: `${400 + i * 120}ms` }}>
                         <Link
                           href={`/product/${g.best_offer.id}`}
                           className="flex items-center gap-3 rounded-2xl border bg-background p-3 transition-colors hover:bg-accent/60"
                         >
-                          <ProductThumb icon={g.icon} category={g.category} imageUrl={g.image_url} alt="" size="md" />
+                          <ProductThumb icon={g.icon} category={g.category} imageUrl={g.image_url} thumbnailUrl={g.thumbnail_url} alt="" size="md" />
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-semibold">{g.name}</p>
                             <p className="mt-0.5 truncate text-xs text-muted-foreground">
@@ -169,7 +139,7 @@ export function HomeView() {
                           </div>
                           <p className="self-start font-semibold tabular">{formatPrice(g.min_price)}</p>
                         </Link>
-                      </motion.li>
+                      </li>
                     ))}
               </ul>
               <div className="mt-3 flex items-center justify-between rounded-xl bg-brand-soft px-3 py-2.5 text-sm text-brand-ink">
@@ -179,7 +149,7 @@ export function HomeView() {
                 <ArrowRight className="size-4" />
               </div>
             </div>
-          </motion.div>
+          </div>
         </div>
       </section>
 
@@ -194,7 +164,7 @@ export function HomeView() {
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           {(meta?.categories ?? Array.from({ length: 10 }).map(() => null)).map((c, i) =>
             c ? (
-              <motion.div key={c.slug} {...fadeUp} transition={{ ...fadeUp.transition, delay: i * 0.03 }}>
+              <div key={c.slug}>
                 <Link
                   href={`/search?category=${c.slug}`}
                   className="group flex h-full flex-col gap-3 rounded-2xl border bg-card p-4 transition-[transform,box-shadow] duration-200 hover:-translate-y-0.5 hover:shadow-lift"
@@ -213,7 +183,7 @@ export function HomeView() {
                     <span className="text-xs text-muted-foreground tabular">{formatNumber(c.in_stock_listings ?? 0)} in stock</span>
                   </span>
                 </Link>
-              </motion.div>
+              </div>
             ) : (
               <Skeleton key={i} className="h-[118px] rounded-2xl" />
             ),
@@ -245,32 +215,32 @@ export function HomeView() {
 
       {/* ---------------------------------------------------------------- how it works */}
       <section id="how" className="mx-auto max-w-7xl scroll-mt-20 px-4 pt-20 md:px-6">
-        <motion.div {...fadeUp} className="max-w-2xl">
+        <div className="max-w-2xl">
           <h2 className="text-2xl font-semibold md:text-3xl">Check the shelf before you leave home</h2>
           <p className="mt-2 text-muted-foreground">
             Pickup is the default because you get to see it before you pay. Delivery is there when the shop offers it, handled by the shop itself.
           </p>
-        </motion.div>
+        </div>
         <div className="mt-8 grid gap-4 md:grid-cols-3">
           {[
             { icon: PackageSearch, title: "Search the way you talk", body: "Type 'charging adapter' or 'tap leaking'. NearShop understands meaning, not just exact product names.", tag: "AI search" },
             { icon: ClipboardCheck, title: "Reserve in one tap", body: "The shop confirms and sets it aside for 30 minutes. You get a pickup code and a live countdown.", tag: "No payment upfront" },
             { icon: Footprints, title: "Walk in, check, pay", body: "Inspect it at the counter and pay there. If the shop delivers, cash on delivery works too.", tag: "Pickup or delivery" },
           ].map((s, i) => (
-            <motion.div key={s.title} {...fadeUp} transition={{ ...fadeUp.transition, delay: i * 0.08 }} className="relative rounded-2xl border bg-card p-6">
+            <div key={s.title} className="relative rounded-2xl border bg-card p-6">
               <span className="absolute top-6 right-6 font-heading text-4xl font-semibold text-muted-foreground/20 tabular">0{i + 1}</span>
               <s.icon className="size-6 text-brand" />
               <h3 className="mt-4 text-lg font-semibold">{s.title}</h3>
               <p className="mt-1.5 text-sm text-muted-foreground">{s.body}</p>
               <span className="mt-4 inline-flex rounded-full bg-muted px-2.5 py-1 text-xs font-medium">{s.tag}</span>
-            </motion.div>
+            </div>
           ))}
         </div>
       </section>
 
       {/* ---------------------------------------------------------------- for shops */}
       <section className="mx-auto max-w-7xl px-4 pt-20 md:px-6">
-        <motion.div {...fadeUp} className="overflow-hidden rounded-3xl bg-primary text-primary-foreground">
+        <div className="overflow-hidden rounded-3xl bg-primary text-primary-foreground">
           <div className="grid gap-10 p-8 md:p-12 lg:grid-cols-[1.1fr_1fr]">
             <div>
               <span className="inline-flex items-center gap-2 rounded-full bg-primary-foreground/10 px-3 py-1 text-xs font-medium">
@@ -308,7 +278,7 @@ export function HomeView() {
               ))}
             </ul>
           </div>
-        </motion.div>
+        </div>
       </section>
     </>
   );

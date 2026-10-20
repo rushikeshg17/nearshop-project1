@@ -184,7 +184,7 @@ function InventoryRow({ p, focused, onEdit }: { p: OwnerListing; focused: boolea
   return (
     <li ref={ref} className={cn("flex flex-wrap items-center gap-x-4 gap-y-3 p-3 sm:flex-nowrap", focused && "bg-brand-soft/50", !p.is_active && "opacity-60")}>
       <button type="button" onClick={() => fileRef.current?.click()} className="group relative shrink-0 rounded-lg" aria-label={`Upload photo for ${p.name}`}>
-        <ProductThumb icon={p.icon} imageUrl={p.image_url} category={p.category} alt="" size="sm" />
+        <ProductThumb icon={p.icon} imageUrl={p.image_url} thumbnailUrl={p.thumbnail_url} category={p.category} alt="" size="sm" />
         <span className="absolute inset-0 grid place-items-center rounded-lg bg-black/40 text-white opacity-0 transition-opacity group-hover:opacity-100"><Camera className="size-4" /></span>
       </button>
       <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={(e) => e.target.files?.[0] && upload.mutate(e.target.files[0])} />

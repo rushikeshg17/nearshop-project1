@@ -112,7 +112,7 @@ export default function OwnerOverviewPage() {
             <ul className="divide-y rounded-2xl border bg-card">
               {d.low_stock.map((p) => (
                 <li key={p.id} className="flex items-center gap-3 p-3">
-                  <ProductThumb icon={p.icon} imageUrl={p.image_url} category={p.category} alt="" size="sm" />
+                  <ProductThumb icon={p.icon} imageUrl={p.image_url} thumbnailUrl={p.thumbnail_url} category={p.category} alt="" size="sm" />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{p.name}</p>
                     <p className="text-xs text-muted-foreground">
@@ -134,7 +134,7 @@ export default function OwnerOverviewPage() {
             {d.top_products.map((p, i) => (
               <li key={p.id} className="flex items-center gap-3 p-3">
                 <span className="w-5 text-center text-sm text-muted-foreground tabular">{i + 1}</span>
-                <ProductThumb icon={p.icon} imageUrl={p.image_url} category={p.category} alt="" size="sm" />
+                <ProductThumb icon={p.icon} imageUrl={p.image_url} thumbnailUrl={p.thumbnail_url} category={p.category} alt="" size="sm" />
                 <p className="min-w-0 flex-1 truncate text-sm font-medium">{p.name}</p>
                 <span className="text-right text-sm tabular">
                   <span className="block font-medium">{formatPrice(p.revenue)}</span>

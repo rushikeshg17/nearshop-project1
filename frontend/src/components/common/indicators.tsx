@@ -2,7 +2,6 @@
 
 import { BadgeCheck, Clock3, Star } from "lucide-react";
 
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useNow } from "@/hooks/use-debounce";
 import { formatDistance, formatPrice, freshnessLevel, timeAgo } from "@/lib/format";
 import type { StockStatus } from "@/lib/types";
@@ -95,7 +94,9 @@ export function Price({
 export function Rating({ value, count, className, showCount = true }: { value: number | null; count: number; className?: string; showCount?: boolean }) {
   if (!value || !count) return <span className={cn("text-xs text-muted-foreground", className)}>No reviews yet</span>;
   return (
-    <span className={cn("inline-flex items-center gap-1 text-xs tabular", className)}>
+    // relative: the sr-only text is absolutely positioned, and must stay inside a horizontal scroller (the home
+    // page's shop cards), or it widens the page and a phone zooms out and shifts the layout (P2.9).
+    <span className={cn("relative inline-flex items-center gap-1 text-xs tabular", className)}>
       <Star className="size-3.5 fill-warning text-warning" aria-hidden />
       <span className="font-medium text-foreground">{value.toFixed(1)}</span>
       {showCount && <span className="text-muted-foreground">({count})</span>}
@@ -129,13 +130,12 @@ export function OpenBadge({ isOpen, label, className }: { isOpen: boolean | null
   );
 }
 
+/** The verified badge. Its explanation is the icon's SVG title (shown on hover, read by screen readers), not
+ * a Radix tooltip: the badge is on every shop card, and the tooltip's code was first-load JavaScript (P2.9). */
 export function VerifiedMark({ className }: { className?: string }) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <BadgeCheck className={cn("size-4 shrink-0 text-info", className)} aria-label="Verified shop" />
-      </TooltipTrigger>
-      <TooltipContent>Verified by NearShop: address and owner checked in person</TooltipContent>
-    </Tooltip>
+    <BadgeCheck className={cn("size-4 shrink-0 text-info", className)} role="img" aria-label="Verified shop">
+      <title>Verified by NearShop: address and owner checked in person</title>
+    </BadgeCheck>
   );
 }

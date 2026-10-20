@@ -121,6 +121,88 @@ export function scrubBreadcrumb(crumb: Sentry.Breadcrumb): Sentry.Breadcrumb {
   return maskPii(crumb);
 }
 
+// Customer and owner routes with a dynamic segment, as their templates (src/app). Web Vitals and every other
+// browser span carry the template, never the id, slug or query string of the page the visitor was on.
+const DYNAMIC_ROUTES: [RegExp, string][] = [
+  [/^\/product\/[^/]+$/, "/product/[id]"],
+  [/^\/shops\/[^/]+$/, "/shops/[slug]"],
+  [/^\/account\/orders\/[^/]+$/, "/account/orders/[id]"],
+  [/^\/account\/reservations\/[^/]+$/, "/account/reservations/[id]"],
+  [/^\/sitemap\/[^/]+$/, "/sitemap/[id]"],
+];
+// A static route: up to four segments of lowercase letters and hyphens (/, /search, /shop/inventory).
+const STATIC_ROUTE = /^(?:\/[a-z][a-z-]*){0,4}$/;
+
+/** The route template of a path or URL: "/product/880?ref=x" gives "/product/[id]", "/search?q=tape" gives
+ * "/search". A path that is neither a dynamic route nor static-looking gives "/[other]". */
+export function routeTemplate(pathOrUrl: string): string {
+  let path = pathOrUrl;
+  try {
+    path = new URL(pathOrUrl, "http://localhost").pathname;
+  } catch {
+    // not a URL: use it as it is
+  }
+  const pathname = path.replace(/[?#].*$/, "").replace(/\/+$/, "") || "/";
+  for (const [pattern, template] of DYNAMIC_ROUTES) if (pattern.test(pathname)) return template;
+  return pathname === "/" || STATIC_ROUTE.test(pathname) ? pathname : "/[other]";
+}
+
+// A URL or path followed by a query string or fragment ("/search?q=tape", "https://host/a?b=c#d").
+const URL_WITH_QUERY = /((?:[a-z][a-z0-9+.-]*:)?\/\/?[^\s?#"']*)[?#][^\s"']*/gi;
+
+/** text with the query string and fragment removed from every URL or path in it. */
+export function stripQuery(text: string): string {
+  return text.replace(URL_WITH_QUERY, "$1");
+}
+
+// Span attributes that name the page (on every span), and those that hold the page's own URL (on the pageload
+// or navigation span and on Web Vital spans). In the browser they are replaced by the route template. Other
+// spans (scripts, images, API calls) keep their URL, without the query string.
+const PAGE_NAME_KEYS = new Set(["sentry.transaction", "sentry.segment.name"]);
+const PAGE_URL_KEYS = new Set(["url.full", "url.path", "http.url"]);
+// Span attributes dropped everywhere: query strings and fragments, never needed to read a trace.
+const QUERY_KEY = /(?:^|[._])(?:query|fragment|search)(?:$|[._])/;
+
+type SpanLike = { name: string; is_segment?: boolean; attributes?: Record<string, unknown> };
+
+/** beforeSendSpan (span streaming, the SDK's default trace lifecycle; beforeSendTransaction is not called
+ * then): every span, Web Vitals included, has PII masked, query strings removed and request headers limited
+ * to SAFE_HEADERS. In the browser, the
+ * page's URL is replaced by its route template, and each span carries nearshop.route and the network's
+ * effective connection type (network.connection.effective_type: slow-2g, 2g, 3g or 4g). */
+export function scrubSpan<T extends SpanLike>(span: T): T {
+  const browser = typeof window !== "undefined";
+  // The pageload or navigation span, or a Web Vital span (LCP, CLS, INP: browser.web_vital.* attributes).
+  const pageSpan = Boolean(span.is_segment) || Object.keys(span.attributes ?? {}).some((k) => k.startsWith("browser.web_vital."));
+  const attributes: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(span.attributes ?? {})) {
+    if (QUERY_KEY.test(key)) continue;
+    // Request and response headers on server spans: only the headers an event may keep (never cookies or
+    // the authorization header), as scrubEvent does for events.
+    const header = /^http\.(?:request|response)\.header\.(.+)$/.exec(key);
+    if (header && !SAFE_HEADERS.has(header[1].toLowerCase())) continue;
+    const pageKey = PAGE_NAME_KEYS.has(key) || (pageSpan && PAGE_URL_KEYS.has(key));
+    if (Array.isArray(value)) {
+      attributes[key] = value.map((v) => (typeof v === "string" ? stripQuery(v) : v));
+    } else if (typeof value !== "string") {
+      attributes[key] = value;
+    } else if (browser && pageKey && (value.startsWith("/") || /^https?:/.test(value))) {
+      attributes[key] = routeTemplate(value);
+    } else {
+      attributes[key] = stripQuery(value);
+    }
+  }
+  let name = stripQuery(span.name);
+  if (browser) {
+    const route = routeTemplate(window.location.pathname);
+    if (span.is_segment && name.startsWith("/")) name = routeTemplate(name);
+    attributes["nearshop.route"] = route;
+    const connection = (navigator as Navigator & { connection?: { effectiveType?: string } }).connection;
+    attributes["network.connection.effective_type"] ??= connection?.effectiveType ?? "unknown";
+  }
+  return { ...span, name: maskText(name), attributes: maskPii(attributes) };
+}
+
 /** The paths a span being sampled is about: its name ("/search", "GET /api/search"), the page's location
  * in the browser, and the incoming request's URL on the server. */
 function sampledPaths({ name, location, normalizedRequest }: TracesSamplerSamplingContext): string[] {
@@ -155,7 +237,8 @@ export function sentryOptions() {
     sendDefaultPii: false,
     tracesSampler,
     beforeSend: scrubEvent,
-    beforeSendTransaction: scrubEvent,
+    beforeSendTransaction: scrubEvent, // only with traceLifecycle "static"; spans stream by default
+    beforeSendSpan: scrubSpan,
     beforeBreadcrumb: scrubBreadcrumb,
   };
 }

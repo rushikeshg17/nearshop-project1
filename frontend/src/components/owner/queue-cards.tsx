@@ -46,7 +46,7 @@ export function OwnerReservationCard({ r }: { r: Reservation }) {
   return (
     <motion.li layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="rounded-2xl border bg-card p-4">
       <div className="flex gap-4">
-        <ProductThumb icon={r.product.icon} imageUrl={r.product.image_url} alt="" size="md" />
+        <ProductThumb icon={r.product.icon} imageUrl={r.product.image_url} thumbnailUrl={r.product.thumbnail_url} alt="" size="md" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge status={r.status} kind="reservation" />

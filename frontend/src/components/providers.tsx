@@ -1,15 +1,36 @@
 "use client";
 
 import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MotionConfig } from "motion/react";
+import dynamic from "next/dynamic";
 import { ThemeProvider } from "next-themes";
-import { useState } from "react";
-import { toast } from "sonner";
+import { useEffect, useState } from "react";
 
-import { Toaster } from "@/components/ui/sonner";
-import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError, errorMessage } from "@/lib/api";
 import { LocationProvider } from "@/lib/location";
+
+// The toast viewport is not first-load JavaScript (P2.9): it mounts 2 s after the page has loaded, when the
+// browser is idle. A toast raised before then is not lost: sonner replays active toasts to a new Toaster.
+const Toaster = dynamic(() => import("@/components/ui/sonner").then((m) => m.Toaster), { ssr: false });
+
+function IdleToaster() {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    // 2 s after the load event, when the main thread is idle: past the page's first paint and data on a slow phone.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const idle = () =>
+      "requestIdleCallback" in window ? requestIdleCallback(() => setReady(true), { timeout: 3000 }) : setReady(true);
+    const start = () => {
+      timer = setTimeout(idle, 2000);
+    };
+    if (document.readyState === "complete") start();
+    else window.addEventListener("load", start, { once: true });
+    return () => {
+      window.removeEventListener("load", start);
+      clearTimeout(timer);
+    };
+  }, []);
+  return ready ? <Toaster position="top-center" richColors closeButton /> : null;
+}
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [client] = useState(
@@ -24,8 +45,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
         },
         mutationCache: new MutationCache({
           // Mutations show their own error unless they opt out with meta.silent.
+          // sonner is loaded here, not imported: it is not first-load JavaScript (P2.9).
           onError: (error, _v, _c, mutation) => {
-            if (!mutation.meta?.silent) toast.error(errorMessage(error));
+            if (!mutation.meta?.silent) void import("sonner").then(({ toast }) => toast.error(errorMessage(error)));
           },
         }),
       }),
@@ -34,12 +56,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
       <QueryClientProvider client={client}>
-        <MotionConfig reducedMotion="user">
-          <TooltipProvider delayDuration={300}>
-            <LocationProvider>{children}</LocationProvider>
-            <Toaster position="top-center" richColors closeButton />
-          </TooltipProvider>
-        </MotionConfig>
+        {/* No MotionConfig and no TooltipProvider on every page (P2.9): shared screens animate with CSS, and
+            globals.css honours the reduced-motion setting; a screen that uses a Radix tooltip wraps it in its
+            own TooltipProvider. */}
+        <LocationProvider>{children}</LocationProvider>
+        <IdleToaster />
       </QueryClientProvider>
     </ThemeProvider>
   );

@@ -1,13 +1,16 @@
 import type { Metadata, Viewport } from "next";
-import { Bricolage_Grotesque, Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
 
 import { Providers } from "@/components/providers";
 
 import "./globals.css";
 
-const sans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
-const mono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
-const display = Bricolage_Grotesque({ variable: "--font-display", subsets: ["latin"], weight: ["500", "600", "700"] });
+// One font on the critical path (P2.9): the body face, preloaded. The mono face (reservation and order codes)
+// is declared but not preloaded, so the browser fetches it only on a page that shows a code. The display face
+// that headings used (Bricolage Grotesque, 41 KB) is dropped: it was fetched on every page and, on slow 4G,
+// competed with the page's own scripts and data; headings use the body face (globals.css, --font-heading).
+const sans = Geist({ variable: "--font-geist-sans", subsets: ["latin"], display: "swap" });
+const mono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"], preload: false });
 
 export const metadata: Metadata = {
   title: { default: "NearShop: find it nearby", template: "%s · NearShop" },
@@ -28,7 +31,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en-IN" suppressHydrationWarning className={`${sans.variable} ${mono.variable} ${display.variable}`}>
+    <html lang="en-IN" suppressHydrationWarning className={`${sans.variable} ${mono.variable}`}>
       <body className="min-h-dvh antialiased">
         <Providers>{children}</Providers>
       </body>

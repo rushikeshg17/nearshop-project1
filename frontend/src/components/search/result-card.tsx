@@ -1,7 +1,6 @@
 "use client";
 
 import { Bike, ChevronRight, Footprints, Store } from "lucide-react";
-import { motion } from "motion/react";
 import Link from "next/link";
 
 import { Distance, Freshness, Rating, StockPill } from "@/components/common/indicators";
@@ -26,21 +25,20 @@ export function ResultCard({
   const outOfStock = group.in_stock_count === 0;
 
   return (
-    <motion.article
-      layout="position"
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.32, delay: Math.min(index, 8) * 0.035, ease: [0.22, 1, 0.36, 1] }}
+    // CSS entrance (tw-animate-css), staggered for the first rows; no animation library on first load (P2.9).
+    <article
+      style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
       onMouseEnter={() => onHover?.(group.offers.map((o) => o.shop.id))}
       onMouseLeave={() => onHover?.(null)}
       className={cn(
-        "group relative rounded-2xl border bg-card transition-[box-shadow,border-color] duration-200 hover:border-foreground/15 hover:shadow-lift",
+        "group relative animate-in rounded-2xl border bg-card fill-mode-both duration-300 ease-out fade-in slide-in-from-bottom-3",
+        "transition-[box-shadow,border-color] hover:border-foreground/15 hover:shadow-lift",
         highlighted && "border-brand/40 shadow-lift",
         outOfStock && "opacity-80",
       )}
     >
       <Link href={`/product/${best.id}`} className="flex gap-4 p-4 outline-none" aria-label={`${group.name}, from ${formatPrice(group.min_price)}`}>
-        <ProductThumb icon={group.icon} imageUrl={group.image_url} category={group.category} alt="" size="lg" className="max-sm:size-20" />
+        <ProductThumb icon={group.icon} imageUrl={group.image_url} thumbnailUrl={group.thumbnail_url} category={group.category} alt="" size="lg" className="max-sm:size-20" />
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -115,6 +113,6 @@ export function ResultCard({
           </ul>
         </div>
       )}
-    </motion.article>
+    </article>
   );
 }

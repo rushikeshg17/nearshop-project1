@@ -9,9 +9,21 @@ import { cn } from "@/lib/utils";
 export function ShopAvatar({ shop, categories, className }: { shop: ShopBrief; categories?: Category[]; className?: string }) {
   const cat = categories?.find((c) => c.slug === shop.categories[0]);
   const hue = cat?.color_hue ?? 40;
-  if (shop.image_url) {
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img src={shop.image_url} alt="" className={cn("size-12 shrink-0 rounded-xl object-cover", className)} />;
+  const src = shop.thumbnail_url ?? shop.image_url;
+  if (src) {
+    // The 320 px thumbnail (P2.7), never the full photo, lazily loaded with its size reserved (P2.9).
+    return (
+      // eslint-disable-next-line @next/next/no-img-element -- images come from the API via /media (or the media domain), already resized to WebP
+      <img
+        src={src}
+        alt=""
+        width={48}
+        height={48}
+        loading="lazy"
+        decoding="async"
+        className={cn("size-12 shrink-0 rounded-xl object-cover", className)}
+      />
+    );
   }
   return (
     <div

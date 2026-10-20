@@ -75,7 +75,7 @@ export function OrderView({ id }: { id: number }) {
             <ul className="divide-y">
               {o.items.map((i) => (
                 <li key={i.product_id} className="flex items-center gap-3 py-3 first:pt-0">
-                  <ProductThumb icon={i.icon} imageUrl={i.image_url} alt="" size="sm" />
+                  <ProductThumb icon={i.icon} imageUrl={i.image_url} thumbnailUrl={i.thumbnail_url} alt="" size="sm" />
                   <Link href={`/product/${i.product_id}`} className="min-w-0 flex-1 truncate text-sm font-medium hover:underline">{i.name}</Link>
                   <span className="text-sm text-muted-foreground tabular">{i.quantity} x {formatPrice(i.unit_price)}</span>
                 </li>

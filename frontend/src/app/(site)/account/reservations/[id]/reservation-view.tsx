@@ -95,7 +95,7 @@ export function ReservationView({ id }: { id: number }) {
           </motion.section>
 
           <section className="flex items-center gap-4 rounded-3xl border bg-card p-5">
-            <ProductThumb icon={r.product.icon} imageUrl={r.product.image_url} alt="" size="lg" />
+            <ProductThumb icon={r.product.icon} imageUrl={r.product.image_url} thumbnailUrl={r.product.thumbnail_url} alt="" size="lg" />
             <div className="min-w-0 flex-1">
               <Link href={`/product/${r.product.id}`} className="font-semibold hover:underline">{r.product.name}</Link>
               <p className="text-sm text-muted-foreground">{r.quantity} x {formatPrice(r.unit_price)}{r.product.unit && ` · ${r.product.unit}`}</p>

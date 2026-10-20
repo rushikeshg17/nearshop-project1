@@ -14,6 +14,7 @@ import {
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
@@ -23,8 +24,6 @@ import { ProductThumb } from "@/components/common/product-thumb";
 import { EmptyState, ErrorState } from "@/components/common/states";
 import { StatusBadge } from "@/components/common/status";
 import { ShopMap } from "@/components/map/shop-map";
-import { DeliveryDialog } from "@/components/product/delivery-dialog";
-import { ReserveDialog } from "@/components/product/reserve-dialog";
 import { ReviewList } from "@/components/shop/review-list";
 import { ShopTrust } from "@/components/shop/shop-trust";
 import { Button } from "@/components/ui/button";
@@ -36,6 +35,11 @@ import { formatDistance, formatPrice, travelHint } from "@/lib/format";
 import { useLocation } from "@/lib/location";
 import type { ProductDetail, Recommendation } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+// The reserve and delivery dialogs (Radix dialog, vaul drawer) load when the customer first opens one, not
+// with the page's first-load JavaScript (P2.9).
+const ReserveDialog = dynamic(() => import("@/components/product/reserve-dialog").then((m) => m.ReserveDialog), { ssr: false });
+const DeliveryDialog = dynamic(() => import("@/components/product/delivery-dialog").then((m) => m.DeliveryDialog), { ssr: false });
 
 /**
  * The product page's content. `initial` is the listing as the server rendered it (page.tsx): the same for every
@@ -51,6 +55,16 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
   const { data: me } = useMe();
   const [reserveOpen, setReserveOpen] = useState(false);
   const [deliveryOpen, setDeliveryOpen] = useState(false);
+  // A dialog mounts on first use and then stays mounted, so it can animate closed.
+  const [dialogsUsed, setDialogsUsed] = useState({ reserve: false, delivery: false });
+  const openReserve = () => {
+    setDialogsUsed((u) => ({ ...u, reserve: true }));
+    setReserveOpen(true);
+  };
+  const openDelivery = () => {
+    setDialogsUsed((u) => ({ ...u, delivery: true }));
+    setDeliveryOpen(true);
+  };
 
   const q = useQuery({
     queryKey: ["product", id, location?.lat, location?.lng],
@@ -198,11 +212,13 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                   ? "Learned from what customers nearby buy in the same visit. Save a second trip."
                   : "Bestsellers in this category near you."}
               </p>
-              <ul className="mt-4 grid gap-3 sm:grid-cols-2">
+              {/* grid-cols-1 (minmax(0, 1fr)): a long name truncates instead of widening the page, which made a
+                  phone zoom out and shift the layout (P2.9). */}
+              <ul className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {recs.data.items.map((r) => (
                   <li key={r.offer.id}>
                     <Link href={`/product/${r.offer.id}`} className="flex items-center gap-3 rounded-2xl border bg-card p-3 transition-shadow hover:shadow-lift">
-                      <ProductThumb icon={r.offer.icon} imageUrl={r.offer.image_url} category={r.offer.category} alt="" size="sm" />
+                      <ProductThumb icon={r.offer.icon} imageUrl={r.offer.image_url} thumbnailUrl={r.offer.thumbnail_url} category={r.offer.category} alt="" size="sm" />
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">{r.offer.name}</p>
                         <p className="truncate text-xs text-muted-foreground">
@@ -262,7 +278,7 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                   size="lg"
                   className="h-12 w-full rounded-xl bg-brand text-base text-brand-foreground hover:bg-brand/90"
                   disabled={out || !shop.offers_pickup || !isCustomer}
-                  onClick={() => requireCustomer(() => setReserveOpen(true))}
+                  onClick={() => requireCustomer(openReserve)}
                 >
                   <Footprints /> Reserve for pickup
                 </Button>
@@ -271,7 +287,7 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                   variant="outline"
                   className="h-12 w-full rounded-xl text-base"
                   disabled={out || !shop.offers_delivery || !isCustomer || (delivery !== null && !delivery.eligible)}
-                  onClick={() => requireCustomer(() => setDeliveryOpen(true))}
+                  onClick={() => requireCustomer(openDelivery)}
                 >
                   <Bike /> Request delivery
                 </Button>
@@ -357,15 +373,17 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
               <p className="text-lg font-semibold tabular">{formatPrice(p.price)}</p>
               <p className="truncate text-xs text-muted-foreground">{p.quantity} in stock · {shop.name}</p>
             </div>
-            <Button className="ml-auto h-11 rounded-xl bg-brand px-5 text-brand-foreground hover:bg-brand/90" onClick={() => requireCustomer(() => setReserveOpen(true))}>
+            <Button className="ml-auto h-11 rounded-xl bg-brand px-5 text-brand-foreground hover:bg-brand/90" onClick={() => requireCustomer(openReserve)}>
               <Footprints /> Reserve
             </Button>
           </div>
         </div>
       )}
 
-      <ReserveDialog product={p} open={reserveOpen} onOpenChange={setReserveOpen} />
-      {shop.offers_delivery && <DeliveryDialog product={p} open={deliveryOpen} onOpenChange={setDeliveryOpen} />}
+      {dialogsUsed.reserve && <ReserveDialog product={p} open={reserveOpen} onOpenChange={setReserveOpen} />}
+      {shop.offers_delivery && dialogsUsed.delivery && (
+        <DeliveryDialog product={p} open={deliveryOpen} onOpenChange={setDeliveryOpen} />
+      )}
     </div>
   );
 }

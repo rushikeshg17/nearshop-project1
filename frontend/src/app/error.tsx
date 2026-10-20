@@ -1,17 +1,16 @@
 "use client";
 
-import * as Sentry from "@sentry/nextjs";
 import { RotateCcw, TriangleAlert } from "lucide-react";
-import Link from "next/link";
 import { useEffect } from "react";
 
 import { Button } from "@/components/ui/button";
+import { captureException } from "@/lib/sentry-browser";
 
 export default function Error({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
   // The boundary catches the error before Sentry's global handlers see it, so report it here (a no-op
   // without NEXT_PUBLIC_SENTRY_DSN; events are scrubbed by src/lib/observability.ts).
   useEffect(() => {
-    Sentry.captureException(error);
+    captureException(error);
   }, [error]);
 
   return (
@@ -22,7 +21,9 @@ export default function Error({ error, reset }: { error: Error & { digest?: stri
         <p className="mt-2 text-muted-foreground">It&apos;s on our side, not yours. Try again, and if it keeps happening, go back home.</p>
         <div className="mt-6 flex justify-center gap-2">
           <Button onClick={reset}><RotateCcw /> Try again</Button>
-          <Button asChild variant="outline"><Link href="/">Home</Link></Button>
+          {/* A plain link, not next/link: see not-found.tsx (P2.9). */}
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- keeps next/link out of a chunk every page loads */}
+          <Button asChild variant="outline"><a href="/">Home</a></Button>
         </div>
       </div>
     </div>

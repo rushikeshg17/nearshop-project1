@@ -17,7 +17,6 @@ import { ShopTrust } from "@/components/shop/shop-trust";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
 import { useDebounce } from "@/hooks/use-debounce";
 import { useMeta } from "@/hooks/use-session";
 import { api, ApiError } from "@/lib/api";
@@ -128,7 +127,23 @@ export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail 
               <h2 className="text-xl font-semibold">On the shelf</h2>
               <p className="text-sm text-muted-foreground">{s.listing_counts?.in_stock ?? 0} of {s.listing_counts?.total ?? 0} items in stock right now</p>
             </div>
-            <label className="flex items-center gap-2 text-sm"><Switch checked={inStock} onCheckedChange={setInStock} /> In stock only</label>
+            {/* A native checkbox as a switch, styled like ui/switch, without Radix on first load (P2.9). */}
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <span className="relative inline-flex h-[18.4px] w-8 shrink-0">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={inStock}
+                  onChange={(e) => setInStock(e.target.checked)}
+                  className="peer absolute inset-0 m-0 cursor-pointer appearance-none rounded-full bg-input transition-colors outline-none checked:bg-primary focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/80"
+                />
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute top-[1.2px] left-px size-4 rounded-full bg-background transition-transform peer-checked:translate-x-[calc(100%-2px)] dark:bg-foreground dark:peer-checked:bg-primary-foreground"
+                />
+              </span>
+              In stock only
+            </label>
           </div>
           <div className="relative mt-4">
             <Search className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -150,7 +165,7 @@ export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail 
               : products.data.items.map((p) => (
                   <li key={p.id}>
                     <Link href={`/product/${p.id}`} className="flex h-full gap-3 rounded-2xl border bg-card p-3 transition-shadow hover:shadow-lift">
-                      <ProductThumb icon={p.icon} imageUrl={p.image_url} category={p.category} alt="" size="md" />
+                      <ProductThumb icon={p.icon} imageUrl={p.image_url} thumbnailUrl={p.thumbnail_url} category={p.category} alt="" size="md" />
                       <div className="min-w-0 flex-1">
                         <p className="line-clamp-2 text-sm leading-snug font-medium">{p.name}</p>
                         <p className="mt-1 font-semibold tabular">{formatPrice(p.price)}</p>

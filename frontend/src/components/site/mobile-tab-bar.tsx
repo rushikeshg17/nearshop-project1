@@ -1,7 +1,6 @@
 "use client";
 
 import { Home, LayoutDashboard, Receipt, Search, Store } from "lucide-react";
-import { motion } from "motion/react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -30,21 +29,25 @@ export function MobileTabBar() {
           const active = t.match(pathname);
           return (
             <li key={t.label}>
+              {/* No prefetch (P2.9): on a slow connection, fetching four other screens on every page load
+                  competed with the page's own content and data. */}
               <Link
                 href={t.href}
+                prefetch={false}
                 aria-current={active ? "page" : undefined}
                 className={cn(
                   "relative flex flex-col items-center gap-1 pt-2.5 pb-1.5 text-[11px] font-medium transition-colors",
                   active ? "text-foreground" : "text-muted-foreground",
                 )}
               >
-                {active && (
-                  <motion.span
-                    layoutId="tab-indicator"
-                    className="absolute top-0 h-0.5 w-8 rounded-full bg-brand"
-                    transition={{ type: "spring", stiffness: 500, damping: 40 }}
-                  />
-                )}
+                {/* The active tab's indicator grows in with a CSS transition (no animation library, P2.9). */}
+                <span
+                  aria-hidden
+                  className={cn(
+                    "absolute top-0 h-0.5 w-8 rounded-full bg-brand transition-[opacity,transform] duration-200 ease-out",
+                    active ? "scale-x-100 opacity-100" : "scale-x-0 opacity-0",
+                  )}
+                />
                 <t.icon className="size-5" strokeWidth={active ? 2.2 : 1.8} />
                 {t.label}
               </Link>

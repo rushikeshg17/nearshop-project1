@@ -4,6 +4,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import {
   ArrowUpDown,
   Bike,
+  ChevronDown,
   List,
   Loader2,
   Map as MapIcon,
@@ -13,10 +14,9 @@ import {
   Store,
   X,
 } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 
 import { AppIcon } from "@/components/common/app-icon";
 import { Distance, Rating } from "@/components/common/indicators";
@@ -26,18 +26,17 @@ import { ResultCard } from "@/components/search/result-card";
 import { LocationPicker } from "@/components/site/location-picker";
 import { SearchBox } from "@/components/site/search-box";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { Switch } from "@/components/ui/switch";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useMeta } from "@/hooks/use-session";
 import { api } from "@/lib/api";
 import { formatPrice, pluralize } from "@/lib/format";
 import { useLocation } from "@/lib/location";
 import type { MapPin, SearchResponse } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+// The filters sheet loads when the pointer or focus reaches its button and opens on the first tap; it is not
+// first-load JavaScript (P2.9).
+const loadFilters = () => import("@/components/search/search-filters");
+const SearchFiltersSheet = lazy(() => loadFilters().then((m) => ({ default: m.SearchFiltersSheet })));
 
 const SORTS = [
   { value: "relevance", label: "Best match" },
@@ -55,6 +54,8 @@ export function SearchView() {
   const [mobileMap, setMobileMap] = useState(false);
   const [hoverShops, setHoverShops] = useState<number[] | null>(null);
   const [selectedShop, setSelectedShop] = useState<number | null>(null);
+  const [filtersUsed, setFiltersUsed] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   const q = params.get("q") ?? "";
   const category = params.get("category") ?? "";
@@ -116,38 +117,27 @@ export function SearchView() {
   const activeFilters = [inStock, !!fulfillment, !!minPrice || !!maxPrice].filter(Boolean).length;
   const heading = q ? `"${first?.corrected_from ? first.normalized_query : q}"` : catName ?? "Everything nearby";
 
-  const filtersBody = (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between gap-4">
-        <Label htmlFor="instock" className="flex flex-col items-start gap-0.5">
-          <span>In stock only</span>
-          <span className="text-xs font-normal text-muted-foreground">Hide items shops have run out of</span>
-        </Label>
-        <Switch id="instock" checked={inStock} onCheckedChange={(v) => setParam({ stock: v ? "1" : null })} />
-      </div>
-      <div className="space-y-2">
-        <Label>How you want it</Label>
-        <ToggleGroup
-          type="single"
-          variant="outline"
-          value={fulfillment || "any"}
-          onValueChange={(v) => setParam({ fulfillment: v === "any" || !v ? null : v })}
-          className="w-full"
-        >
-          <ToggleGroupItem value="any" className="flex-1">Any</ToggleGroupItem>
-          <ToggleGroupItem value="pickup" className="flex-1">Pickup</ToggleGroupItem>
-          <ToggleGroupItem value="delivery" className="flex-1">Delivery</ToggleGroupItem>
-        </ToggleGroup>
-      </div>
-      <div className="space-y-2">
-        <Label>Price range (Rs)</Label>
-        <div className="flex items-center gap-2">
-          <Input inputMode="numeric" placeholder="Min" defaultValue={minPrice} onBlur={(e) => setParam({ min: e.target.value.replace(/\D/g, "") })} aria-label="Minimum price" />
-          <span className="text-muted-foreground">to</span>
-          <Input inputMode="numeric" placeholder="Max" defaultValue={maxPrice} onBlur={(e) => setParam({ max: e.target.value.replace(/\D/g, "") })} aria-label="Maximum price" />
-        </div>
-      </div>
-    </div>
+  const filtersButton = (
+    <Button
+      variant="outline"
+      className="h-9 rounded-full"
+      aria-haspopup="dialog"
+      onPointerEnter={() => void loadFilters()}
+      onFocus={() => void loadFilters()}
+      onClick={
+        filtersUsed
+          ? undefined
+          : () => {
+              setFiltersUsed(true);
+              setFiltersOpen(true);
+            }
+      }
+    >
+      <SlidersHorizontal /> Filters
+      {activeFilters > 0 && (
+        <span className="grid size-5 place-items-center rounded-full bg-primary text-[11px] text-primary-foreground tabular">{activeFilters}</span>
+      )}
+    </Button>
   );
 
   return (
@@ -189,58 +179,52 @@ export function SearchView() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Select value={sort} onValueChange={(v) => setParam({ sort: v === "relevance" ? null : v })}>
-              <SelectTrigger className="h-9 w-auto gap-2 rounded-full" aria-label="Sort results">
-                <ArrowUpDown className="size-3.5" />
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent align="end">
+            {/* A native select: the phone's own picker, and no Radix select on first load (P2.9). */}
+            <label className="relative inline-flex h-9 items-center rounded-full border border-input text-sm transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50 hover:bg-accent dark:bg-input/30">
+              <ArrowUpDown className="pointer-events-none absolute left-3 size-3.5" aria-hidden />
+              <select
+                value={sort}
+                onChange={(e) => setParam({ sort: e.target.value === "relevance" ? null : e.target.value })}
+                aria-label="Sort results"
+                className="h-full cursor-pointer appearance-none rounded-full bg-transparent pr-8 pl-8 outline-none"
+              >
                 {SORTS.map((s) => (
-                  <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
+                  <option key={s.value} value={s.value}>{s.label}</option>
                 ))}
-              </SelectContent>
-            </Select>
-            <Sheet>
-              <SheetTrigger asChild>
-                <Button variant="outline" className="h-9 rounded-full">
-                  <SlidersHorizontal /> Filters
-                  {activeFilters > 0 && (
-                    <span className="grid size-5 place-items-center rounded-full bg-primary text-[11px] text-primary-foreground tabular">{activeFilters}</span>
-                  )}
-                </Button>
-              </SheetTrigger>
-              <SheetContent className="w-full sm:max-w-sm">
-                <SheetHeader>
-                  <SheetTitle>Filters</SheetTitle>
-                </SheetHeader>
-                <div className="px-4">{filtersBody}</div>
-                <SheetFooter>
-                  <Button variant="ghost" onClick={() => setParam({ stock: null, fulfillment: null, min: null, max: null })}>
-                    Clear all
-                  </Button>
-                </SheetFooter>
-              </SheetContent>
-            </Sheet>
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2.5 size-4 text-muted-foreground" aria-hidden />
+            </label>
+            {filtersUsed ? (
+              <Suspense fallback={filtersButton}>
+                <SearchFiltersSheet
+                  trigger={filtersButton}
+                  open={filtersOpen}
+                  onOpenChange={setFiltersOpen}
+                  values={{ inStock, fulfillment, minPrice, maxPrice }}
+                  setParam={setParam}
+                />
+              </Suspense>
+            ) : (
+              filtersButton
+            )}
           </div>
         </div>
 
         {/* AI hint / corrections */}
-        <AnimatePresence>
-          {first?.corrected_from && (
-            <motion.p initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} className="mt-3 text-sm">
-              Showing results for <span className="font-medium">{first.normalized_query}</span>. No matches for &ldquo;{first.corrected_from}&rdquo;.
-            </motion.p>
-          )}
-          {first?.did_you_mean && (
-            <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-3 text-sm">
-              Did you mean{" "}
-              <Link href={`/search?q=${encodeURIComponent(first.did_you_mean)}`} className="font-medium text-brand-ink underline underline-offset-4">
-                {first.did_you_mean}
-              </Link>
-              ?
-            </motion.p>
-          )}
-        </AnimatePresence>
+        {first?.corrected_from && (
+          <p className="mt-3 animate-in text-sm duration-300 fade-in">
+            Showing results for <span className="font-medium">{first.normalized_query}</span>. No matches for &ldquo;{first.corrected_from}&rdquo;.
+          </p>
+        )}
+        {first?.did_you_mean && (
+          <p className="mt-3 animate-in text-sm duration-300 fade-in">
+            Did you mean{" "}
+            <Link href={`/search?q=${encodeURIComponent(first.did_you_mean)}`} className="font-medium text-brand-ink underline underline-offset-4">
+              {first.did_you_mean}
+            </Link>
+            ?
+          </p>
+        )}
         {q && first && first.total > 0 && !first.corrected_from && (
           <p className="mt-3 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
             <Sparkles className="size-3.5 text-brand" /> Matched by meaning and keywords
@@ -316,40 +300,33 @@ export function SearchView() {
               selected={selectedShop}
               onSelect={(id) => setSelectedShop(id === selectedShop ? null : id)}
             />
-            <AnimatePresence>
-              {selected && (
-                <motion.div
-                  initial={{ opacity: 0, y: 16 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 16 }}
-                  className="absolute inset-x-3 bottom-3 rounded-2xl border bg-card p-4 shadow-lift"
-                >
-                  <button onClick={() => setSelectedShop(null)} className="absolute top-3 right-3 rounded-full p-1 text-muted-foreground hover:bg-muted" aria-label="Close">
-                    <X className="size-4" />
-                  </button>
-                  <div className="flex items-center gap-2 pr-8">
-                    <Store className="size-4 text-muted-foreground" />
-                    <p className="truncate font-semibold">{selected.name}</p>
-                  </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-x-3 text-sm text-muted-foreground">
-                    <span>{selected.locality}</span>
-                    <Distance km={selected.distance_km} className="text-sm" />
-                    <Rating value={selected.rating_avg} count={selected.rating_count} />
-                    {selected.offers_delivery && (
-                      <span className="inline-flex items-center gap-1 text-xs"><Bike className="size-3.5" /> Delivers</span>
-                    )}
-                  </div>
-                  <p className="mt-2 text-sm">
-                    {selected.in_stock_count > 0
-                      ? `${pluralize(selected.in_stock_count, "matching item")} in stock, from ${formatPrice(selected.min_price)}`
-                      : "Has matching items, but they're out of stock"}
-                  </p>
-                  <Button asChild size="sm" variant="outline" className="mt-3">
-                    <Link href={`/shops/${selected.slug}${q ? `?q=${encodeURIComponent(q)}` : ""}`}>Open shop</Link>
-                  </Button>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            {selected && (
+              <div className="absolute inset-x-3 bottom-3 animate-in rounded-2xl border bg-card p-4 shadow-lift duration-200 fade-in slide-in-from-bottom-4">
+                <button onClick={() => setSelectedShop(null)} className="absolute top-3 right-3 rounded-full p-1 text-muted-foreground hover:bg-muted" aria-label="Close">
+                  <X className="size-4" />
+                </button>
+                <div className="flex items-center gap-2 pr-8">
+                  <Store className="size-4 text-muted-foreground" />
+                  <p className="truncate font-semibold">{selected.name}</p>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 text-sm text-muted-foreground">
+                  <span>{selected.locality}</span>
+                  <Distance km={selected.distance_km} className="text-sm" />
+                  <Rating value={selected.rating_avg} count={selected.rating_count} />
+                  {selected.offers_delivery && (
+                    <span className="inline-flex items-center gap-1 text-xs"><Bike className="size-3.5" /> Delivers</span>
+                  )}
+                </div>
+                <p className="mt-2 text-sm">
+                  {selected.in_stock_count > 0
+                    ? `${pluralize(selected.in_stock_count, "matching item")} in stock, from ${formatPrice(selected.min_price)}`
+                    : "Has matching items, but they're out of stock"}
+                </p>
+                <Button asChild size="sm" variant="outline" className="mt-3">
+                  <Link href={`/shops/${selected.slug}${q ? `?q=${encodeURIComponent(q)}` : ""}`}>Open shop</Link>
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </div>

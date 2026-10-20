@@ -2,13 +2,14 @@
 
 // Errors in the root layout itself. This replaces the whole document, so it carries its own <html>, <body>
 // and styles (globals.css does not reach it), following the OS color scheme.
-import * as Sentry from "@sentry/nextjs";
 import { useEffect } from "react";
+
+import { captureException } from "@/lib/sentry-browser";
 
 export default function GlobalError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
   // Reported here because the boundary catches the error first (a no-op without NEXT_PUBLIC_SENTRY_DSN).
   useEffect(() => {
-    Sentry.captureException(error);
+    captureException(error);
   }, [error]);
 
   return (

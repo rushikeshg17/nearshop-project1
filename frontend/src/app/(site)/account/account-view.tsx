@@ -126,7 +126,7 @@ export function AccountView() {
                   {d.recommendations.map((r) => (
                     <li key={r.offer.id}>
                       <Link href={`/product/${r.offer.id}`} className="flex items-center gap-3 rounded-xl border bg-card p-3 hover:bg-accent/50">
-                        <ProductThumb icon={r.offer.icon} imageUrl={r.offer.image_url} category={r.offer.category} alt="" size="sm" />
+                        <ProductThumb icon={r.offer.icon} imageUrl={r.offer.image_url} thumbnailUrl={r.offer.thumbnail_url} category={r.offer.category} alt="" size="sm" />
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-sm font-medium">{r.offer.name}</span>
                           <span className="block truncate text-xs text-muted-foreground">{r.offer.shop.name} · {formatDistance(r.offer.shop.distance_km)}</span>

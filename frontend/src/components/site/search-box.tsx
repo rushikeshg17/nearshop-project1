@@ -2,7 +2,6 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, History, Loader2, Search, TrendingUp, X } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
@@ -17,23 +16,38 @@ type Option =
   | { kind: "item"; value: string; icon: string; sub: string }
   | { kind: "category"; value: string; slug: string; icon: string };
 
-export function SearchBox({
-  size = "md",
-  autoFocus = false,
-  className,
-  placeholder = "Search for a product, brand or need",
-}: {
+interface SearchBoxProps {
   size?: "md" | "lg";
   autoFocus?: boolean;
   className?: string;
   placeholder?: string;
-}) {
-  const router = useRouter();
+}
+
+/** The search box. Only on the search page does it read the query string: useSearchParams in a statically
+ * rendered page makes everything up to the nearest Suspense boundary render in the browser only, which kept
+ * the home page's hero out of its server HTML and its first paint (P2.9). */
+export function SearchBox(props: SearchBoxProps) {
   const pathname = usePathname();
+  return pathname === "/search" ? <SearchPageBox {...props} /> : <SearchBoxField {...props} query={null} />;
+}
+
+function SearchPageBox(props: SearchBoxProps) {
   const params = useSearchParams();
+  return <SearchBoxField {...props} query={params.get("q") ?? ""} />;
+}
+
+/** query: the search page's q, kept in the box while navigating between searches; null elsewhere. */
+function SearchBoxField({
+  size = "md",
+  autoFocus = false,
+  className,
+  placeholder = "Search for a product, brand or need",
+  query,
+}: SearchBoxProps & { query: string | null }) {
+  const router = useRouter();
   const listId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [value, setValue] = useState(pathname === "/search" ? (params.get("q") ?? "") : "");
+  const [value, setValue] = useState(query ?? "");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
   const debounced = useDebounce(value.trim(), 150);
@@ -41,8 +55,8 @@ export function SearchBox({
   useEffect(() => {
     // keep the box in sync when navigating between searches
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (pathname === "/search") setValue(params.get("q") ?? "");
-  }, [pathname, params]);
+    if (query !== null) setValue(query);
+  }, [query]);
 
   const suggest = useQuery({
     queryKey: ["suggest", debounced],
@@ -175,60 +189,54 @@ export function SearchBox({
         )}
       </form>
 
-      <AnimatePresence>
-        {showPanel && (
-          <motion.ul
-            id={listId}
-            role="listbox"
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.14 }}
-            className="absolute inset-x-0 top-full z-50 max-h-[60vh] overflow-auto rounded-b-2xl border border-t-0 bg-popover p-1.5 shadow-lift"
-          >
-            {debounced.length < 2 && (
-              <li className="px-3 pt-2 pb-1 text-xs font-medium text-muted-foreground">
-                {discover.data?.recent.length ? "Recent and popular" : "Popular near you"}
-              </li>
-            )}
-            {options.map((opt, i) => (
-              <li
-                key={`${opt.kind}-${opt.value}-${i}`}
-                id={`${listId}-${i}`}
-                role="option"
-                aria-selected={i === active}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => go(opt)}
-                onMouseEnter={() => setActive(i)}
-                className={cn(
-                  "flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-sm",
-                  i === active && "bg-accent",
+      {showPanel && (
+        <ul
+          id={listId}
+          role="listbox"
+          className="absolute inset-x-0 top-full z-50 max-h-[60vh] animate-in overflow-auto rounded-b-2xl border border-t-0 bg-popover p-1.5 shadow-lift duration-150 fade-in slide-in-from-top-1"
+        >
+          {debounced.length < 2 && (
+            <li className="px-3 pt-2 pb-1 text-xs font-medium text-muted-foreground">
+              {discover.data?.recent.length ? "Recent and popular" : "Popular near you"}
+            </li>
+          )}
+          {options.map((opt, i) => (
+            <li
+              key={`${opt.kind}-${opt.value}-${i}`}
+              id={`${listId}-${i}`}
+              role="option"
+              aria-selected={i === active}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => go(opt)}
+              onMouseEnter={() => setActive(i)}
+              className={cn(
+                "flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-sm",
+                i === active && "bg-accent",
+              )}
+            >
+              <span className="grid size-7 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground [&_svg]:size-4">
+                {opt.kind === "query" ? (
+                  opt.icon === "history" ? <History /> : opt.icon === "trending" ? <TrendingUp /> : <Search />
+                ) : (
+                  <AppIcon name={opt.icon} />
                 )}
-              >
-                <span className="grid size-7 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground [&_svg]:size-4">
-                  {opt.kind === "query" ? (
-                    opt.icon === "history" ? <History /> : opt.icon === "trending" ? <TrendingUp /> : <Search />
-                  ) : (
-                    <AppIcon name={opt.icon} />
-                  )}
-                </span>
-                <span className="min-w-0 flex-1 truncate">
-                  {opt.kind === "query" && opt.icon === "search" ? (
-                    <>
-                      Search for <span className="font-medium">&ldquo;{opt.value}&rdquo;</span>
-                    </>
-                  ) : (
-                    opt.value
-                  )}
-                </span>
-                {opt.kind === "category" && <span className="text-xs text-muted-foreground">Category</span>}
-                {opt.kind === "item" && opt.sub && <span className="hidden text-xs text-muted-foreground sm:inline">{opt.sub}</span>}
-                {i === active && <ArrowUpRight className="size-4 text-muted-foreground" />}
-              </li>
-            ))}
-          </motion.ul>
-        )}
-      </AnimatePresence>
+              </span>
+              <span className="min-w-0 flex-1 truncate">
+                {opt.kind === "query" && opt.icon === "search" ? (
+                  <>
+                    Search for <span className="font-medium">&ldquo;{opt.value}&rdquo;</span>
+                  </>
+                ) : (
+                  opt.value
+                )}
+              </span>
+              {opt.kind === "category" && <span className="text-xs text-muted-foreground">Category</span>}
+              {opt.kind === "item" && opt.sub && <span className="hidden text-xs text-muted-foreground sm:inline">{opt.sub}</span>}
+              {i === active && <ArrowUpRight className="size-4 text-muted-foreground" />}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

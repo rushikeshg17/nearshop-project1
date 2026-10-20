@@ -68,6 +68,7 @@ export interface ShopBrief {
   free_delivery_above: number | null;
   is_verified: boolean;
   image_url: string | null;
+  thumbnail_url: string | null; // the 320 px thumbnail (P2.7), for lists and small previews
   inventory_updated_at: string | null;
   rating_avg: number | null;
   rating_count: number;
@@ -115,6 +116,7 @@ export interface Listing {
   unit: string | null;
   icon: string;
   image_url: string | null;
+  thumbnail_url: string | null; // the 320 px thumbnail (P2.7), for lists and small previews
   category: string | null;
   price: number;
   mrp: number | null;
@@ -141,6 +143,7 @@ export interface ResultGroup {
   unit: string | null;
   icon: string;
   image_url: string | null;
+  thumbnail_url: string | null; // the 320 px thumbnail (P2.7), for lists and small previews
   category: string;
   min_price: number;
   max_price: number;
@@ -300,6 +303,7 @@ export interface Reservation {
     unit: string | null;
     icon: string;
     image_url: string | null;
+    thumbnail_url: string | null; // the 320 px thumbnail (P2.7), for lists and small previews
     quantity_in_stock: number;
   };
   shop: {
@@ -346,6 +350,7 @@ export interface Order {
     quantity: number;
     icon: string;
     image_url: string | null;
+    thumbnail_url: string | null; // the 320 px thumbnail (P2.7), for lists and small previews
   }[];
   shop: { id: number; slug: string; name: string; locality: string | null; phone: string | null; lat: number; lng: number };
   actions: string[];

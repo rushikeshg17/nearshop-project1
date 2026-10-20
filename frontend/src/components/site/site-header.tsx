@@ -1,6 +1,7 @@
 "use client";
 
 import { Store } from "lucide-react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Suspense, useEffect } from "react";
@@ -8,12 +9,22 @@ import { Suspense, useEffect } from "react";
 import { Logo } from "@/components/brand/logo";
 import { registerCategoryHues } from "@/components/common/product-thumb";
 import { LocationPicker } from "@/components/site/location-picker";
-import { NotificationsBell } from "@/components/site/notifications-bell";
 import { SearchBox } from "@/components/site/search-box";
-import { ThemeToggle, UserMenu } from "@/components/site/user-menu";
+import { ThemeToggle } from "@/components/site/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { useMe, useMeta } from "@/hooks/use-session";
 import { cn } from "@/lib/utils";
+
+// Signed-in only, and the session is read in the browser: the menus (Radix dropdown and popover) load after
+// the page, never with its first-load JavaScript (P2.9). Each keeps its button's size while it loads.
+const NotificationsBell = dynamic(() => import("@/components/site/notifications-bell").then((m) => m.NotificationsBell), {
+  ssr: false,
+  loading: () => <div className="size-9" />,
+});
+const UserMenu = dynamic(() => import("@/components/site/user-menu").then((m) => m.UserMenu), {
+  ssr: false,
+  loading: () => <div className="size-9" />,
+});
 
 export function SiteHeader() {
   const pathname = usePathname();
@@ -37,8 +48,10 @@ export function SiteHeader() {
         </div>
         <div className="flex-1 md:hidden" />
         <nav className="flex shrink-0 items-center gap-1">
+          {/* Header links are not prefetched (P2.9): see mobile-tab-bar.tsx. */}
           <Link
             href="/shops"
+            prefetch={false}
             className={cn(
               "hidden rounded-full px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground xl:inline-flex",
               pathname.startsWith("/shops") && "text-foreground",
@@ -48,6 +61,7 @@ export function SiteHeader() {
           </Link>
           <Link
             href="/ai"
+            prefetch={false}
             className={cn(
               "hidden rounded-full px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground xl:inline-flex",
               pathname === "/ai" && "text-foreground",
@@ -64,12 +78,12 @@ export function SiteHeader() {
             <>
               <ThemeToggle />
               <Button asChild variant="ghost" className="hidden h-9 rounded-full px-4 sm:inline-flex">
-                <Link href="/register/shop">
+                <Link href="/register/shop" prefetch={false}>
                   <Store /> List your shop
                 </Link>
               </Button>
               <Button asChild className="h-9 rounded-full px-4">
-                <Link href={`/login?next=${encodeURIComponent(pathname)}`}>Sign in</Link>
+                <Link href={`/login?next=${encodeURIComponent(pathname)}`} prefetch={false}>Sign in</Link>
               </Button>
             </>
           )}
