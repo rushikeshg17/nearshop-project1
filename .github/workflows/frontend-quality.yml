@@ -8,7 +8,16 @@
 #     and CPU throttling, 3 runs per URL, median: performance 85 or more, LCP 2.5 s or less, Total Blocking
 #     Time 200 ms or less, CLS 0.1 or less.
 # Pages: home, search with a query, a product page and a shop page. Any missed budget fails the job.
-# P2.10 (accessibility) and P7.10 (Kannada interface audit) add their checks to this job.
+#
+# Then every Playwright spec in frontend/e2e runs (frontend/playwright.config.ts), once per interface language in
+# E2E_LANGUAGES; a spec added there later joins with no change here. P2.10 added two (docs/accessibility.md):
+#   - accessibility.spec.ts: axe with the WCAG 2.2 A and AA rule tags on every customer and owner screen in the
+#     target, at 360 by 800 px, with its dialogs open; any serious or critical violation fails the job;
+#   - keyboard-reserve.spec.ts: search, open a product, reserve it and see the code with the keyboard only, with
+#     the focus visible at every step.
+# They sign in as the seeded demo customer and owner with the demo password generated below, and create a
+# reservation and a delivery order in the throwaway database, after the performance checks have run.
+# P7.10 adds Kannada to E2E_LANGUAGES.
 #
 # How the site runs here: MongoDB as the single-node replica set from docker-compose.yml, the demo city
 # seeded with a demo password generated for this run, the API (uvicorn) and the production frontend build
@@ -46,13 +55,14 @@ env:
   API_ORIGIN: http://127.0.0.1:8000
   SITE: http://127.0.0.1:3000
   LAB_SITE: https://127.0.0.1:3443 # the HTTP/2 proxy in front of SITE
+  E2E_LANGUAGES: "en" # comma-separated interface languages for frontend/e2e; P7.10 adds Kannada
   NEXT_TELEMETRY_DISABLED: "1"
 
 jobs:
   lab:
     name: frontend-quality
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40 # P2.10 added the Playwright specs (a few minutes) after Lighthouse
     env:
       UV_LOCKED: "1"
       # The API and the seed: the local database, development settings, no scheduler, the light embedding
@@ -278,6 +288,50 @@ jobs:
           sys.exit(1 if missing else 0)
           EOF
           exit $status
+
+      # Playwright's own Chromium (the version frontend/package-lock.json pins), with its system libraries.
+      - name: Install the Playwright browser
+        if: ${{ !cancelled() }}
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Accessibility and keyboard checks (every spec in frontend/e2e)
+        if: ${{ !cancelled() }}
+        working-directory: frontend
+        env:
+          NEARSHOP_E2E_BASE_URL: ${{ env.SITE }}
+          NEARSHOP_E2E_LANGUAGES: ${{ env.E2E_LANGUAGES }}
+          NEARSHOP_E2E_OUTPUT_DIR: ${{ runner.temp }}/e2e
+          NEARSHOP_E2E_AXE_SUMMARY: ${{ runner.temp }}/e2e/axe.jsonl
+        run: |
+          mkdir -p "$NEARSHOP_E2E_OUTPUT_DIR"
+          status=0
+          npx playwright test || status=$?
+          python3 - <<'EOF'
+          import json, os
+          path = os.environ["NEARSHOP_E2E_AXE_SUMMARY"]
+          rows = [json.loads(line) for line in open(path)] if os.path.exists(path) else []
+          out = ["### Accessibility (axe, WCAG 2.2 A and AA, 360 by 800 px)", "",
+                 "| Language | Screen | Serious or critical | Moderate or minor | Rules |", "|---|---|---:|---:|---|"]
+          for r in rows:
+              rules = ", ".join(f"{v['rule']} ({v['impact']}, {len(v['nodes'])})" for v in r["violations"]) or "none"
+              out.append(f"| {r['language']} | {r['screen']} | {r['blocking']} | {r['other']} | {rules} |")
+          blocking = sum(r["blocking"] for r in rows)
+          out += ["", f"{len(rows)} screens and dialogs audited; {blocking} serious or critical violations "
+                      "(any fails the job). The keyboard test's result is in the Playwright report.", ""]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(out) + "\n")
+          EOF
+          exit $status
+
+      - name: Playwright report (on failure)
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-report
+          path: ${{ runner.temp }}/e2e
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Logs (on failure)
         if: failure()

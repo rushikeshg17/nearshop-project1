@@ -9,6 +9,9 @@
   - Warm neutral surfaces, ink-black primary actions, one brand accent (vermilion) used sparingly:
     logo, map pins, the "Reserve" CTA, focus and selection.
   - Semantic stock colours: success = in stock, warning = low stock, muted = out of stock.
+  - Accessibility (P2.10, docs/accessibility.md): text tokens keep 4.5:1 against the surfaces they sit on, in both
+    themes (brand text on the page, white text on brand, destructive text on its tint), and the focus ring is
+    opaque, at 3:1 or more against the page.
 */
 
 @theme inline {
@@ -81,12 +84,12 @@
   --muted-foreground: oklch(0.52 0.012 60);
   --accent: oklch(0.95 0.008 75);
   --accent-foreground: oklch(0.22 0.012 60);
-  --destructive: oklch(0.58 0.22 27);
+  --destructive: oklch(0.52 0.21 27);
   --border: oklch(0.91 0.006 75);
   --input: oklch(0.89 0.008 75);
-  --ring: oklch(0.64 0.19 38 / 55%);
+  --ring: oklch(0.55 0.19 36);
 
-  --brand: oklch(0.63 0.2 36);
+  --brand: oklch(0.54 0.19 36);
   --brand-foreground: oklch(0.99 0.005 60);
   --brand-soft: oklch(0.955 0.03 45);
   --brand-ink: oklch(0.48 0.16 36);
@@ -126,7 +129,7 @@
   --destructive: oklch(0.68 0.19 25);
   --border: oklch(1 0 0 / 9%);
   --input: oklch(1 0 0 / 14%);
-  --ring: oklch(0.7 0.17 40 / 60%);
+  --ring: oklch(0.7 0.17 40);
 
   --brand: oklch(0.7 0.18 40);
   --brand-foreground: oklch(0.16 0.01 50);
@@ -151,11 +154,27 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border outline-ring;
   }
   html {
     @apply font-sans;
     -webkit-tap-highlight-color: transparent;
+    /* A focused element is scrolled clear of the sticky header and, on phones, of the bottom tab bar and the
+       product page's buy bar, so keyboard focus is never hidden behind them (WCAG 2.4.11). */
+    scroll-padding-top: 5rem;
+    scroll-padding-bottom: 9rem;
+  }
+  @media (min-width: 64rem) {
+    html {
+      scroll-padding-bottom: 1rem;
+    }
+  }
+  /* Keyboard focus is always visible: links and other focusable elements without their own focus style get a
+     solid ring in the ring colour. Components that draw their own indicator (rings in button.tsx, inputs) set
+     outline-none, which, as a utility, wins over this base rule. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
   }
   body {
     @apply bg-background text-foreground;
