@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import SecretStr, ValidationError
+from pymongo import MongoClient
 
 from app.core.config import ENVIRONMENTS, Settings, settings
 from app.core.database import client as mongo_client
@@ -55,8 +56,48 @@ def test_refuses_a_protected_host():
     shards = "mongodb://u:p@a.example.com:27017,shard-01.abcd1.mongodb.net:27017/?replicaSet=x"
     assert guard(mongodb_uri=shards, protected_hosts=["abcd1.mongodb.net"])
     assert guard(protected_hosts=["localhost"])
-    # an unrelated host whose name merely ends the same way is not protected
-    assert guard(mongodb_uri="mongodb://notabcd1.mongodb.net/", protected_hosts=["abcd1.mongodb.net"]) is None
+    # an unrelated host whose name merely ends the same way is not protected (demo: a hosted cluster)
+    assert guard(environment="demo", mongodb_uri="mongodb://notabcd1.mongodb.net/",
+                 protected_hosts=["abcd1.mongodb.net"]) is None
+
+
+# Atlas offers the same cluster as mongodb+srv://cluster0.<project>.mongodb.net and as a standard
+# mongodb:// string of member hosts in <project>.mongodb.net, which are not under the SRV name.
+ATLAS_STANDARD_URI = ("mongodb://u:p@ac-xyz-shard-00-00.abcd1.mongodb.net:27017,"
+                      "ac-xyz-shard-00-01.abcd1.mongodb.net:27017/?ssl=true&replicaSet=atlas-xyz-shard-0")
+LEGACY_STANDARD_URI = "mongodb://u:p@cluster0-shard-00-00.abcd1.mongodb.net:27017/?ssl=true"
+
+
+@pytest.mark.parametrize("listed", ["cluster0.abcd1.mongodb.net", "abcd1.mongodb.net", "ABCD1.mongodb.net."])
+@pytest.mark.parametrize("uri", [ATLAS_URI, ATLAS_STANDARD_URI, LEGACY_STANDARD_URI])
+def test_a_protected_atlas_cluster_covers_every_connection_string(uri, listed):
+    problem = guard(environment="demo", mongodb_uri=uri, protected_hosts=[listed])
+    assert problem and "NEARSHOP_PROTECTED_HOSTS" in problem
+
+
+def test_protected_domains():
+    assert schema.protected_domains(["cluster0.abcd1.mongodb.net", " staging.example.com ", ""]) == [
+        "cluster0.abcd1.mongodb.net", "abcd1.mongodb.net", "staging.example.com"]
+    assert schema.protected_domains(["abcd1.mongodb.net"]) == ["abcd1.mongodb.net"]
+    # another Atlas project is not covered
+    assert guard(environment="demo", mongodb_uri="mongodb+srv://cluster0.zzzz9.mongodb.net/",
+                 protected_hosts=["cluster0.abcd1.mongodb.net"]) is None
+
+
+@pytest.mark.parametrize("environment", ["development", "test"])
+@pytest.mark.parametrize("uri", [ATLAS_URI, ATLAS_STANDARD_URI, "mongodb://localhost:27017,db.example.com/"])
+def test_development_and_test_reset_only_a_local_server(environment, uri):
+    # even with nothing listed in NEARSHOP_PROTECTED_HOSTS
+    problem = guard(environment=environment, mongodb_uri=uri)
+    assert problem and "is not local" in problem and "NEARSHOP_ENVIRONMENT=demo" in problem
+    assert guard(environment="demo", mongodb_uri=uri) is None
+
+
+@pytest.mark.parametrize("uri", ["mongodb://127.0.0.1:27017/?directConnection=true", "mongodb://[::1]:27017/",
+                                 "mongodb://mongo:27017/?replicaSet=rs0"])
+def test_local_hosts_are_allowed(uri):
+    assert guard(mongodb_uri=uri) is None
+    assert guard(environment="test", mongodb_uri=uri) is None
 
 
 def test_refuses_the_production_database_name():
@@ -129,6 +170,32 @@ def test_reset_refuses_and_writes_nothing(db, monkeypatch, setting, value):
         schema.reset(db.mongo, confirm=db.mongo.name)
     assert {name: db.mongo[name].count_documents({}) for name in before} == before
     assert all(before.values())
+
+
+def test_reset_checks_the_client_it_is_given(db, monkeypatch):
+    # settings point at the local server, but the handle comes from another client: its hosts count
+    monkeypatch.setattr(settings, "environment", "demo")
+    other = MongoClient(ATLAS_STANDARD_URI, connect=False)
+    try:
+        assert "ac-xyz-shard-00-00.abcd1.mongodb.net" in schema.client_hosts(other)
+        monkeypatch.setattr(settings, "protected_hosts", "cluster0.abcd1.mongodb.net")
+        with pytest.raises(schema.ResetRefused, match="NEARSHOP_PROTECTED_HOSTS"):
+            schema.reset(other["nearshop"], confirm="nearshop")
+        monkeypatch.setattr(settings, "environment", "development")
+        monkeypatch.setattr(settings, "protected_hosts", "")
+        with pytest.raises(schema.ResetRefused, match="is not local"):
+            schema.reset(other["nearshop"], confirm="nearshop")
+    finally:
+        other.close()
+    assert schema.client_hosts(mongo_client) == schema.uri_hosts(os.environ["NEARSHOP_MONGODB_URI"])
+
+
+def test_client_hosts_of_an_unresolved_srv_client():
+    srv = MongoClient("mongodb+srv://cluster0.abcd1.example.invalid/", connect=False)
+    try:
+        assert schema.client_hosts(srv) == ["cluster0.abcd1.example.invalid"]
+    finally:
+        srv.close()
 
 
 def test_reset_refuses_without_a_matching_confirmation(db):

@@ -5,8 +5,9 @@
 
 It writes to the MongoDB database in NEARSHOP_MONGODB_URI / NEARSHOP_MONGODB_DB and REPLACES what is
 there, so it runs only when the environment guard in database/schema.py (check_reset_allowed) allows
-it: environment development, test or demo; not the production database name; no host listed in
-NEARSHOP_PROTECTED_HOSTS; and --confirm-db repeating the database name. Otherwise it stops before
+it: environment development, test or demo (development and test: a local MongoDB only); not the
+production database name; no host listed in NEARSHOP_PROTECTED_HOSTS; and --confirm-db repeating the
+database name. Otherwise it stops before
 it touches any database. Documents are built in memory and sent with bulk inserts, so a hosted
 cluster is seeded in about a minute. The city comes from NEARSHOP_SEED_CITY (default ballari; see cities.json for options).
 

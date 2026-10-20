@@ -24,8 +24,9 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
 def _uri_hosts(uri: str) -> list[str]:
-    # Same parsing as database.schema.uri_hosts, repeated here because importing the app would read
-    # the settings before this guard has pointed them at the test database.
+    # A simpler parse than database.schema.uri_hosts (importing that would read the app settings before
+    # this guard has pointed them at the test database). It does not unwrap IPv6 literals such as [::1],
+    # so those come out as hosts outside TEST_HOSTS and the URI is refused: it can only fail safe.
     rest = uri.strip().split("://", 1)[-1].replace("?", "/", 1).split("/", 1)[0].rsplit("@", 1)[-1]
     return [p.strip().lower().split(":", 1)[0] for p in rest.split(",") if p.strip()]
 

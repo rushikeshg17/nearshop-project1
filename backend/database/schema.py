@@ -33,8 +33,9 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 
-from pymongo import ASCENDING, DESCENDING, GEOSPHERE, TEXT, IndexModel
+from pymongo import ASCENDING, DESCENDING, GEOSPHERE, TEXT, IndexModel, MongoClient
 from pymongo.database import Database as MongoDatabase
 from pymongo.errors import OperationFailure
 
@@ -325,6 +326,14 @@ def ensure_schema(mongo: MongoDatabase) -> None:
 
 # Environments in which reset (and the seed through it) may run. Staging and production never may.
 RESET_ENVIRONMENTS = ("development", "test", "demo")
+# In development and test, reset runs only against a MongoDB on the machine itself (or the CI service
+# host mongo). Seeding a hosted demo cluster takes NEARSHOP_ENVIRONMENT=demo.
+LOCAL_ONLY_ENVIRONMENTS = ("development", "test")
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "mongo"})
+# MongoDB Atlas domains. An Atlas cluster's SRV name is <cluster>.<project>.mongodb.net, but its
+# standard (mongodb://) connection string names member hosts such as ac-xyz-shard-00-00.<project>.mongodb.net,
+# which are not under the SRV name. So a protected Atlas name also protects its project domain.
+ATLAS_DOMAINS = ("mongodb.net", "mongodbgov.net")
 
 
 class ResetRefused(RuntimeError):
@@ -348,30 +357,62 @@ def uri_hosts(uri: str) -> list[str]:
     return hosts
 
 
-def _is_protected(host: str, protected_hosts: list[str]) -> bool:
-    return any(host == p or host.endswith("." + p) for p in protected_hosts)
+def client_hosts(client: MongoClient) -> list[str]:
+    """Host names a client was built with (its seed list, or for mongodb+srv its SRV name until it has
+    resolved it, then the member hosts). Read from the client's topology, so nothing is connected."""
+    try:
+        return sorted({str(host).lower() for host, _port in client.topology_description.server_descriptions()})
+    except Exception:  # an unusual client: the configured URI is still checked
+        return []
+
+
+def protected_domains(protected_hosts: list[str]) -> list[str]:
+    """The protected hosts plus, for an Atlas cluster name, its project domain (see ATLAS_DOMAINS)."""
+    domains = []
+    for host in (h.strip().lower().rstrip(".") for h in protected_hosts):
+        if not host:
+            continue
+        domains.append(host)
+        for atlas in ATLAS_DOMAINS:
+            labels = host.removesuffix("." + atlas).split(".")
+            if host.endswith("." + atlas) and len(labels) >= 2:
+                domains.append(f"{labels[-1]}.{atlas}")
+    return list(dict.fromkeys(domains))
+
+
+def _is_protected(host: str, domains: list[str]) -> bool:
+    return any(host == d or host.endswith("." + d) for d in domains)
 
 
 def check_reset_allowed(*, environment: str, mongodb_uri: str, db_name: str, production_db: str,
-                        protected_hosts: list[str], confirm: str | None) -> str | None:
+                        protected_hosts: list[str], confirm: str | None,
+                        extra_hosts: Iterable[str] = ()) -> str | None:
     """Say why `db_name` must not be wiped, or return None when reset may run.
 
-    All four must hold: the environment is development, test or demo; the database is not the
-    production database name; no host of the URI is (a subdomain of) a protected host; and the
-    operator's confirmation repeats the database name. Pure: it reads no settings and touches no
-    database, so callers check it before creating any database handle."""
+    All of these must hold: the environment is development, test or demo; in development and test,
+    every host is local (LOCAL_HOSTS); the database is not the production database name; no host is
+    (under) a protected host or, for an Atlas cluster name, its project domain; and the operator's
+    confirmation repeats the database name. The hosts are those of `mongodb_uri` plus `extra_hosts`
+    (the hosts of the client actually used). Pure: it reads no settings and touches no database, so
+    callers check it before creating any database handle."""
     if environment not in RESET_ENVIRONMENTS:
         return (f"NEARSHOP_ENVIRONMENT is {environment!r}; reset and the seed run only in "
                 f"{', '.join(RESET_ENVIRONMENTS)}.")
     if db_name == production_db:
         return f"database {db_name!r} is the production database name (NEARSHOP_PRODUCTION_MONGODB_DB)."
-    protected = [h.strip().lower() for h in protected_hosts if h.strip()]
-    hosts = uri_hosts(mongodb_uri)
+    hosts = list(dict.fromkeys([*uri_hosts(mongodb_uri), *(h.lower() for h in extra_hosts)]))
     if not hosts:
         return "NEARSHOP_MONGODB_URI names no host."
+    domains = protected_domains(protected_hosts)
     for host in hosts:
-        if _is_protected(host, protected):
+        if _is_protected(host, domains):
             return f"MongoDB host {host!r} is listed in NEARSHOP_PROTECTED_HOSTS (a staging or production cluster)."
+    if environment in LOCAL_ONLY_ENVIRONMENTS:
+        for host in hosts:
+            if host not in LOCAL_HOSTS:
+                return (f"MongoDB host {host!r} is not local. In {environment}, reset and the seed run only "
+                        f"against {', '.join(sorted(LOCAL_HOSTS))}; a hosted demo cluster needs "
+                        f"NEARSHOP_ENVIRONMENT=demo.")
     if not confirm:
         return f"no confirmation given. Repeat the database name to wipe it: --confirm-db {db_name}"
     if confirm != db_name:
@@ -379,21 +420,24 @@ def check_reset_allowed(*, environment: str, mongodb_uri: str, db_name: str, pro
     return None
 
 
-def reset_problem(db_name: str, confirm: str | None) -> str | None:
-    """`check_reset_allowed` for the configured environment, URI and protected hosts."""
+def reset_problem(db_name: str, confirm: str | None, *, client: MongoClient | None = None) -> str | None:
+    """`check_reset_allowed` for the configured environment, URI and protected hosts, plus the hosts of
+    `client` when given (the client that would run the reset)."""
     from app.core.config import settings
 
     return check_reset_allowed(environment=settings.environment, mongodb_uri=settings.mongodb_uri,
                                db_name=db_name, production_db=settings.production_mongodb_db,
-                               protected_hosts=settings.protected_host_list, confirm=confirm)
+                               protected_hosts=settings.protected_host_list, confirm=confirm,
+                               extra_hosts=client_hosts(client) if client is not None else ())
 
 
 def reset(mongo: MongoDatabase, *, confirm: str | None) -> None:
     """Drop every NearShop collection and recreate the empty schema (used by the seed script and tests).
 
-    Raises ResetRefused, before any write, unless `check_reset_allowed` passes for this database
-    with `confirm` as the operator's confirmation."""
-    if problem := reset_problem(mongo.name, confirm):
+    Raises ResetRefused, before any write, unless `check_reset_allowed` passes for this database, the
+    hosts of the client behind `mongo` and the configured URI, with `confirm` as the operator's
+    confirmation."""
+    if problem := reset_problem(mongo.name, confirm, client=mongo.client):
         raise ResetRefused(f"Reset refused; nothing was written. {problem}")
     for name in VALIDATORS:
         mongo.drop_collection(name)

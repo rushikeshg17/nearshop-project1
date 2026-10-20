@@ -26,7 +26,8 @@ class Settings(BaseSettings):
 
     # Environment guard for destructive commands (database/schema.py, check_reset_allowed): reset and the
     # seed refuse the production database name and any URI whose host is, or ends in, one of the
-    # comma-separated protected hosts (the staging and production cluster hosts).
+    # comma-separated protected hosts (the staging and production cluster hosts). List an Atlas cluster
+    # by its project domain (abcd1.mongodb.net); a cluster name (cluster0.abcd1.mongodb.net) covers it too.
     production_mongodb_db: str = "nearshop_prod"
     protected_hosts: str = ""
 

@@ -79,13 +79,13 @@ NearShop uses multi-document transactions, so every MongoDB it talks to runs as 
 - Development (`backend/.env`): `NEARSHOP_MONGODB_URI=mongodb://localhost:27017/?replicaSet=rs0`, database `nearshop`.
 - Tests: `make test` sets `NEARSHOP_TEST_MONGODB_URI=mongodb://127.0.0.1:27017/?directConnection=true`, the same server written differently. Each run creates and drops its own `nearshop_test_<random>` database.
 
-No laptop holds staging or production credentials. Their connection strings live only in the hosting dashboards.
+No laptop may hold staging or production credentials: their connection strings belong only in the hosting dashboards. Until a laptop's `backend/.env` is moved off a hosted cluster, list that cluster in `NEARSHOP_PROTECTED_HOSTS` there.
 
 ### Environment guard
 
 `NEARSHOP_ENVIRONMENT` is one of `development`, `test`, `staging`, `production` or `demo`; any other value stops the API, the seed and the tools at startup.
 
-The seed resets the database, so it (and `schema.reset`) refuses, before it opens any connection, unless all of these hold: the environment is `development`, `test` or `demo`; the database name differs from `NEARSHOP_PRODUCTION_MONGODB_DB` (default `nearshop_prod`); no host in the URI is, or is under, one of the comma-separated `NEARSHOP_PROTECTED_HOSTS` (the staging and production cluster hosts); and `--confirm-db` repeats the database name. `make seed` always seeds the local database and passes the confirmation for it.
+The seed resets the database, so it (and `schema.reset`) refuses, before it opens any connection, unless all of these hold: the environment is `development`, `test` or `demo`, and in `development` and `test` every host is local (`localhost`, `127.0.0.1`, `::1` or the CI host `mongo`; seeding a hosted demo cluster takes `NEARSHOP_ENVIRONMENT=demo`); the database name differs from `NEARSHOP_PRODUCTION_MONGODB_DB` (default `nearshop_prod`); no host in the URI, or of the client doing the reset, is, or is under, one of the comma-separated `NEARSHOP_PROTECTED_HOSTS` (the staging and production clusters; for MongoDB Atlas list the project domain such as `abcd1.mongodb.net`, which covers both the `mongodb+srv` name and the member hosts of the standard `mongodb://` string, and a listed Atlas cluster name also covers its project domain); and `--confirm-db` repeats the database name. `make seed` always seeds the local database and passes the confirmation for it.
 
 The test suite reads only `NEARSHOP_TEST_MONGODB_URI`. pytest stops at startup, before any connection, when it is missing, when its host is not `localhost`, `127.0.0.1` or the CI service host `mongo`, or when it equals `NEARSHOP_MONGODB_URI`. Where MongoDB already runs (a CI service container), skip the Docker step with `make test DB_UP=`.
 
@@ -150,7 +150,7 @@ frontend/
 ## Tests
 
 ```bash
-make test        # backend: 94 tests, against the local MongoDB replica set (starts it first)
+make test        # backend: 115 tests, against the local MongoDB replica set (starts it first)
 cd frontend && npx tsc --noEmit && npx eslint src && npm run build
 ```
 
