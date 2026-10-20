@@ -51,8 +51,43 @@ const SAFE_HEADERS = new Set([
   "user-agent", "x-nearshop-client", "x-request-id", "x-vercel-id", "sentry-trace", "baggage",
 ]);
 
-export function maskText(text: string): string {
+// A run of non-space text that may be URL-encoded: it holds a %XX escape or a + (a space in a query string).
+const ENCODED = /[^\s]*(?:%[0-9A-Fa-f]{2}|\+)[^\s]*/g;
+
+function maskPlain(text: string): string {
   return text.replace(EMAIL, "[email]").replace(PHONE, "[phone]").replace(ADDRESS, "[address]");
+}
+
+/** One round of URL decoding (+ is a space), leaving malformed escapes as they are. */
+function decodeOnce(text: string): string {
+  return text.replace(/\+/g, " ").replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+    try {
+      return decodeURIComponent(run);
+    } catch {
+      return run;
+    }
+  });
+}
+
+/** A URL or query string (q=tape+98450%2012345, a%40b.com, next=%2Fsearch%3Fq%3D...) decoded, up to three
+ * times for a URL inside a URL, and masked; unchanged when its decoded form holds nothing to mask. */
+function maskEncoded(token: string): string {
+  let decoded = token;
+  for (let i = 0; i < 3; i++) {
+    const once = decodeOnce(decoded);
+    if (once === decoded) break;
+    decoded = once;
+    const masked = maskPlain(decoded);
+    if (masked !== decoded) return masked;
+  }
+  return token;
+}
+
+/** text with Indian mobile numbers, email addresses and street addresses replaced by placeholders, in plain
+ * text and in URL-encoded text alike (page URLs, query strings, fetch breadcrumbs). */
+export function maskText(text: string): string {
+  const masked = maskPlain(text);
+  return masked.includes("%") || masked.includes("+") ? masked.replace(ENCODED, maskEncoded) : masked;
 }
 
 /** A copy of value with maskText applied to every string, however deeply nested. */

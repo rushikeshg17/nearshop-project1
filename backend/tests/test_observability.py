@@ -1,5 +1,6 @@
 """Observability (app/core/observability.py): error events scrubbed before sending, one JSON log line per
 request, request ids, Server-Timing, and the health endpoints (/api/health/ready, /api/health/db)."""
+import asyncio
 import io
 import json
 import logging
@@ -34,6 +35,9 @@ FAKE_DSN = "https://public0123456789abcdef@o0.ingest.example.invalid/1"
 @pytest.mark.parametrize("text", [
     "call 9845012345 now", "call +91 98450 12345 now", "call +919845012345", "call 09845012345",
     "call 98450-12345", "phone=9845012345&x=1",
+    # URL-encoded: a + or %20 for a space, %2B for the plus, and a URL inside a URL
+    "q=tape+9845012345", "q=tape%209845012345", "/api/search?q=call+%2B919845012345", "q=98450%2012345",
+    "https://x.test/login?next=%2Fsearch%3Fq%3Dtape%2B9845012345",
 ])
 def test_mobile_numbers_are_masked(text):
     masked = mask_text(text)
@@ -47,6 +51,9 @@ def test_mobile_numbers_are_masked(text):
     ("1 Main Road", "Main Road"),
     ("#45/2, Gandhi Nagar", "Gandhi Nagar"),
     ("off 5th Main, 3rd Cross", "5th Main"),
+    ("q=someone.real%40example.com", "example.com"),
+    ("/api/search?q=12+MG+Road", "MG"),
+    ("q=12%20MG%20Road&lat=1", "MG"),
 ])
 def test_emails_and_street_addresses_are_masked(text, gone):
     assert gone not in mask_text(text)
@@ -56,6 +63,7 @@ def test_emails_and_street_addresses_are_masked(text, gone):
     'File "/app/main.py", line 12, in main',  # tracebacks stay readable
     "order 512 is ready", "listing 1234567 updated", "took 1792487642 ms",
     "trace 9845012345abcdef9845012345abcdef",  # hex ids are never phone numbers
+    "/api/search?q=teflon+tape&lat=12.3052&lng=76.6552", "C++ is 50% off", "q=bad%zz+value",
 ])
 def test_ordinary_text_is_left_alone(text):
     assert mask_text(text) == text
@@ -129,7 +137,8 @@ def test_an_error_reaches_the_tracker_without_cookie_or_phone_number(ids, sentry
         c.post("/api/auth/login", json={"email": "cust@example.com", "password": PASSWORD},
                headers={"X-NearShop-Client": "web"})
         session = c.cookies[settings.cookie_name]
-        res = c.post("/api/test-observability-boom", json={"phone": PHONE, "email": EMAIL},
+        res = c.post("/api/test-observability-boom?q=tape+9845012345&e=someone.real%40example.com",
+                     json={"phone": PHONE, "email": EMAIL},
                      headers={"X-NearShop-Client": "web", "Authorization": "Bearer not-a-real-token",
                               "x-vercel-id": "bom1::test-request-1"})
     assert res.status_code == 500
@@ -145,7 +154,8 @@ def test_an_error_reaches_the_tracker_without_cookie_or_phone_number(ids, sentry
     assert {k.lower() for k in request.get("headers", {})}.isdisjoint({"cookie", "authorization"})
     text = json.dumps(event)  # _meta may say a cookie header was removed, never what it held
     assert session not in text and settings.cookie_name not in text and "not-a-real-token" not in text
-    for personal in (PHONE, PHONE.replace(" ", ""), EMAIL, "MG Road", "cust@example.com"):
+    assert request["query_string"] == "q=tape [phone]&e=[email]"
+    for personal in (PHONE, PHONE.replace(" ", ""), EMAIL, "MG Road", "cust@example.com", "example.com"):
         assert personal not in text
     assert "[phone]" in text and "[email]" in text
 
@@ -217,10 +227,50 @@ def test_request_id_is_echoed_and_malformed_ids_are_replaced(client):
 
 def test_an_unhandled_error_still_writes_one_line(ids, boom_route, request_log):
     with TestClient(main.app, raise_server_exceptions=False) as c:
-        assert c.post("/api/test-observability-boom", headers={"X-NearShop-Client": "web"}).status_code == 500
+        res = c.post("/api/test-observability-boom", headers={"X-NearShop-Client": "web", "x-request-id": "edge-500"})
+    assert res.status_code == 500
+    # the 500 Starlette makes of the exception still says which request it was, and how long it took
+    assert res.headers["x-request-id"] == "edge-500" and res.headers["server-timing"].startswith("app;dur=")
     (line,) = request_log.getvalue().splitlines()
     record = json.loads(line)
     assert record["status"] == 500 and record["level"] == "warning" and record["role"] == "anonymous"
+    assert record["request_id"] == "edge-500" and record["route"] == "/api/test-observability-boom"
+
+
+def test_the_servers_traceback_line_keeps_the_request_id(boom_route):
+    """uvicorn logs an exception the app raises in the request's own task, after the app returns."""
+    sent, buffer = [], io.StringIO()
+    handler = logging.StreamHandler(buffer)
+    handler.setFormatter(observability.JsonFormatter())
+    server_log = logging.getLogger("tests.server")
+    server_log.addHandler(handler)
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST", "scheme": "http",
+             "path": "/api/test-observability-boom", "raw_path": b"/api/test-observability-boom", "root_path": "",
+             "query_string": b"", "client": ("127.0.0.1", 50000), "server": ("testserver", 80),
+             "headers": [(b"host", b"testserver"), (b"x-nearshop-client", b"web"), (b"x-request-id", b"edge-501")]}
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    async def serve():  # as uvicorn's RequestResponseCycle.run_asgi
+        try:
+            await main.app(scope, receive, send)
+        except RuntimeError:
+            server_log.exception("Exception in ASGI application")
+
+    try:
+        asyncio.run(serve())
+    finally:
+        server_log.removeHandler(handler)
+    (line,) = buffer.getvalue().splitlines()
+    record = json.loads(line)
+    assert record["request_id"] == "edge-501" and "RuntimeError" in record["exc"]
+    assert "[phone]" in record["exc"] and PHONE not in record["exc"]
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    assert start["status"] == 500 and (b"x-request-id", b"edge-501") in start["headers"]
 
 
 def test_log_messages_are_masked():

@@ -22,6 +22,8 @@ RequestObservabilityMiddleware wraps every HTTP request:
   * exactly one JSON log line per request (logger nearshop.request): method, route template (never the
     raw path), status, duration_ms, db_ms, db_queue_ms, db_calls, request_id and role (from the signed
     session token; never the user id or email);
+  * it wraps the whole middleware stack, Starlette's ServerErrorMiddleware included, so a 500 from an
+    unhandled exception has the headers as well, and the server's traceback line keeps the request id;
   * a Server-Timing header: app (time in the app until the response starts), db (wall time with database
     work in flight: Collection calls plus waits in the mongo-io gather pool's queue, overlapping work
     counted once) and dbq (the longest wait in that queue).
@@ -46,6 +48,7 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from functools import wraps
 from typing import Any
+from urllib.parse import unquote_plus
 
 from starlette.datastructures import MutableHeaders
 from starlette.requests import cookie_parser
@@ -75,13 +78,40 @@ _ID_KEYS = frozenset({"event_id", "trace_id", "span_id", "parent_span_id", "rele
                       "baggage", "request_id"})
 
 
-def mask_text(text: str) -> str:
-    """text with Indian mobile numbers, email addresses and street addresses replaced by placeholders."""
-    if not text:
-        return text
+# A run of non-space text that may be URL-encoded: it holds a %XX escape or a + (a space in a query string).
+_ENCODED = re.compile(r"[^\s]*(?:%[0-9A-Fa-f]{2}|\+)[^\s]*")
+
+
+def _mask_plain(text: str) -> str:
     text = _EMAIL.sub("[email]", text)
     text = _PHONE.sub("[phone]", text)
     return _ADDRESS.sub("[address]", text)
+
+
+def _mask_encoded(match: re.Match) -> str:
+    """A URL or query string (q=tape+98450%2012345, a%40b.com, next=%2Fsearch%3Fq%3D...) decoded, up to
+    three times for a URL inside a URL, and masked; unchanged when its decoded form holds nothing to mask."""
+    token = decoded = match.group(0)
+    for _ in range(3):
+        once = unquote_plus(decoded)
+        if once == decoded:
+            break
+        decoded = once
+        masked = _mask_plain(decoded)
+        if masked != decoded:
+            return masked
+    return token
+
+
+def mask_text(text: str) -> str:
+    """text with Indian mobile numbers, email addresses and street addresses replaced by placeholders, in
+    plain text and in URL-encoded text alike (URLs, query strings, fetch breadcrumbs)."""
+    if not text:
+        return text
+    text = _mask_plain(text)
+    if "%" in text or "+" in text:
+        text = _ENCODED.sub(_mask_encoded, text)
+    return text
 
 
 def mask_pii(value: Any, key: str | None = None) -> Any:
@@ -408,7 +438,10 @@ class RequestObservabilityMiddleware:
             }
             log.log(logging.WARNING if status >= 500 else logging.INFO, "request", extra=fields)
             _timer.reset(timer_token)
-            _request_id.reset(id_token)
+        # Reached only when the app returned. An unhandled exception leaves the request id set: the server
+        # (uvicorn) logs the traceback next, in this request's own task, so that line carries the id too.
+        # The task ends with the request, so the id goes nowhere else.
+        _request_id.reset(id_token)
 
 
 def _tag_sentry(request_id: str, role: str) -> None:
@@ -422,6 +455,15 @@ def _tag_sentry(request_id: str, role: str) -> None:
 
 
 def install(app: Any) -> None:
-    """Add the request middleware (outermost of the app's own middleware) and the database timing."""
+    """Wrap the app's whole middleware stack in the request middleware, and add the database timing.
+
+    The middleware sits outside Starlette's ServerErrorMiddleware too (add_middleware would put it inside),
+    so the 500 an unhandled exception turns into also carries X-Request-Id and Server-Timing, and its log
+    line its real status. Sentry's ASGI wrapper (Starlette.__call__) stays outside it, as before."""
     instrument_database()
-    app.add_middleware(RequestObservabilityMiddleware)
+    build_stack = app.build_middleware_stack
+
+    def build_observed_stack() -> ASGIApp:
+        return RequestObservabilityMiddleware(build_stack())
+
+    app.build_middleware_stack = build_observed_stack

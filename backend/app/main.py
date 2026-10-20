@@ -106,8 +106,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["content-type", "x-nearshop-client", "authorization"],
 )
-# Added last, so it is the outermost of the app's middleware: every response, CORS ones included, gets
-# its request id and Server-Timing, and every request its one log line.
+# Wraps the whole middleware stack (CORS and Starlette's own error handling included): every response,
+# the 500 of an unhandled exception included, gets its request id and Server-Timing, and every request its
+# one log line.
 observability.install(app)
 
 

@@ -72,6 +72,8 @@ os.environ["NEARSHOP_MEDIA_DIR"] = str(_tmp / "media")
 os.environ["NEARSHOP_MEDIA_BACKEND"] = "local"
 os.environ["NEARSHOP_MEDIA_PUBLIC_BASE_URL"] = ""
 os.environ["NEARSHOP_MODEL_DIR"] = str(_tmp / "models")
+# Error tracking stays off whatever backend/.env or the shell says: no test error reaches a real project.
+os.environ["NEARSHOP_SENTRY_DSN"] = ""
 
 from fastapi.testclient import TestClient  # noqa: E402
 

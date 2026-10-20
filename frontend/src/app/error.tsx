@@ -1,11 +1,19 @@
 "use client";
 
+import * as Sentry from "@sentry/nextjs";
 import { RotateCcw, TriangleAlert } from "lucide-react";
 import Link from "next/link";
+import { useEffect } from "react";
 
 import { Button } from "@/components/ui/button";
 
-export default function Error({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
+export default function Error({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+  // The boundary catches the error before Sentry's global handlers see it, so report it here (a no-op
+  // without NEXT_PUBLIC_SENTRY_DSN; events are scrubbed by src/lib/observability.ts).
+  useEffect(() => {
+    Sentry.captureException(error);
+  }, [error]);
+
   return (
     <div className="grid min-h-[70dvh] place-items-center px-4">
       <div className="max-w-md text-center">
