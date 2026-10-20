@@ -11,6 +11,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 Environment = Literal["development", "test", "staging", "production", "demo"]
 ENVIRONMENTS: tuple[str, ...] = get_args(Environment)
 MediaBackend = Literal["local", "s3"]
+BackupBackend = Literal["off", "local", "s3"]
 
 
 class Settings(BaseSettings):
@@ -61,6 +62,25 @@ class Settings(BaseSettings):
     media_public_base_url: str = ""  # https://media.example.com, no trailing slash needed
     max_upload_mb: int = 5
 
+    # Off-site backups (database/backup.py and database/restore.py; docs/runbooks/restore.md). off (the
+    # default): the tools refuse to run. local: sets in the directory backup_dir (development and drills
+    # on a laptop's local database). s3: the private Cloudflare R2 backup bucket, never a photo bucket; the
+    # endpoint, bucket and key pair are required then. Sets go under <backup_prefix>/<set id>/, and the
+    # prefix defaults to the environment name, so staging and production never mix even in one bucket.
+    # The API never reads these; only the two tools do, and they check them when they start.
+    backup_backend: BackupBackend = "off"
+    backup_dir: Path | None = None
+    backup_prefix: str = ""
+    backup_s3_endpoint: str = ""  # https://<account id>.r2.cloudflarestorage.com
+    backup_s3_bucket: str = ""
+    backup_s3_access_key_id: str = ""
+    backup_s3_secret_access_key: SecretStr = SecretStr("")
+    backup_s3_region: str = "auto"
+    # Retention (plan section 8.4): the newest set of each of the last 30 days, and the first set of
+    # each of the last 12 months, counting the current day and month. Every other set is deleted.
+    backup_keep_daily: int = 30
+    backup_keep_monthly: int = 12
+
     # Seed / location defaults
     seed_city: str = "ballari"
     # Password given to the seeded demo accounts. No default: the seed refuses to run until a long
@@ -94,6 +114,33 @@ class Settings(BaseSettings):
         if normalised not in get_args(MediaBackend):
             raise ValueError(f"NEARSHOP_MEDIA_BACKEND must be local or s3; got {value!r}")
         return normalised
+
+    @field_validator("backup_backend", mode="before")
+    @classmethod
+    def _check_backup_backend(cls, value: object) -> object:
+        # An empty value (a Render variable left blank) means off.
+        normalised = (value.strip().lower() or "off") if isinstance(value, str) else value
+        if normalised not in get_args(BackupBackend):
+            raise ValueError(f"NEARSHOP_BACKUP_BACKEND must be off, local or s3; got {value!r}")
+        return normalised
+
+    @field_validator("backup_dir", mode="before")
+    @classmethod
+    def _blank_backup_dir(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("backup_keep_daily", "backup_keep_monthly", mode="after")
+    @classmethod
+    def _check_backup_keep(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_BACKUP_KEEP_DAILY and NEARSHOP_BACKUP_KEEP_MONTHLY must be 1 or more")
+        return value
+
+    @property
+    def backup_set_prefix(self) -> str:
+        """Where this environment's backup sets live in the store: NEARSHOP_BACKUP_PREFIX, or the
+        environment name, without leading or trailing slashes."""
+        return self.backup_prefix.strip().strip("/") or self.environment
 
     @field_validator("media_public_base_url", mode="after")
     @classmethod

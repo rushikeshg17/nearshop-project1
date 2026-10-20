@@ -1,5 +1,5 @@
-.PHONY: setup db-up db-down schema migrate seed api web test retrain lint lint-backend lint-frontend build audit \
-	audit-waived-ghsas secret-scan ci smoke
+.PHONY: setup db-up db-down schema migrate seed backup restore api web test retrain lint lint-backend lint-frontend \
+	build audit audit-waived-ghsas secret-scan ci smoke
 
 # The local MongoDB from docker-compose.yml: a single-node replica set on localhost:27017.
 LOCAL_MONGODB_URI ?= mongodb://localhost:27017/?replicaSet=rs0
@@ -47,6 +47,31 @@ migrate: db-up
 seed: db-up
 	cd backend && NEARSHOP_MONGODB_URI='$(LOCAL_MONGODB_URI)' NEARSHOP_MONGODB_DB='$(LOCAL_MONGODB_DB)' \
 		uv run python -m database.seed.seed --confirm-db '$(LOCAL_MONGODB_DB)'
+
+# Off-site backups (backend/database/backup.py, backend/database/restore.py; docs/runbooks/restore.md).
+# Like migrate and seed, both always use the local database, whatever backend/.env points at, with a local
+# directory, BACKUP_DIR (outside the repository), as the store; the tools' own safeguards apply as they
+# are. Staging and production back up in their Render cron jobs and restore in one-off jobs there.
+#   make backup                                    # back up the local database, then delete expired sets
+#   make backup BACKUP_ARGS=--list                 # list the sets
+#   make restore TARGET_DB=nearshop_restored       # restore the latest set into an empty database
+#   make restore TARGET_DB=nearshop_restored BACKUP_SET=2026-10-21T213000Z
+# RESTORE_ARGS passes further flags (--list, or --emergency to restore into the production database name
+# after typing it).
+BACKUP_DIR ?= $(HOME)/.nearshop/backups
+BACKUP_ARGS ?=
+TARGET_DB ?=
+BACKUP_SET ?= latest
+RESTORE_ARGS ?=
+LOCAL_BACKUP_ENV = NEARSHOP_MONGODB_URI='$(LOCAL_MONGODB_URI)' NEARSHOP_MONGODB_DB='$(LOCAL_MONGODB_DB)' \
+	NEARSHOP_BACKUP_BACKEND=local NEARSHOP_BACKUP_DIR='$(BACKUP_DIR)'
+
+backup: db-up
+	cd backend && $(LOCAL_BACKUP_ENV) uv run python -m database.backup $(BACKUP_ARGS)
+
+restore: db-up
+	cd backend && $(LOCAL_BACKUP_ENV) uv run python -m database.restore --target-db '$(TARGET_DB)' \
+		--set '$(BACKUP_SET)' $(RESTORE_ARGS)
 
 api:
 	cd backend && uv run uvicorn app.main:app --reload --reload-dir app --port 8000

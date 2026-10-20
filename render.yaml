@@ -1,6 +1,9 @@
-# Render Blueprint for the NearShop API (the frontend is deployed on Vercel). Two services:
-#   nearshop-api-staging  tracks main     NEARSHOP_ENVIRONMENT=staging     Starter  (0.5 CPU, 512 MB)
-#   nearshop-api          tracks release  NEARSHOP_ENVIRONMENT=production  Standard (1 CPU, 2 GB), always on
+# Render Blueprint for the NearShop API (the frontend is deployed on Vercel). Two web services and two
+# cron jobs:
+#   nearshop-api-staging        tracks main     NEARSHOP_ENVIRONMENT=staging     Starter  (0.5 CPU, 512 MB)
+#   nearshop-api                tracks release  NEARSHOP_ENVIRONMENT=production  Standard (1 CPU, 2 GB), always on
+#   nearshop-backup-staging     tracks main     nightly off-site backup of the staging database
+#   nearshop-backup-production  tracks release  nightly off-site backup of the production database
 # Every change reaches staging first; production deploys only when release is fast-forwarded to a main
 # commit whose staging smoke test passed (docs/runbooks/release-and-rollback.md).
 #
@@ -126,3 +129,93 @@ services:
         sync: false # secret
       - key: NEARSHOP_MEDIA_PUBLIC_BASE_URL
         sync: false # the production bucket's public custom domain, for example https://media.<domain>
+
+  # Nightly off-site backup of the staging database (P1.6, backend/database/backup.py): every collection as
+  # gzipped BSON plus a manifest, in the private backup bucket under staging/<set id>/, then sets older than
+  # the retention rule (30 daily, 12 monthly) are deleted. Every run writes a row to backup_runs in the
+  # staging database: the heartbeat (alert when no run has succeeded for 26 hours). Restores and the drill
+  # run as one-off jobs on this service (docs/runbooks/restore.md), which reuse its settings.
+  - type: cron
+    name: nearshop-backup-staging
+    runtime: python
+    plan: starter
+    region: singapore
+    branch: main
+    rootDir: backend
+    schedule: "30 21 * * *" # 21:30 UTC, 03:00 IST
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: uv run --no-dev python -m database.backup
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: NEARSHOP_ENVIRONMENT
+        value: staging
+      # The same database as the staging API: its connection string is read from that service, so it is
+      # entered once, in the API's settings.
+      - key: NEARSHOP_MONGODB_URI
+        fromService:
+          type: web
+          name: nearshop-api-staging
+          envVarKey: NEARSHOP_MONGODB_URI
+      - key: NEARSHOP_MONGODB_DB
+        value: nearshop
+      - key: NEARSHOP_BACKUP_PREFIX
+        value: staging
+      # The private backup bucket (never a photo bucket) and an R2 API token scoped to it, Object Read &
+      # Write. Until NEARSHOP_BACKUP_BACKEND is s3 every run fails with "NEARSHOP_BACKUP_BACKEND is off".
+      - key: NEARSHOP_BACKUP_BACKEND
+        sync: false # s3
+      - key: NEARSHOP_BACKUP_S3_ENDPOINT
+        sync: false # https://<account id>.r2.cloudflarestorage.com
+      - key: NEARSHOP_BACKUP_S3_BUCKET
+        sync: false # the staging backup bucket
+      - key: NEARSHOP_BACKUP_S3_ACCESS_KEY_ID
+        sync: false # secret: the staging backup token, never the photo token
+      - key: NEARSHOP_BACKUP_S3_SECRET_ACCESS_KEY
+        sync: false # secret
+
+  # Nightly off-site backup of the production database (P1.6, backend/database/backup.py): every collection as
+  # gzipped BSON plus a manifest, in the private backup bucket under production/<set id>/, then sets older than
+  # the retention rule (30 daily, 12 monthly) are deleted. Every run writes a row to backup_runs in the
+  # production database: the heartbeat (alert when no run has succeeded for 26 hours). Restores and the drill
+  # run as one-off jobs on this service (docs/runbooks/restore.md), which reuse its settings.
+  - type: cron
+    name: nearshop-backup-production
+    runtime: python
+    plan: starter
+    region: singapore
+    branch: release
+    rootDir: backend
+    schedule: "30 21 * * *" # 21:30 UTC, 03:00 IST
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: uv run --no-dev python -m database.backup
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: NEARSHOP_ENVIRONMENT
+        value: production
+      # The same database as the production API: its connection string is read from that service, so it is
+      # entered once, in the API's settings.
+      - key: NEARSHOP_MONGODB_URI
+        fromService:
+          type: web
+          name: nearshop-api
+          envVarKey: NEARSHOP_MONGODB_URI
+      - key: NEARSHOP_MONGODB_DB
+        value: nearshop
+      - key: NEARSHOP_BACKUP_PREFIX
+        value: production
+      # The private backup bucket (never a photo bucket) and an R2 API token scoped to it, Object Read &
+      # Write. Until NEARSHOP_BACKUP_BACKEND is s3 every run fails with "NEARSHOP_BACKUP_BACKEND is off".
+      - key: NEARSHOP_BACKUP_BACKEND
+        sync: false # s3
+      - key: NEARSHOP_BACKUP_S3_ENDPOINT
+        sync: false # https://<account id>.r2.cloudflarestorage.com
+      - key: NEARSHOP_BACKUP_S3_BUCKET
+        sync: false # the production backup bucket
+      - key: NEARSHOP_BACKUP_S3_ACCESS_KEY_ID
+        sync: false # secret: the production backup token, never the photo token
+      - key: NEARSHOP_BACKUP_S3_SECRET_ACCESS_KEY
+        sync: false # secret
