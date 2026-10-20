@@ -1,0 +1,41 @@
+# Waivers for the dependency-audit check (.github/workflows/ci.yml, make audit).
+#
+# The audit fails on every high or critical advisory in the frontend's production dependencies
+# (npm audit --omit=dev) and in backend/uv.lock (uv audit), unless that advisory is waived here for
+# that package. It also fails when any waiver below has expired, has an expiry more than 30 days
+# ahead, or is missing a field. A waiver buys time for a fix; it is not a fix. Renew one only with a
+# new reason, and remove it in the change that fixes the advisory.
+#
+# Each waiver names:
+#   advisory: the GHSA id (or another id the advisory is listed under, such as a CVE or PYSEC id)
+#   package:  the vulnerable package, as npm or PyPI names it
+#   reason:   why it cannot be fixed yet, and what fixes it
+#   expires:  YYYY-MM-DD, at most 30 days after the day the waiver is added or renewed
+#
+# Waived GHSA ids are also passed to GitHub's dependency review on pull requests.
+
+waivers:
+  - advisory: GHSA-cjq9-62q9-8jv4
+    package: next
+    reason: >-
+      SSRF in Next.js image optimization, fixed in next 16.3.8. frontend/package.json pins next (and
+      eslint-config-next) to 16.3.7; the upgrade and lockfile change is a separate frontend change
+      outside P1.2's files. The app does not use next/image, but the /_next/image endpoint is still
+      served, so upgrade before this expires.
+    expires: 2026-11-19
+  - advisory: GHSA-68fv-2mgg-jv7q
+    package: source-map-js
+    reason: >-
+      Denial of service when parsing a crafted indexed source map, fixed in source-map-js 1.2.2.
+      Reached only through postcss (from next and shadcn) while building CSS from the repo's own
+      files, never with user input at runtime. Fix with a lockfile refresh (npm update source-map-js)
+      in the frontend dependency change.
+    expires: 2026-11-19
+  - advisory: GHSA-vfj7-8cjw-p6xm
+    package: braces
+    reason: >-
+      Stack-exhaustion denial of service on deeply nested brace patterns. Reached only through the
+      shadcn command-line tool (shadcn > fast-glob > micromatch > braces), which runs on a developer's
+      machine with the repo's own glob patterns; the site imports only shadcn/tailwind.css. Fix by
+      moving shadcn to devDependencies, or by updating it once a fixed braces is in its tree.
+    expires: 2026-11-19

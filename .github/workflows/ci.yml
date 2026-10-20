@@ -1,0 +1,165 @@
+# Continuous integration: every pull request and every push to main runs four checks. main is
+# protected on all four (backend, frontend, secret-scan, dependency-audit), and Render deploys only a
+# commit whose checks passed (render.yaml, autoDeployTrigger: checksPass). make ci runs the same
+# checks locally, apart from GitHub's dependency review.
+#
+# CI never receives a MongoDB Atlas URI or any other secret: the tests run against a throwaway
+# MongoDB inside the backend job, and the frontend build uses a dummy API origin.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Every Monday on main, only the dependency audit runs, so a new advisory against unchanged code
+  # is caught. 03:30 UTC is 09:00 in India.
+  schedule:
+    - cron: "30 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  UV_VERSION: "0.12.19" # has uv audit; keep in step with the team's uv
+  NODE_VERSION: "24"
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb # linux_x64 tarball
+
+jobs:
+  backend:
+    name: backend
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      UV_LOCKED: "1" # fail if backend/uv.lock is out of date with pyproject.toml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install the locked dependencies
+        working-directory: backend
+        run: uv sync --locked
+
+      - name: Ruff
+        run: make lint-backend
+
+      # docker-compose.yml runs mongo:7.0 as the single-node replica set rs0. Its health check
+      # initiates the set, and --wait returns only once this node is a writable primary.
+      - name: Start MongoDB (single-node replica set) and wait until it is primary
+        run: make db-up
+
+      - name: Pytest
+        env:
+          NEARSHOP_TEST_MONGODB_URI: mongodb://127.0.0.1:27017/?directConnection=true
+        run: make test DB_UP=
+
+      - name: MongoDB logs (on failure)
+        if: failure()
+        run: docker compose logs --tail 200 mongo
+
+  frontend:
+    name: frontend
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Clean install from package-lock.json
+        working-directory: frontend
+        run: npm ci
+
+      - name: tsc and eslint
+        run: make lint-frontend
+
+      - name: Production build
+        env:
+          NEARSHOP_API_ORIGIN: http://api.invalid # dummy: the build only writes it into the proxy rewrites
+        run: make build
+
+  secret-scan:
+    name: secret-scan
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the full history of every branch and tag
+          persist-credentials: false
+
+      - name: Install gitleaks ${{ env.GITLEAKS_VERSION }} (checksum verified)
+        working-directory: ${{ runner.temp }}
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLo "$tarball" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum --check --strict
+          mkdir -p gitleaks-bin && tar -xzf "$tarball" -C gitleaks-bin gitleaks
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
+
+      - name: gitleaks over the full git history
+        run: make secret-scan
+
+  dependency-audit:
+    name: dependency-audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # npm audit of the frontend's production dependencies and uv audit of backend/uv.lock. Fails on
+      # any high or critical advisory not waived in .github/dependency-waivers.yml, and on any expired
+      # waiver or one that runs more than 30 days ahead.
+      - name: npm and uv audit against the waivers
+        run: make audit
+
+      - name: Read the waived advisories for dependency review
+        id: waivers
+        if: github.event_name == 'pull_request'
+        run: echo "ghsas=$(make -s audit-waived-ghsas)" >> "$GITHUB_OUTPUT"
+
+      # Blocks a pull request that adds or upgrades to a dependency with a high or critical advisory,
+      # in any ecosystem GitHub's dependency graph reads (npm, uv/pip, GitHub Actions).
+      - name: GitHub dependency review
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          allow-ghsas: ${{ steps.waivers.outputs.ghsas }}

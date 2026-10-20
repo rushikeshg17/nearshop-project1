@@ -13,7 +13,9 @@ services:
       uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"
     startCommand: uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
-    autoDeploy: true
+    # Deploy a push to main only after its GitHub checks pass (.github/workflows/ci.yml). Replaces the
+    # deprecated autoDeploy: true, which deployed every push untested.
+    autoDeployTrigger: checksPass
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.7

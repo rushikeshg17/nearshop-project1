@@ -1,0 +1,31 @@
+# gitleaks configuration for the secret-scan check (.github/workflows/ci.yml, make secret-scan).
+# CI scans the full git history (every commit on every ref) with gitleaks' default rules and fails on
+# any finding. Never allow-list a real credential: rotate it, then remove it from the code.
+title = "NearShop secret scan"
+
+[extend]
+useDefault = true
+
+# The placeholder values that backend/.env.example ships, now or in earlier commits. Each one must
+# match both the file and the whole value on its line, so the same text anywhere else, or a longer
+# value that starts with it, is still reported.
+[[allowlists]]
+description = "Placeholder values in backend/.env.example"
+condition = "AND"
+paths = ['''^backend/\.env\.example$''']
+regexTarget = "line"
+regexes = [
+  '''(?m)NEARSHOP_SECRET_KEY=change-me\r?$''',
+  '''(?m)NEARSHOP_MONGODB_URI=mongodb\+srv://<user>:<password>@<cluster>\.mongodb\.net/\?retryWrites=true&w=majority\r?$''',
+  '''(?m)NEARSHOP_MONGODB_URI=mongodb://localhost:27017/\?replicaSet=rs0\r?$''',
+]
+
+# Not a credential: the SHA-256 digest of the retired demo password, which backend/.env.example
+# published until P0.1 and which P0.2 rotated out. The seed keeps the digest only to refuse that old
+# value (backend/database/seed/seed.py, RETIRED_DEMO_PASSWORD_SHA256). The plain value is already in
+# the public history, so the digest discloses nothing new. Matched on this exact value and file only.
+[[allowlists]]
+description = "Digest of the retired, public demo password in the seed"
+condition = "AND"
+paths = ['''^backend/database/seed/seed\.py$''']
+regexes = ['''^8cd5cf5588bf26aa04d49f072334e1657dc77d21034a55010b98f60239895528$''']
