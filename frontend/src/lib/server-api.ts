@@ -2,6 +2,7 @@ import "server-only";
 
 import { unstable_cache } from "next/cache";
 import { headers } from "next/headers";
+import { userAgent } from "next/server";
 import { cache } from "react";
 
 import type { ProductDetail, ShopDetail, SitemapEntries } from "@/lib/types";
@@ -16,6 +17,14 @@ import type { ProductDetail, ShopDetail, SitemapEntries } from "@/lib/types";
 //   page view caused the call, not the Vercel function that makes it.
 // It never forwards the visitor's cookies or session: what it fetches is the same for everyone, so it is
 // cached across visitors (for REVALIDATE_SECONDS), and the pages hold nothing personal.
+//
+// Decision (P2.8, to carry into P2.9): what is cached is the API data, not the HTML. Reading the visitor's
+// address calls headers(), which makes the product and shop pages render on every view (Cache-Control:
+// private, no-store), as a function run with the data from the cache. The alternative, a page cached whole
+// at the CDN, would have to call the API with no visitor address, so every cache miss, a crawler's included,
+// would count against the address of Vercel's function, which all visitors share. Per-IP limits on the
+// visitor (P2.3) were chosen over a CDN-cached page, so the "cached page" time to first byte is a warm
+// function plus a data-cache hit; P2.9 measures it and revisits this if it misses 200 ms.
 
 const API_ORIGIN = (process.env.NEARSHOP_API_ORIGIN ?? "http://127.0.0.1:8000").replace(/\/+$/, "");
 const EDGE_HEADER = "x-nearshop-edge";
@@ -95,10 +104,29 @@ async function fetchFromApi<T>(path: string, clientIp: string | undefined): Prom
   return { status: 200, data: (await res.json()) as T };
 }
 
-/** GET a location-independent, public API path, shared by every visitor for `revalidate` seconds. On a miss,
- * the call carries the address of the visitor whose request made it. */
+type Stamped<T> = { fetchedAt: number; result: ApiResult<T> };
+
+/** GET a location-independent, public API path, shared by every visitor for at most `revalidate` seconds. On a
+ * miss, the call carries the address of the visitor whose request made it.
+ *
+ * unstable_cache is stale-while-revalidate: past `revalidate`, it hands the old entry to one more request and
+ * refreshes it in the background. A page visited rarely (as crawlers visit) would then get data as old as its
+ * last visit, whether hours or days: a removed listing or a paused shop answering 200 with its old price and
+ * stock. So each entry carries the time it was fetched, and one older than `revalidate` is not used: that
+ * request fetches the data itself, while unstable_cache's own background refresh renews the entry for the next. */
 async function cachedGet<T>(path: string, revalidate: number, clientIp: string | undefined): Promise<ApiResult<T>> {
-  return unstable_cache(() => fetchFromApi<T>(path, clientIp), ["nearshop-api", path], { revalidate })();
+  const stamped = await unstable_cache(
+    async (): Promise<Stamped<T>> => ({ fetchedAt: Date.now(), result: await fetchFromApi<T>(path, clientIp) }),
+    ["nearshop-api-v2", path],
+    { revalidate },
+  )();
+  if (Date.now() - stamped.fetchedAt <= revalidate * 1000) return stamped.result;
+  return fetchFromApi<T>(path, clientIp);
+}
+
+/** Whether this request comes from a known crawler (Next.js's own list, as it uses for metadata streaming). */
+export async function isCrawler(): Promise<boolean> {
+  return userAgent({ headers: await headers() }).isBot;
 }
 
 // React's cache: generateMetadata and the page ask once per request.

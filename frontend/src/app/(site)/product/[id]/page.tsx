@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
 import { formatPrice } from "@/lib/format";
-import { absoluteUrl, getProduct, indexingEnabled, jsonLdScript, type ApiResult } from "@/lib/server-api";
+import { absoluteUrl, getProduct, indexingEnabled, isCrawler, jsonLdScript, type ApiResult } from "@/lib/server-api";
 import type { ProductDetail } from "@/lib/types";
 
 import { ProductView } from "./product-view";
@@ -23,7 +23,7 @@ function productId(raw: string): number | null {
 }
 
 /** The listing, or notFound() (HTTP 404) when the API has none; null when the API could not be reached, in
- * which case the page falls back to loading it in the browser. */
+ * which case the page falls back to loading it in the browser (crawlers get HTTP 500 instead). */
 async function load(raw: string): Promise<ProductDetail | null> {
   const id = productId(raw);
   if (id === null) notFound();
@@ -32,6 +32,9 @@ async function load(raw: string): Promise<ProductDetail | null> {
     result = await getProduct(id);
   } catch (err) {
     console.error("product page: server fetch failed", err);
+    // A crawler gets the error, so HTTP 500: it keeps what it has and retries later, instead of indexing an
+    // empty shell under a generic title. A visitor gets the page, which then loads in the browser.
+    if (await isCrawler()) throw err;
     return null;
   }
   if (result.status === 404) notFound();
@@ -46,7 +49,7 @@ function stockText(p: ProductDetail): string {
 export async function generateMetadata({ params }: PageProps<"/product/[id]">): Promise<Metadata> {
   const { id } = await params;
   const p = await load(id);
-  if (!p) return { title: "Product" };
+  if (!p) return { title: "Product", robots: { index: false, follow: false } };
   const shop = p.shop;
   const title = `${p.name} at ${shop.name}, ${shop.city}`;
   const description =

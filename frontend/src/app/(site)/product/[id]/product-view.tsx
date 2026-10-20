@@ -14,7 +14,6 @@ import {
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
-import { motion } from "motion/react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
@@ -115,9 +114,10 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
         {/* ---------------------------------------------------------- left: item */}
         <div className="min-w-0 space-y-10">
           <div className="grid gap-6 sm:grid-cols-[200px_minmax(0,1fr)] sm:items-start xl:grid-cols-[260px_minmax(0,1fr)]">
-            <motion.div initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.4 }}>
+            {/* No entrance fade: the server HTML would carry opacity 0, hiding the photo until scripts run. */}
+            <div>
               <ProductThumb icon={p.icon} imageUrl={p.image_url} hue={p.category_detail.color_hue} alt={p.name} size="xl" className="max-sm:mx-auto max-sm:max-w-56" />
-            </motion.div>
+            </div>
             <div>
               {p.brand && <p className="text-sm font-medium tracking-wide text-muted-foreground uppercase">{p.brand}</p>}
               <h1 className="mt-1 text-2xl leading-tight font-semibold md:text-3xl">{p.name}</h1>

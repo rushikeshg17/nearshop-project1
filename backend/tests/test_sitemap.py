@@ -47,6 +47,14 @@ def test_sitemap_lists_only_active_listings_of_live_shops(client, db, ids, hidde
         assert entry["updated_at"].endswith("Z")
 
 
+def test_pages_the_sitemap_leaves_out_answer_404(client, ids, hidden):
+    """Search engines see only what customers may see: a paused shop's page and its listings are 404 too."""
+    assert client.get("/api/shops/shop-b").status_code == 404
+    assert client.get(f"/api/products/{ids['tape_far']}").status_code == 404  # active listing, paused shop
+    assert client.get(f"/api/products/{ids['charger']}").status_code == 404  # inactive listing
+    assert client.get(f"/api/products/{ids['tape']}").status_code == 200
+
+
 def test_sitemap_lists_every_live_shop_and_active_listing(client, db, ids):
     data = client.get("/api/sitemap").json()
     slugs, listing_ids = {s["slug"] for s in data["shops"]}, {p["id"] for p in data["listings"]}

@@ -89,14 +89,22 @@ def product_detail(product_id: int, db: DB, user: OptionalUser, lat: float | Non
                                       "status": {"$in": list(reservation_service.ACTIVE)}})
         return {"id": r.id, "code": r.code, "status": r.status.value} if r else None
 
+    def own_shop() -> Shop | None:
+        s = db.shops.get(p.shop_id)
+        return with_categories(db, [s])[0] if s is not None else None
+
     shop, catalog, peers, own_reviews, sold_30d, reservation = db.gather(
-        lambda: with_categories(db, [db.shops.get(p.shop_id)])[0],
+        own_shop,
         lambda: db.catalog_items.get(p.catalog_item_id),
         same_item,
         lambda: db.reviews.find({"product_id": p.id}, sort=[("created_at", -1)], limit=6),
         lambda: _sold_last_30d(db, p.id),
         my_reservation,
     )
+    # A paused shop's listings are hidden like its shop page (_shop_by_slug) and the sitemap (LIVE_SHOP): the
+    # server-rendered product page answers 404 for them, so search engines never index what customers cannot see.
+    if shop is None or not shop.is_active:
+        raise NotFound("This product is no longer listed")
     distance = _dist(lat, lng, shop)
 
     others = [listing(r, shop_brief(r.shop, _dist(lat, lng, r.shop))) for r in peers if r.id != p.id]

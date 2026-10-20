@@ -19,8 +19,10 @@ export default async function robots(): Promise<MetadataRoute.Robots> {
     rules: {
       userAgent: "*",
       allow: "/",
-      // Signed-in areas and the API. "/shop/" (the owner console) does not cover the public /shops/ pages.
-      disallow: ["/account/", "/shop/", "/admin/", "/api/"],
+      // Signed-in areas and the API. Rules match by prefix, so "/account" and "/admin" cover those roots and
+      // everything under them. The owner console is "/shop" exactly ($ ends the match) and "/shop/", neither of
+      // which covers the public /shops/ pages.
+      disallow: ["/account", "/admin", "/shop$", "/shop/", "/api/"],
     },
     sitemap: Array.from({ length: count }, (_, id) => absoluteUrl(`/sitemap/${id}.xml`)),
   };

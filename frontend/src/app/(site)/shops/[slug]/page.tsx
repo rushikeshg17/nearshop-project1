@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
-import { absoluteUrl, getShop, indexingEnabled, jsonLdScript, type ApiResult } from "@/lib/server-api";
+import { absoluteUrl, getShop, indexingEnabled, isCrawler, jsonLdScript, type ApiResult } from "@/lib/server-api";
 import type { ShopDetail } from "@/lib/types";
 
 import { ShopView } from "./shop-view";
@@ -18,7 +18,7 @@ const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
 const HOURS = /(\d{1,2})(?::(\d{2}))?\s*([AP]M)\s*[-–to]+\s*(\d{1,2})(?::(\d{2}))?\s*([AP]M)/i;
 
 /** The shop, or notFound() (HTTP 404) when the API has none; null when the API could not be reached, in which
- * case the page falls back to loading it in the browser. */
+ * case the page falls back to loading it in the browser (crawlers get HTTP 500 instead). */
 async function load(slug: string): Promise<ShopDetail | null> {
   if (!SLUG.test(slug)) notFound();
   let result: ApiResult<ShopDetail>;
@@ -26,6 +26,9 @@ async function load(slug: string): Promise<ShopDetail | null> {
     result = await getShop(slug);
   } catch (err) {
     console.error("shop page: server fetch failed", err);
+    // A crawler gets the error, so HTTP 500: it keeps what it has and retries later, instead of indexing an
+    // empty shell under a generic title. A visitor gets the page, which then loads in the browser.
+    if (await isCrawler()) throw err;
     return null;
   }
   if (result.status === 404) notFound();
@@ -39,7 +42,7 @@ function place(s: ShopDetail): string {
 export async function generateMetadata({ params }: PageProps<"/shops/[slug]">): Promise<Metadata> {
   const { slug } = await params;
   const s = await load(slug);
-  if (!s) return { title: "Shop" };
+  if (!s) return { title: "Shop", robots: { index: false, follow: false } };
   const title = `${s.name}, ${place(s)}`;
   const rating = s.rating_avg !== null && s.rating_count > 0 ? ` Rated ${s.rating_avg.toFixed(1)} from ${s.rating_count} reviews.` : "";
   const description =
@@ -93,7 +96,7 @@ function shopJsonLd(s: ShopDetail) {
     "@id": url,
     name: s.name,
     url,
-    ...(s.description || s.tagline ? { description: s.description ?? s.tagline } : {}),
+    ...(s.description || s.tagline ? { description: s.description || s.tagline } : {}),
     ...(s.image_url ? { image: [absoluteUrl(s.image_url)] } : {}),
     ...(s.phone ? { telephone: s.phone } : {}),
     address: {
