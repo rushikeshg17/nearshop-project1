@@ -15,9 +15,11 @@ Scenarios (one Locust user class each):
   OwnerUser        an owner's dashboard: GET /api/owner/overview every 15 s, as the site polls it.
   ReservationUser  a staging test customer reserves one unit of an in-stock pickup listing and cancels it,
                    once every NEARSHOP_LOADTEST_RESERVE_PACE seconds (360: the plan's 10 per customer per hour).
-The owner and customer users sign in with staging test accounts from NEARSHOP_LOADTEST_ACCOUNTS, a CSV file
-kept outside the repository with the columns role,email,password (role owner or customer). One user runs per
-account; without the file both classes are off. Credentials are never printed or written anywhere.
+The owner and customer users sign in with staging test accounts from NEARSHOP_LOADTEST_ACCOUNTS, the absolute
+path of a CSV file kept outside the repository with the columns role,email,password (role owner or customer).
+One user runs per account; without the file both classes are off. Credentials are never printed or written
+anywhere. python loadtest/locustfile.py count-accounts prints how many accounts the file gives (make loadtest
+adds that many users to -u), read exactly as the run reads it.
 
 Targets: 30 SearchUsers for 10 minutes. The owner and reservation users come on top (fixed counts), so
 -u is 30 plus the number of accounts. NEARSHOP_LOADTEST_SHAPE=steps instead steps the search users through
@@ -30,6 +32,11 @@ end-to-end minus app. When the run stops, a summary is printed and written as JS
 NEARSHOP_LOADTEST_SUMMARY (default ~/.nearshop/loadtest/summary-<UTC time>.json): p50, p95 and p99 per
 endpoint, server-side and end to end, pool queue wait p95, error rates, the Vercel edge and function
 regions seen (x-vercel-id), each step's p95 and error rate, and a pass or fail for each target.
+
+Pool queue wait p95 is taken per endpoint over the requests whose dbq is above 0, so the many requests that
+never queue (a single query, a transaction, a page with nothing to gather) do not dilute it. dbq is a
+request's total over its gathered tasks, not one task's wait. The target is judged on search and on the
+worst endpoint.
 
 Safety: the run refuses to start against the production site (nearshop-umber.vercel.app and every host in
 NEARSHOP_PRODUCTION_URL, comma-separated), against a Render URL (go through Vercel, as users do), and
@@ -88,13 +95,18 @@ LOGIN = "POST /api/auth/login"
 # ------------------------------------------------------------------ configuration
 
 
+def _host_name(value: str) -> str:
+    """A host name compared as DNS does: lower case, without the trailing dot of a fully qualified name."""
+    return value.strip().lower().rstrip(".")
+
+
 def check_target(host: str | None, confirm: str | None, production: str | None) -> str | None:
     """Why the run must not start against host, or None when it may."""
     parts = urlsplit(host or "")
-    name = (parts.hostname or "").lower()
+    name = _host_name(parts.hostname or "")
     if not name:
         return "no --host given: pass the staging Vercel URL, for example --host https://<staging host>"
-    refused = PRODUCTION_HOSTS | {(urlsplit(u.strip()).hostname or u.strip()).lower()
+    refused = PRODUCTION_HOSTS | {_host_name(urlsplit(u.strip()).hostname or u)
                                   for u in (production or "").split(",") if u.strip()}
     if name in refused:
         return f"{name} is production. Load-test staging only."
@@ -104,7 +116,7 @@ def check_target(host: str | None, confirm: str | None, production: str | None) 
         return f"{name} is a Render URL. Load-test through the staging Vercel URL, as users reach the API."
     if parts.scheme != "https":
         return f"{host} is not https. Use the staging Vercel URL."
-    if (confirm or "").strip().lower() != name:
+    if _host_name(confirm or "") != name:
         return (f"set NEARSHOP_LOADTEST_CONFIRM_HOST={name} to confirm that {name} is staging "
                 "(resized to the production plan for the run)")
     return None
@@ -116,10 +128,17 @@ def load_queries(path: Path = HERE / "queries.csv") -> list[str]:
 
 
 def load_accounts(path: str | None) -> dict[str, list[tuple[str, str]]]:
+    """The test accounts by role. The path must be absolute (or start with ~), so that make loadtest, which
+    counts them from the repository root, and Locust, which runs in backend/, read the same file."""
     accounts: dict[str, list[tuple[str, str]]] = {"owner": [], "customer": []}
     if not path:
         return accounts
-    with open(os.path.expanduser(path), newline="", encoding="utf-8") as f:
+    file = Path(path).expanduser()
+    if not file.is_absolute():
+        raise SystemExit(f"NEARSHOP_LOADTEST_ACCOUNTS must be an absolute path, not {path}")
+    if not file.is_file():
+        raise SystemExit(f"NEARSHOP_LOADTEST_ACCOUNTS: there is no file {file}")
+    with file.open(newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             role = (row.get("role") or "").strip().lower()
             if role in accounts and row.get("email") and row.get("password"):
@@ -195,6 +214,8 @@ def _stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     e2e = [r["e2e"] for r in ok]
     app = [r["app"] for r in ok if r["app"] is not None]
     network = [r["e2e"] - r["app"] for r in ok if r["app"] is not None]
+    dbq = [r["dbq"] for r in ok if r["dbq"] is not None]
+    queued = [v for v in dbq if v > 0]  # requests that waited in the pool; the rest never queued
     return {
         "requests": len(rows), "errors": len(rows) - len(ok),
         "error_rate": round((len(rows) - len(ok)) / len(rows), 4) if rows else None,
@@ -202,7 +223,8 @@ def _stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "server_ms": {f"p{q}": percentile(app, q) for q in (50, 95, 99)},
         "network_ms": {f"p{q}": percentile(network, q) for q in (50, 95)},
         "db_ms_p95": percentile([r["db"] for r in ok if r["db"] is not None], 95),
-        "pool_queue_ms_p95": percentile([r["dbq"] for r in ok if r["dbq"] is not None], 95),
+        "pool_queued_requests": len(queued),
+        "pool_queue_ms_p95": percentile(queued, 95) if queued else (0.0 if dbq else None),
     }
 
 
@@ -223,6 +245,9 @@ def summarize(rows: list[dict[str, Any]], host: str | None) -> dict[str, Any]:
     e2e95, app95 = search["end_to_end_ms"]["p95"], search["server_ms"]["p95"]
     network_share = round((e2e95 - app95) / e2e95, 3) if e2e95 and app95 is not None else None
     edge95 = (endpoints.get(EDGE) or _stats([]))["end_to_end_ms"]["p95"]
+    pool = {name: s["pool_queue_ms_p95"] for name, s in endpoints.items()
+            if name not in (LOGIN, EDGE) and s["pool_queue_ms_p95"] is not None}
+    worst_pool = max(pool, key=pool.__getitem__, default=None)
 
     by_users: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for r in measured:
@@ -240,7 +265,8 @@ def summarize(rows: list[dict[str, Any]], host: str | None) -> dict[str, Any]:
         "server_search_p95_ms<=600": _verdict(app95, SERVER_SEARCH_P95_MS),
         "end_to_end_search_p95_ms<=1200": _verdict(e2e95, END_TO_END_P95_MS),
         "error_rate<0.5%": _verdict(overall["error_rate"], MAX_ERROR_RATE, strict=True),
-        "pool_queue_wait_p95_ms<=50": _verdict(overall["pool_queue_ms_p95"], POOL_QUEUE_P95_MS),
+        "pool_queue_wait_p95_ms<=50 (search)": _verdict(search["pool_queue_ms_p95"], POOL_QUEUE_P95_MS),
+        "pool_queue_wait_p95_ms<=50 (worst endpoint)": _verdict(pool.get(worst_pool), POOL_QUEUE_P95_MS),
         "peak_memory<=75%_of_RAM": "READ FROM RENDER METRICS",
     }
     stay = (e2e95 is not None and network_share is not None and e2e95 <= END_TO_END_P95_MS
@@ -249,6 +275,8 @@ def summarize(rows: list[dict[str, Any]], host: str | None) -> dict[str, Any]:
         "host": host, "finished_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "peak_users": max((r["users"] for r in rows), default=0),
         "overall": overall, "endpoints": endpoints, "targets": targets,
+        "pool_queue": {"search_p95_ms": search["pool_queue_ms_p95"], "worst_endpoint": worst_pool,
+                       "worst_p95_ms": pool.get(worst_pool)},
         "region": {"search_end_to_end_p95_ms": e2e95, "search_server_p95_ms": app95,
                    "network_share_of_end_to_end_p95": network_share, "edge_only_p95_ms": edge95,
                    "rule": "stay in Singapore" if stay else "write the move recommendation",
@@ -268,6 +296,9 @@ def _print_summary(summary: dict[str, Any]) -> None:
               f"{s['pool_queue_ms_p95']!s:>8}")
     for target, verdict in summary["targets"].items():
         print(f"  {verdict:24} {target}")
+    pool = summary["pool_queue"]
+    print(f"  pool queue wait p95 (requests that queued): search {pool['search_p95_ms']} ms; worst "
+          f"{pool['worst_endpoint']} {pool['worst_p95_ms']} ms")
     region = summary["region"]
     print(f"  region: network {region['network_share_of_end_to_end_p95']} of search end-to-end p95 "
           f"({region['search_end_to_end_p95_ms']} ms); {region['rule']}; seen {region['vercel_regions_seen']}")
@@ -467,3 +498,11 @@ if os.environ.get("NEARSHOP_LOADTEST_SHAPE") == "steps":
             if step >= len(self.levels):
                 return None
             return self.levels[step] + self.fixed, 5.0
+
+
+if __name__ == "__main__":  # python loadtest/locustfile.py count-accounts: the users make loadtest adds to -u
+    import sys
+
+    if sys.argv[1:] != ["count-accounts"]:
+        raise SystemExit("usage: python loadtest/locustfile.py count-accounts")
+    print(len(ACCOUNTS["owner"]) + len(ACCOUNTS["customer"]))

@@ -41,8 +41,11 @@ has every number.
 - **Regions.** The x-vercel-id header gives the Vercel edge and function regions of every response.
 - **Breaking point.** make loadtest-steps steps the search users through 30, 45, 60, 90, 120, 150 and 200,
   2 minutes each. The breaking point is the first step where end-to-end p95 exceeds 2 s or errors exceed 1%.
-- **Pool queue wait p95.** The p95 over requests of dbq, the per-request total. Each task's own wait is at
-  most that total, so the per-task p95 is no higher. If this figure passes, the per-task one does too.
+- **Pool queue wait p95.** The p95 of dbq, per endpoint, over the requests whose dbq is above 0. Many
+  requests never queue (a single query, a transaction such as POST /api/reservations, a page with nothing
+  to gather) and report 0; counting them would dilute the figure and could hide long waits on search. The
+  target is judged twice: on search, and on the worst endpoint. dbq is a request's total over its gathered
+  tasks, not a single task's wait, so this is not a per-task percentile.
 - **Peak memory.** Locust cannot see it. Read it from Render: Dashboard > nearshop-api-staging > Metrics >
   Memory, the highest value during the run. For scale, the semantic index is about 2 MB at 1,351 listings
   and would be about 77 MB at 50,000. The embedding model also stays in memory.
@@ -69,13 +72,18 @@ Copy the numbers into the tables below.
    production's would not be. Either point staging at a temporary Flex cluster for the run, or record that
    the run used M0 next to any database bottleneck.
 3. **Rate limits.** Keep NEARSHOP_RATE_LIMIT_MODE at log_only on staging (its default). All load comes from
-   one or two IP addresses. At 30 users that is about 150 searches a minute from one address, above the
-   per-IP limit of 120 a minute that real visitors behind carrier NAT also share. Count the "would limit"
-   log lines afterwards, and note them under Bottlenecks if real traffic could hit them.
+   one or two IP addresses. At 30 users that is about 150 searches and 450 suggest calls (three per search)
+   a minute from one address. Both are above the per-IP limits that real visitors behind carrier NAT also
+   share: search_ip, 120 a minute, and suggest_ip, 240 a minute (backend/app/core/ratelimit.py). The
+   product and shop pages come to about 280 calls a minute, close to catalog_read, 300 a minute per IP. Count the
+   "would limit" log lines for each rule afterwards, and note them under Bottlenecks if real traffic could
+   hit them.
 4. **Test accounts.** Create staging test accounts as in the release-and-rollback runbook: 2 owners, each
    with a shop, and 2 customers, with random passwords. List them in a CSV file outside the repository,
-   with the columns role,email,password (role owner or customer). Point NEARSHOP_LOADTEST_ACCOUNTS at it.
-   The script never prints them.
+   with the columns role,email,password (role owner or customer). Point NEARSHOP_LOADTEST_ACCOUNTS at it,
+   with an absolute path: make loadtest counts the accounts from the repository root and Locust reads the
+   file from backend/, so the script refuses a relative path, and stops if the file is missing. The script
+   never prints them.
 5. **Vercel protection.** If the staging preview is behind Vercel Authentication, set
    NEARSHOP_LOADTEST_VERCEL_BYPASS to the protection-bypass secret.
 6. **Atlas region.** Check that the staging and production clusters are in Atlas's AWS Singapore region
@@ -125,7 +133,7 @@ Server is app from Server-Timing. End to end is from Bengaluru broadband and fro
 | Measure | Value |
 |---|---|
 | Peak memory (Render metrics) | not measured, out of 2 GB |
-| Pool queue wait p95 (dbq) | not measured |
+| Pool queue wait p95 (dbq, requests that queued), search / worst endpoint | not measured / not measured |
 | Database time p95 for search (db) | not measured |
 | Edge-only time p95 (favicon), Bengaluru / Ballari 4G | not measured / not measured |
 | Vercel edge and function regions seen | not measured |
@@ -141,7 +149,7 @@ Server is app from Server-Timing. End to end is from Bengaluru broadband and fro
 | End-to-end p95 from India of 1,200 ms or less (the worse of the two vantage points) | not measured | Fail: not measured yet |
 | Error rate below 0.5% | not measured | Fail: not measured yet |
 | Peak memory of 75% of instance RAM or less (1,536 MB of 2 GB) | not measured | Fail: not measured yet |
-| Pool queue wait p95 of 50 ms or less | not measured | Fail: not measured yet |
+| Pool queue wait p95 of 50 ms or less, on search and on the worst endpoint | not measured | Fail: not measured yet |
 
 ### Bottlenecks and follow-ups
 
@@ -179,7 +187,8 @@ This only checks that the scripts work. It is not a capacity figure. On 20 Oct 2
 - Every scenario ran with no errors. Signing in, polling the overview, and reserving then cancelling all
   worked.
 - The favicon probe fails locally, because only Vercel serves that file.
-- Server-Timing was read on every API response. Search server p95 was 46 ms and dbq p95 was 2.4 ms.
+- Server-Timing was read on every API response. Search server p95 was 46 ms, and dbq p95 over all
+  requests (before the per-endpoint rule above) was 2.4 ms.
 - The stepped shape ran 5 then 15 users and reported each step.
 - The script refused a host that was not confirmed, and sent no requests to it.
 

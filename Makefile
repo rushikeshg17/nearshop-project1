@@ -92,25 +92,25 @@ smoke:
 # staging resized to the production plan. Never production: LOADTEST_URL has no default, and the locustfile
 # refuses the production site and any host not named in NEARSHOP_LOADTEST_CONFIRM_HOST. LOADTEST_USERS search
 # users run for LOADTEST_TIME, plus one owner or reservation user per staging test account listed in the CSV
-# file NEARSHOP_LOADTEST_ACCOUNTS (kept outside the repository). loadtest-steps steps the search users up
-# (NEARSHOP_LOADTEST_STEPS) to find the breaking point. The summary goes to ~/.nearshop/loadtest/.
+# file NEARSHOP_LOADTEST_ACCOUNTS (an absolute path, outside the repository). loadtest-steps steps the search
+# users up (NEARSHOP_LOADTEST_STEPS) to find the breaking point. The summary goes to ~/.nearshop/loadtest/.
 #   NEARSHOP_LOADTEST_CONFIRM_HOST=<staging host> make loadtest LOADTEST_URL=https://<staging host>
 LOADTEST_URL ?=
 LOADTEST_USERS ?= 30
 LOADTEST_TIME ?= 10m
 LOADTEST_SPAWN_RATE ?= 3
 LOADTEST_ARGS ?=
-# The signed-in users come on top of the search users: one per owner or customer row of the accounts file.
-LOADTEST_ACCOUNTS = $$( if [ -n "$$NEARSHOP_LOADTEST_ACCOUNTS" ]; then grep -cE '^(owner|customer),' \
-	"$$NEARSHOP_LOADTEST_ACCOUNTS"; else echo 0; fi )
+# The signed-in users come on top of the search users: one per account the locustfile reads from the accounts
+# file (an absolute path; it counts them itself, so the count and the run always agree, and stops on a bad path).
+LOADTEST_ACCOUNTS = uv run python loadtest/locustfile.py count-accounts
 LOCUST = uv run locust -f loadtest/locustfile.py --headless --host '$(LOADTEST_URL)'
 LOADTEST_URL_SET = [ -n '$(LOADTEST_URL)' ] || { echo "Set LOADTEST_URL to the staging Vercel URL (docs/perf/baseline.md)." >&2; \
 	exit 2; }
 
 loadtest:
 	@$(LOADTEST_URL_SET)
-	cd backend && $(LOCUST) -u $$(( $(LOADTEST_USERS) + $(LOADTEST_ACCOUNTS) )) -r $(LOADTEST_SPAWN_RATE) \
-		-t '$(LOADTEST_TIME)' $(LOADTEST_ARGS)
+	cd backend && accounts=$$($(LOADTEST_ACCOUNTS)) && $(LOCUST) -u $$(( $(LOADTEST_USERS) + accounts )) \
+		-r $(LOADTEST_SPAWN_RATE) -t '$(LOADTEST_TIME)' $(LOADTEST_ARGS)
 
 loadtest-steps:
 	@$(LOADTEST_URL_SET)

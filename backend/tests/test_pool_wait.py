@@ -59,7 +59,9 @@ def test_a_real_page_reports_its_queue_wait(client, ids):
     assert res.status_code == 200
     timing = _timing(res)
     assert {"app", "db", "dbq"} <= set(timing)
-    assert 0 <= timing["dbq"] <= timing["db"] <= timing["app"]
+    # dbq is summed over the gathered tasks while db counts overlapping waits once, so dbq may exceed db
+    assert timing["dbq"] >= 0
+    assert 0 <= timing["db"] <= timing["app"]
 
 
 def test_gather_reports_its_queue_wait_in_server_timing(client, gather_route, request_log):
