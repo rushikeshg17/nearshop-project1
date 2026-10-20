@@ -60,10 +60,10 @@ export function ProductThumb({
       />
     );
   }
+  // An empty alt marks the tile as decorative (the item's name is next to it): hidden from screen readers.
   return (
     <div
-      role="img"
-      aria-label={alt}
+      {...(alt ? { role: "img", "aria-label": alt } : { "aria-hidden": true })}
       className={cn(sizes, "grid shrink-0 place-items-center", className)}
       style={{
         background: `light-dark(oklch(0.955 0.028 ${h}), oklch(0.27 0.035 ${h}))`,

@@ -62,7 +62,7 @@ export function ReservationView({ id }: { id: number }) {
           <ArrowLeft className="size-4" /> Your activity
         </Link>
 
-        <div className="mt-4 grid gap-6 lg:grid-cols-[1fr_360px]">
+        <div className="mt-4 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
           <div className="space-y-6">
             <motion.section
               key={r.status}

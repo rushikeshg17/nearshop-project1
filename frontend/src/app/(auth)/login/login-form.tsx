@@ -113,6 +113,8 @@ export function LoginForm() {
               autoComplete="one-time-code"
               autoCapitalize="off"
               spellCheck={false}
+              // The field appears in answer to the user's own submit, so focus moves to it (P2.10, docs/accessibility.md).
+              // eslint-disable-next-line jsx-a11y/no-autofocus
               autoFocus
               required
               maxLength={32}

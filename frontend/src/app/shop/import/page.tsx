@@ -193,7 +193,7 @@ export default function ImportPage() {
                 <TableCell className="min-w-56">
                   <div className="flex flex-col gap-1.5">
                     <Select value={r.action} onValueChange={(v) => edit(i, { action: v as Action })}>
-                      <SelectTrigger className="h-8 w-full"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="h-8 w-full" aria-label={`What to do with ${r.name}`}><SelectValue /></SelectTrigger>
                       <SelectContent>
                         {(["update", "add_catalog", "add_new", "skip"] as Action[])
                           .filter((a) => (a === "update" ? !!r.product_id : a === "add_catalog" ? !!r.catalog_item_id && !r.product_id : true))
@@ -202,7 +202,7 @@ export default function ImportPage() {
                     </Select>
                     {r.action === "add_new" && (
                       <Select value={r.category_slug ?? ""} onValueChange={(v) => edit(i, { category_slug: v })}>
-                        <SelectTrigger className="h-8 w-full"><SelectValue placeholder="Category" /></SelectTrigger>
+                        <SelectTrigger className="h-8 w-full" aria-label={`Category for ${r.name}`}><SelectValue placeholder="Category" /></SelectTrigger>
                         <SelectContent>{meta?.categories.map((c) => <SelectItem key={c.slug} value={c.slug}>{c.name}</SelectItem>)}</SelectContent>
                       </Select>
                     )}

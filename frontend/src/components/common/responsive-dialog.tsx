@@ -1,6 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
+import { useRef, useSyncExternalStore } from "react";
 
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Drawer, DrawerContent, DrawerDescription, DrawerFooter, DrawerHeader, DrawerTitle } from "@/components/ui/drawer";
@@ -36,6 +36,7 @@ export function ResponsiveDialog({
   footer?: React.ReactNode;
 }) {
   const desktop = useIsDesktop();
+  const drawerRef = useRef<HTMLDivElement>(null);
   if (desktop) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
@@ -52,7 +53,16 @@ export function ResponsiveDialog({
   }
   return (
     <Drawer open={open} onOpenChange={onOpenChange}>
-      <DrawerContent>
+      {/* The drawer takes focus when it opens, so keyboard and screen-reader users are inside it (P2.10). It focuses
+          itself rather than its first field, so a phone's on-screen keyboard does not pop up over it. */}
+      <DrawerContent
+        ref={drawerRef}
+        className="outline-none"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          drawerRef.current?.focus();
+        }}
+      >
         <DrawerHeader className="text-left">
           <DrawerTitle>{title}</DrawerTitle>
           {description && <DrawerDescription>{description}</DrawerDescription>}

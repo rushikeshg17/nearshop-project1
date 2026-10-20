@@ -8,7 +8,7 @@ export default function NotFound() {
     <div className="grid min-h-dvh place-items-center px-4">
       <div className="max-w-md text-center">
         {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- see above */}
-        <a href="/" className="inline-flex items-center justify-center gap-2 rounded-lg outline-none" aria-label="NearShop home">
+        <a href="/" className="inline-flex items-center justify-center gap-2 rounded-lg" aria-label="NearShop home">
           <LogoMark />
           <span className="font-heading text-[1.2rem] leading-none font-semibold tracking-tight">
             near<span className="text-brand">shop</span>

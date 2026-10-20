@@ -69,6 +69,10 @@ function TabsTrigger({
         className
       )}
       {...props}
+      // NearShop's tabs are filters over one list and have no TabsContent panels. Radix would point aria-controls
+      // at a panel that is never rendered, an invalid reference (axe: aria-valid-attr-value; P2.10). Pass
+      // aria-controls explicitly when a tab does control a panel.
+      aria-controls={props["aria-controls"]}
     />
   )
 }

@@ -30,7 +30,7 @@ import { api } from "@/lib/api";
 import { formatDistance, formatNumber, formatPrice } from "@/lib/format";
 import { useLocation } from "@/lib/location";
 import type { SearchResponse, ShopBrief } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, revealFocused } from "@/lib/utils";
 
 const QUICK = ["phone charger", "PVC elbow joint", "school shoes", "9W LED bulb", "umbrella", "bike engine oil"];
 
@@ -204,7 +204,7 @@ export function HomeView() {
             </Link>
           </Button>
         </div>
-        <div className="-mx-4 flex snap-x gap-3 overflow-x-auto px-4 pb-2 scrollbar-none md:mx-0 md:grid md:grid-cols-3 md:overflow-visible md:px-0 lg:grid-cols-4">
+        <div className="-mx-4 flex snap-x gap-3 overflow-x-auto px-4 pb-2 scrollbar-none md:mx-0 md:grid md:grid-cols-3 md:overflow-visible md:px-0 lg:grid-cols-4" onFocus={revealFocused}>
           {shops.isLoading || !shops.data
             ? Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-44 w-72 shrink-0 rounded-2xl md:w-auto" />)
             : shops.data.shops.slice(0, 8).map((s) => (
@@ -214,7 +214,7 @@ export function HomeView() {
       </section>
 
       {/* ---------------------------------------------------------------- how it works */}
-      <section id="how" className="mx-auto max-w-7xl scroll-mt-20 px-4 pt-20 md:px-6">
+      <section id="how" className="mx-auto max-w-7xl px-4 pt-20 md:px-6">
         <div className="max-w-2xl">
           <h2 className="text-2xl font-semibold md:text-3xl">Check the shelf before you leave home</h2>
           <p className="mt-2 text-muted-foreground">
@@ -228,7 +228,7 @@ export function HomeView() {
             { icon: Footprints, title: "Walk in, check, pay", body: "Inspect it at the counter and pay there. If the shop delivers, cash on delivery works too.", tag: "Pickup or delivery" },
           ].map((s, i) => (
             <div key={s.title} className="relative rounded-2xl border bg-card p-6">
-              <span className="absolute top-6 right-6 font-heading text-4xl font-semibold text-muted-foreground/20 tabular">0{i + 1}</span>
+              <span aria-hidden className="absolute top-6 right-6 font-heading text-4xl font-semibold text-muted-foreground/75 tabular">0{i + 1}</span>
               <s.icon className="size-6 text-brand" />
               <h3 className="mt-4 text-lg font-semibold">{s.title}</h3>
               <p className="mt-1.5 text-sm text-muted-foreground">{s.body}</p>

@@ -19,7 +19,7 @@ import { useMeta } from "@/hooks/use-session";
 import { api } from "@/lib/api";
 import { formatPrice } from "@/lib/format";
 import type { CatalogEntry } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, revealFocused } from "@/lib/utils";
 
 type Picked = Record<number, { price: string; quantity: string }>;
 
@@ -83,7 +83,7 @@ export function CatalogView() {
             <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search the catalogue" className="h-9 pl-9" />
           </div>
         </div>
-        <div className="-mx-4 mb-4 flex gap-2 overflow-x-auto px-4 scrollbar-none md:mx-0 md:flex-wrap md:px-0">
+        <div className="-mx-4 mb-4 flex gap-2 overflow-x-auto px-4 scrollbar-none md:mx-0 md:flex-wrap md:px-0" onFocus={revealFocused}>
           <button onClick={() => setCategory(null)} className={cn("shrink-0 rounded-full border px-3 py-1.5 text-sm", !category ? "border-primary bg-primary text-primary-foreground" : "bg-card hover:bg-accent")}>
             My categories
           </button>

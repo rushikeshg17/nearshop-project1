@@ -49,6 +49,9 @@ function InputGroupAddon({
   ...props
 }: React.ComponentProps<"div"> & VariantProps<typeof inputGroupAddonVariants>) {
   return (
+    // A click on the addon (an icon or text beside the input) focuses the input, for the mouse. Keyboard users
+    // reach the input itself with Tab, so the addon needs no key handler (P2.10, docs/accessibility.md).
+    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
     <div
       role="group"
       data-slot="input-group-addon"

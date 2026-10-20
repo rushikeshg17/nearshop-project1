@@ -31,7 +31,7 @@ import { api } from "@/lib/api";
 import { formatPrice, pluralize } from "@/lib/format";
 import { useLocation } from "@/lib/location";
 import type { MapPin, SearchResponse } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, revealFocused } from "@/lib/utils";
 
 // The filters sheet loads when the pointer or focus reaches its button and opens on the first tap; it is not
 // first-load JavaScript (P2.9).
@@ -150,7 +150,7 @@ export function SearchView() {
         </div>
 
         {/* category chips */}
-        <div className="-mx-4 mt-4 flex gap-2 overflow-x-auto px-4 pb-1 scrollbar-none md:mx-0 md:mt-1 md:px-0">
+        <div className="-mx-4 mt-4 flex gap-2 overflow-x-auto px-4 pb-1 scrollbar-none md:mx-0 md:mt-1 md:px-0" onFocus={revealFocused}>
           <Chip active={!category} onClick={() => setParam({ category: null })}>All</Chip>
           {meta?.categories.map((c) => (
             <Chip key={c.slug} active={category === c.slug} onClick={() => setParam({ category: category === c.slug ? null : c.slug })}>

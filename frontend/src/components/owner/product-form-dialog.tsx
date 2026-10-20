@@ -85,9 +85,9 @@ export function ProductFormDialog({ product, open, onOpenChange }: { product?: O
           <Input id="pf-brand" value={f.brand} onChange={set("brand")} />
         </div>
         <div className="space-y-1.5">
-          <Label>Category</Label>
+          <Label htmlFor="pf-category">Category</Label>
           <Select value={f.category_slug} onValueChange={(v) => setF((s) => ({ ...s, category_slug: v }))}>
-            <SelectTrigger className="w-full"><SelectValue placeholder="Choose" /></SelectTrigger>
+            <SelectTrigger id="pf-category" className="w-full"><SelectValue placeholder="Choose" /></SelectTrigger>
             <SelectContent>{meta?.categories.map((c) => <SelectItem key={c.slug} value={c.slug}>{c.name}</SelectItem>)}</SelectContent>
           </Select>
         </div>

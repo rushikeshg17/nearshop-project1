@@ -81,7 +81,7 @@ export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail 
 
   return (
     <div className="mx-auto max-w-7xl px-4 pt-6 md:px-6 md:pt-10">
-      <header className="grid gap-6 rounded-3xl border bg-card p-5 md:grid-cols-[1fr_320px] md:p-7">
+      <header className="grid grid-cols-1 gap-6 rounded-3xl border bg-card p-5 md:grid-cols-[minmax(0,1fr)_320px] md:p-7">
         <div className="min-w-0">
           <div className="flex items-start gap-4">
             <ShopAvatar shop={s} categories={meta?.categories} className="size-16" />
@@ -120,7 +120,7 @@ export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail 
         </div>
       </header>
 
-      <div className="mt-8 grid gap-8 lg:grid-cols-[1fr_340px]">
+      <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_340px]">
         <section className="min-w-0">
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
@@ -185,7 +185,7 @@ export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail 
             <h2 className="mb-3 font-semibold">Track record</h2>
             <ShopTrust r={s.reliability} />
           </section>
-          <section id="reviews" className="scroll-mt-20 rounded-3xl border bg-card p-5">
+          <section id="reviews" className="rounded-3xl border bg-card p-5">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="font-semibold">Reviews</h2>
               {s.rating_avg && <span className="flex items-center gap-2 text-sm"><Stars value={Math.round(s.rating_avg)} /> {s.rating_avg.toFixed(1)}</span>}

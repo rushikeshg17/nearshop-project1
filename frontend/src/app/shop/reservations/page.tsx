@@ -51,7 +51,7 @@ export default function OwnerReservationsPage() {
         q.data.length === 0 ? (
           <EmptyState icon={ClipboardList} title="No active reservations" description="When a customer reserves something from your shop it appears here, and you get a notification." />
         ) : (
-          <div className="grid gap-6 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
             {COLUMNS.map((c) => {
               const rows = q.data.filter((r) => r.status === c.status);
               return (

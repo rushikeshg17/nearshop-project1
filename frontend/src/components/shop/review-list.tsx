@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 
 export function Stars({ value, className }: { value: number; className?: string }) {
   return (
-    <span className={cn("inline-flex", className)} aria-label={`${value} out of 5 stars`}>
+    <span role="img" className={cn("inline-flex", className)} aria-label={`${value} out of 5 stars`}>
       {[1, 2, 3, 4, 5].map((i) => (
         <Star key={i} className={cn("size-3.5", i <= value ? "fill-warning text-warning" : "text-muted-foreground/30")} />
       ))}

@@ -94,13 +94,14 @@ export function DeliveryDialog({ product, open, onOpenChange }: { product: Produ
         ) : q ? (
           <dl className="space-y-1.5 rounded-xl border p-3 text-sm">
             <div className="flex justify-between"><dt className="text-muted-foreground">Items</dt><dd className="tabular">{formatPrice(q.subtotal ?? 0)}</dd></div>
-            <div className="flex justify-between">
+            <div className="flex flex-wrap justify-between">
               <dt className="text-muted-foreground">Delivery ({formatDistance(q.distance_km)})</dt>
               <dd className="tabular">{q.delivery_fee ? formatPrice(q.delivery_fee) : "Free"}</dd>
+              {/* A dd, not a p: a list of terms may hold only dt and dd (axe: definition-list; P2.10). */}
+              {q.free_delivery_above && (q.delivery_fee ?? 0) > 0 && (
+                <dd className="mt-1.5 w-full text-xs text-muted-foreground">Free delivery on orders above {formatPrice(q.free_delivery_above)}</dd>
+              )}
             </div>
-            {q.free_delivery_above && (q.delivery_fee ?? 0) > 0 && (
-              <p className="text-xs text-muted-foreground">Free delivery on orders above {formatPrice(q.free_delivery_above)}</p>
-            )}
             <div className="flex justify-between border-t pt-1.5 font-semibold">
               <dt>Pay on delivery</dt>
               <dd className="tabular">{formatPrice((q.subtotal ?? 0) + (q.delivery_fee ?? 0))}</dd>

@@ -66,7 +66,7 @@ export function InventoryView() {
         title="Inventory"
         description="Keep counts honest. Customers see how recently you updated, and fresh shops rank higher."
         action={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button asChild variant="outline"><Link href="/shop/import"><FileSpreadsheet /> Import Excel</Link></Button>
             <Button asChild variant="outline"><Link href="/shop/catalog"><Library /> Add from catalogue</Link></Button>
             <Button onClick={() => setCreating(true)}><Plus /> New product</Button>
@@ -83,14 +83,14 @@ export function InventoryView() {
           <TabsList>{STOCK_TABS.map((t) => <TabsTrigger key={t.value} value={t.value}>{t.label}</TabsTrigger>)}</TabsList>
         </Tabs>
         <Select value={category || "all"} onValueChange={(v) => setParam("category", v)}>
-          <SelectTrigger className="h-9 w-40"><SelectValue placeholder="Category" /></SelectTrigger>
+          <SelectTrigger className="h-9 w-40" aria-label="Category"><SelectValue placeholder="Category" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All categories</SelectItem>
             {meta?.categories.map((c) => <SelectItem key={c.slug} value={c.slug}>{c.name}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={sort} onValueChange={(v) => setParam("sort", v === "name" ? null : v)}>
-          <SelectTrigger className="h-9 w-40"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="h-9 w-40" aria-label="Sort products"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="name">Name</SelectItem>
             <SelectItem value="stock_asc">Lowest stock</SelectItem>

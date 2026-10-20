@@ -18,7 +18,6 @@ type Option =
 
 interface SearchBoxProps {
   size?: "md" | "lg";
-  autoFocus?: boolean;
   className?: string;
   placeholder?: string;
 }
@@ -39,7 +38,6 @@ function SearchPageBox(props: SearchBoxProps) {
 /** query: the search page's q, kept in the box while navigating between searches; null elsewhere. */
 function SearchBoxField({
   size = "md",
-  autoFocus = false,
   className,
   placeholder = "Search for a product, brand or need",
   query,
@@ -131,7 +129,7 @@ function SearchBoxField({
           go();
         }}
         className={cn(
-          "group flex items-center gap-2 border bg-card shadow-soft transition-[box-shadow,border-color] focus-within:border-brand/50 focus-within:ring-4 focus-within:ring-brand/10",
+          "group flex items-center gap-2 border bg-card shadow-soft transition-[box-shadow,border-color] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring",
           lg ? "h-14 rounded-2xl pr-2 pl-4" : "h-10 rounded-xl pr-1.5 pl-3",
           showPanel && "rounded-b-none",
         )}
@@ -152,7 +150,6 @@ function SearchBoxField({
           onFocus={() => setOpen(true)}
           onBlur={() => setTimeout(() => setOpen(false), 120)}
           onKeyDown={onKeyDown}
-          autoFocus={autoFocus}
           placeholder={placeholder}
           aria-label="Search products"
           aria-expanded={showPanel}
@@ -201,6 +198,9 @@ function SearchBoxField({
             </li>
           )}
           {options.map((opt, i) => (
+            // The combobox pattern (WAI-ARIA APG): options are not focusable, and the input handles the keys
+            // (arrows, Enter, Escape) through aria-activedescendant, so the click needs no key handler here.
+            // eslint-disable-next-line jsx-a11y/click-events-have-key-events
             <li
               key={`${opt.kind}-${opt.value}-${i}`}
               id={`${listId}-${i}`}

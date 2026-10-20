@@ -18,7 +18,7 @@ import { useMeta } from "@/hooks/use-session";
 import { api } from "@/lib/api";
 import { useLocation } from "@/lib/location";
 import type { ShopBrief } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { cn, revealFocused } from "@/lib/utils";
 
 export function ShopsView() {
   const router = useRouter();
@@ -64,7 +64,7 @@ export function ShopsView() {
             </SelectContent>
           </Select>
         </div>
-        <div className="-mx-4 mt-3 flex gap-2 overflow-x-auto px-4 pb-1 scrollbar-none md:mx-0 md:px-0">
+        <div className="-mx-4 mt-3 flex gap-2 overflow-x-auto px-4 pb-1 scrollbar-none md:mx-0 md:px-0" onFocus={revealFocused}>
           <button onClick={() => setCategory(null)} className={cn("shrink-0 rounded-full border px-3 py-1.5 text-sm", !category ? "border-primary bg-primary text-primary-foreground" : "bg-card hover:bg-accent")}>All</button>
           {meta?.categories.map((c) => (
             <button key={c.slug} onClick={() => setCategory(category === c.slug ? null : c.slug)}

@@ -18,21 +18,24 @@ function StarInput({ value, onChange, label }: { value: number; onChange: (v: nu
   return (
     <div className="flex items-center justify-between gap-4">
       <span className="text-sm">{label}</span>
-      <div className="flex" role="radiogroup" aria-label={label} onMouseLeave={() => setHover(0)}>
-        {[1, 2, 3, 4, 5].map((i) => (
-          <button
-            key={i}
-            type="button"
-            role="radio"
-            aria-checked={value === i}
-            aria-label={`${i} star${i > 1 ? "s" : ""}`}
-            onMouseEnter={() => setHover(i)}
-            onClick={() => onChange(i)}
-            className="p-1 transition-transform active:scale-90"
-          >
-            <Star className={cn("size-6 transition-colors", i <= (hover || value) ? "fill-warning text-warning" : "text-muted-foreground/40")} />
-          </button>
-        ))}
+      {/* The hover preview is for the mouse only: the stars are buttons, reached and pressed with the keyboard. */}
+      <div className="flex" onMouseLeave={() => setHover(0)}>
+        <div className="flex" role="radiogroup" aria-label={label}>
+          {[1, 2, 3, 4, 5].map((i) => (
+            <button
+              key={i}
+              type="button"
+              role="radio"
+              aria-checked={value === i}
+              aria-label={`${i} star${i > 1 ? "s" : ""}`}
+              onMouseEnter={() => setHover(i)}
+              onClick={() => onChange(i)}
+              className="p-1 transition-transform active:scale-90"
+            >
+              <Star className={cn("size-6 transition-colors", i <= (hover || value) ? "fill-warning text-warning" : "text-muted-foreground/40")} />
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );

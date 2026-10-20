@@ -37,7 +37,7 @@ export function ResultCard({
         outOfStock && "opacity-80",
       )}
     >
-      <Link href={`/product/${best.id}`} className="flex gap-4 p-4 outline-none" aria-label={`${group.name}, from ${formatPrice(group.min_price)}`}>
+      <Link href={`/product/${best.id}`} className="flex gap-4 rounded-2xl p-4" aria-label={`${group.name}, from ${formatPrice(group.min_price)}`}>
         <ProductThumb icon={group.icon} imageUrl={group.image_url} thumbnailUrl={group.thumbnail_url} category={group.category} alt="" size="lg" className="max-sm:size-20" />
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">

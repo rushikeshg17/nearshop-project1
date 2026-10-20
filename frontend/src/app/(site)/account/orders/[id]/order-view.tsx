@@ -58,7 +58,7 @@ export function OrderView({ id }: { id: number }) {
         <Link href="/account" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="size-4" /> Your activity
         </Link>
-        <div className="mt-4 grid gap-6 lg:grid-cols-[1fr_360px]">
+        <div className="mt-4 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
           <div className="space-y-6">
             <motion.section key={o.status} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
               className={cn("rounded-3xl border p-6", moving ? "border-brand/30 bg-brand-soft/50" : "bg-card")}>

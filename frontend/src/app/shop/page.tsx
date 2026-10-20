@@ -56,7 +56,7 @@ export default function OwnerOverviewPage() {
         <StatTile label="Low or out of stock" value={d.inventory.low_stock + d.inventory.out_of_stock} hint={`of ${d.inventory.listings} listings`} icon={AlertTriangle} tone="warning" href="/shop/inventory?stock=low_stock" />
       </div>
 
-      <div className="mt-8 grid gap-8 xl:grid-cols-[1.25fr_1fr]">
+      <div className="mt-8 grid grid-cols-1 gap-8 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
         <section>
           <div className="mb-3 flex items-center justify-between">
             <h2 className="flex items-center gap-2 text-lg font-semibold">
@@ -102,7 +102,7 @@ export default function OwnerOverviewPage() {
         </section>
       </div>
 
-      <div className="mt-8 grid gap-8 lg:grid-cols-2">
+      <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-2">
         <section>
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-lg font-semibold">Running low</h2>

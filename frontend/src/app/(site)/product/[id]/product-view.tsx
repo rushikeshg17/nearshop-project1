@@ -184,7 +184,7 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
           </div>
 
           {/* compare */}
-          <section id="compare" className="scroll-mt-20">
+          <section id="compare">
             <h2 className="text-xl font-semibold">Compare shops nearby</h2>
             <p className="mt-1 text-sm text-muted-foreground">
               {live && (live.other_offers.length ? `${live.other_offers.length + 1} shops list this item.` : "Only this shop lists this item right now.")}

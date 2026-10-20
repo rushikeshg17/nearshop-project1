@@ -55,7 +55,7 @@ export default function OwnerOrdersPage() {
         <ListSkeleton />
       ) : scope === "active" ? (
         q.data.length ? (
-          <ul className="grid gap-4 lg:grid-cols-2">{q.data.map((o) => <OwnerOrderCard key={o.id} o={o} />)}</ul>
+          <ul className="grid grid-cols-1 gap-4 lg:grid-cols-2">{q.data.map((o) => <OwnerOrderCard key={o.id} o={o} />)}</ul>
         ) : (
           <EmptyState icon={Bike} title="No active deliveries" description="New delivery orders appear here with the customer's address and route." />
         )
