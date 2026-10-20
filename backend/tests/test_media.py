@@ -1,5 +1,6 @@
 """Photos behind the storage interface (app/services/media.py): an in-memory fake stands in for the
 bucket, so no test touches a real one; the local backend keeps today's behaviour."""
+import asyncio
 import io
 import logging
 import re
@@ -62,9 +63,9 @@ def fake_storage():
 
 @pytest.fixture
 def local_storage():
-    # Rebuilt from settings: the local backend in settings.media_dir (a temporary directory in tests), the
-    # same directory the API mounts at /media.
-    previous = media.use_storage(None)
+    # The local backend in settings.media_dir (a temporary directory in tests), the same directory the API
+    # mounts at /media. Built explicitly, never from settings, so no configuration can point it at a bucket.
+    previous = media.use_storage(LocalStorage(settings.media_dir))
     yield settings.media_dir
     media.use_storage(previous)
 
@@ -190,6 +191,43 @@ def test_bad_backend_or_base_url_is_refused():
         Settings(_env_file=None, environment="test", media_backend="disk")
     with pytest.raises(ValidationError):
         Settings(_env_file=None, environment="test", media_public_base_url="media.example.test")
+
+
+@pytest.mark.parametrize("environment", ["staging", "production", "demo"])
+def test_deployed_environments_need_an_https_base_url(environment):
+    with pytest.raises(ValidationError) as err:
+        Settings(_env_file=None, environment=environment, media_public_base_url="http://media.example.test")
+    assert "https://" in str(err.value)
+    cfg = Settings(_env_file=None, environment=environment, media_public_base_url="https://media.example.test")
+    assert cfg.media_public_base_url == "https://media.example.test"
+
+
+@pytest.mark.parametrize("environment", ["development", "test"])
+def test_http_base_url_is_accepted_in_development_and_test(environment):
+    cfg = Settings(_env_file=None, environment=environment, media_public_base_url="http://127.0.0.1:9000/photos")
+    assert cfg.media_public_base_url == "http://127.0.0.1:9000/photos"
+
+
+def test_first_upload_builds_the_storage_off_the_event_loop(owner_a, ids, monkeypatch):
+    # With s3 the first upload imports boto3 and builds the client; that must happen in a worker thread.
+    built: list[bool] = []
+    fake = FakeStorage()
+
+    def build(cfg):
+        try:
+            asyncio.get_running_loop()
+            built.append(True)
+        except RuntimeError:
+            built.append(False)
+        return fake
+
+    monkeypatch.setattr(media, "build_storage", build)
+    previous = media.use_storage(None)
+    try:
+        assert _upload_product_image(owner_a, ids["tape"]).status_code == 200
+    finally:
+        media.use_storage(previous)
+    assert built == [False] and len(fake.objects) == 1
 
 
 # ------------------------------------------------------------------ serializers

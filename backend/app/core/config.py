@@ -100,11 +100,16 @@ class Settings(BaseSettings):
     def _check_media_base_url(cls, value: str) -> str:
         value = value.strip().rstrip("/")
         if value and not value.startswith(("https://", "http://")):
-            raise ValueError("NEARSHOP_MEDIA_PUBLIC_BASE_URL must start with https://")
+            raise ValueError("NEARSHOP_MEDIA_PUBLIC_BASE_URL must start with https:// "
+                             "(or http:// in development and test)")
         return value
 
     @model_validator(mode="after")
     def _check_media_s3(self) -> "Settings":
+        # The deployed site is https, and browsers block or flag http images on an https page.
+        if self.media_public_base_url.startswith("http://") and self.environment not in ("development", "test"):
+            raise ValueError(f"NEARSHOP_MEDIA_PUBLIC_BASE_URL must start with https:// in {self.environment}; "
+                             "http:// is accepted only in development and test")
         if self.media_backend == "s3":
             required = {
                 "NEARSHOP_MEDIA_S3_ENDPOINT": self.media_s3_endpoint,

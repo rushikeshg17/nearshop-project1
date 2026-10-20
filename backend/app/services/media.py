@@ -11,6 +11,7 @@ NEARSHOP_MEDIA_BACKEND picks where the bytes go:
 """
 import io
 import logging
+import threading
 import uuid
 from pathlib import Path
 from typing import Protocol
@@ -101,12 +102,17 @@ def build_storage(cfg: Settings) -> MediaStorage:
 
 
 _storage: MediaStorage | None = None
+_storage_lock = threading.Lock()
 
 
 def get_storage() -> MediaStorage:
+    """The storage backend, built on first use. It may run in several worker threads at once (uploads and
+    deletes both call it off the event loop), so only one of them builds the client."""
     global _storage
     if _storage is None:
-        _storage = build_storage(settings)
+        with _storage_lock:
+            if _storage is None:
+                _storage = build_storage(settings)
     return _storage
 
 
@@ -133,9 +139,14 @@ async def save_image(upload: UploadFile, folder: str) -> str:
     key = f"{folder}/{uuid.uuid4().hex}.webp"
     out = io.BytesIO()
     img.save(out, "WEBP", quality=82, method=5)
-    # A bucket upload is a network call; keep it off the event loop.
-    await run_in_threadpool(get_storage().put, key, out.getvalue(), CONTENT_TYPE)
+    # A bucket upload is a network call, and the first one also imports boto3 and builds the client: keep
+    # both off the event loop.
+    await run_in_threadpool(_put, key, out.getvalue())
     return key
+
+
+def _put(key: str, data: bytes) -> None:
+    get_storage().put(key, data, CONTENT_TYPE)
 
 
 def delete_image(key: str | None) -> None:

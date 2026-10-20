@@ -11,8 +11,15 @@ const MEDIA_BASE_URL = process.env.NEARSHOP_MEDIA_PUBLIC_BASE_URL?.trim().replac
 
 function mediaPattern(base: string): RemotePattern {
   const url = new URL(base);
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
-    throw new Error("NEARSHOP_MEDIA_PUBLIC_BASE_URL must be an https:// URL");
+  // The deployed site is https, and browsers block or flag http images on an https page, so a production
+  // build (next build) needs https; next dev also accepts http, matching the API in development and test.
+  const allowHttp = process.env.NODE_ENV !== "production";
+  if (url.protocol !== "https:" && !(allowHttp && url.protocol === "http:")) {
+    throw new Error(
+      allowHttp
+        ? "NEARSHOP_MEDIA_PUBLIC_BASE_URL must be an https:// or http:// URL"
+        : "NEARSHOP_MEDIA_PUBLIC_BASE_URL must be an https:// URL in a production build",
+    );
   }
   return {
     protocol: url.protocol === "https:" ? "https" : "http",

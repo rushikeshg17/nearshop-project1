@@ -68,6 +68,9 @@ os.environ["NEARSHOP_ENABLE_SCHEDULER"] = "false"
 os.environ["NEARSHOP_WARM_ON_STARTUP"] = "false"  # the fixture below creates the schema
 os.environ["NEARSHOP_EMBEDDING_PROVIDER"] = "tfidf"  # fast and offline for tests
 os.environ["NEARSHOP_MEDIA_DIR"] = str(_tmp / "media")
+# Photos stay on the local backend with /media URLs, whatever backend/.env says: no test reaches a bucket.
+os.environ["NEARSHOP_MEDIA_BACKEND"] = "local"
+os.environ["NEARSHOP_MEDIA_PUBLIC_BASE_URL"] = ""
 os.environ["NEARSHOP_MODEL_DIR"] = str(_tmp / "models")
 
 from fastapi.testclient import TestClient  # noqa: E402
