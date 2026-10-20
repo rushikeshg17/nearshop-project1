@@ -3,6 +3,7 @@ resolved first with app/services/loaders.py. Timestamps are emitted as ISO-8601 
 browsers never mistake them for local time (important for 'updated 2 minutes ago')."""
 from datetime import datetime
 
+from app.core.config import settings
 from app.models import Category, Notification, Order, Product, Reservation, Review, Shop, StatusEvent
 from app.utils.hours import open_status
 
@@ -12,7 +13,11 @@ def iso(dt: datetime | None) -> str | None:
 
 
 def media_url(path: str | None) -> str | None:
-    return f"/media/{path}" if path else None
+    """The browser URL of a stored image key: on the bucket's public domain when one is set (staging and
+    production), otherwise /media, which the API serves from local disk in development and test."""
+    if not path:
+        return None
+    return f"{settings.media_public_base_url or '/media'}/{path}"
 
 
 def category_out(c: Category) -> dict:

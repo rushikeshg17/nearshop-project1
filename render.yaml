@@ -5,9 +5,10 @@
 # commit whose staging smoke test passed (docs/runbooks/release-and-rollback.md).
 #
 # Render dashboard > New > Blueprint > pick this repository. Each service asks for its own
-# NEARSHOP_MONGODB_URI, NEARSHOP_SECRET_KEY and NEARSHOP_PROTECTED_HOSTS (sync: false): staging and
-# production never share a database, a signing key or a value of any secret. Render prompts for sync: false
-# values only when a service is first created, and later Blueprint syncs leave them as set in the dashboard.
+# NEARSHOP_MONGODB_URI, NEARSHOP_SECRET_KEY, NEARSHOP_PROTECTED_HOSTS and NEARSHOP_MEDIA_* photo-bucket
+# settings (sync: false): staging and production never share a database, a signing key, a bucket or a
+# value of any secret. Render prompts for sync: false values only when a service is first created, and
+# later Blueprint syncs leave them as set in the dashboard.
 #
 # Plan IDs are Render's current names for the instance types: 0.5c-512mb is Starter and 1c-2g is Standard.
 # Both deploy a push only after its GitHub checks pass (.github/workflows/ci.yml), and both run the schema
@@ -57,6 +58,23 @@ services:
         value: "false"
       - key: NEARSHOP_DEMO_MODE
         value: "true"
+      # Photos in staging's own Cloudflare R2 bucket (P1.5; the API's disk is wiped on every deploy). Set
+      # NEARSHOP_MEDIA_BACKEND to s3 once the bucket exists; left unset or blank, the API keeps photos on
+      # its disk and logs a warning at startup. The R2 API token is scoped to the staging photo bucket only.
+      # On a service that already exists, add these six in the dashboard (Environment): a Blueprint sync
+      # does not prompt for new sync: false values.
+      - key: NEARSHOP_MEDIA_BACKEND
+        sync: false # s3
+      - key: NEARSHOP_MEDIA_S3_ENDPOINT
+        sync: false # https://<account id>.r2.cloudflarestorage.com
+      - key: NEARSHOP_MEDIA_S3_BUCKET
+        sync: false # the staging photo bucket
+      - key: NEARSHOP_MEDIA_S3_ACCESS_KEY_ID
+        sync: false # secret: staging's R2 token, Object Read & Write on the staging photo bucket
+      - key: NEARSHOP_MEDIA_S3_SECRET_ACCESS_KEY
+        sync: false # secret
+      - key: NEARSHOP_MEDIA_PUBLIC_BASE_URL
+        sync: false # the staging bucket's public custom domain, for example https://media-staging.<domain>
 
   - type: web
     name: nearshop-api
@@ -95,3 +113,16 @@ services:
         value: "false"
       - key: NEARSHOP_DEMO_MODE
         value: "true"
+      # Photos in production's own Cloudflare R2 bucket (P1.5), never the staging bucket or its token.
+      - key: NEARSHOP_MEDIA_BACKEND
+        sync: false # s3
+      - key: NEARSHOP_MEDIA_S3_ENDPOINT
+        sync: false # https://<account id>.r2.cloudflarestorage.com
+      - key: NEARSHOP_MEDIA_S3_BUCKET
+        sync: false # the production photo bucket
+      - key: NEARSHOP_MEDIA_S3_ACCESS_KEY_ID
+        sync: false # secret: production's R2 token, Object Read & Write on the production photo bucket
+      - key: NEARSHOP_MEDIA_S3_SECRET_ACCESS_KEY
+        sync: false # secret
+      - key: NEARSHOP_MEDIA_PUBLIC_BASE_URL
+        sync: false # the production bucket's public custom domain, for example https://media.<domain>

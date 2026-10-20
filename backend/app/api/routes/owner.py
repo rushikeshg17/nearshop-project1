@@ -5,6 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, File, Query, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from app.ai.semantic_index import index
 from app.core.database import Database
@@ -19,7 +20,7 @@ from app.schemas.requests import (
     StockIn,
     TransitionIn,
 )
-from app.schemas.serializers import listing, order_out, reservation_out, review_out, shop_detail
+from app.schemas.serializers import listing, media_url, order_out, reservation_out, review_out, shop_detail
 from app.services import analytics, importer
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
@@ -81,9 +82,9 @@ def update_shop(body: ShopUpdateIn, shop: OwnerShop, db: DB):
 @router.post("/shop/image")
 async def upload_shop_image(shop: OwnerShop, db: DB, file: UploadFile = File(...)):
     rel = await save_image(file, "shops")
-    delete_image(shop.image_path)
+    await run_in_threadpool(delete_image, shop.image_path)
     db.shops.set(shop, image_path=rel)
-    return {"image_url": f"/media/{rel}"}
+    return {"image_url": media_url(rel)}
 
 
 @router.get("/overview")
@@ -225,7 +226,7 @@ def delete_product(product_id: int, shop: OwnerShop, db: DB):
 async def upload_product_image(product_id: int, shop: OwnerShop, db: DB, file: UploadFile = File(...)):
     p = _own_product(db, shop, product_id)
     rel = await save_image(file, "products")
-    delete_image(p.image_path)
+    await run_in_threadpool(delete_image, p.image_path)
     db.products.set(p, image_path=rel)
     return listing(p)
 

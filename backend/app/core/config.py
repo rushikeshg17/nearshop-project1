@@ -10,6 +10,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 Environment = Literal["development", "test", "staging", "production", "demo"]
 ENVIRONMENTS: tuple[str, ...] = get_args(Environment)
+MediaBackend = Literal["local", "s3"]
 
 
 class Settings(BaseSettings):
@@ -46,7 +47,18 @@ class Settings(BaseSettings):
 
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
+    # Photos (app/services/media.py). local: files in media_dir, served by the API at /media (development
+    # and test). s3: an S3-compatible bucket (Cloudflare R2) for staging and production, whose public custom
+    # domain is media_public_base_url; the endpoint, bucket and key pair are required then. Image URLs use
+    # media_public_base_url whenever it is set, and /media otherwise.
+    media_backend: MediaBackend = "local"
     media_dir: Path = BACKEND_DIR / "media"
+    media_s3_endpoint: str = ""  # https://<account id>.r2.cloudflarestorage.com
+    media_s3_bucket: str = ""
+    media_s3_access_key_id: str = ""
+    media_s3_secret_access_key: SecretStr = SecretStr("")
+    media_s3_region: str = "auto"  # R2 uses auto
+    media_public_base_url: str = ""  # https://media.example.com, no trailing slash needed
     max_upload_mb: int = 5
 
     # Seed / location defaults
@@ -73,6 +85,38 @@ class Settings(BaseSettings):
         if normalised not in ENVIRONMENTS:
             raise ValueError(f"NEARSHOP_ENVIRONMENT must be one of {', '.join(ENVIRONMENTS)}; got {value!r}")
         return normalised
+
+    @field_validator("media_backend", mode="before")
+    @classmethod
+    def _check_media_backend(cls, value: object) -> object:
+        # An empty value (a Render variable left blank) means the default.
+        normalised = (value.strip().lower() or "local") if isinstance(value, str) else value
+        if normalised not in get_args(MediaBackend):
+            raise ValueError(f"NEARSHOP_MEDIA_BACKEND must be local or s3; got {value!r}")
+        return normalised
+
+    @field_validator("media_public_base_url", mode="after")
+    @classmethod
+    def _check_media_base_url(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        if value and not value.startswith(("https://", "http://")):
+            raise ValueError("NEARSHOP_MEDIA_PUBLIC_BASE_URL must start with https://")
+        return value
+
+    @model_validator(mode="after")
+    def _check_media_s3(self) -> "Settings":
+        if self.media_backend == "s3":
+            required = {
+                "NEARSHOP_MEDIA_S3_ENDPOINT": self.media_s3_endpoint,
+                "NEARSHOP_MEDIA_S3_BUCKET": self.media_s3_bucket,
+                "NEARSHOP_MEDIA_S3_ACCESS_KEY_ID": self.media_s3_access_key_id,
+                "NEARSHOP_MEDIA_S3_SECRET_ACCESS_KEY": self.media_s3_secret_access_key.get_secret_value(),
+                # Nothing else serves the bucket's photos: the API mounts /media only for the local backend.
+                "NEARSHOP_MEDIA_PUBLIC_BASE_URL": self.media_public_base_url,
+            }
+            if missing := [name for name, value in required.items() if not value.strip()]:
+                raise ValueError(f"NEARSHOP_MEDIA_BACKEND=s3 needs {', '.join(missing)}")
+        return self
 
     @property
     def protected_host_list(self) -> list[str]:

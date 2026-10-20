@@ -46,11 +46,23 @@ def check_schema(mongo) -> None:
         log.info("database schema at migration %d, as this release expects", version.applied)
 
 
+def serves_local_media(environment: str, media_backend: str) -> bool:
+    """Whether the API serves photos from its own disk at /media: in development and test. Staging and
+    production serve photos from the bucket's public domain (NEARSHOP_MEDIA_BACKEND=s3). Until a deployed
+    environment has its bucket, it keeps the local backend and /media (with a startup warning), so its
+    photos keep working between deploys as before."""
+    return environment in ("development", "test") or media_backend == "local"
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if settings.environment != "development" and settings.secret_key == "dev-only-change-me":
         raise RuntimeError("Set NEARSHOP_SECRET_KEY before running outside development")
-    settings.media_dir.mkdir(parents=True, exist_ok=True)
+    if settings.media_backend == "local":
+        settings.media_dir.mkdir(parents=True, exist_ok=True)
+        if settings.environment not in ("development", "test"):
+            log.warning("photos are stored on this server's disk (NEARSHOP_MEDIA_BACKEND=local) and every "
+                        "redeploy deletes them; set NEARSHOP_MEDIA_BACKEND=s3 and the NEARSHOP_MEDIA_S3_* settings")
     scheduler = None
     if settings.enable_scheduler:
         from app.jobs import start_scheduler
@@ -126,4 +138,5 @@ def health_db():
 
 
 app.include_router(api_router)
-app.mount("/media", StaticFiles(directory=settings.media_dir, check_dir=False), name="media")
+if serves_local_media(settings.environment, settings.media_backend):
+    app.mount("/media", StaticFiles(directory=settings.media_dir, check_dir=False), name="media")
