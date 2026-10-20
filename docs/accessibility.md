@@ -101,7 +101,7 @@ The recommended set leaves three rules off, and so does NearShop:
 label-has-associated-control is on with one option: the shadcn/ui components Input, Textarea, Checkbox,
 Switch, RadioGroupItem and SelectTrigger count as controls, since each renders a native control.
 
-Four lines disable a rule, each with its reason beside it:
+Three lines disable jsx-a11y rules (the input-group line disables two), each with its reason beside it:
 
 | File | Rule | Why |
 |---|---|---|
@@ -182,8 +182,13 @@ Found after the baseline, by the checks added in P2.10:
   box's indicator was too faint to see (a 10 % brand ring); the bottom sheets (reserve, delivery, cancel,
   decline) opened without moving focus into them, leaving focus behind the overlay; a category chip one pixel
   inside the edge of its row took focus without scrolling into view.
-- ESLint, jsx-a11y recommended: 8 errors in 5 files: login-form (1), catalog-view (2), review-dialog (1),
-  search-box (2) and input-group (2).
+- ESLint, jsx-a11y recommended, with the plugin's default options: 8 errors in 5 files: login-form (1),
+  catalog-view (2), review-dialog (1), search-box (2) and input-group (2). The two in catalog-view
+  (label-has-associated-control) were false: each label wraps a shadcn/ui Input, which renders a native input.
+  With the committed config, which counts those components as controls, the baseline is 6 errors in 4 files:
+  login-form (1, no-autofocus), review-dialog (1, interactive-supports-focus), search-box (2, no-autofocus and
+  click-events-have-key-events) and input-group (2, click-events-have-key-events and
+  no-noninteractive-element-interactions).
 
 ## Fixes outside P2.10's file list
 
@@ -206,6 +211,9 @@ judged after it. The follow-up changes these files in frontend/src:
   globals.css sets scroll-padding-top for the whole page)
 
 frontend/package-lock.json changes with frontend/package.json.
+
+The two commits must land together, in one pull request: the first turns the jsx-a11y rules on, and on its own
+it fails `make lint` until the follow-up fixes the files that break them.
 
 ## Still to do
 

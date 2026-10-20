@@ -172,7 +172,10 @@ async function audit(page: Page, testInfo: TestInfo, screen: string, language: s
   const count = (list: Violation[]) => list.reduce((n, v) => n + v.nodes.length, 0);
   const summary = process.env.NEARSHOP_E2E_AXE_SUMMARY;
   if (summary) {
+    // A test retried in CI (retries: 1) writes its rows again: the summary keeps only each test's last attempt.
     const row = {
+      test: testInfo.testId,
+      attempt: testInfo.retry,
       language,
       screen,
       blocking: count(blocking),

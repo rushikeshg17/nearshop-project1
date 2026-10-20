@@ -311,6 +311,12 @@ jobs:
           import json, os
           path = os.environ["NEARSHOP_E2E_AXE_SUMMARY"]
           rows = [json.loads(line) for line in open(path)] if os.path.exists(path) else []
+          # A retried test writes its rows again: keep only the last attempt of each test.
+          last = {}
+          for r in rows:
+              last[r["test"]] = max(last.get(r["test"], 0), r["attempt"])
+          retried = sum(1 for n in last.values() if n > 0)
+          rows = [r for r in rows if r["attempt"] == last[r["test"]]]
           out = ["### Accessibility (axe, WCAG 2.2 A and AA, 360 by 800 px)", "",
                  "| Language | Screen | Serious or critical | Moderate or minor | Rules |", "|---|---|---:|---:|---|"]
           for r in rows:
@@ -319,6 +325,8 @@ jobs:
           blocking = sum(r["blocking"] for r in rows)
           out += ["", f"{len(rows)} screens and dialogs audited; {blocking} serious or critical violations "
                       "(any fails the job). The keyboard test's result is in the Playwright report.", ""]
+          if retried:
+              out += [f"{retried} test(s) were retried; the rows above are from each test's last attempt.", ""]
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
               f.write("\n".join(out) + "\n")
           EOF

@@ -148,6 +148,9 @@ async function tabTo(page: Page, target: Locator, step: string) {
 }
 
 test("search, open a product, reserve it and see the code, with the keyboard only", async ({ page, playwright }, testInfo) => {
+  // Every Tab stop is checked (two short waits, a settle poll and two screenshots): about 40 s on a laptop, so
+  // the config's 60 s per test is too tight for a slower CI runner.
+  test.setTimeout(180_000);
   const owner = await playwright.request.newContext({ baseURL: testInfo.project.use.baseURL });
   await signIn(owner, OWNER);
   await signIn(page.request, CUSTOMER);
