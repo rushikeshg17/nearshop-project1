@@ -151,6 +151,75 @@ def test_the_storage_job_runs_under_its_lease_once_a_day(snapshots):
     b.shutdown()
 
 
+def test_a_failing_snapshot_is_retried_hourly_not_on_every_tick(snapshots, caplog, monkeypatch):
+    from pymongo.errors import OperationFailure
+
+    calls = []
+    real_sizes = analytics.collection_sizes
+
+    def failing_sizes(mongo):
+        calls.append(1)
+        raise OperationFailure("$collStats is not allowed in this atlas tier", code=8000)
+
+    monkeypatch.setattr(analytics, "collection_sizes", failing_sizes)
+    mongo = Database().mongo
+    mongo[jobs.LEASES].delete_one({"_id": "snapshot_storage"})
+    t0 = datetime(2026, 10, 20, 6, 0)
+    now = [t0]
+    a = jobs.Scheduler(mongo, jobs={"snapshot_storage": jobs.snapshot_storage}, holder="process-a",
+                       clock=lambda: now[0])
+    b = jobs.Scheduler(mongo, jobs={"snapshot_storage": jobs.snapshot_storage}, holder="process-b",
+                       clock=lambda: now[0])
+    assert jobs.RETRY_AFTER_FAILURE["snapshot_storage"] == timedelta(hours=1)
+    with caplog.at_level(logging.ERROR, logger="app.jobs"):
+        assert a.tick() == {"snapshot_storage": True}
+        failed = mongo[jobs.LEASES].find_one({"_id": "snapshot_storage"})
+        assert failed["last_result"] == {"ok": False, "error": "OperationFailure", "retry_at": t0 + timedelta(hours=1)}
+        for seconds in range(30, 3600, 30):  # every tick of the next hour: lease renewed, no measurement
+            now[0] = t0 + timedelta(seconds=seconds)
+            assert a.tick() == {"snapshot_storage": False}
+        lease = mongo[jobs.LEASES].find_one({"_id": "snapshot_storage"})
+        assert lease["holder"] == "process-a" and lease["last_result"] == failed["last_result"]
+        assert lease["last_run_at"] == failed["last_run_at"]
+        assert len(calls) == 1
+        errors = [r for r in caplog.records if r.name == "app.jobs" and r.levelno >= logging.ERROR]
+        assert len(errors) == 1
+        # The backoff is on the lease: a process taking it over waits for retry_at too.
+        a.shutdown()
+        now[0] = t0 + timedelta(minutes=59, seconds=45)
+        assert b.tick() == {"snapshot_storage": False} and len(calls) == 1
+        now[0] = t0 + timedelta(hours=1)  # due: one more attempt, which fails and backs off again
+        assert b.tick() == {"snapshot_storage": True} and len(calls) == 2
+        assert mongo[jobs.LEASES].find_one({"_id": "snapshot_storage"})["last_result"]["retry_at"] == \
+            t0 + timedelta(hours=2)
+    # Once the measurement works again, the next due attempt records the day's snapshot.
+    monkeypatch.setattr(analytics, "collection_sizes", real_sizes)
+    now[0] = t0 + timedelta(hours=2)
+    assert b.tick() == {"snapshot_storage": True}
+    result = mongo[jobs.LEASES].find_one({"_id": "snapshot_storage"})["last_result"]
+    assert result["ok"] is True and result["recorded"] is True and "retry_at" not in result
+    assert snapshots.count_documents({}) == 1
+    b.shutdown()
+
+
+def test_without_a_retry_delay_a_failed_job_runs_again_on_the_next_tick(ids):
+    mongo = Database().mongo
+    mongo[jobs.LEASES].delete_one({"_id": "sweep_retry"})
+    runs = []
+
+    def broken():
+        runs.append(1)
+        raise RuntimeError("boom")
+
+    s = jobs.Scheduler(mongo, jobs={"sweep_retry": broken}, holder="process-a")
+    assert "sweep_expired" not in jobs.RETRY_AFTER_FAILURE  # the sweep and its heartbeat never back off
+    s.tick()
+    s.tick()
+    assert len(runs) == 2
+    assert "retry_at" not in mongo[jobs.LEASES].find_one({"_id": "sweep_retry"})["last_result"]
+    s.shutdown()
+
+
 def test_the_validator_rejects_a_malformed_snapshot(snapshots):
     from pymongo.errors import WriteError
 

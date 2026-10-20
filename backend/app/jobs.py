@@ -20,6 +20,11 @@ it holds the lease, so at any instance count each job runs once per tick.
 The leased jobs are sweep_expired, every tick, and snapshot_storage (P2.2), which records each
 collection's data and index size in storage_snapshots once a day (app/services/analytics.py).
 
+A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
+recorded on the lease with retry_at, and until then the holder only renews the lease without running
+the job. snapshot_storage is one: a failing measurement lists every collection and reads each one's
+stats, and logs an error (an error tracker issue), so it is retried at most hourly, not every 30 s.
+
 Reservation and order lists also expire reservations and cancel stale orders lazily when read, so a
 page is right even between ticks.
 
@@ -78,6 +83,8 @@ Clock = Callable[[], datetime]
 LEASES = "job_leases"
 TICK_SECONDS = 30
 LEASE_TTL = timedelta(seconds=60)
+# Jobs too costly, or too loud, to repeat on every tick after a failure: retried after this long.
+RETRY_AFTER_FAILURE: dict[str, timedelta] = {"snapshot_storage": timedelta(hours=1)}
 
 RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
@@ -122,15 +129,27 @@ def release_lease(mongo: MongoDatabase, job: str, holder: str, now: datetime) ->
 
 
 def run_leased(mongo: MongoDatabase, job: str, holder: str, fn: Callable[[], Mapping[str, Any] | None],
-               clock: Clock = utcnow, ttl: timedelta = LEASE_TTL) -> bool:
-    """Run fn if holder holds (or can take) job's lease, and record the run on the lease. True when it ran."""
-    if not acquire_lease(mongo, job, holder, clock(), ttl):
+               clock: Clock = utcnow, ttl: timedelta = LEASE_TTL, retry_after: timedelta | None = None) -> bool:
+    """Run fn if holder holds (or can take) job's lease, and record the run on the lease. True when it ran.
+
+    With retry_after, a failed run records retry_at (the failure's time plus retry_after) in last_result,
+    and fn is not run again before then: the lease is still renewed, and last_run_at and last_result
+    keep the failure. The backoff is on the lease, so it holds across a lease take-over."""
+    now = clock()
+    if not acquire_lease(mongo, job, holder, now, ttl):
         return False
+    if retry_after is not None:
+        last = (mongo[LEASES].find_one({"_id": job}, {"last_result": 1}) or {}).get("last_result") or {}
+        retry_at = last.get("retry_at")
+        if last.get("ok") is False and isinstance(retry_at, datetime) and now < retry_at:
+            return False
     try:
         result: dict[str, Any] = {"ok": True, **(fn() or {})}
     except Exception as exc:  # one bad run must not stop the scheduler
         log.exception("job %s failed", job)
         result = {"ok": False, "error": type(exc).__name__}
+        if retry_after is not None:
+            result["retry_at"] = clock() + retry_after
     mongo[LEASES].update_one({"_id": job, "holder": holder},
                              {"$set": {"last_run_at": clock(), "last_result": result}})
     return True
@@ -150,7 +169,8 @@ def sweep_expired() -> dict[str, int]:
 
 def snapshot_storage() -> dict[str, Any]:
     """Daily storage snapshot (P2.2): records today's (IST) collection sizes in storage_snapshots once,
-    on the first tick of the day; every later tick that day is one lookup by _id."""
+    on the first tick of the day; every later tick that day is one lookup by _id. A failed measurement
+    is retried an hour later (RETRY_AFTER_FAILURE), not on every tick."""
     from app.services.analytics import record_storage_snapshot  # analytics loads the search code
 
     return record_storage_snapshot(Database().mongo, utcnow())
@@ -184,13 +204,16 @@ class SearchIndexRefresher:
 class Scheduler:
     """Runs each job of `jobs` on every tick, only while this process holds the job's lease, and each
     of `local` (given the database) in this process on every tick, without a lease. With no jobs given,
-    the jobs are JOBS and the local job is a SearchIndexRefresher."""
+    the jobs are JOBS and the local job is a SearchIndexRefresher. `retry` (default RETRY_AFTER_FAILURE)
+    names the jobs whose failures are retried only after a delay (run_leased)."""
 
     def __init__(self, mongo: MongoDatabase, *, jobs: Mapping[str, Callable[[], Mapping[str, Any] | None]] | None = None,
                  local: Mapping[str, Callable[[MongoDatabase], Any]] | None = None,
-                 holder: str | None = None, clock: Clock = utcnow, ttl: timedelta = LEASE_TTL):
+                 holder: str | None = None, clock: Clock = utcnow, ttl: timedelta = LEASE_TTL,
+                 retry: Mapping[str, timedelta] | None = None):
         self.mongo = mongo
         self.jobs = dict(JOBS if jobs is None else jobs)
+        self.retry = dict(RETRY_AFTER_FAILURE if retry is None else retry)
         if local is None:
             local = {"refresh_search_index": SearchIndexRefresher()} if jobs is None else {}
         self.local = dict(local)
@@ -204,7 +227,7 @@ class Scheduler:
         ran = {}
         for job, fn in self.jobs.items():
             try:
-                ran[job] = run_leased(self.mongo, job, self.holder, fn, self.clock, self.ttl)
+                ran[job] = run_leased(self.mongo, job, self.holder, fn, self.clock, self.ttl, self.retry.get(job))
             except Exception as exc:  # the database unreachable: try again next tick
                 log.warning("job %s: could not take its lease (%s)", job, type(exc).__name__)
                 ran[job] = False

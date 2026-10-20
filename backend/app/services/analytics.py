@@ -414,8 +414,9 @@ def collection_sizes(mongo: MongoDatabase) -> list[dict]:
 
 def record_storage_snapshot(mongo: MongoDatabase, now: datetime, limit_mb: int | None = None) -> dict[str, Any]:
     """Record today's (IST) snapshot unless it exists. Cheap when it does: one lookup by _id, so the job
-    can be called on every scheduler tick. Logs a warning at 70% of the limit and an error (an error
-    tracker issue) at 85%. Returns what the lease records as the job's last result."""
+    can be called on every scheduler tick. A failed measurement raises; the scheduler then waits an hour
+    before the next attempt (RETRY_AFTER_FAILURE in app/jobs.py). Logs a warning at 70% of the limit and
+    an error (an error tracker issue) at 85%. Returns what the lease records as the job's last result."""
     day = ist_date(now).isoformat()
     coll = mongo[STORAGE_SNAPSHOTS]
     if coll.find_one({"_id": day}, {"_id": 1}) is not None:
