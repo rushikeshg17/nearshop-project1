@@ -92,7 +92,8 @@ export function Price({
 }
 
 export function Rating({ value, count, className, showCount = true }: { value: number | null; count: number; className?: string; showCount?: boolean }) {
-  if (!value || !count) return <span className={cn("text-xs text-muted-foreground", className)}>No reviews yet</span>;
+  // No rating_avg: fewer than 5 distinct customers have counted reviews yet (P3.5, plan section 8.2).
+  if (!value || !count) return <span className={cn("text-xs text-muted-foreground", className)}>New shop</span>;
   return (
     // relative: the sr-only text is absolutely positioned, and must stay inside a horizontal scroller (the home
     // page's shop cards), or it widens the page and a phone zooms out and shifts the layout (P2.9).

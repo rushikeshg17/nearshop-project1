@@ -1,23 +1,31 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Ban, Bike, Check, CheckCheck, MapPin, MessageSquare, PackageCheck, Phone, RotateCcw, Timer, X } from "lucide-react";
+import { Ban, Bike, Check, CheckCheck, Loader2, MapPin, MessageSquare, PackageCheck, Phone, RotateCcw, Timer, X } from "lucide-react";
 import { motion, MotionConfig } from "motion/react";
+import { useId, useState } from "react";
 import { toast } from "sonner";
 
 import { ProductThumb } from "@/components/common/product-thumb";
+import { ResponsiveDialog } from "@/components/common/responsive-dialog";
 import { Countdown, StatusBadge } from "@/components/common/status";
 import { ConfirmAction } from "@/components/fulfillment/confirm-action";
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/api";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { api, ApiError, errorMessage } from "@/lib/api";
 import { formatDistance, formatPrice, timeAgo } from "@/lib/format";
 import type { Order, Reservation } from "@/lib/types";
 
-function useOwnerAction<T>(kind: "reservations" | "orders") {
+type ActionInput = { id: number; action: string; reason?: string | null; code?: string };
+
+function useOwnerAction<T>(kind: "reservations" | "orders", silent = false) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, action, reason }: { id: number; action: string; reason?: string | null }) =>
-      api.post<T>(`/owner/${kind}/${id}/${action}`, { reason: reason ?? null }),
+    mutationFn: ({ id, action, reason, code }: ActionInput) =>
+      api.post<T>(`/owner/${kind}/${id}/${action}`, { reason: reason ?? null, ...(code !== undefined ? { code } : {}) }),
+    // The code dialog shows its own errors next to the field it asks for.
+    meta: silent ? { silent: true } : undefined,
     onSuccess: (_d, v) => {
       qc.invalidateQueries({ queryKey: ["owner"] });
       const done: Record<string, string> = {
@@ -37,9 +45,120 @@ function useOwnerAction<T>(kind: "reservations" | "orders") {
   });
 }
 
+/** The reservation code as the backend stores it (R- and 6 characters). Customers see it without the R- on their
+ * screen, so the owner may type it either way; case and spaces do not matter (P3.5). */
+function normalizeReservationCode(input: string) {
+  const raw = input.replace(/\s+/g, "").toUpperCase();
+  if (!raw) return "";
+  if (raw.startsWith("R-")) return raw;
+  return `R-${raw.replace(/^R(?=[A-Z0-9]{6}$)/, "")}`;
+}
+
+/**
+ * Asks the owner for the code the customer has (plan section 8.2): the reservation code shown on the customer's
+ * screen to complete a pickup, or the 4-digit delivery code only the customer can see to deliver an order. The
+ * action runs only with it; a wrong code keeps the dialog open with the reason.
+ */
+function CodeDialog({
+  open,
+  onOpenChange,
+  kind,
+  title,
+  confirmLabel,
+  pending,
+  onSubmit,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  kind: "pickup" | "delivery";
+  title: string;
+  confirmLabel: string;
+  pending: boolean;
+  onSubmit: (code: string) => Promise<unknown>;
+}) {
+  const id = useId();
+  const [code, setCode] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const delivery = kind === "delivery";
+  const ready = delivery ? /^\d{4}$/.test(code) : normalizeReservationCode(code).length >= 8;
+  const close = (o: boolean) => {
+    if (pending) return;
+    if (!o) {
+      setCode("");
+      setError(null);
+    }
+    onOpenChange(o);
+  };
+  const submit = async () => {
+    if (!ready || pending) return;
+    setError(null);
+    try {
+      await onSubmit(delivery ? code : normalizeReservationCode(code));
+      close(false);
+    } catch (e) {
+      const wrong = e instanceof ApiError && e.code === "wrong_code";
+      setError(wrong ? `${errorMessage(e)}. Check the code with the customer and try again.` : errorMessage(e));
+    }
+  };
+  return (
+    <ResponsiveDialog
+      open={open}
+      onOpenChange={close}
+      title={title}
+      description={
+        delivery
+          ? "Ask the customer for the 4-digit delivery code on their order screen. Hand over the order only after it is accepted."
+          : "Ask the customer to show the pickup code on their reservation screen, and type it here."
+      }
+      footer={
+        <>
+          <Button variant="ghost" onClick={() => close(false)} disabled={pending}>Not yet</Button>
+          <Button type="submit" form={`${id}-form`} disabled={!ready || pending}>
+            {pending && <Loader2 className="animate-spin" />} {confirmLabel}
+          </Button>
+        </>
+      }
+    >
+      <form
+        id={`${id}-form`}
+        className="space-y-1.5 pb-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        <Label htmlFor={`${id}-code`}>{delivery ? "Delivery code" : "Pickup code"}</Label>
+        <Input
+          id={`${id}-code`}
+          value={code}
+          onChange={(e) => {
+            setError(null);
+            setCode(delivery ? e.target.value.replace(/\D/g, "").slice(0, 4) : e.target.value.toUpperCase().slice(0, 12));
+          }}
+          inputMode={delivery ? "numeric" : "text"}
+          autoComplete="off"
+          autoCapitalize="characters"
+          spellCheck={false}
+          placeholder={delivery ? "4 digits" : "e.g. 7KQ2MX"}
+          className="h-11 font-mono text-lg tracking-[0.2em]"
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? `${id}-error` : undefined}
+        />
+        {error && (
+          <p id={`${id}-error`} role="alert" className="text-sm font-medium text-destructive">
+            {error}
+          </p>
+        )}
+      </form>
+    </ResponsiveDialog>
+  );
+}
+
 export function OwnerReservationCard({ r }: { r: Reservation }) {
   const act = useOwnerAction<Reservation>("reservations");
-  const busy = act.isPending;
+  const complete = useOwnerAction<Reservation>("reservations", true);
+  const [codeOpen, setCodeOpen] = useState(false);
+  const busy = act.isPending || complete.isPending;
   const run = (action: string, reason?: string | null) => act.mutate({ id: r.id, action, reason });
   const has = (a: string) => r.actions.includes(a);
 
@@ -51,7 +170,8 @@ export function OwnerReservationCard({ r }: { r: Reservation }) {
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <StatusBadge status={r.status} kind="reservation" />
-              <span className="font-mono text-xs text-muted-foreground">{r.code}</span>
+              {/* Not the reservation code: the customer shows it at the counter to complete the pickup (P3.5). */}
+              <span className="text-xs text-muted-foreground tabular">#{r.id}</span>
               <span className="text-xs text-muted-foreground" suppressHydrationWarning>{timeAgo(r.created_at)}</span>
             </div>
             <p className="mt-1.5 font-medium">
@@ -85,7 +205,7 @@ export function OwnerReservationCard({ r }: { r: Reservation }) {
               <Button size="sm" onClick={() => run("ready")} disabled={busy}><PackageCheck /> Mark ready</Button>
             )}
             {has("complete") && (
-              <Button size="sm" variant={has("ready") ? "outline" : "default"} onClick={() => run("complete")} disabled={busy}><CheckCheck /> Picked up and paid</Button>
+              <Button size="sm" variant={has("ready") ? "outline" : "default"} onClick={() => setCodeOpen(true)} disabled={busy}><CheckCheck /> Picked up and paid</Button>
             )}
             {has("reject") && (
               <ConfirmAction title="Decline this reservation?" description="The customer will be told and pointed to other shops." confirmLabel="Decline"
@@ -101,6 +221,9 @@ export function OwnerReservationCard({ r }: { r: Reservation }) {
             )}
           </div>
         )}
+        <CodeDialog open={codeOpen} onOpenChange={setCodeOpen} kind="pickup" title="Complete this pickup"
+          confirmLabel="Picked up and paid" pending={complete.isPending}
+          onSubmit={(code) => complete.mutateAsync({ id: r.id, action: "complete", code })} />
       </motion.li>
     </MotionConfig>
   );
@@ -108,7 +231,9 @@ export function OwnerReservationCard({ r }: { r: Reservation }) {
 
 export function OwnerOrderCard({ o }: { o: Order }) {
   const act = useOwnerAction<Order>("orders");
-  const busy = act.isPending;
+  const deliver = useOwnerAction<Order>("orders", true);
+  const [codeOpen, setCodeOpen] = useState(false);
+  const busy = act.isPending || deliver.isPending;
   const run = (action: string, reason?: string | null) => act.mutate({ id: o.id, action, reason });
   const has = (a: string) => o.actions.includes(a);
 
@@ -138,7 +263,7 @@ export function OwnerOrderCard({ o }: { o: Order }) {
             {has("confirm") && <Button size="sm" onClick={() => run("confirm")} disabled={busy}><Check /> Confirm order</Button>}
             {has("prepare") && <Button size="sm" onClick={() => run("prepare")} disabled={busy}><PackageCheck /> Start packing</Button>}
             {has("dispatch") && <Button size="sm" onClick={() => run("dispatch")} disabled={busy}><Bike /> Out for delivery</Button>}
-            {has("deliver") && <Button size="sm" onClick={() => run("deliver")} disabled={busy}><CheckCheck /> Delivered, cash collected</Button>}
+            {has("deliver") && <Button size="sm" onClick={() => setCodeOpen(true)} disabled={busy}><CheckCheck /> Delivered, cash collected</Button>}
             {has("fail") && (
               <ConfirmAction title="Delivery failed?" confirmLabel="Mark failed" reasonLabel="What happened?" reasonRequired reasonPlaceholder="e.g. Customer not reachable" pending={busy}
                 onConfirm={(reason) => run("fail", reason)} trigger={(open) => <Button size="sm" variant="ghost" onClick={open}>Couldn&apos;t deliver</Button>} />
@@ -151,6 +276,9 @@ export function OwnerOrderCard({ o }: { o: Order }) {
             )}
           </div>
         )}
+        <CodeDialog open={codeOpen} onOpenChange={setCodeOpen} kind="delivery" title="Deliver this order"
+          confirmLabel="Delivered, cash collected" pending={deliver.isPending}
+          onSubmit={(code) => deliver.mutateAsync({ id: o.id, action: "deliver", code })} />
       </motion.li>
     </MotionConfig>
   );

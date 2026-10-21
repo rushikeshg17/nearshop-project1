@@ -137,10 +137,10 @@ class Settings(BaseSettings):
     # sign-in (P4.1) verifies phones; NEARSHOP_REVIEW_REQUIRES_VERIFIED_PHONE=true turns it on.
     review_requires_verified_phone: bool = False
     # Completion codes (P3.5): completing a pickup needs the reservation code and delivering an order needs the
-    # customer's 4-digit delivery code. Off until the owner screens that ask for the code ship (P3.7), so the live
-    # owner screens keep working; P3.7 turns it on (NEARSHOP_COMPLETION_CODES_REQUIRED=true). The tests run with
-    # it on. Delivery codes are created either way.
-    completion_codes_required: bool = False
+    # customer's 4-digit delivery code. On since P3.7, whose owner screens ask for the code; the frontend sends it
+    # either way, so NEARSHOP_COMPLETION_CODES_REQUIRED=false is a safe switch back. Delivery codes are created
+    # either way.
+    completion_codes_required: bool = True
 
     # AI
     embedding_provider: str = "fastembed"  # fastembed | tfidf

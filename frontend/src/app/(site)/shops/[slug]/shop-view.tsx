@@ -11,7 +11,7 @@ import { Freshness, OpenBadge, Rating, StockPill, VerifiedMark } from "@/compone
 import { ProductThumb } from "@/components/common/product-thumb";
 import { EmptyState, ErrorState } from "@/components/common/states";
 import { ShopMap } from "@/components/map/shop-map";
-import { ReviewList, Stars } from "@/components/shop/review-list";
+import { RatingSummary, ReviewList } from "@/components/shop/review-list";
 import { ShopAvatar } from "@/components/shop/shop-card";
 import { ShopTrust } from "@/components/shop/shop-trust";
 import { Button } from "@/components/ui/button";
@@ -188,7 +188,7 @@ export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail 
           <section id="reviews" className="rounded-3xl border bg-card p-5">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="font-semibold">Reviews</h2>
-              {s.rating_avg && <span className="flex items-center gap-2 text-sm"><Stars value={Math.round(s.rating_avg)} /> {s.rating_avg.toFixed(1)}</span>}
+              <RatingSummary avg={s.rating_avg} />
             </div>
             {reviews.data ? <ReviewList reviews={reviews.data.reviews} /> : <Skeleton className="h-40" />}
           </section>

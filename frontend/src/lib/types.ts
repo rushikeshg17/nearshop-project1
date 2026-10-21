@@ -264,6 +264,62 @@ export interface Review {
   customer_name: string;
   product_name: string | null;
   source: "pickup" | "delivery";
+  /** The shop's public reply (P3.6). Public lists carry it only while it is visible. */
+  reply: ReviewReply | null;
+  /** Moderation status: only in the owner's own list (GET /owner/reviews). */
+  status?: ModerationStatus;
+}
+
+export type ModerationStatus = "visible" | "hidden" | "removed";
+
+export interface ReviewReply {
+  text: string;
+  created_at: string;
+  edited_at: string | null;
+  /** Owner's list only: the reply's moderation status, and whether reports have it waiting for an admin. */
+  status?: ModerationStatus;
+  under_review?: boolean;
+}
+
+/** Reasons a review or a reply can be reported for (backend/app/services/reviews.py, ReportReason). */
+export type ReviewReportReason = "fake" | "abusive" | "personal_info" | "off_topic" | "other";
+
+/** One item in the admin moderation queue (GET /admin/reviews/queue, P3.6), oldest first. */
+export interface ModerationQueueItem {
+  target: "review" | "reply";
+  review_id: number;
+  shop_id: number;
+  shop: { id: number; name: string; slug: string } | null;
+  entered_at: string;
+  age_hours: number;
+  status: ModerationStatus;
+  triaged_at: string | null;
+  rating: number;
+  comment: string | null;
+  created_at: string;
+  reply_text: string | null;
+  reports: { count: number; reasons: Partial<Record<ReviewReportReason, number>>; notes: string[] };
+  flags: ("reported" | "held_self_dealing" | "hidden_by_reports")[];
+  actions: ("keep" | "hide" | "remove")[];
+}
+
+export interface ModerationQueue {
+  items: ModerationQueueItem[];
+  triage_hours: number;
+  decide_hours: number;
+}
+
+/** The monthly moderation SLA (GET /admin/reviews/sla). A share is null while nothing has reached its deadline. */
+export interface ReviewSla {
+  month: string;
+  items: number;
+  open: number;
+  triage_counted: number;
+  triaged_within_24h: number;
+  triaged_share: number | null;
+  decision_counted: number;
+  decided_within_72h: number;
+  decided_share: number | null;
 }
 
 export interface DeliveryQuote {
@@ -423,6 +479,9 @@ export interface Order {
   shop: { id: number; slug: string; name: string; locality: string | null; phone: string | null; lat: number; lng: number };
   actions: string[];
   reviewed: boolean;
+  /** The 4-digit code the customer gives the shop at delivery (P3.5). Only in the customer's own responses, and
+   * only once the shop has confirmed the order; owner responses never carry it. */
+  delivery_code?: string | null;
   customer?: Person;
   timeline?: TimelineEvent[];
 }

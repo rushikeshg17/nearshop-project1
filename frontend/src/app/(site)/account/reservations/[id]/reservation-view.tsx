@@ -84,13 +84,16 @@ export function ReservationView({ id }: { id: number }) {
                 )}
               </div>
               {held && (
-                <div className="mt-6 flex items-center justify-between rounded-2xl border border-dashed border-brand/40 bg-card p-4">
-                  <div>
-                    <p className="text-xs text-muted-foreground">Pickup code</p>
-                    <p className="font-mono text-3xl font-semibold tracking-[0.2em]">{r.code.replace("R-", "")}</p>
-                  </div>
-                  <p className="max-w-40 text-right text-xs text-muted-foreground">Show this at the counter. Pay {formatPrice(r.total)} at the shop.</p>
-                </div>
+                // The shop types this code to complete the pickup (P3.5), so it is large enough to read across a counter.
+                <section aria-labelledby="pickup-code-label" className="mt-6 rounded-2xl border-2 border-dashed border-brand/50 bg-card p-5 text-center">
+                  <p id="pickup-code-label" className="text-sm font-semibold">Show this at the counter</p>
+                  <p className="mt-2 font-mono text-5xl font-bold tracking-[0.25em] tabular sm:text-6xl">
+                    {r.code.replace(/^R-/, "")}
+                  </p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Pickup code. The shop enters it to hand over your item. Pay {formatPrice(r.total)} at the shop.
+                  </p>
+                </section>
               )}
               <FulfillmentProgress item={r} className="mt-8" />
             </motion.section>

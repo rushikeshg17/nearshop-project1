@@ -31,6 +31,9 @@ const HEADLINE: Record<string, string> = {
   RETURNED_TO_SHOP: "Returned to the shop",
 };
 
+// Confirmed orders not yet delivered: the customer's delivery code is shown while the order is in these states.
+const AWAITING_DELIVERY: string[] = ["SHOP_CONFIRMED", "PREPARING", "OUT_FOR_DELIVERY"];
+
 export function OrderView({ id }: { id: number }) {
   const qc = useQueryClient();
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -69,6 +72,16 @@ export function OrderView({ id }: { id: number }) {
               <h1 className="mt-3 text-2xl font-semibold md:text-3xl">{HEADLINE[o.status]}</h1>
               {o.close_reason && <p className="mt-1 text-muted-foreground">Reason: {o.close_reason}</p>}
               {moving && <p className="mt-1 text-muted-foreground">Keep {formatPrice(o.total)} ready. {o.shop.name} is delivering it themselves.</p>}
+              {o.delivery_code && AWAITING_DELIVERY.includes(o.status) && (
+                // Only the customer sees this code (P3.5): the shop needs it to mark the order delivered.
+                <section aria-labelledby="delivery-code-label" className="mt-6 rounded-2xl border-2 border-dashed border-brand/50 bg-card p-5 text-center">
+                  <p id="delivery-code-label" className="text-sm font-semibold">Your delivery code</p>
+                  <p className="mt-2 font-mono text-5xl font-bold tracking-[0.3em] tabular sm:text-6xl">{o.delivery_code}</p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Give it to the person from {o.shop.name} only when the order is in your hands. Never share it by phone or message.
+                  </p>
+                </section>
+              )}
               <FulfillmentProgress item={o} className="mt-8" />
             </motion.section>
 

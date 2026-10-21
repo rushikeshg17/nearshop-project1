@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { BadgeCheck, BrainCircuit, LayoutDashboard, Loader2, Scale, ShieldCheck, Store, Users } from "lucide-react";
+import { BadgeCheck, BrainCircuit, Flag, LayoutDashboard, Loader2, Scale, ShieldCheck, Store, Users } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
@@ -21,12 +21,13 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useMe } from "@/hooks/use-session";
 import { api } from "@/lib/api";
-import type { AdminOverview, VerificationQueueItem } from "@/lib/types";
+import type { AdminOverview, ModerationQueue, VerificationQueueItem } from "@/lib/types";
 
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const { data: me, isLoading } = useMe();
   const overview = useQuery({ queryKey: ["admin", "overview"], queryFn: () => api.get<AdminOverview>("/admin/overview"), enabled: me?.role === "admin" });
   const queue = useVerificationQueue(me?.role === "admin");
+  const moderation = useModerationQueue(me?.role === "admin");
   if (isLoading) return <div className="p-10"><ListSkeleton /><LegalFooter className="mt-16" /></div>;
   if (!me || me.role !== "admin") {
     return (
@@ -41,6 +42,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true },
     { href: "/admin/anomalies", label: "Price review", icon: Scale, badge: overview.data?.totals.open_price_flags },
     { href: "/admin/verification", label: "Verification", icon: BadgeCheck, badge: queue.data?.length },
+    { href: "/admin/moderation", label: "Moderation", icon: Flag, badge: moderation.data?.items.length },
     { href: "/admin/shops", label: "Shops", icon: Store },
     { href: "/admin/users", label: "Users", icon: Users },
     { href: "/ai", label: "AI Lab", icon: BrainCircuit },
@@ -54,6 +56,17 @@ export function useVerificationQueue(enabled = true) {
   return useQuery({
     queryKey: ["admin", "verification"],
     queryFn: () => api.get<VerificationQueueItem[]>("/admin/verification"),
+    enabled,
+    refetchInterval: 30_000,
+  });
+}
+
+/** The review moderation queue (P3.6): reported reviews and replies, and reviews held out by the self-dealing rule.
+ * Shared by the nav badge and the Moderation page; polled every 30 seconds, like the verification queue. */
+export function useModerationQueue(enabled = true) {
+  return useQuery({
+    queryKey: ["admin", "moderation"],
+    queryFn: () => api.get<ModerationQueue>("/admin/reviews/queue"),
     enabled,
     refetchInterval: 30_000,
   });
