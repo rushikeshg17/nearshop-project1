@@ -68,8 +68,14 @@ def test_nfc_and_joiners():
 
 def test_english_queries_unchanged():
     assert normalize_query("  Phone CHARGER 1 Litre ") == "phone charger 1 l"
-    assert normalize_query("usb_c cable") == "usb c cable"
     assert search_tokens(["usb-c", "a", "led 9w"]) == ["usb", "led", "9w"]
+
+
+def test_underscore_now_separates_words():
+    # A deliberate change: the underscore is punctuation (Unicode category Pc), not a letter, mark or digit,
+    # so it now splits words. Before P5.2 the word class kept it, giving the single token "usb_c".
+    assert normalize_query("usb_c cable") == "usb c cable"
+    assert search_tokens([normalize_query("usb_c cable")]) == ["usb", "cable"]
 
 
 # ---------------------------------------------------------------- local_terms data and migration
@@ -95,6 +101,22 @@ def test_load_local_terms_normalises_and_rejects_bad_files(tmp_path):
     f.write_text(json.dumps([]), encoding="utf-8")
     with pytest.raises(ValueError):
         m4.load_local_terms(f)
+
+
+def test_local_terms_past_the_validator_limits_are_refused(tmp_path, db, ids):
+    # The migration writes before ensure_schema applies the validator, so it checks the limits itself:
+    # a list past them would make every later stock or price update to the listing fail validation.
+    f = tmp_path / "local_terms.json"
+    f.write_text(json.dumps({"items": [{"slug": "x", "latin": ["a" * (m4.MAX_TERM_LENGTH + 1)]}]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="longer than"):
+        m4.load_local_terms(f)
+    f.write_text(json.dumps({"items": [{"slug": "x", "latin": [f"t{n}" for n in range(m4.MAX_TERMS + 1)]}]}),
+                 encoding="utf-8")
+    with pytest.raises(ValueError, match="at most"):
+        m4.load_local_terms(f)
+    with pytest.raises(ValueError):
+        m4.apply_local_terms(db.mongo, {"samsung-25w-charger": ["x" * (m4.MAX_TERM_LENGTH + 1)]})
+    assert "local_terms" not in db.mongo.catalog_items.find_one({"slug": "samsung-25w-charger"})
 
 
 @pytest.fixture

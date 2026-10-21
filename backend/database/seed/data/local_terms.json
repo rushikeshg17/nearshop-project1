@@ -1,5 +1,5 @@
 {
- "about": "Local names of catalogue items (P5.2): Kannada (kn), Telugu (te) and Hindi (hi) script, plus common Latin-script spellings (latin). Search matches them word for word, after the same normalisation as a query (app/utils/text.py normalize_query), so a phrase matches only when typed in full. The team fills this for the top 150 catalogue items. Entries with reviewed false are a starting set written by a developer, not by a native speaker: check each one, correct it, and set reviewed to true. Production picks up changes through a new migration that calls apply_local_terms (database/migrations/m0004_local_terms.py); the seed reads the file on every run.",
+ "about": "Local names of catalogue items (P5.2): Kannada (kn), Telugu (te) and Hindi (hi) script, plus common Latin-script spellings of those local words (latin); English names belong in the catalogue's tags, not here, so that English queries are ranked the same for every item. Search matches them word for word, after the same normalisation as a query (app/utils/text.py normalize_query), so a phrase matches only when typed in full. The team fills this for the top 150 catalogue items. Entries with reviewed false are a starting set written by a developer, not by a native speaker: check each one, correct it, and set reviewed to true. A review_note names a term the reviewer must decide on. Production picks up changes through a new migration that calls apply_local_terms (database/migrations/m0004_local_terms.py); the seed reads the file on every run.",
  "items": [
   {
    "slug": "samsung-25w-usb-c-adapter",
@@ -145,8 +145,7 @@
    "latin": [
     "istri",
     "istri pettige",
-    "istri pette",
-    "iron box"
+    "istri pette"
    ],
    "reviewed": false
   },
@@ -168,8 +167,7 @@
    "latin": [
     "istri",
     "istri pettige",
-    "istri pette",
-    "iron box"
+    "istri pette"
    ],
    "reviewed": false
   },
@@ -191,8 +189,7 @@
    "latin": [
     "istri",
     "istri pettige",
-    "istri pette",
-    "iron box"
+    "istri pette"
    ],
    "reviewed": false
   },
@@ -234,7 +231,8 @@
     "battary",
     "betri"
    ],
-   "reviewed": false
+   "reviewed": false,
+   "review_note": "Check the single-word cell terms (ಸೆಲ್, సెల్, सेल): in Kannada and Telugu cell also means a mobile phone, so a query such as సెల్ ఛార్జర్ gives these batteries the same boost as chargers. Keep them only if shoppers here use cell for a battery; otherwise remove them."
   },
   {
    "slug": "eveready-1015-aa-carbon-4pk",
@@ -254,7 +252,8 @@
     "battary",
     "betri"
    ],
-   "reviewed": false
+   "reviewed": false,
+   "review_note": "Check the single-word cell terms (ಸೆಲ್, సెల్, सेल): in Kannada and Telugu cell also means a mobile phone, so a query such as సెల్ ఛార్జర్ gives these batteries the same boost as chargers. Keep them only if shoppers here use cell for a battery; otherwise remove them."
   },
   {
    "slug": "eveready-1012-aaa-carbon-4pk",
@@ -274,7 +273,8 @@
     "battary",
     "betri"
    ],
-   "reviewed": false
+   "reviewed": false,
+   "review_note": "Check the single-word cell terms (ಸೆಲ್, సెల్, सेल): in Kannada and Telugu cell also means a mobile phone, so a query such as సెల్ ఛార్జర్ gives these batteries the same boost as chargers. Keep them only if shoppers here use cell for a battery; otherwise remove them."
   },
   {
    "slug": "castrol-activ-4t-20w40-1l",
@@ -292,8 +292,7 @@
     "इंजन तेल"
    ],
    "latin": [
-    "injin oil",
-    "bike oil"
+    "injin oil"
    ],
    "reviewed": false
   },
@@ -313,8 +312,7 @@
     "इंजन तेल"
    ],
    "latin": [
-    "injin oil",
-    "bike oil"
+    "injin oil"
    ],
    "reviewed": false
   },
@@ -334,8 +332,7 @@
     "इंजन तेल"
    ],
    "latin": [
-    "injin oil",
-    "bike oil"
+    "injin oil"
    ],
    "reviewed": false
   },
@@ -355,8 +352,7 @@
     "इंजन तेल"
    ],
    "latin": [
-    "injin oil",
-    "bike oil"
+    "injin oil"
    ],
    "reviewed": false
   },
@@ -376,8 +372,7 @@
     "इंजन तेल"
    ],
    "latin": [
-    "injin oil",
-    "bike oil"
+    "injin oil"
    ],
    "reviewed": false
   },
@@ -396,8 +391,7 @@
     "कार ऑयल"
    ],
    "latin": [
-    "injin oil",
-    "car oil"
+    "injin oil"
    ],
    "reviewed": false
   },

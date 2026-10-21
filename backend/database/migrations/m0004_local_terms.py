@@ -26,7 +26,7 @@ from pymongo.database import Database as MongoDatabase
 
 from app.utils.text import normalize_query
 from database.migrations import backfill
-from database.schema import INDEXES
+from database.schema import INDEXES, LOCAL_TERMS
 
 NUMBER = 4
 NAME = "local_terms"
@@ -35,13 +35,20 @@ DATA_FILE = Path(__file__).resolve().parents[1] / "seed" / "data" / "local_terms
 # The groups of terms an entry of local_terms.json may hold.
 TERM_GROUPS = ("kn", "te", "hi", "latin")
 INDEX_NAME = "local_terms"
+# The validator's limits (database/schema.py LOCAL_TERMS). This migration runs before ensure_schema applies the
+# validator, so it checks them itself: a list written past them would make every later update to the
+# listing fail validation.
+MAX_TERMS = LOCAL_TERMS["maxItems"]
+MAX_TERM_LENGTH = LOCAL_TERMS["items"]["maxLength"]
 
 log = logging.getLogger(__name__)
 
 
 def load_local_terms(path: Path = DATA_FILE) -> dict[str, list[str]]:
     """slug -> its normalised local terms (Kannada, Telugu and Devanagari first, then Latin), deduplicated,
-    in file order. Entries with no terms are left out. A malformed file raises ValueError."""
+    in file order. Entries with no terms are left out. A malformed file, or one past the validator's limits
+    (MAX_TERMS terms per item, MAX_TERM_LENGTH characters per term), raises ValueError before anything is
+    written."""
     data = json.loads(path.read_text(encoding="utf-8"))
     items = data.get("items") if isinstance(data, dict) else None
     if not isinstance(items, list):
@@ -59,14 +66,30 @@ def load_local_terms(path: Path = DATA_FILE) -> dict[str, list[str]]:
             terms += [t for t in (normalize_query(v) for v in values) if t]
         if terms:
             out[slug] = list(dict.fromkeys([*out.get(slug, []), *terms]))
+    check_limits(out, path.name)
     return out
+
+
+def check_limits(terms: dict[str, list[str]], source: str = "local_terms") -> None:
+    """Raise ValueError when an item's terms break the validator's limits (MAX_TERMS terms, each a non-empty
+    string of at most MAX_TERM_LENGTH characters)."""
+    for slug, values in terms.items():
+        if len(values) > MAX_TERMS:
+            raise ValueError(f"{source}: {slug} has {len(values)} terms; at most {MAX_TERMS} are allowed")
+        bad = [t for t in values if not isinstance(t, str) or not t or len(t) > MAX_TERM_LENGTH]
+        if bad:
+            raise ValueError(f"{source}: {slug} has a term that is empty or longer than {MAX_TERM_LENGTH} "
+                             f"characters: {str(bad[0])[:40]!r}")
 
 
 def apply_local_terms(mongo: MongoDatabase, terms: dict[str, list[str]] | None = None,
                       *, batch_size: int = 500) -> tuple[int, int]:
     """Write local_terms to the catalog items named in terms (default: local_terms.json), then copy each
     item's terms to its listings in batches. Returns (catalog items updated, listings updated)."""
-    terms = load_local_terms() if terms is None else terms
+    if terms is None:
+        terms = load_local_terms()
+    else:
+        check_limits(terms)
     items_updated = 0
     for slug, values in terms.items():
         items_updated += mongo.catalog_items.update_one(
