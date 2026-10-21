@@ -89,6 +89,9 @@ RATING = {"bsonType": INT, "minimum": 1, "maximum": 5}
 RATING_N = {"oneOf": [{"bsonType": "null"}, RATING]}
 POSITIVE_INT = {"bsonType": INT, "minimum": 1}
 NON_NEGATIVE = {"bsonType": NUM, "minimum": 0}
+# Kannada, Telugu and Hindi names of a catalog item plus Latin transliterations, normalised (P5.2,
+# database/seed/data/local_terms.json). Matched token for token by search's keyword stage.
+LOCAL_TERMS = {"bsonType": "array", "maxItems": 100, "items": {"bsonType": STR, "minLength": 1, "maxLength": 100}}
 
 VALIDATORS: dict[str, dict] = {
     "users": schema(
@@ -114,6 +117,7 @@ VALIDATORS: dict[str, dict] = {
         ["slug", "name", "category_id", "specs", "tags"],
         slug=STR, name=STR, brand=STR_N, category_id=INT, subcategory=STR_N, mrp=NUM_N, typical_price=NUM_N,
         specs="object", tags={"bsonType": "array", "items": {"bsonType": STR}},
+        local_terms=LOCAL_TERMS,
     ),
     "shops": schema(
         ["owner_id", "name", "slug", "address_line", "city", "location", "offers_pickup", "offers_delivery",
@@ -135,6 +139,7 @@ VALIDATORS: dict[str, dict] = {
         quantity={"bsonType": INT, "minimum": 0},  # stock can never go negative, whatever the code does
         low_stock_threshold={"bsonType": INT, "minimum": 0}, is_active=BOOL, stock_updated_at=DATE,
         created_at=DATE, updated_at=DATE,
+        local_terms=LOCAL_TERMS,  # copied from the catalog item (migration 4); optional
     ),
     "inventory_events": schema(
         ["product_id", "shop_id", "delta", "quantity_after", "reason", "created_at"],
@@ -287,6 +292,7 @@ INDEXES: dict[str, list[IndexModel]] = {
     "catalog_items": [
         IndexModel([("slug", A)], unique=True, name="uq_slug"),
         IndexModel([("category_id", A), ("name", A)], name="category_name"),
+        IndexModel([("local_terms", A)], name="local_terms"),  # multikey; search's local-term match (P5.2)
     ],
     "shops": [
         IndexModel([("slug", A)], unique=True, name="uq_slug"),
@@ -300,6 +306,7 @@ INDEXES: dict[str, list[IndexModel]] = {
                    partialFilterExpression={"catalog_item_id": IS_INT}),
         IndexModel([("catalog_item_id", A), ("is_active", A)], name="catalog_item_active"),
         IndexModel([("category_id", A), ("is_active", A)], name="category_active"),
+        IndexModel([("local_terms", A)], name="local_terms"),  # multikey; search's local-term match (P5.2)
         # Keyword half of hybrid search (replaces SQLite FTS5): weighted, stemmed text index.
         IndexModel([("name", TEXT), ("brand", TEXT), ("keywords", TEXT), ("description", TEXT)],
                    weights={"name": 10, "brand": 6, "keywords": 4, "description": 1},

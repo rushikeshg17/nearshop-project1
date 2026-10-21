@@ -1,0 +1,1056 @@
+{
+ "about": "Local names of catalogue items (P5.2): Kannada (kn), Telugu (te) and Hindi (hi) script, plus common Latin-script spellings (latin). Search matches them word for word, after the same normalisation as a query (app/utils/text.py normalize_query), so a phrase matches only when typed in full. The team fills this for the top 150 catalogue items. Entries with reviewed false are a starting set written by a developer, not by a native speaker: check each one, correct it, and set reviewed to true. Production picks up changes through a new migration that calls apply_local_terms (database/migrations/m0004_local_terms.py); the seed reads the file on every run.",
+ "items": [
+  {
+   "slug": "samsung-25w-usb-c-adapter",
+   "kn": [
+    "ಚಾರ್ಜರ್",
+    "ಮೊಬೈಲ್ ಚಾರ್ಜರ್"
+   ],
+   "te": [
+    "ఛార్జర్",
+    "చార్జర్",
+    "మొబైల్ ఛార్జర్"
+   ],
+   "hi": [
+    "चार्जर",
+    "मोबाइल चार्जर"
+   ],
+   "latin": [
+    "charjar",
+    "charjer"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "xiaomi-33w-charger-combo",
+   "kn": [
+    "ಚಾರ್ಜರ್",
+    "ಮೊಬೈಲ್ ಚಾರ್ಜರ್"
+   ],
+   "te": [
+    "ఛార్జర్",
+    "చార్జర్",
+    "మొబైల్ ఛార్జర్"
+   ],
+   "hi": [
+    "चार्जर",
+    "मोबाइल चार्जर"
+   ],
+   "latin": [
+    "charjar",
+    "charjer"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "apple-20w-usb-c-power-adapter",
+   "kn": [
+    "ಚಾರ್ಜರ್",
+    "ಮೊಬೈಲ್ ಚಾರ್ಜರ್"
+   ],
+   "te": [
+    "ఛార్జర్",
+    "చార్జర్",
+    "మొబైల్ ఛార్జర్"
+   ],
+   "hi": [
+    "चार्जर",
+    "मोबाइल चार्जर"
+   ],
+   "latin": [
+    "charjar",
+    "charjer"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "oneplus-supervooc-80w-adapter",
+   "kn": [
+    "ಚಾರ್ಜರ್",
+    "ಮೊಬೈಲ್ ಚಾರ್ಜರ್"
+   ],
+   "te": [
+    "ఛార్జర్",
+    "చార్జర్",
+    "మొబైల్ ఛార్జర్"
+   ],
+   "hi": [
+    "चार्जर",
+    "मोबाइल चार्जर"
+   ],
+   "latin": [
+    "charjar",
+    "charjer"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "ambrane-20w-pd-type-c-charger",
+   "kn": [
+    "ಚಾರ್ಜರ್",
+    "ಮೊಬೈಲ್ ಚಾರ್ಜರ್"
+   ],
+   "te": [
+    "ఛార్జర్",
+    "చార్జర్",
+    "మొబైల్ ఛార్జర్"
+   ],
+   "hi": [
+    "चार्जर",
+    "मोबाइल चार्जर"
+   ],
+   "latin": [
+    "charjar",
+    "charjer"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "portronics-adapto-20-charger",
+   "kn": [
+    "ಚಾರ್ಜರ್",
+    "ಮೊಬೈಲ್ ಚಾರ್ಜರ್"
+   ],
+   "te": [
+    "ఛార్జర్",
+    "చార్జర్",
+    "మొబైల్ ఛార్జర్"
+   ],
+   "hi": [
+    "चार्जर",
+    "मोबाइल चार्जर"
+   ],
+   "latin": [
+    "charjar",
+    "charjer"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "bajaj-dx6-dry-iron",
+   "kn": [
+    "ಇಸ್ತ್ರಿ ಪೆಟ್ಟಿಗೆ",
+    "ಇಸ್ತ್ರಿ",
+    "ಐರನ್ ಬಾಕ್ಸ್"
+   ],
+   "te": [
+    "ఇస్త్రీ పెట్టె",
+    "ఇస్త్రీ"
+   ],
+   "hi": [
+    "इस्त्री",
+    "प्रेस"
+   ],
+   "latin": [
+    "istri",
+    "istri pettige",
+    "istri pette",
+    "iron box"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "philips-gc1905-steam-iron",
+   "kn": [
+    "ಇಸ್ತ್ರಿ ಪೆಟ್ಟಿಗೆ",
+    "ಇಸ್ತ್ರಿ",
+    "ಐರನ್ ಬಾಕ್ಸ್"
+   ],
+   "te": [
+    "ఇస్త్రీ పెట్టె",
+    "ఇస్త్రీ"
+   ],
+   "hi": [
+    "इस्त्री",
+    "प्रेस"
+   ],
+   "latin": [
+    "istri",
+    "istri pettige",
+    "istri pette",
+    "iron box"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "usha-ei-1602-dry-iron",
+   "kn": [
+    "ಇಸ್ತ್ರಿ ಪೆಟ್ಟಿಗೆ",
+    "ಇಸ್ತ್ರಿ",
+    "ಐರನ್ ಬಾಕ್ಸ್"
+   ],
+   "te": [
+    "ఇస్త్రీ పెట్టె",
+    "ఇస్త్రీ"
+   ],
+   "hi": [
+    "इस्त्री",
+    "प्रेस"
+   ],
+   "latin": [
+    "istri",
+    "istri pettige",
+    "istri pette",
+    "iron box"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "bajaj-rex-500w-mixer-grinder",
+   "kn": [
+    "ಮಿಕ್ಸರ್ ಗ್ರೈಂಡರ್",
+    "ಮಿಕ್ಸಿ"
+   ],
+   "te": [
+    "మిక్సర్ గ్రైండర్",
+    "మిక్సీ"
+   ],
+   "hi": [
+    "मिक्सर ग्राइंडर",
+    "मिक्सी"
+   ],
+   "latin": [
+    "mixie",
+    "mixi"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "duracell-aa-alkaline-4pk",
+   "kn": [
+    "ಬ್ಯಾಟರಿ",
+    "ಸೆಲ್"
+   ],
+   "te": [
+    "బ్యాటరీ",
+    "సెల్"
+   ],
+   "hi": [
+    "बैटरी",
+    "सेल"
+   ],
+   "latin": [
+    "battary",
+    "betri"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "eveready-1015-aa-carbon-4pk",
+   "kn": [
+    "ಬ್ಯಾಟರಿ",
+    "ಸೆಲ್"
+   ],
+   "te": [
+    "బ్యాటరీ",
+    "సెల్"
+   ],
+   "hi": [
+    "बैटरी",
+    "सेल"
+   ],
+   "latin": [
+    "battary",
+    "betri"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "eveready-1012-aaa-carbon-4pk",
+   "kn": [
+    "ಬ್ಯಾಟರಿ",
+    "ಸೆಲ್"
+   ],
+   "te": [
+    "బ్యాటరీ",
+    "సెల్"
+   ],
+   "hi": [
+    "बैटरी",
+    "सेल"
+   ],
+   "latin": [
+    "battary",
+    "betri"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "castrol-activ-4t-20w40-1l",
+   "kn": [
+    "ಎಂಜಿನ್ ಆಯಿಲ್",
+    "ಬೈಕ್ ಆಯಿಲ್"
+   ],
+   "te": [
+    "ఇంజిన్ ఆయిల్",
+    "బైక్ ఆయిల్"
+   ],
+   "hi": [
+    "इंजन ऑयल",
+    "बाइक ऑयल",
+    "इंजन तेल"
+   ],
+   "latin": [
+    "injin oil",
+    "bike oil"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "castrol-power1-4t-15w50-1l",
+   "kn": [
+    "ಎಂಜಿನ್ ಆಯಿಲ್",
+    "ಬೈಕ್ ಆಯಿಲ್"
+   ],
+   "te": [
+    "ఇంజిన్ ఆయిల్",
+    "బైక్ ఆయిల్"
+   ],
+   "hi": [
+    "इंजन ऑयल",
+    "बाइक ऑयल",
+    "इंजन तेल"
+   ],
+   "latin": [
+    "injin oil",
+    "bike oil"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "castrol-activ-scooter-10w30-800ml",
+   "kn": [
+    "ಎಂಜಿನ್ ಆಯಿಲ್",
+    "ಬೈಕ್ ಆಯಿಲ್"
+   ],
+   "te": [
+    "ఇంజిన్ ఆయిల్",
+    "బైక్ ఆయిల్"
+   ],
+   "hi": [
+    "इंजन ऑयल",
+    "बाइक ऑयल",
+    "इंजन तेल"
+   ],
+   "latin": [
+    "injin oil",
+    "bike oil"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "motul-3000-4t-20w40-1l",
+   "kn": [
+    "ಎಂಜಿನ್ ಆಯಿಲ್",
+    "ಬೈಕ್ ಆಯಿಲ್"
+   ],
+   "te": [
+    "ఇంజిన్ ఆయిల్",
+    "బైక్ ఆయిల్"
+   ],
+   "hi": [
+    "इंजन ऑयल",
+    "बाइक ऑयल",
+    "इंजन तेल"
+   ],
+   "latin": [
+    "injin oil",
+    "bike oil"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "servo-4t-xtra-20w40-900ml",
+   "kn": [
+    "ಎಂಜಿನ್ ಆಯಿಲ್",
+    "ಬೈಕ್ ಆಯಿಲ್"
+   ],
+   "te": [
+    "ఇంజిన్ ఆయిల్",
+    "బైక్ ఆయిల్"
+   ],
+   "hi": [
+    "इंजन ऑयल",
+    "बाइक ऑयल",
+    "इंजन तेल"
+   ],
+   "latin": [
+    "injin oil",
+    "bike oil"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "castrol-gtx-20w50-car-3-5l",
+   "kn": [
+    "ಎಂಜಿನ್ ಆಯಿಲ್",
+    "ಕಾರ್ ಆಯಿಲ್"
+   ],
+   "te": [
+    "ఇంజిన్ ఆయిల్",
+    "కార్ ఆయిల్"
+   ],
+   "hi": [
+    "इंजन ऑयल",
+    "कार ऑयल"
+   ],
+   "latin": [
+    "injin oil",
+    "car oil"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "steelbird-sb-39-rox-full-face-helmet",
+   "kn": [
+    "ಹೆಲ್ಮೆಟ್"
+   ],
+   "te": [
+    "హెల్మెట్"
+   ],
+   "hi": [
+    "हेलमेट"
+   ],
+   "latin": [
+    "helmat",
+    "helmit"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "studds-ninja-elite-super-d1-helmet",
+   "kn": [
+    "ಹೆಲ್ಮೆಟ್"
+   ],
+   "te": [
+    "హెల్మెట్"
+   ],
+   "hi": [
+    "हेलमेट"
+   ],
+   "latin": [
+    "helmat",
+    "helmit"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "vega-cliff-open-face-helmet",
+   "kn": [
+    "ಹೆಲ್ಮೆಟ್"
+   ],
+   "te": [
+    "హెల్మెట్"
+   ],
+   "hi": [
+    "हेलमेट"
+   ],
+   "latin": [
+    "helmat",
+    "helmit"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "watertec-ptmt-bib-cock",
+   "kn": [
+    "ನಲ್ಲಿ"
+   ],
+   "te": [
+    "కుళాయి",
+    "నల్లా"
+   ],
+   "hi": [
+    "नल",
+    "टोंटी"
+   ],
+   "latin": [
+    "nalli",
+    "kulai",
+    "tonti"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "jaquar-continental-bib-cock",
+   "kn": [
+    "ನಲ್ಲಿ"
+   ],
+   "te": [
+    "కుళాయి",
+    "నల్లా"
+   ],
+   "hi": [
+    "नल",
+    "टोंटी"
+   ],
+   "latin": [
+    "nalli",
+    "kulai",
+    "tonti"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "cera-pillar-cock-basin",
+   "kn": [
+    "ನಲ್ಲಿ"
+   ],
+   "te": [
+    "కుళాయి",
+    "నల్లా"
+   ],
+   "hi": [
+    "नल",
+    "टोंटी"
+   ],
+   "latin": [
+    "nalli",
+    "kulai",
+    "tonti"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "watertec-kitchen-sink-swan-neck",
+   "kn": [
+    "ನಲ್ಲಿ"
+   ],
+   "te": [
+    "కుళాయి",
+    "నల్లా"
+   ],
+   "hi": [
+    "नल",
+    "टोंटी"
+   ],
+   "latin": [
+    "nalli",
+    "kulai",
+    "tonti"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "relaxo-hawaii-mens-slippers",
+   "kn": [
+    "ಚಪ್ಪಲಿ"
+   ],
+   "te": [
+    "చెప్పులు",
+    "చెప్పు"
+   ],
+   "hi": [
+    "चप्पल"
+   ],
+   "latin": [
+    "chappali",
+    "cheppulu"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "paragon-slickers-mens-slippers",
+   "kn": [
+    "ಚಪ್ಪಲಿ"
+   ],
+   "te": [
+    "చెప్పులు",
+    "చెప్పు"
+   ],
+   "hi": [
+    "चप्पल"
+   ],
+   "latin": [
+    "chappali",
+    "cheppulu"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "popy-3-fold-umbrella",
+   "kn": [
+    "ಛತ್ರಿ",
+    "ಕೊಡೆ"
+   ],
+   "te": [
+    "గొడుగు"
+   ],
+   "hi": [
+    "छाता",
+    "छतरी"
+   ],
+   "latin": [
+    "chatri",
+    "kode",
+    "godugu",
+    "chhata"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "johns-2-fold-umbrella",
+   "kn": [
+    "ಛತ್ರಿ",
+    "ಕೊಡೆ"
+   ],
+   "te": [
+    "గొడుగు"
+   ],
+   "hi": [
+    "छाता",
+    "छतरी"
+   ],
+   "latin": [
+    "chatri",
+    "kode",
+    "godugu",
+    "chhata"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "citizen-long-gents-umbrella",
+   "kn": [
+    "ಛತ್ರಿ",
+    "ಕೊಡೆ"
+   ],
+   "te": [
+    "గొడుగు"
+   ],
+   "hi": [
+    "छाता",
+    "छतरी"
+   ],
+   "latin": [
+    "chatri",
+    "kode",
+    "godugu",
+    "chhata"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "nayasa-plastic-bucket-20l",
+   "kn": [
+    "ಬಕೆಟ್"
+   ],
+   "te": [
+    "బకెట్"
+   ],
+   "hi": [
+    "बाल्टी"
+   ],
+   "latin": [
+    "baket"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "gala-no-dust-grass-broom",
+   "kn": [
+    "ಪೊರಕೆ"
+   ],
+   "te": [
+    "చీపురు"
+   ],
+   "hi": [
+    "झाड़ू"
+   ],
+   "latin": [
+    "porake",
+    "cheepuru"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "scotch-brite-hard-bristle-floor-broom",
+   "kn": [
+    "ಪೊರಕೆ"
+   ],
+   "te": [
+    "చీపురు"
+   ],
+   "hi": [
+    "झाड़ू"
+   ],
+   "latin": [
+    "porake",
+    "cheepuru"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "philips-9w-stellar-bright-led-b22",
+   "kn": [
+    "ಬಲ್ಬ್",
+    "ಎಲ್ಇಡಿ ಬಲ್ಬ್"
+   ],
+   "te": [
+    "బల్బ్",
+    "బల్బు"
+   ],
+   "hi": [
+    "बल्ब"
+   ],
+   "latin": [
+    "balb"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "syska-12w-led-bulb-b22",
+   "kn": [
+    "ಬಲ್ಬ್",
+    "ಎಲ್ಇಡಿ ಬಲ್ಬ್"
+   ],
+   "te": [
+    "బల్బ్",
+    "బల్బు"
+   ],
+   "hi": [
+    "बल्ब"
+   ],
+   "latin": [
+    "balb"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "wipro-garnet-9w-led-bulb",
+   "kn": [
+    "ಬಲ್ಬ್",
+    "ಎಲ್ಇಡಿ ಬಲ್ಬ್"
+   ],
+   "te": [
+    "బల్బ్",
+    "బల్బు"
+   ],
+   "hi": [
+    "बल्ब"
+   ],
+   "latin": [
+    "balb"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "halonix-prime-9w-inverter-bulb",
+   "kn": [
+    "ಬಲ್ಬ್",
+    "ಎಲ್ಇಡಿ ಬಲ್ಬ್"
+   ],
+   "te": [
+    "బల్బ్",
+    "బల్బు"
+   ],
+   "hi": [
+    "बल्ब"
+   ],
+   "latin": [
+    "balb"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "crompton-hs-plus-1200mm-ceiling-fan",
+   "kn": [
+    "ಫ್ಯಾನ್"
+   ],
+   "te": [
+    "ఫ్యాన్"
+   ],
+   "hi": [
+    "पंखा"
+   ],
+   "latin": [
+    "fyan"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "atomberg-renesa-bldc-1200mm-fan",
+   "kn": [
+    "ಫ್ಯಾನ್"
+   ],
+   "te": [
+    "ఫ్యాన్"
+   ],
+   "hi": [
+    "पंखा"
+   ],
+   "latin": [
+    "fyan"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "usha-maxx-air-400mm-table-fan",
+   "kn": [
+    "ಫ್ಯಾನ್"
+   ],
+   "te": [
+    "ఫ్యాన్"
+   ],
+   "hi": [
+    "पंखा"
+   ],
+   "latin": [
+    "fyan"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "classmate-long-notebook-172-pages-ruled",
+   "kn": [
+    "ನೋಟ್ ಬುಕ್",
+    "ಪುಸ್ತಕ"
+   ],
+   "te": [
+    "నోట్ బుక్",
+    "పుస్తకం"
+   ],
+   "hi": [
+    "कॉपी",
+    "नोटबुक"
+   ],
+   "latin": [
+    "pustaka",
+    "pustakam"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "classmate-notebook-172-pages-crown",
+   "kn": [
+    "ನೋಟ್ ಬುಕ್",
+    "ಪುಸ್ತಕ"
+   ],
+   "te": [
+    "నోట్ బుక్",
+    "పుస్తకం"
+   ],
+   "hi": [
+    "कॉपी",
+    "नोटबुक"
+   ],
+   "latin": [
+    "pustaka",
+    "pustakam"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "navneet-youva-long-notebook-200",
+   "kn": [
+    "ನೋಟ್ ಬುಕ್",
+    "ಪುಸ್ತಕ"
+   ],
+   "te": [
+    "నోట్ బుక్",
+    "పుస్తకం"
+   ],
+   "hi": [
+    "कॉपी",
+    "नोटबुक"
+   ],
+   "latin": [
+    "pustaka",
+    "pustakam"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "surf-excel-easy-wash-1kg",
+   "kn": [
+    "ಸೋಪಿನ ಪುಡಿ",
+    "ಡಿಟರ್ಜೆಂಟ್"
+   ],
+   "te": [
+    "సబ్బు పొడి",
+    "డిటర్జెంట్"
+   ],
+   "hi": [
+    "कपड़े धोने का पाउडर",
+    "डिटर्जेंट"
+   ],
+   "latin": [
+    "sopina pudi",
+    "sabbu podi"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "tide-plus-double-power-jasmine-1kg",
+   "kn": [
+    "ಸೋಪಿನ ಪುಡಿ",
+    "ಡಿಟರ್ಜೆಂಟ್"
+   ],
+   "te": [
+    "సబ్బు పొడి",
+    "డిటర్జెంట్"
+   ],
+   "hi": [
+    "कपड़े धोने का पाउडर",
+    "डिटर्जेंट"
+   ],
+   "latin": [
+    "sopina pudi",
+    "sabbu podi"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "ghadi-detergent-powder-1kg",
+   "kn": [
+    "ಸೋಪಿನ ಪುಡಿ",
+    "ಡಿಟರ್ಜೆಂಟ್"
+   ],
+   "te": [
+    "సబ్బు పొడి",
+    "డిటర్జెంట్"
+   ],
+   "hi": [
+    "कपड़े धोने का पाउडर",
+    "डिटर्जेंट"
+   ],
+   "latin": [
+    "sopina pudi",
+    "sabbu podi"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "good-knight-gold-flash-refill-45ml",
+   "kn": [
+    "ಸೊಳ್ಳೆ"
+   ],
+   "te": [
+    "దోమ",
+    "దోమలు"
+   ],
+   "hi": [
+    "मच्छर"
+   ],
+   "latin": [
+    "solle",
+    "doma",
+    "machchar"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "all-out-ultra-refill-45ml",
+   "kn": [
+    "ಸೊಳ್ಳೆ"
+   ],
+   "te": [
+    "దోమ",
+    "దోమలు"
+   ],
+   "hi": [
+    "मच्छर"
+   ],
+   "latin": [
+    "solle",
+    "doma",
+    "machchar"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "astral-ptfe-teflon-tape-12mm-10m",
+   "kn": [
+    "ಟೆಫ್ಲಾನ್ ಟೇಪ್"
+   ],
+   "te": [
+    "టెఫ్లాన్ టేప్"
+   ],
+   "hi": [
+    "टेफ्लॉन टेप"
+   ],
+   "latin": [],
+   "reviewed": false
+  },
+  {
+   "slug": "ramraj-double-dhoti-jari-border",
+   "kn": [
+    "ಪಂಚೆ"
+   ],
+   "te": [
+    "పంచె"
+   ],
+   "hi": [
+    "धोती"
+   ],
+   "latin": [
+    "panche",
+    "pancha"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "sangu-cotton-checked-lungi",
+   "kn": [
+    "ಲುಂಗಿ"
+   ],
+   "te": [
+    "లుంగీ"
+   ],
+   "hi": [
+    "लुंगी"
+   ],
+   "latin": [],
+   "reviewed": false
+  },
+  {
+   "slug": "bombay-dyeing-cotton-bath-towel-70x140",
+   "kn": [
+    "ಟವೆಲ್",
+    "ಟವಲ್"
+   ],
+   "te": [
+    "తువ్వాలు"
+   ],
+   "hi": [
+    "तौलिया"
+   ],
+   "latin": [
+    "tuvvalu",
+    "tauliya"
+   ],
+   "reviewed": false
+  },
+  {
+   "slug": "eveready-rechargeable-led-torch-2w",
+   "kn": [
+    "ಟಾರ್ಚ್"
+   ],
+   "te": [
+    "టార్చ్",
+    "టార్చి"
+   ],
+   "hi": [
+    "टॉर्च"
+   ],
+   "latin": [],
+   "reviewed": false
+  },
+  {
+   "slug": "eveready-jumbo-2d-metal-torch",
+   "kn": [
+    "ಟಾರ್ಚ್"
+   ],
+   "te": [
+    "టార్చ్",
+    "టార్చి"
+   ],
+   "hi": [
+    "टॉर्च"
+   ],
+   "latin": [],
+   "reviewed": false
+  }
+ ]
+}

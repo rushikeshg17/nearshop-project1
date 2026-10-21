@@ -12,7 +12,8 @@ it touches any database. Documents are built in memory and sent with bulk insert
 cluster is seeded in about a minute. The city comes from NEARSHOP_SEED_CITY (default ballari; see cities.json for options).
 
 What it creates (all demo data; sales are flagged is_demo=True so AI outputs say so):
-  - categories + ~300 catalog items, ~48 shops spread over real localities
+  - categories + ~300 catalog items (with their Kannada, Telugu and Hindi names from local_terms.json),
+    ~48 shops spread over real localities
   - each shop's listings with local price variation (and a few deliberate outliers)
   - 150 days of daily sales with weekday + monthly seasonality, plus co-purchase baskets
   - reservation / delivery history with realistic outcomes, status timelines and reviews
@@ -69,6 +70,7 @@ from app.services.loaders import reset_category_cache
 from app.utils.geo import haversine_km
 from app.utils.text import short_code, slugify
 from database import schema
+from database.migrations.m0004_local_terms import apply_local_terms
 
 DATA = BACKEND_DIR / "database" / "seed" / "data"
 SALES_DAYS = 150
@@ -639,6 +641,9 @@ def main(argv: Sequence[str] = ()) -> None:
     ]:
         bulk_insert(collection, docs)
         print(f"    {collection.name}: {len(docs)}")
+    # Kannada, Telugu and Hindi names from data/local_terms.json, on the catalogue and its listings (P5.2).
+    items_named, listings_named = apply_local_terms(db.mongo)
+    print(f"    local_terms: {items_named} catalog items, {listings_named} listings")
     nid.save_counters(db)
 
     # ------------------------------------------------------------ train AI

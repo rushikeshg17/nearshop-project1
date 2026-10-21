@@ -21,12 +21,15 @@ from app.models import Product, SearchEvent, Shop
 from app.schemas.serializers import listing, shop_brief
 from app.services.loaders import categories, category_by_slug, with_categories, with_category
 from app.utils.geo import haversine_km, within_km
-from app.utils.text import expand_synonyms, normalize_query, search_tokens
+from app.utils.text import expand_synonyms, is_word, normalize_query, search_tokens, word_parts
 
 SEM_FLOOR, SEM_CEIL = 0.22, 0.62  # cosine range mapped to 0..1 for all-MiniLM-L6-v2
 SEM_MIN_MATCH = 0.34  # a listing with no keyword hit needs at least this much meaning overlap
 W_SEMANTIC, W_KEYWORD = 0.6, 0.4
 RELATIVE_CUTOFF = 0.42  # drop results far weaker than the best one
+# An exact match on a listing's local_terms (Kannada, Telugu, Hindi or a transliteration; P5.2) adds the text
+# index's brand weight to its keyword score, once per matched term: it counts as much as a brand match.
+W_LOCAL_TERM = 6.0
 # Search results never show these, so they are not fetched.
 LISTING_FIELDS = {"description": 0, "specs": 0}
 
@@ -81,6 +84,47 @@ def keyword_scores(db: Database, terms: list[str]) -> dict[int, float]:
     return {r["_id"]: r["score"] for r in rows}
 
 
+def _local_term_candidates(norm: str) -> list[str]:
+    """What a query can match in local_terms, exactly: each word, each pair of adjacent words, and the
+    whole query (local terms may be phrases, such as the Kannada for "bike oil"). A hyphenated query
+    is also tried with spaces, as people join or split the two words of a name either way."""
+    out: list[str] = []
+    for text in dict.fromkeys([norm, norm.replace("-", " ")]):
+        words = text.split()
+        out += [*words, *(f"{a} {b}" for a, b in zip(words, words[1:], strict=False)), " ".join(words)]
+    return list(dict.fromkeys(w for w in out if w))
+
+
+def local_term_scores(db: Database, norm: str) -> dict[int, float]:
+    """Listings whose local_terms contain a word, adjacent pair or the whole of the normalised query, scored
+    W_LOCAL_TERM per matched term. Listings created from the catalogue after migration 4 copied the terms
+    are matched through their catalog item's own local_terms."""
+    candidates = _local_term_candidates(norm)
+    if not norm or not candidates:
+        return {}
+    wanted = set(candidates)
+    by_item = {c["_id"]: len(wanted.intersection(c["local_terms"]))
+               for c in db.catalog_items.find_raw({"local_terms": {"$in": candidates}}, {"local_terms": 1})}
+    clauses: list[dict] = [{"local_terms": {"$in": candidates}}]
+    if by_item:
+        clauses.append({"catalog_item_id": {"$in": list(by_item)}})
+    out: dict[int, float] = {}
+    for r in db.products.find_raw({"$or": clauses}, {"local_terms": 1, "catalog_item_id": 1}):
+        own = len(wanted.intersection(r.get("local_terms") or []))
+        matched = max(own, by_item.get(r.get("catalog_item_id"), 0))
+        if matched:
+            out[r["_id"]] = W_LOCAL_TERM * matched
+    return out
+
+
+def _keyword_stage(db: Database, norm: str, expanded: list[str]) -> dict[int, float]:
+    """Text-index scores plus the local-term bonus."""
+    kw = keyword_scores(db, norm.split() + expanded)
+    for pid, bonus in local_term_scores(db, norm).items():
+        kw[pid] = kw.get(pid, 0.0) + bonus
+    return kw
+
+
 def _norm_sem(sim: float) -> float:
     return min(max((sim - SEM_FLOOR) / (SEM_CEIL - SEM_FLOOR), 0.0), 1.0)
 
@@ -102,7 +146,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
     # Listings, keyword scores and semantic scores are independent: fetch them side by side.
     products, kw, sem = db.gather(
         lambda: with_category(db, db.products.find(query, projection=LISTING_FIELDS)) if shops else [],
-        lambda: keyword_scores(db, norm.split() + expanded) if norm else {},
+        lambda: _keyword_stage(db, norm, expanded) if norm else {},
         lambda: index.query(db, norm) if norm else {},
     )
 
@@ -242,21 +286,29 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
 # ---------------------------------------------------------------- "did you mean"
 
 _vocab: dict[str, set[str]] = {}
+# Vocabulary words: Latin letters (lower-cased), or Kannada, Telugu or Devanagari letters with their vowel
+# signs and viramas (P5.2). Three characters or more, as before.
+_VOCAB_WORD = re.compile(r"[a-z]{3,}|[\u0900-\u097f\u0c00-\u0c7f\u0c80-\u0cff]{3,}")
+
+
+def _vocab_words(text: str) -> list[str]:
+    return [w for part in word_parts(text.lower()) for w in _VOCAB_WORD.findall(part)]
 
 
 def _vocabulary(db: Database) -> set[str]:
     """Every word customers could mean: catalogue names, brands, tags, category names and the
-    names of shop-specific listings. Cached per process; reset when listings change."""
+    names of shop-specific listings, and the catalogue's local terms (Kannada, Telugu, Devanagari and Latin
+    transliterations). Cached per process; reset when listings change."""
     key = db.mongo.name
     if key not in _vocab:
         words: set[str] = set()
-        for c in db.catalog_items.find_raw({}, {"name": 1, "brand": 1, "tags": 1}):
-            for chunk in [c["name"], c.get("brand") or "", *(c.get("tags") or [])]:
-                words.update(re.findall(r"[a-z]{3,}", chunk.lower()))
+        for c in db.catalog_items.find_raw({}, {"name": 1, "brand": 1, "tags": 1, "local_terms": 1}):
+            for chunk in [c["name"], c.get("brand") or "", *(c.get("tags") or []), *(c.get("local_terms") or [])]:
+                words.update(_vocab_words(chunk))
         for c in db.products.find_raw({"catalog_item_id": None, "is_active": True}, {"name": 1, "keywords": 1}):
-            words.update(re.findall(r"[a-z]{3,}", f"{c['name']} {c.get('keywords') or ''}".lower()))
+            words.update(_vocab_words(f"{c['name']} {c.get('keywords') or ''}"))
         for c in categories(db).values():
-            words.update(re.findall(r"[a-z]{3,}", c.name.lower()))
+            words.update(_vocab_words(c.name))
         _vocab[key] = words
     return _vocab[key]
 
@@ -268,7 +320,7 @@ def suggest_correction(db: Database, norm: str) -> str | None:
     changed = False
     out = []
     for word in norm.split():
-        if len(word) < 4 or word in vocab or not word.isalpha():
+        if len(word) < 4 or word in vocab or not is_word(word):
             out.append(word)
             continue
         match = process.extractOne(word, vocab, scorer=fuzz.ratio, score_cutoff=78)
