@@ -25,7 +25,11 @@ function day(iso: string | null) {
 
 /** The shop's verification as an admin needs it: the status, and whether customers can see the shop. */
 function VerificationStatusCell({ s, now }: { s: AdminShopRow; now: number }) {
-  const expired = s.verification_status === "verified" && !!s.verified_until && new Date(s.verified_until).getTime() <= now;
+  const pastDate = s.verification_status === "verified" && !!s.verified_until && new Date(s.verified_until).getTime() <= now;
+  // A shop whose renewal was submitted in time stays visible past verified_until while it is checked (P3.3), so
+  // a past date only means "Expired" when customers cannot see the shop.
+  const renewing = pastDate && s.visible_to_customers;
+  const expired = pastDate && !renewing;
   const label = expired
     ? "Expired"
     : { draft: "Draft", submitted: "Submitted", verified: "Verified", rejected: "Rejected", suspended: "Suspended" }[s.verification_status];
@@ -34,7 +38,9 @@ function VerificationStatusCell({ s, now }: { s: AdminShopRow; now: number }) {
     <div className="space-y-0.5">
       <Badge variant={variant}>{label}</Badge>
       {s.verification_status === "verified" && s.verified_until && (
-        <p className="text-xs text-muted-foreground">{expired ? "ended" : "until"} {day(s.verified_until)}</p>
+        <p className="text-xs text-muted-foreground">
+          {pastDate ? "ended" : "until"} {day(s.verified_until)}{renewing && ", renewal being checked"}
+        </p>
       )}
       <p className="text-xs text-muted-foreground">{s.visible_to_customers ? "Visible to customers" : "Hidden from customers"}</p>
     </div>

@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { ErrorState, ListSkeleton } from "@/components/common/states";
 import { PageTitle } from "@/components/dashboard/dashboard-shell";
 import { ShopAvatar } from "@/components/shop/shop-card";
-import { formatDay } from "@/app/shop/owner-shell";
+import { formatDay, verificationNotice } from "@/app/shop/owner-shell";
 import {
   KYC_TYPES,
   KycFields,
@@ -65,17 +65,25 @@ function toForm(s: ShopDetail): ShopFormState {
 
 export default function ShopSettingsPage() {
   const shop = useQuery({ queryKey: ["owner", "shop"], queryFn: () => api.get<OwnerShopSettings>("/owner/shop") });
+  // The same query as the owner shell's banner, so an admin's decision reaches this page when the banner sees it.
+  const live = useQuery({
+    queryKey: ["owner", "verification"],
+    queryFn: () => api.get<ShopVerification>("/owner/verification"),
+    refetchInterval: 30_000,
+  });
   if (shop.isError) return <ErrorState error={shop.error} onRetry={() => shop.refetch()} />;
   if (!shop.data) return <ListSkeleton rows={4} />;
+  const verification = live.data ?? shop.data.verification;
   return (
     <>
-      <SettingsForm key={shop.data.id} initial={shop.data} />
-      <VerifySection v={shop.data.verification} />
+      <SettingsForm key={shop.data.id} initial={shop.data} verification={verification} />
+      <VerifySection v={verification} />
     </>
   );
 }
 
-function SettingsForm({ initial }: { initial: OwnerShopSettings }) {
+/** initial is the latest saved shop (the query data, replaced after every save); only the form state is local. */
+function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; verification: ShopVerification }) {
   const qc = useQueryClient();
   const { data: meta } = useMeta();
   const [form, setForm] = useState<ShopFormState>(() => toForm(initial));
@@ -99,7 +107,7 @@ function SettingsForm({ initial }: { initial: OwnerShopSettings }) {
     },
   });
   // A verified shop that changes its address or phone goes back to review and is hidden meanwhile (P3.3).
-  const needsReview = initial.verification.changes_need_review && reviewFieldsChanged(initial, form);
+  const needsReview = verification.changes_need_review && reviewFieldsChanged(initial, form);
   const upload = useMutation({
     mutationFn: (f: File) => api.upload<{ image_url: string }>("/owner/shop/image", f),
     onSuccess: () => {
@@ -257,10 +265,13 @@ function VerificationSummary({ v, typeLabel }: { v: ShopVerification; typeLabel?
   const evidence = v.kyc_number ? `${typeLabel ?? "Number"}: ${v.kyc_number}` : null;
   let line: string;
   if (v.status === "verified" && v.renewal_pending) line = "Your renewal is waiting for an admin. Your shop stays visible meanwhile.";
-  else if (v.status === "verified" && v.visible_to_customers) {
+  else if (v.status === "verified" && verificationNotice(v)?.kind === "expired") {
+    line = `Your verification ended on ${formatDay(v.verified_until)}. Renew it to be visible again.`;
+  } else if (v.status === "verified") {
     line = `Verified until ${formatDay(v.verified_until)}.`;
     if (!v.can_submit && v.renewal_opens_at) line += ` You can renew from ${formatDay(v.renewal_opens_at)}.`;
-  } else if (v.status === "verified") line = `Your verification ended on ${formatDay(v.verified_until)}. Renew it to be visible again.`;
+    if (!v.visible_to_customers) line += " Your shop is switched off in settings, so customers cannot see it.";
+  }
   else if (v.status === "submitted") line = "Waiting for an admin, usually within 2 working days. Your shop is hidden until it is approved.";
   else if (v.status === "rejected") line = "Not approved. Correct the evidence and submit again.";
   else if (v.status === "suspended") line = "Suspended. Submit fresh evidence to be verified again.";
