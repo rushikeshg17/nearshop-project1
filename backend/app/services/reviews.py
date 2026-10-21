@@ -13,7 +13,8 @@ What counts (recompute_shop, run in the same transaction as every review change,
     come from customers whose only completed purchases (completed pickups, delivered orders) are at this shop,
     those reviews are held out of the rating and flagged (held_at) for the admin moderation queue (P3.6). A held
     review stays held until an admin decides it: waiting 30 days does not release it, and a review an admin
-    kept is never held again.
+    kept while it was held (kept_held) is never held again. Keeping a review for any other reason, such as
+    after reports, does not exempt it from the rule.
   * the rating is recomputed from counted, visible, unheld reviews: rating_sum, rating_count and
     rating_customers (distinct customers) on the shop. Nothing increments it. Shop.rating_avg shows a rating
     only from MIN_RATED_CUSTOMERS (app/models/core.py) distinct customers; below that the screens show "New shop" (P3.7).
@@ -101,7 +102,7 @@ def recompute_shop(mongo: MongoDatabase, shop_id: int, *, session: ClientSession
     reviews = list(mongo["reviews"].find(
         {"shop_id": shop_id},
         {"customer_id": 1, "rating": 1, "created_at": 1, "status": 1, "counted": 1, "held": 1, "held_at": 1,
-         "decision": 1},
+         "kept_held": 1},
         sort=[("created_at", 1), ("_id", 1)], session=session))
 
     # One counted review per customer per COUNT_WINDOW_DAYS, oldest first, among the visible ones.
@@ -126,8 +127,9 @@ def recompute_shop(mongo: MongoDatabase, shop_id: int, *, session: ClientSession
         suspect = [r for r in recent if r["customer_id"] in single]
         if suspect and len(suspect) / len(recent) >= SELF_DEALING_SHARE:
             for r in suspect:
-                # An admin who decided to keep a review (P3.6) has cleared it: it is never held again.
-                held[r["_id"]] = held[r["_id"]] or r.get("decision") != KEEP
+                # An admin who kept a review while it was held (P3.6) has cleared it of self-dealing: it is
+                # never held again. A review kept after reports was never judged for self-dealing.
+                held[r["_id"]] = held[r["_id"]] or not r.get("kept_held")
 
     ops: list[UpdateOne] = []
     for r in reviews:
@@ -256,8 +258,8 @@ def decide(db: Database, admin: User, review_id: int, target: str, decision: str
         _save(db, review, target, fields)
         if target == REVIEW:
             if decision == KEEP and review.held:
-                db.reviews.update_one({"_id": review.id}, {"$set": {"held": False}})
-                review.held = False
+                db.reviews.update_one({"_id": review.id}, {"$set": {"held": False, "kept_held": True}})
+                review.held, review.kept_held = False, True
             recompute(db, review.shop_id)
         return review
 
@@ -294,7 +296,7 @@ def edit_reply(db: Database, shop: Shop, review_id: int, text: str) -> ReviewRep
 
     def run() -> ReviewReply:
         review = db.reviews.get(review_id)
-        if review is None or review.shop_id != shop.id or review.reply is None:
+        if review is None or review.shop_id != shop.id or review.status == REMOVED or review.reply is None:
             raise NotFound("Reply not found")
         current = review.reply
         if utcnow() - current.created_at > timedelta(hours=REPLY_EDIT_HOURS):
@@ -316,12 +318,27 @@ def _entered(doc: dict) -> datetime | None:
     return min(times) if times else None
 
 
+QUEUE_FILTER = {"$or": [{"decided_at": None, "reported_at": {"$type": "date"}},
+                        {"held": True, "status": {"$nin": [HIDDEN, REMOVED]}}]}
+REPLY_QUEUE_FILTER = {"reply.decided_at": None, "reply.reported_at": {"$type": "date"}}
+
+
+def sla_filters(start: datetime, end: datetime) -> tuple[dict, dict]:
+    """The reviews, and the replies, that entered the queue in [start, end). The $type condition lets MongoDB
+    use the partial indexes (reported, held, reply_reported), which are filtered on it."""
+    window = {"$type": "date", "$gte": start, "$lt": end}
+    return {"$or": [{"reported_at": window}, {"held_at": window}]}, {"reply.reported_at": window}
+
+
 def queue(db: Database) -> list[dict[str, Any]]:
-    """Everything waiting for an admin, oldest first (the first QUEUE_LIMIT): reported or held reviews, and
-    reported replies, not yet decided."""
-    rows = db.reviews.find_raw({"decided_at": None, "$or": [{"reported_at": {"$type": "date"}}, {"held": True}]})
-    reply_rows = db.reviews.find_raw({"reply.decided_at": None, "reply.reported_at": {"$type": "date"}})
-    items = [(REVIEW, r, _entered(r)) for r in rows] + [(REPLY, r, r["reply"]["reported_at"]) for r in reply_rows]
+    """Everything waiting for an admin, oldest first (the first QUEUE_LIMIT): reported reviews and replies not
+    yet decided, and held reviews an admin has not hidden or removed (keeping one releases it). A review kept
+    after reports and held later by the self-dealing rule comes back, aged from its hold. Each branch of the
+    query has its own index in database/schema.py (reported, held_open, reply_reported)."""
+    rows = db.reviews.find_raw(QUEUE_FILTER)
+    reply_rows = db.reviews.find_raw(REPLY_QUEUE_FILTER)
+    items = [(REVIEW, r, r.get("held_at") if r.get("decided_at") else _entered(r)) for r in rows]
+    items += [(REPLY, r, r["reply"]["reported_at"]) for r in reply_rows]
     items = [i for i in items if i[2] is not None]
     items.sort(key=lambda i: (i[2], i[1]["_id"]))
     items = items[:QUEUE_LIMIT]
@@ -376,14 +393,14 @@ def sla_shares(items: list[tuple[datetime, datetime | None, datetime | None]], n
 
 def sla(db: Database, start: datetime, end: datetime) -> dict[str, Any]:
     """SLA shares for the reviews and replies that entered the queue in [start, end)."""
-    window = {"$gte": start, "$lt": end}
+    review_filter, reply_filter = sla_filters(start, end)
     items: list[tuple[datetime, datetime | None, datetime | None]] = []
-    for r in db.reviews.find_raw({"$or": [{"reported_at": window}, {"held_at": window}]},
+    for r in db.reviews.find_raw(review_filter,
                                  {"reported_at": 1, "held_at": 1, "triaged_at": 1, "decided_at": 1}):
         entered = _entered(r)
         if entered is not None and start <= entered < end:
             items.append((entered, r.get("triaged_at"), r.get("decided_at")))
-    for r in db.reviews.find_raw({"reply.reported_at": window}, {"reply": 1}):
+    for r in db.reviews.find_raw(reply_filter, {"reply": 1}):
         rp = r["reply"]
         items.append((rp["reported_at"], rp.get("triaged_at"), rp.get("decided_at")))
     return sla_shares(items, utcnow())

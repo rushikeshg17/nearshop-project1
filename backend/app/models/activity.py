@@ -105,7 +105,8 @@ class Moderation(BaseModel):
     """What moderation (P3.6, app/services/reviews.py) records on a review or a shop reply. report_count is the
     number of distinct users who reported it (review_reports); reported_at is the first report. It is in the admin
     queue from then (or, for a review, from held_at) until an admin decides it: triaged_at when an admin first
-    picks it up, decided_at and decision (keep, hide or remove) when one decides it, both set once and kept."""
+    picks it up and decided_at when one first decides it, both set once and kept (the SLA is measured on them).
+    An admin may decide again: status, decision, decided_by and decision_note then hold the latest decision."""
 
     status: str = "visible"  # visible | hidden | removed
     report_count: int = 0
@@ -150,6 +151,7 @@ class Review(Document, Moderation):
     held: bool = False
     held_at: datetime | None = None
     held_reason: str | None = None  # self_dealing
+    kept_held: bool = False  # an admin kept it while it was held: the self-dealing rule never holds it again
     reply: ReviewReply | None = None
 
     customer: User | None = Field(default=None, exclude=True)

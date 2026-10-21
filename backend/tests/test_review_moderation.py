@@ -14,6 +14,7 @@ from app.main import app
 from app.models import Product, Role, Shop, User
 from app.models.activity import Review, ReviewReply
 from app.models.core import VerificationStatus, months_after
+from app.services import privacy
 from app.services import reviews as review_service
 from tests.conftest import CENTER, HEADERS
 from tests.test_reviews import PW_HASH, client_for, completed, make_customer, regular
@@ -179,6 +180,53 @@ def test_held_self_dealing_reviews_reach_the_queue_and_keep_releases_them(db, wo
     assert not db.reviews.get(r.id).held and db.shops.get(world["shop"].id).rating_count == 1
 
 
+def test_a_review_kept_after_reports_is_still_held_for_self_dealing_later(db, world, admin):
+    rated_shop(db, world)  # five regular customers: one single-shop reviewer (1 in 6) is under the 30% share
+    first = add_review(db, world, make_customer(db, world, "loner0"))
+    assert not db.reviews.get(first.id).held
+    reporters(db, world, 1)[0].post(f"/api/reviews/{first.id}/report", json=REASON, headers=HEADERS)
+    assert admin.post(f"/api/admin/reviews/{first.id}/decision", json={"decision": "keep"},
+                      headers=HEADERS).status_code == 200
+    kept = db.reviews.get(first.id)
+    assert kept.decision == "keep" and kept.decided_at is not None and not kept.kept_held
+
+    for i in (1, 2):  # 3 of 8 recent reviewers bought only here: the rule fires for the shop
+        add_review(db, world, make_customer(db, world, f"loner{i}"))
+    held = db.reviews.get(first.id)
+    assert held.held and held.held_at is not None, "keeping a reported review is no self-dealing decision"
+    queue = admin.get("/api/admin/reviews/queue", headers=HEADERS).json()["items"]
+    item = next(i for i in queue if i["review_id"] == first.id)
+    assert "held_self_dealing" in item["flags"]
+    assert item["entered_at"].startswith(held.held_at.isoformat()[:19])  # aged from the hold, not the report
+
+    assert admin.post(f"/api/admin/reviews/{first.id}/decision", json={"decision": "keep"},
+                      headers=HEADERS).status_code == 200
+    review_service.recompute_shop(db.mongo, world["shop"].id)
+    released = db.reviews.get(first.id)
+    assert not released.held and released.kept_held and released.decided_at == kept.decided_at
+    queue = admin.get("/api/admin/reviews/queue", headers=HEADERS).json()["items"]
+    assert all(i["review_id"] != first.id for i in queue)
+
+
+def _plans(plan: dict) -> list[str]:
+    """Every stage name in an explain plan."""
+    out = [plan.get("stage", "")]
+    for key in ("inputStage", "inputStages", "queryPlan"):
+        child = plan.get(key)
+        for c in (child if isinstance(child, list) else [child] if child else []):
+            out += _plans(c)
+    return out
+
+
+def test_the_queue_and_sla_queries_use_indexes(db, world):
+    start, end = datetime(2025, 1, 1), datetime(2025, 2, 1)
+    review_filter, reply_filter = review_service.sla_filters(start, end)
+    for flt in (review_service.QUEUE_FILTER, review_service.REPLY_QUEUE_FILTER, review_filter, reply_filter):
+        plan = db.mongo["reviews"].find(flt).explain()["queryPlanner"]["winningPlan"]
+        stages = _plans(plan)
+        assert "COLLSCAN" not in stages and "IXSCAN" in stages, (flt, stages)
+
+
 def test_the_queue_and_its_actions_are_admin_only(db, world, client):
     r = rated_shop(db, world, 1)[0]
     customer = reporters(db, world, 1)[0]
@@ -267,11 +315,42 @@ def test_public_lists_leave_out_hidden_and_removed_reviews_and_show_replies(db, 
         assert rows[0]["reply"]["text"] == "Glad you liked it" and "status" not in rows[0]
     mine = {x["id"]: x["status"] for x in owner.get("/api/owner/reviews", headers=HEADERS).json()}
     assert mine == {shown.id: "visible", hidden.id: "hidden", removed.id: "removed"}
-    # A removed review cannot be reported or answered any more.
+    # A removed review cannot be reported or answered any more, and its reply cannot be edited.
     c = reporters(db, world, 1)[0]
     assert c.post(f"/api/reviews/{removed.id}/report", json=REASON, headers=HEADERS).status_code == 404
     assert owner.post(f"/api/owner/reviews/{removed.id}/reply", json={"text": "x"}, headers=HEADERS
                       ).status_code == 404
+    owner.post(f"/api/owner/reviews/{hidden.id}/reply", json={"text": "Before removal"}, headers=HEADERS)
+    admin.post(f"/api/admin/reviews/{hidden.id}/decision", json={"decision": "remove"}, headers=HEADERS)
+    assert owner.put(f"/api/owner/reviews/{hidden.id}/reply", json={"text": "After removal"}, headers=HEADERS
+                     ).status_code == 404
+    assert db.reviews.get(hidden.id).reply.text == "Before removal"
+
+
+def test_the_data_export_leaves_out_moderation_bookkeeping_and_deletion_clears_report_notes(db, world, admin):
+    customer = regular(db, world, "exporter")
+    r = add_review(db, world, customer)
+    reporter = make_customer(db, world, "noter")
+    review_service.report(db, reporter, r.id, "review", "abusive", "  internal-looking note  ")
+    owner = client_for(world["owner"].email)
+    owner.post(f"/api/owner/reviews/{r.id}/reply", json={"text": "Thanks"}, headers=HEADERS)
+    admin.post(f"/api/admin/reviews/{r.id}/decision", json={"decision": "keep", "note": "admin only"},
+               headers=HEADERS)
+
+    exported = next(x for x in privacy.export_data(db, customer)["reviews"] if x["id"] == r.id)
+    assert exported["status"] == "visible" and exported["reply"]["text"] == "Thanks"
+    for field in ("decided_by", "decision_note", "report_count", "triaged_at", "kept_held"):
+        assert field not in exported
+    for field in ("author_id", "decided_by", "decision_note", "report_count"):
+        assert field not in exported["reply"]
+
+    filed = privacy.export_data(db, reporter)["review_reports"]
+    assert [(x["review_id"], x["reason"], x["note"]) for x in filed] == [(r.id, "abusive", "internal-looking note")]
+    assert "reporter_id" not in filed[0]
+    privacy.anonymise(db, reporter.id)
+    row = db.mongo["review_reports"].find_one({"reporter_id": reporter.id})
+    assert row["note"] is None and row["reason"] == "abusive"
+    assert db.reviews.get(r.id).report_count == 1
 
 
 # ---------------------------------------------------------------- SLA

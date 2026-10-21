@@ -1,7 +1,8 @@
 """Privacy rights and retention (P3.2; plan sections 8.4 and 8.5; docs/legal/retention.md).
 
-  * Export: export_data returns the account's profile, consents, nominee, reservations, orders, reviews,
-    notifications and search history as one JSON document (GET /api/me/export, 3 a day).
+  * Export: export_data returns the account's profile, consents, nominee, reservations, orders, reviews
+    (without admin moderation bookkeeping), the review reports the user filed, notifications and search
+    history as one JSON document (GET /api/me/export, 3 a day).
   * Consent: the newest consents row for a (user, purpose) is the one in force (P3.1). set_consent appends a
     row; it never updates one. Withdrawing personalised suggestions also unlinks the user's past searches.
   * Nomination: one nominee (a name, and a phone or an email) stored on the user, in the export, removed on
@@ -143,6 +144,20 @@ def _clean(doc: dict, drop: Iterable[str] = ()) -> dict:
     return {("id" if k == "_id" else k): value(v) for k, v in doc.items() if k not in skip}
 
 
+# Moderation bookkeeping on a review and on the shop's reply (P3.6) that is the admins' and the shop's, not the
+# customer's: who decided it and their internal note, how many people reported it, and which owner account
+# wrote the reply. The export shows the review's and the reply's status instead.
+REVIEW_INTERNAL = ("decided_by", "decision_note", "report_count", "triaged_at", "kept_held")
+REPLY_INTERNAL = ("decided_by", "decision_note", "report_count", "triaged_at", "author_id")
+
+
+def _review_out(doc: dict) -> dict:
+    out = _clean(doc, REVIEW_INTERNAL)
+    if isinstance(doc.get("reply"), dict):
+        out["reply"] = _clean(doc["reply"], REPLY_INTERNAL)
+    return out
+
+
 def export_data(db: Database, user: User) -> dict:
     """Everything NearShop holds about the account, as one JSON document (plan section 8.5). Secrets
     (the password hash, session ids, second-factor material) are never included."""
@@ -169,7 +184,9 @@ def export_data(db: Database, user: User) -> dict:
         "shops": shops,
         "reservations": find("reservations", {"customer_id": user.id}),
         "orders": find("orders", {"customer_id": user.id}),
-        "reviews": find("reviews", {"customer_id": user.id}),
+        "reviews": [_review_out(d) for d in db.mongo["reviews"].find({"customer_id": user.id}, sort=newest_first)],
+        "review_reports": [_clean(d, ("reporter_id",)) for d in db.mongo["review_reports"].find(
+            {"reporter_id": user.id}, sort=newest_first)],
         "notifications": find("notifications", {"user_id": user.id}),
         "search_history": [_clean(d, ("user_id",)) for d in db.mongo["search_history"].find(
             {"user_id": user.id}, sort=newest_first)],
@@ -305,7 +322,7 @@ def anonymise(db: Database, user_id: int, now: datetime | None = None) -> None:
     """Remove the account's personal data in one transaction (plan section 8.5): the profile becomes
     "Deleted user" with no email, phone, password, home, nominee or sessions; optional consents are
     withdrawn by new rows; notifications and search history are deleted; reviews keep their rating and lose
-    their comment; reservations and orders stay for the shop without phone, address or note; sales lose the
+    their comment; review reports the user filed keep their reason and lose their note; reservations and orders stay for the shop without phone, address or note; sales lose the
     customer id. An owner's shops are hidden and their listings deactivated first."""
     now = now or utcnow()
 
@@ -330,6 +347,9 @@ def anonymise(db: Database, user_id: int, now: datetime | None = None) -> None:
         db.notifications.delete_many({"user_id": user_id})
         db.search_history.delete_many({"user_id": user_id})
         db.reviews.update_many({"customer_id": user_id}, {"$set": {"comment": None}})
+        # Reports the user filed (P3.6) stay, so a review's distinct-reporter count holds, without their note.
+        db.mongo["review_reports"].update_many({"reporter_id": user_id}, {"$set": {"note": None}},
+                                               session=db.session)
         db.reservations.update_many({"customer_id": user_id}, {"$set": {"note": None}})
         db.orders.update_many({"customer_id": user_id}, clear_order_contact(now))
         db.sales_history.update_many({"customer_id": user_id}, {"$set": {"customer_id": None}})

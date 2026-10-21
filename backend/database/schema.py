@@ -401,8 +401,11 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("product_id", A), ("created_at", D)], name="product_created"),
         IndexModel([("customer_id", A)], name="customer"),
         # The moderation queue and the monthly SLA (P3.6): reported reviews, held reviews and reported replies.
+        # The SLA's date ranges use reported, held and reply_reported; the queue uses reported, held_open
+        # (reviews held now) and reply_reported.
         IndexModel([("reported_at", A)], name="reported", partialFilterExpression={"reported_at": {"$type": "date"}}),
         IndexModel([("held_at", A)], name="held", partialFilterExpression={"held_at": {"$type": "date"}}),
+        IndexModel([("held", A)], name="held_open", partialFilterExpression={"held": True}),
         IndexModel([("reply.reported_at", A)], name="reply_reported",
                    partialFilterExpression={"reply.reported_at": {"$type": "date"}}),
     ],
