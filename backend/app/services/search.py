@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import lru_cache
 
 from rapidfuzz import fuzz, process
@@ -21,7 +21,7 @@ from app.ai.semantic_index import index
 from app.core.config import SEARCH_SIMILARITY_SCALE, RankingConfig, settings
 from app.core.database import Database, utcnow
 from app.models import Product, SearchEvent, Shop
-from app.schemas.serializers import listing, shop_brief
+from app.schemas.serializers import STALE_DAYS, freshness, listing, shop_brief
 from app.services.loaders import categories, category_by_slug, with_categories, with_category
 from app.utils.geo import haversine_km, within_km
 from app.utils.text import expand_synonyms, is_word, normalize_query, search_tokens, word_parts
@@ -38,6 +38,23 @@ W_LOCAL_TERM = settings.ranking.w_local_term
 SEM_FLOOR, SEM_CEIL = SEARCH_SIMILARITY_SCALE.sem_floor, SEARCH_SIMILARITY_SCALE.sem_ceil
 # Search results never show these, so they are not fetched.
 LISTING_FIELDS = {"description": 0, "specs": 0}
+
+# Stock freshness (P7.4; bands and multipliers in app/schemas/serializers.py): a group's score is multiplied by
+# the freshness multiplier of its freshest offer, and the in-stock-only filter leaves out listings whose stock was
+# last confirmed more than STALE_DAYS ago. Freshness is judged at search_now(): the current time, unless the
+# evaluation harness fixed the clock to its snapshot's seeding time (set_clock), so a reused snapshot's listings
+# do not go stale as it ages.
+_clock: datetime | None = None
+
+
+def set_clock(at: datetime | None) -> None:
+    """Fix the clock freshness is judged at (None: the current time again). For the evaluation harness only."""
+    global _clock
+    _clock = at
+
+
+def search_now() -> datetime:
+    return _clock or utcnow()
 
 
 @dataclass
@@ -135,7 +152,7 @@ def _norm_sem(sim: float, cfg: RankingConfig) -> float:
     return min(max((sim - cfg.sem_floor) / (cfg.sem_ceil - cfg.sem_floor), 0.0), 1.0)
 
 
-def _candidates(db: Database, p: SearchParams, norm: str, expanded: list[str]) -> tuple:
+def _candidates(db: Database, p: SearchParams, norm: str, expanded: list[str], now: datetime) -> tuple:
     """Everything run_search fetches, none of it touched by the ranking config: the shops in radius, the
     listings that pass the filters, keyword scores, local-term match counts and semantic similarities."""
     category = category_by_slug(db, p.category)
@@ -147,8 +164,9 @@ def _candidates(db: Database, p: SearchParams, norm: str, expanded: list[str]) -
     if p.min_price is not None or p.max_price is not None:
         query["price"] = {**({"$gte": p.min_price} if p.min_price is not None else {}),
                           **({"$lte": p.max_price} if p.max_price is not None else {})}
-    if p.in_stock_only:
+    if p.in_stock_only:  # in stock, and confirmed within STALE_DAYS (P7.4)
         query["quantity"] = {"$gt": 0}
+        query["stock_updated_at"] = {"$gte": now - timedelta(days=STALE_DAYS)}
     # Listings, keyword scores and semantic scores are independent: fetch them side by side.
     products, (kw, local), sem = db.gather(
         lambda: with_category(db, db.products.find(query, projection=LISTING_FIELDS)) if shops else [],
@@ -166,13 +184,14 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
     cfg = ranking or settings.ranking
     norm = normalize_query(p.q) if p.q else ""
     expanded = expand_synonyms(norm) if norm else []
+    now = search_now()
     if cache is None:
-        shops, products, kw, local, sem = _candidates(db, p, norm, expanded)
+        shops, products, kw, local, sem = _candidates(db, p, norm, expanded, now)
     else:
         key = (norm, p.lat, p.lng, p.radius_km, p.category, p.min_price, p.max_price, p.in_stock_only,
-               p.fulfillment, p.shop_id)
+               p.fulfillment, p.shop_id, now if p.in_stock_only else None)
         if key not in cache:
-            cache[key] = _candidates(db, p, norm, expanded)
+            cache[key] = _candidates(db, p, norm, expanded, now)
         shops, products, kw, local, sem = cache[key]
     if local:
         kw = dict(kw)
@@ -219,6 +238,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         score = cfg.w_relevance * rel + cfg.w_proximity * proximity + (cfg.w_in_stock if in_stock else 0.0)
         if not in_stock:
             score *= cfg.out_of_stock_factor
+        score *= max(freshness(x.stock_updated_at, now)["multiplier"] for x in pool)  # P7.4
         prices = [x.price for x in pool]
         # Best offer: in stock, balancing price and distance.
         lo, hi = min(prices), max(prices)
@@ -229,7 +249,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         offers = sorted(items, key=lambda x: (x.quantity <= 0, shops[x.shop_id][1]))
         head = best
         category_counts[head.category.slug] += 1
-        pictured = next((listing(x) for x in items if x.image_path), None)  # the group's photo, any offer's
+        pictured = next((listing(x, now=now) for x in items if x.image_path), None)  # the group's photo, any offer's
         group_rows.append(
             {
                 "key": key,
@@ -249,8 +269,8 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
                 "in_stock_count": len(in_stock),
                 "relevance": round(rel, 3),
                 "score": round(score, 4),
-                "best_offer": listing(best, shop_json(best.shop_id)),
-                "offers": [listing(x, shop_json(x.shop_id)) for x in offers[:6]],
+                "best_offer": listing(best, shop_json(best.shop_id), now),
+                "offers": [listing(x, shop_json(x.shop_id), now) for x in offers[:6]],
             }
         )
 

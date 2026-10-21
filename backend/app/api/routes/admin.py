@@ -71,6 +71,13 @@ def storage(_: AdminUser, db: DB):
     return analytics.storage_report(db.mongo)
 
 
+@router.get("/freshness")
+def freshness(_: AdminUser, db: DB):
+    """Stock freshness per live shop (median listing age, share confirmed within 48 hours), the shops beyond 7 days
+    and the city-wide median listing age: check 10.3's metric (P7.4)."""
+    return analytics.freshness_report(db)
+
+
 @router.get("/anomalies")
 def anomalies(_: AdminUser, db: DB, status: Literal["open", "reviewed", "dismissed"] = "open"):
     rows = db.price_anomalies.find({"status": AnomalyStatus(status)}, sort=[("score", -1)])

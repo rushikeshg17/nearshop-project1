@@ -1,9 +1,10 @@
 """Model -> JSON dict helpers. References (`product.category`, `reservation.shop`, ...) must be
 resolved first with app/services/loaders.py. Timestamps are emitted as ISO-8601 UTC with a trailing Z so
 browsers never mistake them for local time (important for 'updated 2 minutes ago')."""
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.core.config import settings
+from app.core.database import utcnow
 from app.models import Category, Notification, Order, Product, Reservation, Review, Shop, StatusEvent
 from app.services.media import thumbnail_key
 from app.utils.hours import open_status
@@ -11,6 +12,30 @@ from app.utils.hours import open_status
 
 def iso(dt: datetime | None) -> str | None:
     return dt.isoformat(timespec="seconds") + "Z" if dt else None
+
+
+# Stock freshness (P7.4): how long ago a listing's stock was confirmed. Up to FRESH_HOURS it is fresh (no label,
+# no change). Beyond that and up to STALE_DAYS it is labelled "updated N days ago" and its search group ranks with
+# FRESHNESS_MULTIPLIERS["aging"]; beyond STALE_DAYS it is labelled "stock not confirmed recently", ranks with
+# FRESHNESS_MULTIPLIERS["stale"] and is left out of the in-stock-only filter (app/services/search.py).
+FRESH_HOURS = 48
+STALE_DAYS = 7
+FRESHNESS_MULTIPLIERS = {"fresh": 1.0, "aging": 0.85, "stale": 0.6}
+STALE_LABEL = "stock not confirmed recently"
+
+
+def freshness(updated_at: datetime | None, now: datetime) -> dict:
+    """A listing's freshness band at `now`: band (fresh, aging or stale), label (None when fresh) and the ranking
+    multiplier. A listing with no confirmation time counts as stale."""
+    age = now - updated_at if updated_at else None
+    if age is not None and age <= timedelta(hours=FRESH_HOURS):
+        band, label = "fresh", None
+    elif age is not None and age <= timedelta(days=STALE_DAYS):
+        days = age.days
+        band, label = "aging", f"updated {days} day{'' if days == 1 else 's'} ago"
+    else:
+        band, label = "stale", STALE_LABEL
+    return {"band": band, "label": label, "multiplier": FRESHNESS_MULTIPLIERS[band]}
 
 
 def media_url(path: str | None) -> str | None:
@@ -81,8 +106,10 @@ def shop_detail(s: Shop, distance_km: float | None, reliability: dict) -> dict:
     }
 
 
-def listing(p: Product, shop: dict | None = None) -> dict:
-    """A product as sold by one shop (an 'offer')."""
+def listing(p: Product, shop: dict | None = None, now: datetime | None = None) -> dict:
+    """A product as sold by one shop (an 'offer'). `now` is the clock its freshness is judged at (search passes
+    its own, so the evaluation harness can fix it)."""
+    fresh = freshness(p.stock_updated_at, now or utcnow())
     return {
         "id": p.id,
         "catalog_item_id": p.catalog_item_id,
@@ -99,6 +126,7 @@ def listing(p: Product, shop: dict | None = None) -> dict:
         "low_stock_threshold": p.low_stock_threshold,
         "stock_status": p.stock_status,
         "stock_updated_at": iso(p.stock_updated_at),
+        "freshness": {"band": fresh["band"], "label": fresh["label"]},
         "is_active": p.is_active,
         "shop": shop,
     }

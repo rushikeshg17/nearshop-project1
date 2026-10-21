@@ -1,6 +1,6 @@
 "use client";
 
-import { Bike, ChevronRight, Footprints, Store } from "lucide-react";
+import { Bike, ChevronRight, Clock3, Footprints, Store } from "lucide-react";
 import Link from "next/link";
 
 import { Distance, Freshness, Rating, StockPill } from "@/components/common/indicators";
@@ -8,6 +8,26 @@ import { ProductThumb } from "@/components/common/product-thumb";
 import { formatDistance, formatPrice, travelHint } from "@/lib/format";
 import type { ResultGroup } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+/** A listing's stock freshness from the API (P7.4): fresh within 48 hours (no label), aging up to 7 days
+ * ("updated N days ago", ranked lower) and stale beyond ("stock not confirmed recently", ranked lower still). */
+type StockFreshness = { band: "fresh" | "aging" | "stale"; label: string | null };
+
+function FreshnessLabel({ freshness }: { freshness: StockFreshness }) {
+  if (!freshness.label) return null;
+  const stale = freshness.band === "stale";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs whitespace-nowrap",
+        stale ? "bg-warning-soft text-warning-ink" : "bg-muted text-muted-foreground",
+      )}
+    >
+      <Clock3 className="size-3" aria-hidden />
+      {freshness.label.charAt(0).toUpperCase() + freshness.label.slice(1)}
+    </span>
+  );
+}
 
 export function ResultCard({
   group,
@@ -21,6 +41,7 @@ export function ResultCard({
   onHover?: (shopIds: number[] | null) => void;
 }) {
   const best = group.best_offer;
+  const freshness = (best as typeof best & { freshness?: StockFreshness }).freshness;
   const others = group.offers.filter((o) => o.id !== best.id).slice(0, 3);
   const outOfStock = group.in_stock_count === 0;
 
@@ -55,7 +76,7 @@ export function ResultCard({
 
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
             <StockPill status={best.stock_status} quantity={best.quantity} />
-            <Freshness at={best.stock_updated_at} />
+            {freshness?.label ? <FreshnessLabel freshness={freshness} /> : <Freshness at={best.stock_updated_at} />}
           </div>
 
           <div className="mt-3 flex items-center gap-2 text-sm">

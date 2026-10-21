@@ -303,12 +303,17 @@ def seed_fingerprint(root: Path = BACKEND_DIR) -> str:
 
 
 def ensure_snapshot(db: Database, rebuild: bool = False) -> str:
-    """Reuse the seeded evaluation database while its fingerprint matches, else re-seed it. Returns the fingerprint."""
+    """Reuse the seeded evaluation database while its fingerprint matches, else re-seed it. Returns the fingerprint.
+    Either way, search's freshness clock (P7.4) is fixed to the snapshot's seeding time, so stock freshness is judged
+    as it was when the snapshot was built, however old the snapshot is."""
+    from app.services.search import set_clock
+
     fingerprint = seed_fingerprint()
     meta = db.mongo[SNAPSHOT_COLLECTION]
     current = meta.find_one({"_id": "snapshot"})
     if current and current.get("fingerprint") == fingerprint and not rebuild:
         print(f"Reusing the evaluation database {db.mongo.name!r} (seeded {current.get('built_at')}).")
+        set_clock(current.get("built_at"))
         return fingerprint
     from database.seed import seed  # imported on use: it loads the training libraries
 
@@ -323,8 +328,10 @@ def ensure_snapshot(db: Database, rebuild: bool = False) -> str:
         # aborts it. The seed starts by resetting the database, so one more attempt starts clean.
         print("The seed drew a duplicate code; seeding once more...")
         seed.main(["--confirm-db", db.mongo.name])
+    built_at = utcnow()
     meta.insert_one({"_id": "snapshot", "fingerprint": fingerprint, "seed_city": settings.seed_city,
-                     "built_at": utcnow()})
+                     "built_at": built_at})
+    set_clock(built_at)
     return fingerprint
 
 
