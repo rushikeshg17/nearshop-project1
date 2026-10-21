@@ -11,8 +11,9 @@ import logging
 import secrets
 from datetime import timedelta
 
+from app.core.config import settings
 from app.core.database import Database, transactional, utcnow
-from app.core.errors import Conflict, Forbidden, InvalidTransition, NotFound
+from app.core.errors import AppError, Conflict, Forbidden, InvalidTransition, NotFound
 from app.models import (
     InventoryReason,
     Order,
@@ -168,11 +169,48 @@ def transition(db: Database, order_id: int, action: str, user: User | None, reas
                code: str | None = None) -> Order:
     """Move an order through its state machine as one all-or-nothing transaction. Confirming creates the
     4-digit delivery code only the customer sees; delivering needs it (P3.5, plan section 8.2)."""
-    return db.transaction(lambda: _transition(db, order_id, action, user, reason, code))
+    if action in CODE_ACTIONS:
+        ensure_delivery_code(db, order_id)
+    try:
+        return db.transaction(lambda: _transition(db, order_id, action, user, reason, code))
+    except Conflict as exc:
+        if exc.code == "wrong_code" and (code or "").strip():
+            _count_wrong_code(db, order_id)
+        raise
+
+
+# Orders waiting to be delivered, and the actions on them that make sure the order has a delivery code.
+AWAITING_DELIVERY = [OS.SHOP_CONFIRMED.value, OS.PREPARING.value, OS.OUT_FOR_DELIVERY.value]
+CODE_ACTIONS = {"prepare", "dispatch", "deliver"}
+# Wrong delivery codes: after MAX_CODE_FAILURES in a row, the order takes no code for CODE_LOCK_MINUTES, so the
+# 10,000 codes cannot be tried at the counter.
+MAX_CODE_FAILURES = 5
+CODE_LOCK_MINUTES = 30
 
 
 def new_delivery_code() -> str:
     return f"{secrets.randbelow(10_000):04d}"
+
+
+def ensure_delivery_code(db: Database, order_id: int) -> None:
+    """Give a confirmed order its delivery code if it has none, and send the code to the customer. An order
+    confirmed by the release before P3.5 (also while migration 6 ran) has none, and could never be delivered."""
+    order = db.orders.find_one_and_update(
+        {"_id": order_id, "status": {"$in": AWAITING_DELIVERY}, "delivery_code": {"$in": [None, ""]}},
+        {"$set": {"delivery_code": new_delivery_code()}})
+    if order is not None:
+        shop = db.shops.get(order.shop_id)
+        notify(db, order.customer_id, "order_delivery_code", "Your delivery code",
+               f"Your delivery code for the order from {shop.name if shop else 'the shop'} is {order.delivery_code}: "
+               "give it to the shop only when the order arrives.", f"/account/orders/{order.id}")
+
+
+def _count_wrong_code(db: Database, order_id: int) -> None:
+    """Count a wrong delivery code outside the (aborted) transaction; the MAX_CODE_FAILURES-th locks the order."""
+    order = db.orders.find_one_and_update({"_id": order_id}, {"$inc": {"code_failures": 1}})
+    if order is not None and order.code_failures >= MAX_CODE_FAILURES:
+        db.orders.update_one({"_id": order_id}, {"$set": {
+            "code_failures": 0, "code_locked_until": utcnow() + timedelta(minutes=CODE_LOCK_MINUTES)}})
 
 
 def _transition(db: Database, order_id: int, action: str, user: User | None, reason: str | None,
@@ -188,7 +226,12 @@ def _transition(db: Database, order_id: int, action: str, user: User | None, rea
     to_status, actors = TRANSITIONS[key]
     if actor not in actors and actor != "admin":
         raise Forbidden(f"Only the {' or '.join(sorted(actors))} can {action} this order")
-    if action == "deliver":
+    if action == "deliver" and settings.completion_codes_required:
+        locked = order.code_locked_until
+        if locked is not None and locked > utcnow():
+            minutes = max(1, round((locked - utcnow()).total_seconds() / 60))
+            raise AppError(f"Too many wrong delivery codes. Try again in {minutes} min, or call the customer.",
+                           code="code_locked", status_code=429)
         entered = (code or "").strip()
         if not entered:
             raise Conflict("Enter the 4-digit delivery code the customer gives you", code="wrong_code")
@@ -208,7 +251,7 @@ def _transition(db: Database, order_id: int, action: str, user: User | None, rea
             change_stock(db, products[item.product_id], -item.quantity, InventoryReason.ORDER_HOLD, actor_id)
         changes.update(stock_held=True, delivery_code=new_delivery_code())
     elif action == "deliver":
-        changes.update(delivered_at=now, payment_status="paid", stock_held=False)  # COD collected at the door
+        changes.update(delivered_at=now, payment_status="paid", stock_held=False, code_failures=0)  # COD collected at the door
         record_sales(db, [(products[i.product_id], i.quantity, i.unit_price) for i in order.items],
                      source=SaleSource.ORDER, basket_id=order.code, customer_id=order.customer_id)
     elif action in {"cancel", "return"}:

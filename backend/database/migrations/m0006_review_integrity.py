@@ -1,7 +1,8 @@
 """Migration 6: review integrity (P3.5; plan section 8.2).
 
   * Orders the shop has confirmed but not yet delivered get a random 4-digit delivery code, since delivering now
-    needs one (app/services/orders.py). The customer sees it on their order.
+    needs one (app/services/orders.py). The customer sees it on their order. An order the previous release
+    confirms while this runs gets its code from orders.ensure_delivery_code on its next step.
   * Every shop's rating is recomputed under the new rules (app/services/reviews.py, recompute_shop): one counted
     review per customer per shop in 30 days, self-dealing reviews held out, and rating_customers stored so that
     no rating is shown below 5 distinct customers. Shops are done in batches of SHOP_BATCH, each shop on its own.

@@ -153,7 +153,7 @@ def _transition(db: Database, reservation_id: int, action: str, user: User | Non
     to_status, actors = TRANSITIONS[key]
     if actor not in actors and actor != "admin":
         raise Forbidden(f"Only the {' or '.join(sorted(actors))} can {action} this reservation")
-    if action == "complete" and not code_matches(code, res.code):
+    if action == "complete" and settings.completion_codes_required and not code_matches(code, res.code):
         raise Conflict("Enter the reservation code the customer shows you" if not (code or "").strip()
                        else "That is not this reservation's code", code="wrong_code")
 

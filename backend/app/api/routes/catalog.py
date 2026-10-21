@@ -26,6 +26,7 @@ from app.services.loaders import (
 from app.services.meta import city_config
 from app.services.orders import quote_delivery
 from app.services.reliability import shop_reliability
+from app.services.reviews import RATED
 from app.services.search import SearchParams, run_search
 from app.utils.geo import haversine_km, within_km
 
@@ -282,7 +283,7 @@ def shop_reviews(slug: str, db: DB, page: int = Query(1, ge=1), page_size: int =
         lambda: with_customers(db, db.reviews.find({"shop_id": shop.id}, sort=[("created_at", -1)],
                                                    skip=(page - 1) * page_size, limit=page_size)),
         lambda: {r["_id"]: r["n"] for r in db.reviews.aggregate([
-            {"$match": {"shop_id": shop.id}}, {"$group": {"_id": "$rating", "n": {"$sum": 1}}}])},
+            {"$match": {"shop_id": shop.id, **RATED}}, {"$group": {"_id": "$rating", "n": {"$sum": 1}}}])},
     )
     names = product_names(db, (r.product_id for r in rows))
     return {"reviews": [review_out(r, names.get(r.product_id)) for r in rows],

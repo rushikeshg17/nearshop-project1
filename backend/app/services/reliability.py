@@ -10,6 +10,7 @@ from app.core.database import Database, utcnow
 from app.models import InventoryReason, Shop
 from app.models import OrderStatus as OS
 from app.models import ReservationStatus as RS
+from app.services.reviews import RATED
 
 WINDOW_DAYS = 90
 OWNER_REASONS = [InventoryReason.INITIAL.value, InventoryReason.RESTOCK.value, InventoryReason.ADJUSTMENT.value]
@@ -46,7 +47,7 @@ def shop_reliability(db: Database, shop: Shop) -> dict:
 
     def accuracy() -> float | None:
         rows = db.reviews.aggregate([
-            {"$match": {"shop_id": shop.id, "accuracy_rating": {"$ne": None}}},
+            {"$match": {"shop_id": shop.id, **RATED, "accuracy_rating": {"$ne": None}}},
             {"$group": {"_id": None, "avg": {"$avg": "$accuracy_rating"}}},
         ])
         return rows[0]["avg"] if rows else None
@@ -83,7 +84,10 @@ def shop_reliability(db: Database, shop: Shop) -> dict:
         highlights.append(f"Confirmed {responded} of {requests_decided} reservation requests")
     if median_response is not None and median_response <= 10 and len(response_minutes) >= 5:
         highlights.append(f"Usually confirms in about {max(median_response, 1)} min")
-    if avg_accuracy and avg_accuracy >= 4.5 and shop.rating_count >= 5:
+    # Review figures follow the rating (P3.5): none until MIN_RATED_CUSTOMERS distinct customers count.
+    if shop.rating_avg is None:
+        avg_accuracy = None
+    if avg_accuracy and avg_accuracy >= 4.5:
         highlights.append("Customers say items match the listing")
     if shop.established_year and now.year - shop.established_year >= 15:
         highlights.append(f"Serving since {shop.established_year}")

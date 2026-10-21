@@ -145,6 +145,61 @@ def test_delivery_code_is_the_customers_alone_and_delivery_needs_it(db, world):
         assert "delivery_code" not in view and code not in str(view.get("events", ""))
 
 
+def out_for_delivery(db: Database, world: dict, customer: User, owner: TestClient) -> int:
+    body = {"items": [{"product_id": world["product"].id, "quantity": 1}], "lat": CENTER[0], "lng": CENTER[1],
+            "address": "5 Review Lane", "phone": "9876543210"}
+    o = client_for(customer.email).post("/api/orders", json=body, headers=HEADERS).json()
+    for action in ("confirm", "prepare", "dispatch"):
+        assert owner.post(f"/api/owner/orders/{o['id']}/{action}", json={}, headers=HEADERS).status_code == 200
+    return o["id"]
+
+
+def test_wrong_delivery_codes_lock_the_order_for_a_while(db, world):
+    owner = client_for(world["owner"].email)
+    order_id = out_for_delivery(db, world, make_customer(db, world, "guess"), owner)
+    code = db.orders.get(order_id).delivery_code
+    url = f"/api/owner/orders/{order_id}/deliver"
+    wrong = [f"{(int(code) + n) % 10_000:04d}" for n in range(1, 6)]
+    for guess in wrong:
+        assert owner.post(url, json={"code": guess}, headers=HEADERS).json()["error"]["code"] == "wrong_code"
+    locked = owner.post(url, json={"code": code}, headers=HEADERS)  # even the right code waits out the lock
+    assert locked.status_code == 429 and locked.json()["error"]["code"] == "code_locked"
+    db.orders.update_one({"_id": order_id}, {"$set": {"code_locked_until": utcnow() - timedelta(seconds=1)}})
+    done = owner.post(url, json={"code": code}, headers=HEADERS)
+    assert done.status_code == 200 and done.json()["status"] == "DELIVERED"
+
+
+def test_an_order_confirmed_without_a_code_gets_one_and_can_be_delivered(db, world):
+    """An order the release before P3.5 confirmed (also while migration 6 ran) has no delivery code."""
+    owner = client_for(world["owner"].email)
+    customer = make_customer(db, world, "legacy")
+    order_id = out_for_delivery(db, world, customer, owner)
+    db.orders.update_one({"_id": order_id}, {"$unset": {"delivery_code": ""}})
+    url = f"/api/owner/orders/{order_id}/deliver"
+    res = owner.post(url, json={"code": "0000"}, headers=HEADERS)
+    assert res.status_code == 409 and res.json()["error"]["code"] == "wrong_code"
+    code = db.orders.get(order_id).delivery_code
+    assert code and len(code) == 4 and code.isdigit()
+    assert code in db.notifications.find_one({"user_id": customer.id, "kind": "order_delivery_code"}).body
+    assert owner.post(url, json={"code": code}, headers=HEADERS).json()["status"] == "DELIVERED"
+
+
+def test_codes_are_not_asked_for_while_the_setting_is_off(db, world, monkeypatch):
+    """Until the owner screens ask for the codes (P3.7), the live screens keep completing and delivering."""
+    monkeypatch.setattr(settings, "completion_codes_required", False)
+    owner = client_for(world["owner"].email)
+    customer = make_customer(db, world, "nocode")
+    r = client_for(customer.email).post("/api/reservations", json={"product_id": world["product"].id, "quantity": 1},
+                                        headers=HEADERS).json()
+    owner.post(f"/api/owner/reservations/{r['id']}/confirm", json={}, headers=HEADERS)
+    assert owner.post(f"/api/owner/reservations/{r['id']}/complete", json={},
+                      headers=HEADERS).json()["status"] == "COMPLETED"
+    order_id = out_for_delivery(db, world, customer, owner)
+    assert db.orders.get(order_id).delivery_code  # still created for the customer
+    assert owner.post(f"/api/owner/orders/{order_id}/deliver", json={},
+                      headers=HEADERS).json()["status"] == "DELIVERED"
+
+
 # ---------------------------------------------------------------- who may review
 
 def test_a_customer_with_the_owners_or_shops_phone_cannot_review(db, world):
@@ -233,6 +288,34 @@ def test_self_dealing_reviews_are_held_out_of_the_rating(db, world):
     # Held reviews stay held even once the 30-day window has passed them by.
     review_service.recompute_shop(db.mongo, shop.id, now=utcnow() + timedelta(days=45))
     assert db.reviews.count({"shop_id": shop.id, "held": True}) == 3
+
+
+def test_held_and_uncounted_reviews_drive_no_review_figure(client, db, world):
+    """The star distribution and the accuracy trust signal use the reviews the rating uses, and show nothing
+    while the shop has no rating."""
+    def post(c: User, rating: int, accuracy: int):
+        res = client_for(c.email).post("/api/reviews", json={
+            "reservation_id": completed(db, c, world["shop"].id, world["product"].id).id, "rating": rating,
+            "accuracy_rating": accuracy}, headers=HEADERS)
+        assert res.status_code == 200
+
+    honest = [regular(db, world, f"fig{n}") for n in range(4)]
+    for c in honest:
+        post(c, 3, 3)
+    shop = db.shops.get(world["shop"].id)
+    trust = shop_reliability(db, shop)
+    assert shop.rating_avg is None and trust["accuracy_avg"] is None
+    assert "Customers say items match the listing" not in trust["highlights"]
+
+    post(regular(db, world, "fig4"), 3, 3)
+    singles = [make_customer(db, world, f"figsock{n}") for n in range(3)]
+    for c in singles:
+        post(c, 5, 5)  # held as self-dealing
+    post(honest[0], 5, 5)  # a second review within 30 days: not counted
+    shop = db.shops.get(world["shop"].id)
+    assert shop.rating_avg == 3.0 and shop_reliability(db, shop)["accuracy_avg"] == 3.0
+    dist = client.get(f"/api/shops/{shop.slug}/reviews", headers=HEADERS).json()["distribution"]
+    assert dist == {"1": 0, "2": 0, "3": 5, "4": 0, "5": 0}
 
 
 def test_the_owner_self_dealing_path_is_blocked_end_to_end(db, world):

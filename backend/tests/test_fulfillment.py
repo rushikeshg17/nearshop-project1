@@ -29,13 +29,17 @@ def test_reservation_happy_path_holds_stock_and_records_sale(customer, owner_a, 
     assert Database().sales_history.count({"basket_id": r["code"], "is_demo": False}) == 1
 
     # One review per completed reservation, from an account created at least 3 days before the purchase (P3.5).
+    # The shared customer's created_at is put back afterwards, so later tests see the account as seeded.
     db = Database()
-    db.users.update_one({"email": "cust@example.com", "created_at": {"$gt": utcnow() - timedelta(days=3)}},
-                        {"$set": {"created_at": utcnow() - timedelta(days=30)}})
-    ok = customer.post("/api/reviews", json={"reservation_id": r["id"], "rating": 5}, headers=HEADERS)
-    assert ok.status_code == 200
-    dup = customer.post("/api/reviews", json={"reservation_id": r["id"], "rating": 4}, headers=HEADERS)
-    assert dup.status_code == 409
+    created_at = db.users.find_raw({"email": "cust@example.com"}, {"created_at": 1})[0]["created_at"]
+    db.users.update_one({"email": "cust@example.com"}, {"$set": {"created_at": utcnow() - timedelta(days=30)}})
+    try:
+        ok = customer.post("/api/reviews", json={"reservation_id": r["id"], "rating": 5}, headers=HEADERS)
+        assert ok.status_code == 200
+        dup = customer.post("/api/reviews", json={"reservation_id": r["id"], "rating": 4}, headers=HEADERS)
+        assert dup.status_code == 409
+    finally:
+        db.users.update_one({"email": "cust@example.com"}, {"$set": {"created_at": created_at}})
 
 
 def test_cannot_review_unfinished_purchase(customer, ids):

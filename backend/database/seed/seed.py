@@ -71,6 +71,7 @@ from app.models import (
 from app.models.core import KycType, VerificationStatus, months_after
 from app.services.loaders import reset_category_cache
 from app.services.media import PRIVATE_PREFIX, PrivateStorageUnavailable, private_storage
+from app.services.reviews import recompute_shop
 from app.utils.geo import haversine_km
 from app.utils.text import short_code, slugify
 from database import schema
@@ -497,9 +498,7 @@ def main(argv: Sequence[str] = ()) -> None:
                               delivery_rating=int(min(5, max(1, round(rng.gauss(q, 0.7))))) if order_id else None,
                               comment=rng.choice(REVIEW_COMMENTS[rating]) if rng.random() < 0.75 else None,
                               created_at=at + timedelta(hours=rng.randint(1, 30))))
-        # Computed pattern: the shop carries its own rating totals.
-        shop.rating_sum += rating
-        shop.rating_count += 1
+        # The shop's rating totals are recomputed from the stored reviews after the write below (P3.5).
 
     for s in shops:
         prof = shop_profile[s.id]
@@ -682,6 +681,9 @@ def main(argv: Sequence[str] = ()) -> None:
         bulk_insert(collection, docs)
         print(f"    {collection.name}: {len(docs)}")
     nid.save_counters(db)
+    # Ratings under the review rules (P3.5): counted and held flags on every review, then each shop's totals.
+    for s in shops:
+        recompute_shop(db.mongo, s.id)
 
     # ------------------------------------------------------------ train AI
     print("  training AI models (first run downloads the embedding model)...")

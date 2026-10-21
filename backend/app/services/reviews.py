@@ -39,6 +39,9 @@ SELF_DEALING_SHARE = 0.30
 SELF_DEALING_WINDOW_DAYS = 30
 VISIBLE = "visible"
 HELD_SELF_DEALING = "self_dealing"
+# The reviews a shop's rating is built from (recompute_shop writes counted on every review, false unless visible).
+# Every other figure drawn from reviews (the star distribution, the accuracy trust signal) uses the same set.
+RATED = {"counted": True, "held": {"$ne": True}}
 
 
 def phone_key(phone: str | None) -> str | None:

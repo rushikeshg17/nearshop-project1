@@ -181,6 +181,7 @@ VALIDATORS: dict[str, dict] = {
         },
         delivered_at=DATE_N, closed_at=DATE_N, created_at=DATE, updated_at=DATE,
         delivery_code={"bsonType": STR_N, "pattern": "^[0-9]{4}$"},  # P3.5, optional
+        code_failures={"bsonType": INT, "minimum": 0}, code_locked_until=DATE_N,  # P3.5, optional
     ),
     "status_events": schema(
         ["entity", "entity_id", "shop_id", "to_status", "actor_role", "created_at"],

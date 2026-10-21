@@ -78,6 +78,9 @@ class Order(Document, Timestamps):
     # Four digits created when the shop confirms (P3.5): only the customer sees it, and the shop must enter it
     # to mark the order delivered. Never in an owner's response.
     delivery_code: str | None = None
+    # Wrong delivery codes in a row; the fifth locks code entry until code_locked_until (services/orders.py).
+    code_failures: int = 0
+    code_locked_until: datetime | None = None
     items: list[OrderItem] = Field(default_factory=list)
 
     customer: User | None = Field(default=None, exclude=True)
