@@ -271,7 +271,19 @@ VALIDATORS: dict[str, dict] = {
         admin_id=INT, action={"enum": ["reveal_email"]}, target_user_id=INT,
         reason={"bsonType": STR, "minLength": 10, "maxLength": 500}, created_at=DATE,
     ),
-    # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
+    # Search synonyms managed by admins (P5.4, app/services/synonyms.py; migration 5 imported the 42 that were
+    # in code). term is normalised and unique; expansions are OR'd into the keyword search. Every write bumps
+    # the counters document synonyms_version, which each process checks every 30 seconds.
+    "synonyms": schema(
+        ["term", "expansions", "active", "created_at", "updated_at"],
+        term={"bsonType": STR, "minLength": 1, "maxLength": 40},
+        expansions={"bsonType": "array", "minItems": 1, "maxItems": 20,
+                    "items": {"bsonType": STR, "minLength": 1, "maxLength": 40}},
+        languages={"bsonType": "array", "maxItems": 5, "items": {"bsonType": STR, "maxLength": 8}},
+        active=BOOL, created_by=INT_N, updated_by=INT_N, created_at=DATE, updated_at=DATE,
+    ),
+    # No validators: `counters` ({_id: collection name, seq}; also synonyms_version) and `text_embeddings`
+    # (binary vector cache).
     "counters": {},
     "text_embeddings": {},
 }
@@ -386,6 +398,7 @@ INDEXES: dict[str, list[IndexModel]] = {
     # MongoDB's TTL monitor deletes a counter about a minute after its window ends; the limiter never relies on
     # that, because a new window has a new _id and a cooldown is checked against expires_at.
     "rate_limits": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
+    "synonyms": [IndexModel([("term", A)], unique=True, name="uq_term")],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),
         IndexModel([("target_user_id", A), ("created_at", D)], name="target_created"),

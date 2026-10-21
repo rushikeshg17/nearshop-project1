@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { ClipboardList, Database, IndianRupee, Info, Package, Scale, Search, Store, Users } from "lucide-react";
+import { ClipboardList, Database, IndianRupee, Info, Package, Plus, Scale, Search, Store, Users } from "lucide-react";
 import Link from "next/link";
 import { Bar, BarChart, CartesianGrid, XAxis } from "recharts";
 
@@ -229,10 +229,15 @@ export default function AdminOverviewPage() {
         </section>
         <section className="rounded-2xl border bg-card p-5">
           <h2 className="mb-1 font-semibold">Searches with no results</h2>
-          <p className="mb-3 text-xs text-muted-foreground">Recruit shops or categories that meet this demand.</p>
+          <p className="mb-3 text-xs text-muted-foreground">Recruit shops or categories that meet this demand, or add a synonym when the item is listed under another name.</p>
           <ul className="flex flex-wrap gap-2">
             {d.zero_result_searches.map((z) => (
-              <li key={z.query} className="rounded-full border px-3 py-1 text-sm capitalize">{z.query} <span className="text-muted-foreground tabular">· {z.count}</span></li>
+              <li key={z.query} className="flex items-center gap-1 rounded-full border py-1 pr-1 pl-3 text-sm">
+                <span className="capitalize">{z.query}</span> <span className="text-muted-foreground tabular">· {z.count}</span>
+                <Link href={`/admin/synonyms?term=${encodeURIComponent(z.query)}`} className="ml-1 inline-flex items-center gap-0.5 rounded-full bg-muted px-2 py-0.5 text-xs hover:bg-accent" aria-label={`Add synonym for ${z.query}`}>
+                  <Plus className="size-3" /> Add synonym
+                </Link>
+              </li>
             ))}
           </ul>
         </section>

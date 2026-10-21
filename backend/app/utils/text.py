@@ -1,8 +1,14 @@
-"""Text helpers: slugs, short codes, and query normalisation."""
+"""Text helpers: slugs, short codes, query normalisation and synonym expansion."""
+from __future__ import annotations
+
 import re
 import secrets
 import unicodedata
 from functools import lru_cache
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pymongo.database import Database as MongoDatabase
 
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I confusion when read aloud at the counter
 
@@ -16,52 +22,6 @@ def slugify(value: str) -> str:
 def short_code(prefix: str, length: int = 6) -> str:
     return prefix + "-" + "".join(secrets.choice(_CODE_ALPHABET) for _ in range(length))
 
-
-# Colloquial / regional words people type -> words that appear in listings.
-SYNONYMS: dict[str, list[str]] = {
-    "chappal": ["slipper", "sandal", "flip flop"],
-    "chappals": ["slipper", "sandal"],
-    "hawai": ["slipper", "flip flop"],
-    "nali": ["tap", "faucet"],
-    "nal": ["tap", "faucet"],
-    "adapter": ["charger", "adaptor"],
-    "adaptor": ["charger", "adapter"],
-    "plug": ["charger", "socket"],
-    "lead": ["cable"],
-    "wire": ["cable"],
-    "screen guard": ["tempered glass"],
-    "screenguard": ["tempered glass"],
-    "cover": ["case"],
-    "pouch": ["case", "cover"],
-    "bulb": ["led", "lamp"],
-    "light": ["led", "lamp", "bulb"],
-    "tubelight": ["batten", "tube light"],
-    "pankha": ["fan"],
-    "veshti": ["dhoti"],
-    "dhothi": ["dhoti"],
-    "banian": ["vest", "innerwear"],
-    "baniyan": ["vest", "innerwear"],
-    "chaddi": ["brief", "innerwear"],
-    "kurti": ["kurta"],
-    "copy": ["notebook"],
-    "note book": ["notebook"],
-    "pipe leak": ["teflon tape", "m-seal", "sealant"],
-    "leak": ["teflon tape", "sealant", "m-seal"],
-    "bike": ["motorcycle", "two wheeler"],
-    "scooty": ["scooter", "two wheeler"],
-    "gaadi": ["bike", "motorcycle"],
-    "tyre": ["tube", "tire"],
-    "tire": ["tyre"],
-    "mobile": ["phone", "smartphone"],
-    "cell": ["phone", "battery"],
-    "jhadu": ["broom"],
-    "pocha": ["mop"],
-    "balti": ["bucket"],
-    "soap powder": ["detergent"],
-    "machhar": ["mosquito"],
-    "mosquito coil": ["mosquito repellent"],
-    "tape": ["measuring tape", "insulation tape", "teflon tape"],
-}
 
 _WS = re.compile(r"\s+")
 # Characters a query keeps besides letters, combining marks and digits: whitespace, hyphen, dot and slash.
@@ -99,13 +59,15 @@ def normalize_query(q: str) -> str:
     return _WS.sub(" ", q).strip()
 
 
-def expand_synonyms(q: str) -> list[str]:
-    """Extra terms to OR into keyword search. Never replaces the user's own words."""
-    extra: list[str] = []
-    for key, values in SYNONYMS.items():
-        if re.search(rf"\b{re.escape(key)}\b", q):
-            extra.extend(values)
-    return extra
+def expand_synonyms(q: str, db: MongoDatabase | None = None) -> list[str]:
+    """Extra terms to OR into keyword search. Never replaces the user's own words.
+
+    The entries live in the synonyms collection, managed by admins (app/services/synonyms.py; migration 5
+    imported the 42 that used to be written here). They are read from a per-process cache that checks the
+    synonyms' version every 30 seconds; db names the database (default: the configured one)."""
+    from app.services.synonyms import cache, expand  # lazy: the service imports the database layer
+
+    return expand(q, cache.table(db))
 
 
 def word_parts(text: str) -> list[str]:
