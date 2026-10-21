@@ -92,8 +92,10 @@ search_history, but a query is shown only when all of these hold:
 - 5 or more distinct signed-in users searched it in the last 30 days and got results, counted by user_id,
   never by session, so one person (or anonymous traffic) cannot reach the threshold alone;
 - it is 60 characters or fewer;
-- it passes the blocklist: no phone number (7 or more digits), no email address or mail domain, no link,
-  and no abusive word (English, Hindi, Kannada and Telugu, in Latin letters and in their own scripts).
+- it passes the blocklist: no phone number (7 or more digits joined by dashes, dots or brackets, or 10 or
+  more space-separated digits starting with 0 or 6 to 9), no email address or mail-provider domain (a bare
+  provider name such as "outlook diary" is fine), no link (a scheme, www., t.me or wa.me, a domain with a
+  path, or a spam-prone domain; a plain shop domain such as "amazon.in" is fine), and no abusive word (English, Hindi, Kannada and Telugu, in Latin letters and in their own scripts).
 
 Settings: NEARSHOP_SUGGESTION_MIN_USERS (5, and never lower), NEARSHOP_SUGGESTION_WINDOW_DAYS (30),
 NEARSHOP_SUGGESTION_MAX_CHARS (60) and NEARSHOP_SUGGESTION_BLOCKLIST (extra comma-separated words, no deploy

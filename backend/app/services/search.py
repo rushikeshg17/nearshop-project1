@@ -367,24 +367,36 @@ def suggest_correction(db: Database, norm: str) -> str | None:
 
 # Suggestion hygiene (P5.5): what may never appear in suggestions or popular searches, whoever searched it.
 # The patterns run on normalised queries, which keep digits, dots and slashes but drop @ and colons.
-# A phone number: seven or more digits, allowing spaces, dots, dashes and brackets between them.
-_PHONE = re.compile(r"\d(?:[\s().-]*\d){6,}")
-_EMAIL = re.compile(r"[^\s@]+@[^\s@]+|\b(?:gmail|googlemail|yahoo|ymail|hotmail|outlook|rediffmail|icloud|protonmail)\b",
-                    re.IGNORECASE)
-_LINK = re.compile(r"\bhttps?\b|\bwww\.|[a-z0-9]\.(?:com|in|net|org|co|xyz|me|io|ly|info|biz|link)\b|\bt\.me\b|"
-                   r"\bwa\.me\b", re.IGNORECASE)
+# A phone number: seven or more digits joined only by dashes, dots or brackets ("080-2345-6789", "9845012345"),
+# or, when spaces split the digits, ten or more digits starting with 0 or 6 to 9, the way Indian mobile and
+# STD numbers start ("98450 12345", "080 2345 6789"). So "iphone 15 256 2023" (a model, a size and a year)
+# is not a phone number.
+_PHONE = re.compile(r"(?<!\d)\d(?:[().-]*\d){6,}|(?<!\d)[06-9](?:[\s().-]*\d){9,}")
+# An email address, or a mail provider's domain ("ravi gmail.com" once the @ is dropped); a provider's bare
+# name ("yahoo", "outlook diary") is fine.
+_MAIL_PROVIDERS = r"(?:gmail|googlemail|yahoo|ymail|hotmail|outlook|rediffmail|icloud|protonmail)"
+_EMAIL = re.compile(rf"[^\s@]+@[^\s@]+|\b{_MAIL_PROVIDERS}\s*(?:\.|\bdot\b|\bcom\b)", re.IGNORECASE)
+# A link: a scheme, www., a messaging short link, a domain followed by a path, or a domain on a spam-prone
+# top-level domain. A shop or brand domain on its own ("amazon.in gift card") is fine.
+_LINK = re.compile(r"\bhttps?\b|\bwww\.|\bt\.me\b|\bwa\.me\b|[a-z0-9]\.[a-z]{2,6}/|"
+                   r"[a-z0-9]\.(?:xyz|ly|link|me|io|info|biz|top|club|site|online|click)\b", re.IGNORECASE)
 # Abusive words in English, and in Hindi, Kannada and Telugu, in Latin letters and in their own scripts.
 # A Latin word matches as a whole word, with or without a common ending ("fucking", "bastards"), so
-# "rapeseed" or "dickies" are not caught. A word in an Indian script matches anywhere, as those scripts join
-# suffixes to the word. NEARSHOP_SUGGESTION_BLOCKLIST adds words without a deploy.
+# "rapeseed" or "dickies" are not caught. A word in _ABUSIVE_EXACT matches only as itself, as its endings make
+# ordinary words ("sexy dress", "lunda"). Words that are also ordinary shopping terms ("nude" lipstick, "dengue"
+# test kit) are left out, and _SAFE_PHRASES ("rape seed oil") are removed before matching. A word in an Indian
+# script matches anywhere, as those scripts join suffixes to the word. NEARSHOP_SUGGESTION_BLOCKLIST adds
+# words without a deploy.
 _ABUSIVE_LATIN = (
     "fuck", "fucker", "motherfuck", "motherfucker", "shit", "bitch", "bastard", "asshole", "dick", "cunt", "slut",
-    "whore", "porn", "sex", "sexy", "nude", "rape", "rapist", "nigger", "faggot",
+    "whore", "porn", "rape", "rapist", "nigger", "faggot",
     "chutiya", "chutiye", "chutia", "madarchod", "maderchod", "behenchod", "bhenchod", "benchod", "bhosdi",
-    "bhosdike", "bhosad", "bhosadi", "gandu", "randi", "harami", "lund", "lavda", "lauda", "kamina", "kamine",
+    "bhosdike", "bhosad", "bhosadi", "gandu", "randi", "harami", "lavda", "lauda", "kamina", "kamine",
     "sule", "soole", "bolimaga", "boli maga", "sulemaga", "soolemaga", "tunne", "nin amman", "ninamman",
-    "lanja", "dengu", "dengey", "dengu ra", "puku", "modda", "kojja",
+    "lanja", "dengey", "dengu ra", "puku", "modda", "kojja",
 )
+_ABUSIVE_EXACT = ("sex", "lund")
+_SAFE_PHRASES = re.compile(r"(?<![a-z0-9])rape\s*seeds?(?![a-z0-9])", re.IGNORECASE)
 _ABUSIVE_SCRIPT = (
     "चूतिया", "चुतिया", "मादरचोद", "बहनचोद", "भेनचोद", "भोसड", "गांडू", "रंडी", "हरामी", "लौड़ा",
     "ಸೂಳೆ", "ಬೋಳಿಮಗ", "ತುಣ್ಣೆ", "ಸೂಳೆಮಗ",
@@ -400,7 +412,8 @@ def _blocklist(configured: str) -> tuple[re.Pattern[str], tuple[str, ...]]:
     latin = sorted({w for w in (*_ABUSIVE_LATIN, *extra) if w.isascii()}, key=len, reverse=True)
     script = (*_ABUSIVE_SCRIPT, *(w for w in extra if not w.isascii()))
     words = "|".join(re.escape(w) for w in latin)
-    return re.compile(rf"(?<![a-z0-9])(?:{words}){_ENDINGS}(?![a-z0-9])", re.IGNORECASE), script
+    exact = "|".join(re.escape(w) for w in _ABUSIVE_EXACT)
+    return re.compile(rf"(?<![a-z0-9])(?:(?:{words}){_ENDINGS}|{exact})(?![a-z0-9])", re.IGNORECASE), script
 
 
 def suggestion_allowed(query: str) -> bool:
@@ -412,7 +425,7 @@ def suggestion_allowed(query: str) -> bool:
     if _PHONE.search(text) or _EMAIL.search(text) or _LINK.search(text):
         return False
     latin, script = _blocklist(settings.suggestion_blocklist)
-    folded = text.lower()
+    folded = _SAFE_PHRASES.sub(" ", text.lower())
     return not latin.search(folded) and not any(w in folded for w in script)
 
 

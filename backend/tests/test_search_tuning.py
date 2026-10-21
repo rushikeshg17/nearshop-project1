@@ -272,7 +272,8 @@ def test_suggestions_rank_by_distinct_users(db, history):
 @pytest.mark.parametrize("text", [
     "zq 98450 12345", "zq 9845012345", "zq call 080-2345-6789", "zq ravi gmail.com", "zq ravi@example.com",
     "zq www.cheap-deals.xyz", "zq https //t.me/x", "zq fucking idiot", "zq bastards", "zq madarchod",
-    "zq ಸೂಳೆಮಗ", "zq లంజ", "zq " + "x" * 58,
+    "zq ಸೂಳೆಮಗ", "zq లంజ", "zq " + "x" * 58, "zq 080 2345 6789", "zq ravi gmail com", "zq ravi yahoo.in",
+    "zq cheap.in/offer", "zq sex toys", "zq lund", "zq rape", "zq rapist",
 ])
 def test_blocked_text_never_reaches_suggestions(db, history, text):
     history(text, range(301, 320))
@@ -282,7 +283,10 @@ def test_blocked_text_never_reaches_suggestions(db, history, text):
 
 
 @pytest.mark.parametrize("text", ["phone charger", "rapeseed oil", "10000mah power bank", "1/2 inch pipe",
-                                  "dickies shirt", "ಮೊಬೈಲ್ ಚಾರ್ಜರ್", "पानी की टंकी", "x" * 60])
+                                  "dickies shirt", "ಮೊಬೈಲ್ ಚಾರ್ಜರ್", "पानी की टंकी", "x" * 60,
+                                  "nude lipstick", "dengue test kit", "rape seed oil", "sexy dress", "lunda",
+                                  "outlook diary", "yahoo", "amazon.in gift card", "iphone 15 256 2023",
+                                  "samsung 2023 128 256"])
 def test_ordinary_queries_pass_the_blocklist(text):
     assert search.suggestion_allowed(text)
 
