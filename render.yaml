@@ -28,7 +28,10 @@ services:
     region: singapore
     branch: main
     rootDir: backend
-    # The search model (90 MB) is downloaded while building, so a cold start does not wait for it.
+    # The search model is downloaded while building, so a cold start does not wait for it: get_provider loads
+    # the model NEARSHOP_EMBEDDING_MODEL names (unset: all-MiniLM-L6-v2, 90 MB; P5.3 kept it, see
+    # docs/perf/embedding-models.md). Adopting another model means setting that variable on every service
+    # that builds with this command, so each build downloads the new one.
     buildCommand: >-
       pip install uv && uv sync --frozen --no-dev &&
       uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"

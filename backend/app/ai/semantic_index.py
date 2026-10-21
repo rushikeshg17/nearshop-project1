@@ -3,6 +3,12 @@
 Many shops list the same item, so vectors are cached per unique text in the `text_embeddings`
 collection (`_id` = "<model>:<sha256 of text>") and only new texts are embedded. With a few
 thousand listings a NumPy matrix product is fast enough; Atlas Vector Search can replace this later.
+Because the key starts with the model name, several models' vectors coexist and switching
+NEARSHOP_EMBEDDING_MODEL (P5.3) only embeds what the new model has not seen.
+
+Similarities are returned on the scale search ranks on (config.SEARCH_SIMILARITY_SCALE, the calibration of
+all-MiniLM-L6-v2): another model's cosine is mapped there linearly with that model's own floor and ceiling
+from config.EMBEDDING_MODELS. With equal calibration, as for every model today, the mapping is the identity.
 """
 from __future__ import annotations
 
@@ -14,6 +20,7 @@ import numpy as np
 from bson.binary import Binary
 
 from app.ai.embeddings import get_provider
+from app.core.config import SEARCH_SIMILARITY_SCALE, embedding_spec
 from app.core.database import Database
 
 
@@ -30,6 +37,19 @@ def product_text(name: str, brand: str | None, keywords: str, description: str |
 
 def _hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+def cache_key(model_name: str, text: str) -> str:
+    """The text_embeddings _id of a text's vector under one model: "<model>:<sha256 of text>"."""
+    return f"{model_name}:{_hash(text)}"
+
+
+def to_search_scale(model_name: str, sims: np.ndarray) -> np.ndarray:
+    """Map one model's cosine similarities onto the scale search ranks on (see the module docstring)."""
+    spec, ref = embedding_spec(model_name), SEARCH_SIMILARITY_SCALE
+    if (spec.sem_floor, spec.sem_ceil) == (ref.sem_floor, ref.sem_ceil):
+        return sims
+    return ref.sem_floor + (sims - spec.sem_floor) * ((ref.sem_ceil - ref.sem_floor) / (spec.sem_ceil - spec.sem_floor))
 
 
 class SemanticIndex:
@@ -65,9 +85,9 @@ class SemanticIndex:
         missing = {h: t for h, t in zip(hashes, texts) if h not in cached}
         if missing:
             keys = list(missing)
-            vecs = provider.embed([missing[k] for k in keys])
+            vecs = provider.embed([missing[k] for k in keys], "passage")
             cached.update(zip(keys, vecs))
-            docs = [{"_id": f"{provider.name}:{k}", "model": provider.name, "dim": provider.dim,
+            docs = [{"_id": cache_key(provider.name, missing[k]), "model": provider.name, "dim": provider.dim,
                      "vector": Binary(v.tobytes())} for k, v in zip(keys, vecs)]
             for i in range(0, len(docs), 500):
                 store.insert_many(docs[i:i + 500], ordered=False)
@@ -83,10 +103,15 @@ class SemanticIndex:
     def query(self, db: Database, text: str) -> dict[int, float]:
         """Cosine similarity of `text` against every active listing: {product_id: score}."""
         self.ensure(db)
+        provider = get_provider()
+        if provider.name != self.provider_name:  # the model setting changed since the build
+            self.mark_dirty()
+            self.ensure(db)
+            provider = get_provider()
         if len(self.product_ids) == 0:
             return {}
-        q = get_provider().embed([text])[0]
-        scores = self.matrix @ q
+        q = provider.embed([text], "query")[0]
+        scores = to_search_scale(provider.name, self.matrix @ q)
         return dict(zip(self.product_ids.tolist(), scores.tolist()))
 
 

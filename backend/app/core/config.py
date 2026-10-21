@@ -1,4 +1,5 @@
 """Application settings, loaded from environment variables / .env."""
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, get_args
@@ -16,6 +17,50 @@ RateLimitMode = Literal["enforce", "log_only", "off"]
 EDGE_SECRET_MIN_LENGTH = 32
 # The deployed environments, served over https: the API refuses to start in them with cookie_secure false.
 SECURE_COOKIE_ENVIRONMENTS: tuple[str, ...] = ("staging", "production", "demo")
+
+
+@dataclass(frozen=True)
+class EmbeddingModelSpec:
+    """How one embedding model is run and calibrated (P5.3; trial results in docs/perf/embedding-models.md).
+
+    query_prefix and passage_prefix are prepended to search queries and to listing texts, for models trained
+    with them (multilingual E5: "query: " and "passage: "); empty for models that need none. sem_floor and
+    sem_ceil are the cosine range that search maps to 0..1 for this model. They are not tuned here (P5.5):
+    every candidate starts on the calibration of the current model.
+    """
+
+    query_prefix: str = ""
+    passage_prefix: str = ""
+    sem_floor: float = 0.22
+    sem_ceil: float = 0.62
+
+
+# The cosine scale search ranks on: app/services/search.py's SEM_FLOOR and SEM_CEIL, the calibration of
+# all-MiniLM-L6-v2. The semantic index maps another model's similarities onto this scale with that model's
+# own floor and ceiling below, so search.py stays unchanged when the model changes.
+SEARCH_SIMILARITY_SCALE = EmbeddingModelSpec()
+
+# The embedding models NEARSHOP_EMBEDDING_MODEL may name: those the installed fastembed (0.8.1) supports
+# that were considered in P5.3. A model is listed here before it can be selected, so its prefixes are
+# never missed.
+EMBEDDING_MODELS: dict[str, EmbeddingModelSpec] = {
+    # The current model (English only, 384 dimensions, 90 MB).
+    "sentence-transformers/all-MiniLM-L6-v2": EmbeddingModelSpec(),
+    # P5.3 candidates (multilingual); calibration not tuned.
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": EmbeddingModelSpec(),
+    "minishlab/potion-multilingual-128M": EmbeddingModelSpec(),
+    # Considered but not trialled (too large for the 2 GB instance; see docs/perf/embedding-models.md).
+    "sentence-transformers/paraphrase-multilingual-mpnet-base-v2": EmbeddingModelSpec(),
+    "intfloat/multilingual-e5-large": EmbeddingModelSpec(query_prefix="query: ", passage_prefix="passage: "),
+}
+# The TF-IDF fallback (app/ai/embeddings.py) has no model name of its own in the setting.
+TFIDF_MODEL_NAME = "tfidf-char-svd"
+
+
+def embedding_spec(model_name: str) -> EmbeddingModelSpec:
+    """The spec of a listed model; the TF-IDF fallback and anything unlisted get no prefixes and the default
+    calibration."""
+    return EMBEDDING_MODELS.get(model_name, EmbeddingModelSpec())
 
 
 class Settings(BaseSettings):
@@ -126,6 +171,8 @@ class Settings(BaseSettings):
 
     # AI
     embedding_provider: str = "fastembed"  # fastembed | tfidf
+    # One of EMBEDDING_MODELS, by name (P5.3). Changing it re-embeds every listing once, into
+    # text_embeddings under the new name; the old model's vectors stay until deleted.
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     model_dir: Path = BACKEND_DIR / "ml_artifacts"
     enable_scheduler: bool = True
@@ -160,6 +207,14 @@ class Settings(BaseSettings):
     # uncompressed documents plus indexes. M0 (staging, demo) 512; Flex (production after plan step 1-A) 5120.
     # The admin storage card and the daily snapshot's 70% and 85% warnings are measured against it.
     storage_limit_mb: int = 512
+
+    @field_validator("embedding_model", mode="after")
+    @classmethod
+    def _check_embedding_model(cls, value: str) -> str:
+        if value not in EMBEDDING_MODELS:
+            raise ValueError(f"NEARSHOP_EMBEDDING_MODEL must be one of {', '.join(EMBEDDING_MODELS)}; got {value!r}"
+                             " (add a new model to EMBEDDING_MODELS in app/core/config.py, with its prefixes)")
+        return value
 
     @field_validator("storage_limit_mb", mode="after")
     @classmethod
