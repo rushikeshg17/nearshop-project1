@@ -1,0 +1,137 @@
+{
+ "about": "Search evaluation figures published by `make eval EVAL_ARGS=--publish` (backend/eval/README.md). The AI Lab shows them on every deployment.",
+ "splits": {
+  "dev": {
+   "split": "dev",
+   "at": "2026-10-21T05:28:21Z",
+   "commit": "c0a5b943f6",
+   "queries": 6,
+   "synthetic_queries": 6,
+   "embedding": "sentence-transformers/all-MiniLM-L6-v2",
+   "overall": {
+    "queries": 6,
+    "scored_queries": 6,
+    "ndcg@10": 0.6067,
+    "recall@20": 0.6111,
+    "mrr": 0.7222,
+    "zero_result_rate": 0.1667,
+    "latency_p95_ms": 10.9
+   },
+   "by_language": {
+    "en": {
+     "queries": 1,
+     "scored_queries": 1,
+     "ndcg@10": 0.9764,
+     "recall@20": 1.0,
+     "mrr": 1.0,
+     "zero_result_rate": 0.0,
+     "latency_p95_ms": 10.4
+    },
+    "kn": {
+     "queries": 1,
+     "scored_queries": 1,
+     "ndcg@10": 0.0,
+     "recall@20": 0.0,
+     "mrr": 0.0,
+     "zero_result_rate": 1.0,
+     "latency_p95_ms": 9.5
+    },
+    "kn-Latn": {
+     "queries": 1,
+     "scored_queries": 1,
+     "ndcg@10": 0.4693,
+     "recall@20": 0.3333,
+     "mrr": 1.0,
+     "zero_result_rate": 0.0,
+     "latency_p95_ms": 7.4
+    },
+    "te-Latn": {
+     "queries": 1,
+     "scored_queries": 1,
+     "ndcg@10": 0.9219,
+     "recall@20": 1.0,
+     "mrr": 1.0,
+     "zero_result_rate": 0.0,
+     "latency_p95_ms": 10.9
+    },
+    "hi-Latn": {
+     "queries": 1,
+     "scored_queries": 1,
+     "ndcg@10": 0.9436,
+     "recall@20": 1.0,
+     "mrr": 1.0,
+     "zero_result_rate": 0.0,
+     "latency_p95_ms": 7.6
+    },
+    "misspelt": {
+     "queries": 1,
+     "scored_queries": 1,
+     "ndcg@10": 0.3289,
+     "recall@20": 0.3333,
+     "mrr": 0.3333,
+     "zero_result_rate": 0.0,
+     "latency_p95_ms": 7.9
+    }
+   },
+   "note": "6 labelled dev queries (6 synthetic examples) on the seeded evaluation snapshot.",
+   "source": "published"
+  },
+  "test": {
+   "split": "test",
+   "at": "2026-10-21T05:28:21Z",
+   "commit": "c0a5b943f6",
+   "queries": 4,
+   "synthetic_queries": 4,
+   "embedding": "sentence-transformers/all-MiniLM-L6-v2",
+   "overall": {
+    "queries": 4,
+    "scored_queries": 4,
+    "ndcg@10": 0.4235,
+    "recall@20": 0.4,
+    "mrr": 0.5,
+    "zero_result_rate": 0.25,
+    "latency_p95_ms": 11.6
+   },
+   "by_language": {
+    "en": {
+     "queries": 1,
+     "scored_queries": 1,
+     "ndcg@10": 0.6941,
+     "recall@20": 0.6,
+     "mrr": 1.0,
+     "zero_result_rate": 0.0,
+     "latency_p95_ms": 8.1
+    },
+    "te": {
+     "queries": 1,
+     "scored_queries": 1,
+     "ndcg@10": 0.0,
+     "recall@20": 0.0,
+     "mrr": 0.0,
+     "zero_result_rate": 1.0,
+     "latency_p95_ms": 9.0
+    },
+    "hi": {
+     "queries": 1,
+     "scored_queries": 1,
+     "ndcg@10": 0.0,
+     "recall@20": 0.0,
+     "mrr": 0.0,
+     "zero_result_rate": 0.0,
+     "latency_p95_ms": 10.9
+    },
+    "misspelt": {
+     "queries": 1,
+     "scored_queries": 1,
+     "ndcg@10": 1.0,
+     "recall@20": 1.0,
+     "mrr": 1.0,
+     "zero_result_rate": 0.0,
+     "latency_p95_ms": 11.6
+    }
+   },
+   "note": "4 labelled test queries (4 synthetic examples) on the seeded evaluation snapshot.",
+   "source": "published"
+  }
+ }
+}

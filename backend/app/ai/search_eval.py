@@ -19,9 +19,13 @@ nDCG, recall, MRR and the zero-result rate count only "scored" queries, those wi
 radius; a query whose relevant items no nearby shop lists says nothing about ranking.
 
 The evaluation database (default nearshop_eval) is a seeded snapshot on a local MongoDB only. It is
-built on the first run and reused while the seed and its data files are unchanged (a fingerprint is
-kept in its eval_snapshot collection); --rebuild forces a new one. Each run is stored in that database's
-model_runs as an entry named search_eval, with the split and the git commit in its metrics.
+built on the first run and reused while the seed, its data files, the schema (indexes), the migrations
+and the models are unchanged (a fingerprint is kept in its eval_snapshot collection); --rebuild forces a
+new one. Each run is stored in that database's model_runs as an entry named search_eval, with the split
+and the git commit in its metrics.
+
+Because no run can be stored in a deployed database, --publish also writes each split's figures to the
+committed file backend/eval/published.json, which the AI Lab's endpoint reads on every deployment.
 
 This module changes no ranking: it only calls run_search.
 """
@@ -41,9 +45,11 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import SecretStr
+from pymongo.errors import DuplicateKeyError
 
 from app.core.config import BACKEND_DIR, settings
 from app.core.database import Database, utcnow
+from app.schemas.serializers import iso
 
 LANGUAGES = ("en", "kn", "kn-Latn", "te", "te-Latn", "hi", "hi-Latn", "misspelt")
 SPLITS = ("dev", "test")
@@ -57,6 +63,12 @@ EVAL_DB_PREFIX = "nearshop_eval"
 SNAPSHOT_COLLECTION = "eval_snapshot"
 RUN_NAME = "search_eval"
 SEED_DIR = BACKEND_DIR / "database" / "seed"
+# Everything the seed builds the evaluation database from: a change to any of these rebuilds the snapshot.
+FINGERPRINT_GLOBS = (
+    "database/seed/seed.py", "database/seed/data/*.json", "database/schema.py", "database/migrations/*.py",
+    "app/models/*.py",
+)
+PUBLISHED_PATH = EVAL_DIR / "published.json"  # committed figures the deployed AI Lab shows (--publish)
 EVAL_ENVIRONMENTS = ("development", "test")  # a local MongoDB only (database/schema.py, LOCAL_HOSTS)
 METRIC_KEYS = ("ndcg@10", "recall@20", "mrr", "zero_result_rate", "latency_p95_ms")
 
@@ -161,7 +173,11 @@ def dcg(grades: Iterable[int]) -> float:
 def ndcg_at_k(ranked: Sequence[int | None], judgments: Mapping[int, int], k: int = NDCG_K,
               candidates: Iterable[int] | None = None) -> float:
     """Graded nDCG@k. The ideal ranking uses the judged items in `candidates` (all judged items when None)."""
-    pool = judgments if candidates is None else {i: g for i, g in judgments.items() if i in set(candidates)}
+    if candidates is None:
+        pool = dict(judgments)
+    else:
+        allowed = set(candidates)  # once: `candidates` may be a one-shot iterator
+        pool = {i: g for i, g in judgments.items() if i in allowed}
     ideal = dcg(sorted(pool.values(), reverse=True)[:k])
     if ideal <= 0:
         return 0.0
@@ -272,11 +288,16 @@ def eval_db_problem(*, environment: str, mongodb_uri: str, db_name: str, product
                                       confirm=db_name)
 
 
-def seed_fingerprint() -> str:
-    """Changes whenever the seed or its data files change, so a stale snapshot is rebuilt."""
+def fingerprint_files(root: Path = BACKEND_DIR) -> list[Path]:
+    return sorted({path for pattern in FINGERPRINT_GLOBS for path in Path(root).glob(pattern) if path.is_file()})
+
+
+def seed_fingerprint(root: Path = BACKEND_DIR) -> str:
+    """Changes whenever the seed, its data files, the schema (indexes, the products text index included), the
+    migrations or the models change, so a stale snapshot is rebuilt."""
     h = hashlib.sha256(settings.seed_city.encode())
-    for path in [SEED_DIR / "seed.py", *sorted((SEED_DIR / "data").glob("*.json"))]:
-        h.update(path.name.encode())
+    for path in fingerprint_files(root):
+        h.update(path.relative_to(root).as_posix().encode())
         h.update(path.read_bytes())
     return h.hexdigest()
 
@@ -295,7 +316,13 @@ def ensure_snapshot(db: Database, rebuild: bool = False) -> str:
     # Nobody signs in to the evaluation database: its demo accounts get a fresh random password.
     settings.demo_password = SecretStr(secrets.token_urlsafe(24))
     print(f"Seeding the evaluation database {db.mongo.name!r} (about two minutes)...")
-    seed.main(["--confirm-db", db.mongo.name])
+    try:
+        seed.main(["--confirm-db", db.mongo.name])
+    except DuplicateKeyError:
+        # The seed draws reservation and order codes at random (app/utils/text.py short_code); a rare clash
+        # aborts it. The seed starts by resetting the database, so one more attempt starts clean.
+        print("The seed drew a duplicate code; seeding once more...")
+        seed.main(["--confirm-db", db.mongo.name])
     meta.insert_one({"_id": "snapshot", "fingerprint": fingerprint, "seed_city": settings.seed_city,
                      "built_at": utcnow()})
     return fingerprint
@@ -378,16 +405,66 @@ def run_split(db: Database, split: str, *, queries_dir: Path = EVAL_DIR, store: 
     outcomes = evaluate(db, queries)
     result = aggregate(outcomes)
     commit, dirty = git_commit()
+    stored = None
     if store:
         try:
             queries_file = str(path.resolve().relative_to(BACKEND_DIR))
         except ValueError:
             queries_file = str(path)
-        record_run(db, split=split, result=result, queries=queries, queries_file=queries_file, commit=commit,
-                   dirty=dirty, snapshot=snapshot, duration_ms=int((time.time() - started) * 1000))
-    return {"split": split, "commit": commit, "commit_dirty": dirty, **result,
+        stored = record_run(db, split=split, result=result, queries=queries, queries_file=queries_file,
+                            commit=commit, dirty=dirty, snapshot=snapshot,
+                            duration_ms=int((time.time() - started) * 1000))
+    return {"split": split, "commit": commit, "commit_dirty": dirty, "stored": stored, **result,
             "per_query": [{k: v for k, v in asdict(o).items() if k != "ranked"} | {"top10": o.ranked[:10]}
                           for o in outcomes]}
+
+
+# ---------------------------------------------------------------- what the AI Lab shows
+
+def run_card(run: Any) -> dict[str, Any]:
+    """The AI Lab's view of one stored search_eval run (a ModelRun)."""
+    m = run.metrics
+    return {
+        "split": m.get("split"), "at": iso(run.created_at), "commit": str(m.get("commit") or "")[:10],
+        "queries": run.n_samples, "synthetic_queries": m.get("synthetic_queries", 0),
+        "embedding": m.get("embedding"), "overall": m.get("overall") or {},
+        "by_language": m.get("by_language") or {}, "note": run.data_note, "source": "database",
+    }
+
+
+def load_published(path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """The committed figures per split ({} when the file is missing or unreadable)."""
+    try:
+        data = json.loads(Path(path or PUBLISHED_PATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    splits = data.get("splits") if isinstance(data, dict) else None
+    if not isinstance(splits, dict):
+        return {}
+    return {s: card for s, card in splits.items() if s in SPLITS and isinstance(card, dict)}
+
+
+def publish(runs: Sequence[Any], path: Path | None = None) -> None:
+    """Write the cards of these stored runs to the committed file, keeping the other split's entry."""
+    splits = load_published(path)
+    for run in runs:
+        splits[run.metrics["split"]] = run_card(run) | {"source": "published"}
+    body = {"about": "Search evaluation figures published by `make eval EVAL_ARGS=--publish` "
+                     "(backend/eval/README.md). The AI Lab shows them on every deployment.",
+            "splits": {s: splits[s] for s in SPLITS if s in splits}}
+    Path(path or PUBLISHED_PATH).write_text(json.dumps(body, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def latest_cards(db: Database, published_path: Path | None = None) -> dict[str, dict[str, Any] | None]:
+    """The latest figures for each split: the newer of the latest stored run in this database and the published
+    entry; None for a split never measured."""
+    published = load_published(published_path)
+    out: dict[str, dict[str, Any] | None] = {}
+    for split in SPLITS:
+        runs = db.model_runs.find({"name": RUN_NAME, "metrics.split": split}, sort=[("created_at", -1)], limit=1)
+        candidates = [c for c in (run_card(runs[0]) if runs else None, published.get(split)) if c]
+        out[split] = max(candidates, key=lambda c: str(c.get("at") or "")) if candidates else None
+    return out
 
 
 def _fmt(value: float | None, digits: int = 3) -> str:
@@ -417,6 +494,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p.add_argument("--queries-dir", type=Path, default=EVAL_DIR, help="where queries.<split>.jsonl live")
     p.add_argument("--rebuild", action="store_true", help="re-seed the evaluation database even if it is current")
     p.add_argument("--no-store", action="store_true", help="do not store the run in model_runs")
+    p.add_argument("--publish", action="store_true",
+                   help=f"also write each split's figures to {PUBLISHED_PATH.relative_to(BACKEND_DIR)}, which the "
+                        "deployed AI Lab shows; commit that file")
     p.add_argument("--output", type=Path, help="write the dev (or only) run's results to this JSON file")
     p.add_argument("--summary", type=Path, help="append a Markdown summary to this file (CI: $GITHUB_STEP_SUMMARY)")
     p.add_argument("--baseline", type=Path, help="a JSON file from --output on main; fail if dev nDCG@10 drops "
@@ -427,6 +507,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
 def main(argv: Sequence[str] = ()) -> int:
     args = parse_args(argv)
+    if args.publish and args.no_store:
+        print("--publish needs a stored run; drop --no-store.", file=sys.stderr)
+        return 2
     if problem := eval_db_problem(environment=settings.environment, mongodb_uri=settings.mongodb_uri,
                                   db_name=settings.mongodb_db, production_db=settings.production_mongodb_db,
                                   protected_hosts=settings.protected_host_list):
@@ -451,13 +534,18 @@ def main(argv: Sequence[str] = ()) -> int:
             notes.append(note)
     if any(q.synthetic for s in splits for q in load_queries(split_path(s, args.queries_dir))):
         notes.append("Synthetic example rows are included: these figures are not a quality measurement yet.")
+    if args.publish:
+        publish([r["stored"] for r in runs if r["stored"] is not None])
+        notes.append(f"Published to {PUBLISHED_PATH.relative_to(BACKEND_DIR)}: commit it so the deployed AI Lab "
+                     "shows these figures.")
     text = summary_markdown(runs, notes)
     print(text)
     if args.summary:
         with args.summary.open("a", encoding="utf-8") as f:
             f.write(text)
     if args.output:
-        args.output.write_text(json.dumps(next((r for r in runs if r["split"] == "dev"), runs[0]), indent=1))
+        out = next((r for r in runs if r["split"] == "dev"), runs[0])
+        args.output.write_text(json.dumps({k: v for k, v in out.items() if k != "stored"}, indent=1))
     return 0 if ok else 1
 
 

@@ -137,7 +137,8 @@ def test_evaluation_database_must_be_local_and_named_for_evaluation():
 
 # ---------------------------------------------------------------- a run over the test database
 
-def test_run_is_stored_per_split_and_shown_in_the_ai_lab(db, client, ids, tmp_path):
+def test_run_is_stored_per_split_and_shown_in_the_ai_lab(db, client, ids, tmp_path, monkeypatch):
+    monkeypatch.setattr(se, "PUBLISHED_PATH", tmp_path / "published.json")  # no committed figures
     charger_item = db.products.find_raw({"_id": ids["charger"]}, {"catalog_item_id": 1})[0]["catalog_item_id"]
     tape_item = db.products.find_raw({"_id": ids["tape"]}, {"catalog_item_id": 1})[0]["catalog_item_id"]
     rows = [
@@ -169,3 +170,79 @@ def test_run_is_stored_per_split_and_shown_in_the_ai_lab(db, client, ids, tmp_pa
         assert body["splits"]["dev"]["queries"] == 2
     finally:
         db.model_runs.delete_many({"name": "search_eval"})
+
+
+def test_ndcg_candidates_may_be_a_one_shot_iterator():
+    judgments = {1: 3, 2: 2, 3: 1}
+    ranked = [3, 2, 1]
+    assert se.ndcg_at_k(ranked, judgments, candidates=iter([1, 2, 3])) == pytest.approx(
+        se.ndcg_at_k(ranked, judgments, candidates={1, 2, 3}))
+
+
+def test_fingerprint_covers_schema_migrations_and_models(tmp_path):
+    for rel in ("database/seed/seed.py", "database/seed/data/catalog.json", "database/schema.py",
+                "database/migrations/m0001_baseline.py", "app/models/core.py"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("v1")
+    first = se.seed_fingerprint(tmp_path)
+    for rel in ("database/schema.py", "database/migrations/m0001_baseline.py", "app/models/core.py"):
+        (tmp_path / rel).write_text("v2")
+        changed = se.seed_fingerprint(tmp_path)
+        assert changed != first, rel
+        first = changed
+    assert {p.relative_to(se.BACKEND_DIR).as_posix() for p in se.fingerprint_files()} >= {
+        "database/seed/seed.py", "database/schema.py", "app/models/core.py"}
+
+
+def _stored_run(db, split, ndcg, at):
+    from app.models import ModelRun
+
+    run = ModelRun(name="search_eval", algorithm="test", n_samples=1, data_note="test",
+                   metrics={"split": split, "commit": "abc", "overall": {"ndcg@10": ndcg}, "by_language": {}})
+    run.created_at = at
+    db.model_runs.insert(run)
+    return run
+
+
+def test_latest_run_per_split_survives_many_newer_runs_of_the_other(db, client, tmp_path, monkeypatch):
+    from datetime import timedelta
+
+    from app.core.database import utcnow
+
+    monkeypatch.setattr(se, "PUBLISHED_PATH", tmp_path / "published.json")
+    start = utcnow() - timedelta(days=1)
+    try:
+        _stored_run(db, "test", 0.5, start)
+        for n in range(60):  # far more dev runs than any fixed window
+            _stored_run(db, "dev", 0.6, start + timedelta(minutes=n + 1))
+        body = client.get("/api/ai/search-eval", headers=HEADERS).json()
+        assert body["splits"]["test"]["overall"]["ndcg@10"] == 0.5
+        assert body["splits"]["dev"]["overall"]["ndcg@10"] == 0.6
+    finally:
+        db.model_runs.delete_many({"name": "search_eval"})
+
+
+def test_published_figures_are_shown_when_newer_than_the_database(db, client, tmp_path, monkeypatch):
+    from datetime import timedelta
+
+    from app.core.database import utcnow
+
+    path = tmp_path / "published.json"
+    monkeypatch.setattr(se, "PUBLISHED_PATH", path)
+    try:
+        old = _stored_run(db, "dev", 0.4, utcnow() - timedelta(days=2))
+        new = _stored_run(db, "test", 0.7, utcnow() - timedelta(days=1))
+        se.publish([new])
+        se.publish([_stored_run(db, "dev", 0.8, utcnow() - timedelta(hours=1))])  # keeps the test entry
+        published = json.loads(path.read_text())["splits"]
+        assert set(published) == {"dev", "test"} and published["test"]["source"] == "published"
+        db.model_runs.delete_many({"name": "search_eval", "_id": {"$ne": old.id}})
+        body = client.get("/api/ai/search-eval", headers=HEADERS).json()  # a deployed site: only the file is new
+        assert body["splits"]["dev"]["overall"]["ndcg@10"] == 0.8
+        assert body["splits"]["test"]["overall"]["ndcg@10"] == 0.7
+        _stored_run(db, "dev", 0.9, utcnow())  # a newer local run wins over the file
+        assert client.get("/api/ai/search-eval", headers=HEADERS).json()["splits"]["dev"]["overall"]["ndcg@10"] == 0.9
+    finally:
+        db.model_runs.delete_many({"name": "search_eval"})
+    path.write_text("not json")
+    assert se.load_published(path) == {}

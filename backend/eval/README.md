@@ -58,29 +58,44 @@ ranked once.
 ## Evaluation database and stored runs
 
 Runs use a fixed snapshot so results are reproducible: a local MongoDB database named `nearshop_eval` (EVAL_DB),
-built by the deterministic seed (city ballari) on the first run and reused while backend/database/seed/seed.py and
-its data files are unchanged; a changed seed rebuilds it. The harness refuses any database whose name does not start
+built by the deterministic seed (city ballari) on the first run and reused while everything it is built from is
+unchanged: backend/database/seed/seed.py and its data files, backend/database/schema.py (the indexes, the products
+text index included), backend/database/migrations and backend/app/models. A change to any of them rebuilds it. The harness refuses any database whose name does not start
 with `nearshop_eval`, any host that is not local and any environment other than development or test, so it never
 reaches Atlas whatever backend/.env says.
 
 Each run is stored in that database's `model_runs` collection as an entry named `search_eval`, with the split, the
-git commit (and whether the tree had uncommitted changes), the query file, the embedding model and the figures. The AI
-Lab (/ai) shows the latest run of each split in the database its API reads: to see local runs there, run the API with
-NEARSHOP_MONGODB_URI set to the local server and NEARSHOP_MONGODB_DB=nearshop_eval. A rebuilt snapshot starts a new
-run history.
+git commit (and whether the tree had uncommitted changes), the query file, the embedding model and the figures.
+
+**What the AI Lab shows.** A deployed site's database never holds a run (the harness refuses any database but a local
+`nearshop_eval*`), so published figures live in the repository: `--publish` also writes each split's figures to
+`backend/eval/published.json`, and the AI Lab (/ai) shows, for each split, the newer of that file's entry and the
+latest run in the database its API reads. To publish, run on a clean checkout of main and commit the file:
+
+    make eval EVAL_SPLIT=all EVAL_ARGS=--publish     # after a baseline or an adopted ranking change
+    make eval EVAL_SPLIT=test EVAL_ARGS=--publish    # the once-per-cycle test run
+
+To see unpublished local runs in the AI Lab, run the API with NEARSHOP_MONGODB_URI set to the local server and
+NEARSHOP_MONGODB_DB=nearshop_eval. A rebuilt snapshot starts a new run history.
 
 Options (`uv run python -m app.ai.search_eval --help`): `--output FILE` writes the dev run's figures as JSON,
 `--summary FILE` appends a Markdown table, `--baseline FILE` compares dev nDCG@10 with an earlier `--output` file and
-exits 1 when it fell by more than `--max-drop` (default 0.02), `--no-store` skips model_runs.
+exits 1 when it fell by more than `--max-drop` (default 0.02), `--no-store` skips model_runs, `--publish` writes
+`backend/eval/published.json` (above).
 
 ## CI
 
 The `search-eval` job in .github/workflows/ci.yml runs the dev split:
 
-- on every push to main, and saves the figures as the main baseline (GitHub Actions cache);
+- on every push to main and every Monday (the scheduled run), and saves the figures as the main baseline (GitHub
+  Actions cache; the weekly run keeps it from expiring after 7 unused days);
 - on a pull request that touches search, text, embeddings, semantic-index, the harness, these files or the seed. It
   writes the summary table to the job summary and fails when dev nDCG@10 drops by more than 0.02 against the latest
-  main run. With no main run yet it passes and says so.
+  main run. When no cached main run can be restored it measures the pull request's base commit in the same job and
+  compares with that, with a warning annotation; only a base commit that predates the harness passes uncompared.
+
+The summary is written to the job summary, not posted as a pull request comment: a comment needs a token with
+pull-requests: write in a job that runs the pull request's own code.
 
 The test split is never run in CI.
 
@@ -114,7 +129,8 @@ That is 180 not in English (150 or more is required).
 6. **Use**: work is compared on the dev split. The test split runs once per tuning cycle, on the final version of a
    change, and decides adoption (plan section 8.6: a ranking change needs test nDCG@10 up by 0.02 or more and no rise
    in the zero-result rate).
-7. **Baseline**: once the set is in, run `make eval EVAL_SPLIT=all` on main before any ranking change and record it.
+7. **Baseline**: once the set is in, run `make eval EVAL_SPLIT=all EVAL_ARGS=--publish` on main before any ranking
+   change, commit `backend/eval/published.json` and record the run below.
 
 ## Record
 

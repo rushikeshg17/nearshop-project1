@@ -6,6 +6,7 @@ its own process (app/jobs.py, app/ai/pipeline.py --cron). Nothing here imports a
 from fastapi import APIRouter, Query
 
 from app import jobs
+from app.ai import search_eval as search_eval_mod
 from app.ai import word2vec_ref
 from app.ai.semantic_index import index
 from app.core.deps import DB, AdminUser
@@ -96,20 +97,10 @@ def models(db: DB):
 
 @router.get("/search-eval")
 def search_eval(db: DB):
-    """The latest search evaluation run (app/ai/search_eval.py) for each split, or null for a split never run.
-    Runs are stored in model_runs as search_eval entries by make eval."""
-    runs = db.model_runs.find({"name": "search_eval"}, sort=[("created_at", -1)], limit=50)
-    latest: dict[str, dict] = {}
-    for r in runs:
-        split = r.metrics.get("split")
-        if split in ("dev", "test") and split not in latest:
-            latest[split] = {
-                "split": split, "at": iso(r.created_at), "commit": str(r.metrics.get("commit") or "")[:10],
-                "queries": r.n_samples, "synthetic_queries": r.metrics.get("synthetic_queries", 0),
-                "embedding": r.metrics.get("embedding"), "overall": r.metrics.get("overall") or {},
-                "by_language": r.metrics.get("by_language") or {}, "note": r.data_note,
-            }
-    return {"splits": {split: latest.get(split) for split in ("dev", "test")}}
+    """The latest search evaluation figures (app/ai/search_eval.py) for each split, or null for a split never
+    measured: the newer of the latest search_eval run stored in this database and the committed
+    backend/eval/published.json, which is what a deployed site shows (no run is ever stored in its database)."""
+    return {"splits": search_eval_mod.latest_cards(db)}
 
 
 @router.post("/retrain")

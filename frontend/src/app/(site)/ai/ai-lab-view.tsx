@@ -46,6 +46,7 @@ type EvalRun = {
   overall: EvalFigures;
   by_language: Record<string, EvalFigures>;
   note: string | null;
+  source?: "database" | "published";
 };
 type SearchEval = { splits: { dev: EvalRun | null; test: EvalRun | null } };
 
@@ -250,7 +251,7 @@ export function AiLabView() {
                       )}
                     </>
                   ) : (
-                    <p className="mt-3 text-sm text-muted-foreground">{searchEval.isError ? "Could not load the evaluation results." : "Not measured yet. Run make eval."}</p>
+                    <p className="mt-3 text-sm text-muted-foreground">{searchEval.isError ? "Could not load the evaluation results." : "Not measured yet. Figures appear here once this split of the labelled queries has been run."}</p>
                   )}
                 </article>
               );

@@ -88,8 +88,9 @@ retrain:
 # Search evaluation (P5.1; backend/eval/README.md): every labelled query in backend/eval/queries.<split>.jsonl
 # through run_search, with nDCG@10, Recall@20, MRR, zero-result rate and latency p95, overall and per language.
 # Always the local MongoDB, in its own database EVAL_DB (seeded from the deterministic seed on the first run and
-# reused while the seed is unchanged), whatever backend/.env points at; the run is stored in that database's
+# reused while the seed, schema, migrations and models are unchanged), whatever backend/.env points at; the run is stored in that database's
 # model_runs. EVAL_SPLIT=test runs the held-out split (once per tuning cycle); EVAL_SPLIT=all runs both.
+# EVAL_ARGS=--publish also writes backend/eval/published.json, the figures a deployed AI Lab shows; commit it.
 #   make eval                     make eval EVAL_SPLIT=test           make eval EVAL_ARGS=--rebuild
 EVAL_DB ?= nearshop_eval
 EVAL_SPLIT ?= dev
