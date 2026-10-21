@@ -115,6 +115,26 @@ def test_unchanged_version_is_not_reread(db, monkeypatch):
     assert len(cache.table(db.mongo)) == 42 and loads == []  # only the version was read
 
 
+def test_a_first_read_that_fails_is_retried_soon(db, monkeypatch):
+    now = [0.0]
+    cache = synonyms.SynonymCache(clock=lambda: now[0])
+    real = synonyms.read_version
+
+    def down(mongo):
+        raise ConnectionError("database unreachable")
+
+    monkeypatch.setattr(synonyms, "read_version", down)
+    assert cache.table(db.mongo) == {}  # the search goes ahead without synonyms
+    monkeypatch.setattr(synonyms, "read_version", real)
+    now[0] += synonyms.RETRY_SECONDS - 0.1
+    assert cache.table(db.mongo) == {}
+    now[0] += 0.1
+    assert len(cache.table(db.mongo)) == 42  # retried after RETRY_SECONDS, not CHECK_SECONDS
+    monkeypatch.setattr(synonyms, "read_version", down)
+    now[0] += synonyms.CHECK_SECONDS
+    assert len(cache.table(db.mongo)) == 42  # once loaded, a failed refresh keeps the entries
+
+
 # ---------------------------------------------------------------- validation
 
 
@@ -154,6 +174,29 @@ def test_validation_refuses_more_than_500_entries(admin, db, clean, monkeypatch)
                       headers=HEADERS).status_code == 201
     full = admin.post("/api/admin/synonyms", json={"term": "thaila", "expansions": ["bag"]}, headers=HEADERS)
     assert full.status_code == 422 and full.json()["error"]["code"] == "synonym_limit"
+
+
+def test_concurrent_creates_never_pass_the_limit(db, clean, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.core.database import Database
+    from app.core.errors import AppError
+
+    admin_id = db.mongo["users"].find_one({"role": "admin"}, {"_id": 1})["_id"]
+    count = db.mongo["synonyms"].count_documents({})
+    monkeypatch.setattr(synonyms, "MAX_ENTRIES", count + 1)  # room for one more, like 499 of 500
+
+    def create(n):
+        try:
+            synonyms.create_entry(Database(db.mongo.name), admin_id, f"jhola{n}", ["bag"])
+            return "created"
+        except AppError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(8) as pool:
+        results = list(pool.map(create, range(8)))
+    assert results.count("created") == 1 and results.count("synonym_limit") == 7
+    assert db.mongo["synonyms"].count_documents({}) == count + 1
 
 
 def test_the_validator_refuses_a_self_written_bad_document(db):

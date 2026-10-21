@@ -8,8 +8,10 @@ updated_at and updated_by. Migration 5 imported the 42 entries that used to be a
 
 Every write bumps a version number (counters, _id synonyms_version). Each process keeps the active entries
 in memory and checks the version at most once every CHECK_SECONDS, so an admin's change reaches every API
-process within 30 seconds, and immediately in the process that made it. Cache invalidation across processes
-in general is P8.1.
+process within 30 seconds, and immediately in the process that made it. When the database cannot be read,
+search keeps the entries the process already has; a process that has none yet searches without synonyms and
+tries again after RETRY_SECONDS rather than CHECK_SECONDS. Cache invalidation across processes in general is
+P8.1.
 """
 from __future__ import annotations
 
@@ -34,6 +36,7 @@ log = logging.getLogger(__name__)
 COLLECTION = "synonyms"
 VERSION_ID = "synonyms_version"  # the counters document whose seq is the synonyms' version
 CHECK_SECONDS = 30.0
+RETRY_SECONDS = 5.0  # how soon a process that has never loaded the entries tries again after a failed read
 MAX_ENTRIES = 500  # every entry, active or not
 MAX_EXPANSIONS = 20
 MAX_EXPANSION_LENGTH = 40
@@ -123,13 +126,19 @@ class SynonymCache:
             state = self._state.get(mongo.name)
             if state is not None and now - state[2] < CHECK_SECONDS:
                 return state[0]
+            checked = now
             try:
                 version = read_version(mongo)
                 table = state[0] if state is not None and state[1] == version else load_table(mongo)
             except Exception as exc:  # a database hiccup must not fail a search: keep what we had
-                log.warning("synonyms: could not refresh (%s); using the previous entries", exc)
-                table, version = (state[0], state[1]) if state is not None else ({}, -1)
-            self._state[mongo.name] = (table, version, now)
+                if state is not None and state[1] >= 0:
+                    log.warning("synonyms: could not refresh (%s); using the previous entries", exc)
+                    table, version = state[0], state[1]
+                else:  # nothing loaded yet: search without synonyms, and try again soon rather than in 30 s
+                    log.warning("synonyms: could not load (%s); retrying in %.0f s", exc, RETRY_SECONDS)
+                    table, version = {}, -1
+                    checked = now - CHECK_SECONDS + RETRY_SECONDS
+            self._state[mongo.name] = (table, version, checked)
             return table
 
     def invalidate(self, name: str | None = None) -> None:
@@ -200,19 +209,31 @@ def _check_term_free(db: Database, term: str, entry_id: int | None = None) -> No
 def create_entry(db: Database, admin_id: int, term: str, expansions: list[str],
                  languages: list[str] | None = None) -> dict[str, Any]:
     entry = clean_entry(term, expansions, languages)
-    coll = db.mongo[COLLECTION]
-    if coll.count_documents({}) >= MAX_ENTRIES:
-        raise SynonymInvalid(f"There are already {MAX_ENTRIES} entries, the most allowed. Edit or reuse a "
-                             f"deactivated entry instead.", code="synonym_limit")
-    _check_term_free(db, entry["term"])
-    now = utcnow()
-    doc = {"_id": db.next_id(COLLECTION), **entry, "active": True, "created_by": admin_id, "created_at": now,
-           "updated_at": now, "updated_by": admin_id}
+    entry_id = db.next_id(COLLECTION)  # outside the transaction, like every id (a gap after a refusal is harmless)
+
+    def write() -> dict[str, Any]:
+        s = db.session
+        coll = db.mongo[COLLECTION]
+        # The version bump comes first. Every create writes this same counters document, so two creates at
+        # once conflict and the driver retries the later one, which then counts the other's entry: the limit
+        # check and the insert act as one step and the collection never passes MAX_ENTRIES.
+        db.mongo["counters"].update_one({"_id": VERSION_ID}, {"$inc": {"seq": 1}}, upsert=True, session=s)
+        if coll.count_documents({}, session=s) >= MAX_ENTRIES:
+            raise SynonymInvalid(f"There are already {MAX_ENTRIES} entries, the most allowed. Edit or reuse a "
+                                 f"deactivated entry instead.", code="synonym_limit")
+        if coll.find_one({"term": entry["term"]}, {"_id": 1}, session=s):
+            raise Conflict(f"There is already an entry for {entry['term']!r}.", code="synonym_exists")
+        now = utcnow()
+        doc = {"_id": entry_id, **entry, "active": True, "created_by": admin_id, "created_at": now,
+               "updated_at": now, "updated_by": admin_id}
+        coll.insert_one(doc, session=s)
+        return doc
+
     try:
-        coll.insert_one(doc)
+        doc = db.transaction(write)
     except DuplicateKeyError as exc:  # the unique index, when two admins add the same term at once
         raise Conflict(f"There is already an entry for {entry['term']!r}.", code="synonym_exists") from exc
-    _bump(db)
+    cache.invalidate(db.mongo.name)
     return serialize(doc)
 
 
