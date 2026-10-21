@@ -35,8 +35,8 @@ class EmbeddingModelSpec:
     sem_ceil: float = 0.62
 
 
-# The cosine scale search ranks on: app/services/search.py's SEM_FLOOR and SEM_CEIL, the calibration of
-# all-MiniLM-L6-v2. The semantic index maps another model's similarities onto this scale with that model's
+# The cosine scale search ranks on: the calibration of all-MiniLM-L6-v2 (the sem_floor and sem_ceil of the r1
+# ranking config below). The semantic index maps another model's similarities onto this scale with that model's
 # own floor and ceiling below, so search.py stays unchanged when the model changes.
 SEARCH_SIMILARITY_SCALE = EmbeddingModelSpec()
 
@@ -62,6 +62,46 @@ def embedding_spec(model_name: str) -> EmbeddingModelSpec:
     calibration."""
     return EMBEDDING_MODELS.get(model_name, EmbeddingModelSpec())
 
+
+
+@dataclass(frozen=True)
+class RankingConfig:
+    """Every constant search ranks with (P5.5; app/services/search.py, run_search). Versioned: a config is never
+    edited once it has served traffic. A tuned config is added under a new version, with its tuning report in
+    docs/search/tuning-report.md, and switched on with NEARSHOP_SEARCH_RANKING_VERSION.
+
+    Relevance of a listing: w_semantic times its similarity mapped from sem_floor..sem_ceil onto 0..1, plus
+    w_keyword times its keyword score over the best keyword score (local-term matches add w_local_term each,
+    P5.2). A listing with no keyword hit needs a similarity of sem_min_match or more, and listings below
+    relative_cutoff times the best relevance are dropped. A group of listings of one item scores
+    w_relevance x relevance + w_proximity x proximity + w_in_stock when some offer is in stock, times
+    out_of_stock_factor when none is.
+    """
+
+    version: str
+    sem_floor: float = 0.22
+    sem_ceil: float = 0.62
+    sem_min_match: float = 0.34
+    w_semantic: float = 0.6
+    w_keyword: float = 0.4
+    relative_cutoff: float = 0.42
+    w_local_term: float = 6.0
+    w_relevance: float = 0.75
+    w_proximity: float = 0.15
+    w_in_stock: float = 0.10
+    out_of_stock_factor: float = 0.6
+
+    def tunables(self) -> dict[str, float]:
+        """The numeric fields, without the version."""
+        return {k: v for k, v in self.__dict__.items() if k != "version"}
+
+
+# r1: the hand-set values search used before P5.5, never measured. Add a tuned config as r2, r3 and so on,
+# only after it passes the adoption rule on the test split (plan section 8.6; docs/search/tuning-report.md).
+RANKING_CONFIGS: dict[str, RankingConfig] = {
+    "r1": RankingConfig(version="r1"),
+}
+DEFAULT_RANKING_VERSION = "r1"
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=BACKEND_DIR / ".env", env_prefix="NEARSHOP_", extra="ignore")
@@ -178,6 +218,18 @@ class Settings(BaseSettings):
     enable_scheduler: bool = True
     warm_on_startup: bool = True  # build the semantic index when the API starts (the schema version check always runs)
 
+    # Search ranking (P5.5): the version in RANKING_CONFIGS that run_search ranks with.
+    search_ranking_version: str = DEFAULT_RANKING_VERSION
+    # Suggestion hygiene (P5.5): a query is shown in search suggestions and popular searches only when at least
+    # suggestion_min_users distinct signed-in users (counted by user_id, never by session; 5 or more) searched
+    # it in the last suggestion_window_days days and got results, it is at most suggestion_max_chars characters
+    # long, and it passes the blocklist (phone numbers, email addresses, links and abusive words, plus the
+    # comma-separated suggestion_blocklist words added here; app/services/search.py).
+    suggestion_min_users: int = 5
+    suggestion_window_days: int = 30
+    suggestion_max_chars: int = 60
+    suggestion_blocklist: str = ""
+
     # Observability (app/core/observability.py). Error tracking is on only when sentry_dsn is set, from the
     # environment (Render: NEARSHOP_SENTRY_DSN, a sync: false secret), never from code. release is the git
     # commit events carry; blank means Render's RENDER_GIT_COMMIT. Trace sample rates are 0 to 1.
@@ -215,6 +267,33 @@ class Settings(BaseSettings):
             raise ValueError(f"NEARSHOP_EMBEDDING_MODEL must be one of {', '.join(EMBEDDING_MODELS)}; got {value!r}"
                              " (add a new model to EMBEDDING_MODELS in app/core/config.py, with its prefixes)")
         return value
+
+    @field_validator("search_ranking_version", mode="after")
+    @classmethod
+    def _check_ranking_version(cls, value: str) -> str:
+        if value not in RANKING_CONFIGS:
+            raise ValueError(f"NEARSHOP_SEARCH_RANKING_VERSION must be one of {', '.join(RANKING_CONFIGS)}; "
+                             f"got {value!r}")
+        return value
+
+    @field_validator("suggestion_min_users", mode="after")
+    @classmethod
+    def _check_suggestion_min_users(cls, value: int) -> int:
+        if value < 5:  # plan section 8.6: a few people must not reach everyone's suggestions
+            raise ValueError("NEARSHOP_SUGGESTION_MIN_USERS must be 5 or more")
+        return value
+
+    @field_validator("suggestion_window_days", "suggestion_max_chars", mode="after")
+    @classmethod
+    def _check_suggestion_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_SUGGESTION_WINDOW_DAYS and NEARSHOP_SUGGESTION_MAX_CHARS must be 1 or more")
+        return value
+
+    @property
+    def ranking(self) -> RankingConfig:
+        """The ranking config search uses."""
+        return RANKING_CONFIGS[self.search_ranking_version]
 
     @field_validator("storage_limit_mb", mode="after")
     @classmethod

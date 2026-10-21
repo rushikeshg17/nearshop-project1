@@ -340,26 +340,37 @@ def available_items(db: Database, q: LabelledQuery) -> set[int]:
     return {r["catalog_item_id"] for r in rows}
 
 
-def evaluate(db: Database, queries: Sequence[LabelledQuery]) -> list[QueryOutcome]:
-    """Run every query through run_search (unlogged) and score it."""
+def evaluate(db: Database, queries: Sequence[LabelledQuery], *, ranking: Any = None, cache: dict | None = None,
+             available: dict[str, set[int]] | None = None, prepare: bool = True) -> list[QueryOutcome]:
+    """Run every query through run_search (unlogged) and score it.
+
+    ranking: a RankingConfig to rank with instead of the configured one (P5.5). cache and available let the
+    tuning harness (app/ai/search_tuning.py) run many configs over one prepared set: cache is run_search's
+    fetch-stage memo, available the judged items in radius per query id (filled in when missing), and
+    prepare=False skips rebuilding the semantic index and the warm-up. Latency is not meaningful with a cache.
+    """
     from app.ai.semantic_index import index
     from app.services.search import SearchParams, reset_vocabulary, run_search
 
     def params(q: LabelledQuery) -> SearchParams:
         return SearchParams(q=q.text, lat=q.lat, lng=q.lng, radius_km=q.radius_km, page_size=RECALL_K)
 
-    index.mark_dirty()
-    index.ensure(db)
-    reset_vocabulary()
-    if queries:  # warm-up, untimed: the vocabulary and caches load on the first search
-        run_search(db, params(queries[0]), log=False)
+    if prepare:
+        index.mark_dirty()
+        index.ensure(db)
+        reset_vocabulary()
+        if queries:  # warm-up, untimed: the vocabulary and caches load on the first search
+            run_search(db, params(queries[0]), log=False, ranking=ranking)
+    avail = {} if available is None else available
     out = []
     for q in queries:
         started = time.perf_counter()
-        res = run_search(db, params(q), log=False)
+        res = run_search(db, params(q), log=False, ranking=ranking, cache=cache)
         latency = (time.perf_counter() - started) * 1000
         ranked = [g["catalog_item_id"] for g in res["groups"]]
-        out.append(score_query(q, ranked, res["total"], latency, available_items(db, q)))
+        if q.query_id not in avail:
+            avail[q.query_id] = available_items(db, q)
+        out.append(score_query(q, ranked, res["total"], latency, avail[q.query_id]))
     return out
 
 
@@ -381,13 +392,14 @@ def record_run(db: Database, *, split: str, result: Mapping[str, Any], queries: 
     from app.models import ModelRun
 
     synthetic = sum(q.synthetic for q in queries)
+    ranking = settings.ranking.version
     run = ModelRun(
         name=RUN_NAME,
-        algorithm=f"run_search, {index.provider_name or 'unknown'} embeddings",
+        algorithm=f"run_search, {index.provider_name or 'unknown'} embeddings, ranking {ranking}",
         n_samples=len(queries),
         metrics={"split": split, "commit": commit, "commit_dirty": dirty, "queries_file": queries_file,
                  "synthetic_queries": synthetic, "snapshot": snapshot[:12], "embedding": index.provider_name,
-                 **result},
+                 "ranking": ranking, **result},
         data_note=(f"{len(queries)} labelled {split} queries ({synthetic} synthetic examples) on the seeded "
                    f"evaluation snapshot."),
         uses_demo_data=True,
@@ -427,7 +439,7 @@ def run_card(run: Any) -> dict[str, Any]:
     return {
         "split": m.get("split"), "at": iso(run.created_at), "commit": str(m.get("commit") or "")[:10],
         "queries": run.n_samples, "synthetic_queries": m.get("synthetic_queries", 0),
-        "embedding": m.get("embedding"), "overall": m.get("overall") or {},
+        "embedding": m.get("embedding"), "ranking": m.get("ranking"), "overall": m.get("overall") or {},
         "by_language": m.get("by_language") or {}, "note": run.data_note, "source": "database",
     }
 

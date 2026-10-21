@@ -12,24 +12,30 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from dataclasses import dataclass, replace
+from datetime import timedelta
+from functools import lru_cache
 
 from rapidfuzz import fuzz, process
 
 from app.ai.semantic_index import index
-from app.core.database import Database
+from app.core.config import SEARCH_SIMILARITY_SCALE, RankingConfig, settings
+from app.core.database import Database, utcnow
 from app.models import Product, SearchEvent, Shop
 from app.schemas.serializers import listing, shop_brief
 from app.services.loaders import categories, category_by_slug, with_categories, with_category
 from app.utils.geo import haversine_km, within_km
 from app.utils.text import expand_synonyms, is_word, normalize_query, search_tokens, word_parts
 
-SEM_FLOOR, SEM_CEIL = 0.22, 0.62  # cosine range mapped to 0..1 for all-MiniLM-L6-v2
-SEM_MIN_MATCH = 0.34  # a listing with no keyword hit needs at least this much meaning overlap
-W_SEMANTIC, W_KEYWORD = 0.6, 0.4
-RELATIVE_CUTOFF = 0.42  # drop results far weaker than the best one
-# An exact match on a listing's local_terms (Kannada, Telugu, Hindi or a transliteration; P5.2) adds the text
-# index's brand weight to its keyword score, once per matched term: it counts as much as a brand match.
-W_LOCAL_TERM = 6.0
+# Every ranking constant and group weight lives in a versioned RankingConfig (app/core/config.py, P5.5): the
+# version NEARSHOP_SEARCH_RANKING_VERSION names, r1 by default (the hand-set values used before P5.5). An exact
+# match on a listing's local_terms (Kannada, Telugu, Hindi or a transliteration; P5.2) adds w_local_term, the
+# text index's brand weight, to its keyword score once per matched term: it counts as much as a brand match.
+# W_LOCAL_TERM is the active config's value, read once at import, for code that checks it against the text
+# index's brand weight (database/schema.py); ranking reads the config itself.
+W_LOCAL_TERM = settings.ranking.w_local_term
+# The similarity scale the semantic index returns (config.SEARCH_SIMILARITY_SCALE, the all-MiniLM-L6-v2
+# calibration); r1's sem_floor and sem_ceil equal it, and a tuned config maps from this scale with its own.
+SEM_FLOOR, SEM_CEIL = SEARCH_SIMILARITY_SCALE.sem_floor, SEARCH_SIMILARITY_SCALE.sem_ceil
 # Search results never show these, so they are not fetched.
 LISTING_FIELDS = {"description": 0, "specs": 0}
 
@@ -95,13 +101,14 @@ def _local_term_candidates(norm: str) -> list[str]:
     return list(dict.fromkeys(w for w in out if w))
 
 
-def local_term_scores(db: Database, norm: str) -> dict[int, float]:
+def local_term_scores(db: Database, norm: str, w_local_term: float | None = None) -> dict[int, float]:
     """Listings whose local_terms contain a word, adjacent pair or the whole of the normalised query, scored
-    W_LOCAL_TERM per matched term. Listings created from the catalogue after migration 4 copied the terms
-    are matched through their catalog item's own local_terms."""
+    w_local_term (the ranking config's, by default) per matched term. Listings created from the catalogue after
+    migration 4 copied the terms are matched through their catalog item's own local_terms."""
     candidates = _local_term_candidates(norm)
     if not norm or not candidates:
         return {}
+    weight = settings.ranking.w_local_term if w_local_term is None else w_local_term
     wanted = set(candidates)
     by_item = {c["_id"]: len(wanted.intersection(c["local_terms"]))
                for c in db.catalog_items.find_raw({"local_terms": {"$in": candidates}}, {"local_terms": 1})}
@@ -113,25 +120,24 @@ def local_term_scores(db: Database, norm: str) -> dict[int, float]:
         own = len(wanted.intersection(r.get("local_terms") or []))
         matched = max(own, by_item.get(r.get("catalog_item_id"), 0))
         if matched:
-            out[r["_id"]] = W_LOCAL_TERM * matched
+            out[r["_id"]] = weight * matched
     return out
 
 
-def _keyword_stage(db: Database, norm: str, expanded: list[str]) -> dict[int, float]:
-    """Text-index scores plus the local-term bonus."""
+def _keyword_stage(db: Database, norm: str, expanded: list[str]) -> tuple[dict[int, float], dict[int, int]]:
+    """Text-index scores, and the number of local terms each listing matched (weighted later, by the ranking
+    config)."""
     kw = keyword_scores(db, norm.split() + expanded)
-    for pid, bonus in local_term_scores(db, norm).items():
-        kw[pid] = kw.get(pid, 0.0) + bonus
-    return kw
+    return kw, {pid: round(bonus) for pid, bonus in local_term_scores(db, norm, 1.0).items()}
 
 
-def _norm_sem(sim: float) -> float:
-    return min(max((sim - SEM_FLOOR) / (SEM_CEIL - SEM_FLOOR), 0.0), 1.0)
+def _norm_sem(sim: float, cfg: RankingConfig) -> float:
+    return min(max((sim - cfg.sem_floor) / (cfg.sem_ceil - cfg.sem_floor), 0.0), 1.0)
 
 
-def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: bool = True) -> dict:
-    norm = normalize_query(p.q) if p.q else ""
-    expanded = expand_synonyms(norm) if norm else []
+def _candidates(db: Database, p: SearchParams, norm: str, expanded: list[str]) -> tuple:
+    """Everything run_search fetches, none of it touched by the ranking config: the shops in radius, the
+    listings that pass the filters, keyword scores, local-term match counts and semantic similarities."""
     category = category_by_slug(db, p.category)
     shops = nearby_shops(db, p.lat, p.lng, p.radius_km, p.fulfillment, p.shop_id)
 
@@ -144,11 +150,34 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
     if p.in_stock_only:
         query["quantity"] = {"$gt": 0}
     # Listings, keyword scores and semantic scores are independent: fetch them side by side.
-    products, kw, sem = db.gather(
+    products, (kw, local), sem = db.gather(
         lambda: with_category(db, db.products.find(query, projection=LISTING_FIELDS)) if shops else [],
-        lambda: _keyword_stage(db, norm, expanded) if norm else {},
+        lambda: _keyword_stage(db, norm, expanded) if norm else ({}, {}),
         lambda: index.query(db, norm) if norm else {},
     )
+    return shops, products, kw, local, sem
+
+
+def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: bool = True,
+               ranking: RankingConfig | None = None, cache: dict | None = None) -> dict:
+    """Search. `ranking` overrides the configured ranking config (the evaluation and tuning harnesses).
+    `cache`, a dict kept by the caller across calls, memoises the fetch stage per query and filters, so a
+    tuning run can re-rank the same candidates under many configs; the live API never passes one."""
+    cfg = ranking or settings.ranking
+    norm = normalize_query(p.q) if p.q else ""
+    expanded = expand_synonyms(norm) if norm else []
+    if cache is None:
+        shops, products, kw, local, sem = _candidates(db, p, norm, expanded)
+    else:
+        key = (norm, p.lat, p.lng, p.radius_km, p.category, p.min_price, p.max_price, p.in_stock_only,
+               p.fulfillment, p.shop_id)
+        if key not in cache:
+            cache[key] = _candidates(db, p, norm, expanded)
+        shops, products, kw, local, sem = cache[key]
+    if local:
+        kw = dict(kw)
+        for pid, matched in local.items():
+            kw[pid] = kw.get(pid, 0.0) + cfg.w_local_term * matched
 
     relevance: dict[int, float] = {}
     if norm:
@@ -156,12 +185,12 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         for pr in products:
             k = kw.get(pr.id, 0.0) / kw_max
             s = sem.get(pr.id, 0.0)
-            if k <= 0 and s < SEM_MIN_MATCH:
+            if k <= 0 and s < cfg.sem_min_match:
                 continue
-            relevance[pr.id] = W_SEMANTIC * _norm_sem(s) + W_KEYWORD * k
+            relevance[pr.id] = cfg.w_semantic * _norm_sem(s, cfg) + cfg.w_keyword * k
         if relevance:
             best = max(relevance.values())
-            relevance = {k: v for k, v in relevance.items() if v >= best * RELATIVE_CUTOFF}
+            relevance = {k: v for k, v in relevance.items() if v >= best * cfg.relative_cutoff}
         products = [pr for pr in products if pr.id in relevance]
     else:
         relevance = {pr.id: 1.0 for pr in products}
@@ -187,9 +216,9 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         nearest = min(shops[x.shop_id][1] for x in pool)
         rel = max(relevance[x.id] for x in items)
         proximity = max(0.0, 1 - nearest / max(p.radius_km, 0.5))
-        score = 0.75 * rel + 0.15 * proximity + (0.1 if in_stock else 0.0)
+        score = cfg.w_relevance * rel + cfg.w_proximity * proximity + (cfg.w_in_stock if in_stock else 0.0)
         if not in_stock:
-            score *= 0.6
+            score *= cfg.out_of_stock_factor
         prices = [x.price for x in pool]
         # Best offer: in stock, balancing price and distance.
         lo, hi = min(prices), max(prices)
@@ -255,7 +284,8 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
 
     # Nothing found but the query looks misspelled: show results for the correction instead of an empty page.
     if total == 0 and did_you_mean:
-        corrected = run_search(db, replace(p, q=did_you_mean), user_id=user_id, log=log)
+        corrected = run_search(db, replace(p, q=did_you_mean), user_id=user_id, log=log, ranking=ranking,
+                               cache=cache)
         if corrected["total"]:
             return {**corrected, "query": p.q, "corrected_from": p.q, "did_you_mean": None}
 
@@ -279,7 +309,8 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         "groups": page_rows,
         "shops": sorted(pins.values(), key=lambda s: s["distance_km"]),
         "category_counts": dict(category_counts),
-        "engine": {"semantic": index.provider_name or "loading", "keyword": "mongodb-text-index"},
+        "engine": {"semantic": index.provider_name or "loading", "keyword": "mongodb-text-index",
+                   "ranking": cfg.version},
     }
 
 
@@ -334,13 +365,71 @@ def suggest_correction(db: Database, norm: str) -> str | None:
 
 # ---------------------------------------------------------------- suggestions
 
+# Suggestion hygiene (P5.5): what may never appear in suggestions or popular searches, whoever searched it.
+# The patterns run on normalised queries, which keep digits, dots and slashes but drop @ and colons.
+# A phone number: seven or more digits, allowing spaces, dots, dashes and brackets between them.
+_PHONE = re.compile(r"\d(?:[\s().-]*\d){6,}")
+_EMAIL = re.compile(r"[^\s@]+@[^\s@]+|\b(?:gmail|googlemail|yahoo|ymail|hotmail|outlook|rediffmail|icloud|protonmail)\b",
+                    re.IGNORECASE)
+_LINK = re.compile(r"\bhttps?\b|\bwww\.|[a-z0-9]\.(?:com|in|net|org|co|xyz|me|io|ly|info|biz|link)\b|\bt\.me\b|"
+                   r"\bwa\.me\b", re.IGNORECASE)
+# Abusive words in English, and in Hindi, Kannada and Telugu, in Latin letters and in their own scripts.
+# A Latin word matches as a whole word, with or without a common ending ("fucking", "bastards"), so
+# "rapeseed" or "dickies" are not caught. A word in an Indian script matches anywhere, as those scripts join
+# suffixes to the word. NEARSHOP_SUGGESTION_BLOCKLIST adds words without a deploy.
+_ABUSIVE_LATIN = (
+    "fuck", "fucker", "motherfuck", "motherfucker", "shit", "bitch", "bastard", "asshole", "dick", "cunt", "slut",
+    "whore", "porn", "sex", "sexy", "nude", "rape", "rapist", "nigger", "faggot",
+    "chutiya", "chutiye", "chutia", "madarchod", "maderchod", "behenchod", "bhenchod", "benchod", "bhosdi",
+    "bhosdike", "bhosad", "bhosadi", "gandu", "randi", "harami", "lund", "lavda", "lauda", "kamina", "kamine",
+    "sule", "soole", "bolimaga", "boli maga", "sulemaga", "soolemaga", "tunne", "nin amman", "ninamman",
+    "lanja", "dengu", "dengey", "dengu ra", "puku", "modda", "kojja",
+)
+_ABUSIVE_SCRIPT = (
+    "चूतिया", "चुतिया", "मादरचोद", "बहनचोद", "भेनचोद", "भोसड", "गांडू", "रंडी", "हरामी", "लौड़ा",
+    "ಸೂಳೆ", "ಬೋಳಿಮಗ", "ತುಣ್ಣೆ", "ಸೂಳೆಮಗ",
+    "లంజ", "దెంగ", "పూకు", "మొడ్డ", "కొజ్జ",
+)
+_ENDINGS = r"(?:s|es|er|ers|ing|in|ed|y|a|e|i|o)?"
+
+
+@lru_cache(maxsize=4)
+def _blocklist(configured: str) -> tuple[re.Pattern[str], tuple[str, ...]]:
+    """The abusive-word matchers, with the configured extra words (NEARSHOP_SUGGESTION_BLOCKLIST)."""
+    extra = [w.strip().lower() for w in configured.split(",") if w.strip()]
+    latin = sorted({w for w in (*_ABUSIVE_LATIN, *extra) if w.isascii()}, key=len, reverse=True)
+    script = (*_ABUSIVE_SCRIPT, *(w for w in extra if not w.isascii()))
+    words = "|".join(re.escape(w) for w in latin)
+    return re.compile(rf"(?<![a-z0-9])(?:{words}){_ENDINGS}(?![a-z0-9])", re.IGNORECASE), script
+
+
+def suggestion_allowed(query: str) -> bool:
+    """Whether a query's text may appear in public suggestions: at most suggestion_max_chars characters, and no
+    phone number, email address, link or abusive word."""
+    text = (query or "").strip()
+    if not text or len(text) > settings.suggestion_max_chars:
+        return False
+    if _PHONE.search(text) or _EMAIL.search(text) or _LINK.search(text):
+        return False
+    latin, script = _blocklist(settings.suggestion_blocklist)
+    folded = text.lower()
+    return not latin.search(folded) and not any(w in folded for w in script)
+
+
 def _top_queries(db: Database, match: dict, limit: int) -> list[str]:
-    return [r["_id"] for r in db.search_history.aggregate([
-        {"$match": match},
-        {"$group": {"_id": "$normalized_query", "n": {"$sum": 1}}},
-        {"$sort": {"n": -1, "_id": 1}},
-        {"$limit": limit},
-    ])]
+    """The most searched normalised queries that some result answered, counting distinct signed-in users only:
+    a query qualifies when suggestion_min_users or more users (by user_id, never by session or device)
+    searched it within suggestion_window_days, and its text passes suggestion_allowed."""
+    since = utcnow() - timedelta(days=settings.suggestion_window_days)
+    rows = db.search_history.aggregate([
+        {"$match": {**match, "results_count": {"$gt": 0}, "user_id": {"$ne": None}, "created_at": {"$gte": since}}},
+        {"$group": {"_id": "$normalized_query", "users": {"$addToSet": "$user_id"}, "n": {"$sum": 1}}},
+        {"$project": {"n": 1, "u": {"$size": "$users"}}},
+        {"$match": {"u": {"$gte": settings.suggestion_min_users}}},
+        {"$sort": {"u": -1, "n": -1, "_id": 1}},
+        {"$limit": limit * 5},  # room for the ones the blocklist drops
+    ])
+    return [r["_id"] for r in rows if isinstance(r["_id"], str) and suggestion_allowed(r["_id"])][:limit]
 
 
 def suggestions(db: Database, q: str, limit: int = 8) -> dict:
@@ -352,8 +441,7 @@ def suggestions(db: Database, q: str, limit: int = 8) -> dict:
     cats = categories(db)
     queries, items = db.gather(
         # Anchored, case-sensitive prefix on normalised (lower-case) text: served by the index.
-        lambda: _top_queries(db, {"normalized_query": {"$regex": f"^{re.escape(norm)}"},
-                                  "results_count": {"$gt": 0}}, 4),
+        lambda: _top_queries(db, {"normalized_query": {"$regex": f"^{re.escape(norm)}"}}, 4),
         lambda: db.catalog_items.find({"$or": [{"name": contains}, {"brand": starts}]}, limit=limit),
     )
     return {
@@ -366,7 +454,7 @@ def suggestions(db: Database, q: str, limit: int = 8) -> dict:
 
 
 def popular_searches(db: Database, limit: int = 8) -> list[str]:
-    return _top_queries(db, {"results_count": {"$gt": 0}}, limit)
+    return _top_queries(db, {}, limit)
 
 
 def recent_searches(db: Database, user_id: int, limit: int = 6) -> list[str]:
