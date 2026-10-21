@@ -106,7 +106,11 @@ def demand_listing_eligible(history_days: int, sale_days: int, units: int) -> bo
 def demand_history_gate(progress: list[dict] | None) -> dict:
     """Not shown for want of listing history: progress is the closest listing's, or None for no sales at all."""
     progress = progress or demand_listing_progress(0, 0, 0)
-    short = next((p for p in progress if p["have"] < p["need"]), progress[0])
+    short = next((p for p in progress if p["have"] < p["need"]), None)
+    if short is None:  # the history is there, but no forecast was made for an active listing (yet)
+        return gate(False, "listing_history",
+                    "No forecasts for your listings yet: they appear after the next model run, for active "
+                    "listings with enough sales", progress)
     return gate(False, "listing_history",
                 f"Not enough sales data yet: {_fmt(short['have'])} of {_fmt(short['need'])} {short['label']}",
                 progress)
@@ -175,6 +179,7 @@ def _run_gate(run, not_trained: str) -> dict:
 
 
 def price_flag_review_counts(db: Database) -> tuple[int, int]:
+    """(upheld, dismissed) admin decisions: an admin marking a flag "reviewed" counts as upholding it."""
     counts = _count_by(db.price_anomalies, "status",
                        {"status": {"$in": [AnomalyStatus.REVIEWED.value, AnomalyStatus.DISMISSED.value]}})
     return counts.get(AnomalyStatus.REVIEWED.value, 0), counts.get(AnomalyStatus.DISMISSED.value, 0)
@@ -426,6 +431,8 @@ def owner_insights(db: Database, shop: Shop) -> dict:
                    "metrics": r.metrics, "note": r.data_note}
             for name, r in latest.items()
         },
+        "search_rule": {"window_days": settings.search_insights_window_days,
+                        "min_users": settings.search_insights_min_users},
         "gates": {"demand": demand_gate, "bundles": bundle_gate, "price_flags": flag_gate,
                   "area_demand": search_insights_gate,
                   "missed_demand": search_gate(max((s["zero_users"] for s in searches), default=0), bool(missed))},

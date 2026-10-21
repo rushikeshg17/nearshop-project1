@@ -21,7 +21,10 @@ import { cn } from "@/lib/utils";
 type GateProgress = { label: string; have: number; need: number };
 type Gate = { shown: boolean; code: string | null; reason: string | null; progress: GateProgress[] };
 type GateName = "demand" | "bundles" | "price_flags" | "area_demand" | "missed_demand";
-type GatedInsights = OwnerInsights & { gates?: Partial<Record<GateName, Gate>> };
+type GatedInsights = OwnerInsights & {
+  gates?: Partial<Record<GateName, Gate>>;
+  search_rule?: { window_days: number; min_users: number };
+};
 
 function GateNotice({ gate, className }: { gate: Gate; className?: string }) {
   return (
@@ -131,7 +134,7 @@ export default function InsightsPage() {
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <section className="rounded-2xl border bg-card p-5">
           <h2 className="flex items-center gap-2 font-semibold"><Users className="size-4 text-brand" /> What people near you search for</h2>
-          <p className="mt-1 text-xs text-muted-foreground">Last 30 days of searches near your shop. A search is shown only when 5 or more people made it.</p>
+          <p className="mt-1 text-xs text-muted-foreground">Last {d.search_rule?.window_days ?? 30} days of searches near your shop. A search is shown only when {d.search_rule?.min_users ?? 5} or more people made it.</p>
           {areaGate ? <GateNotice gate={areaGate} className="mt-4" /> : (
           <ul className="mt-4 space-y-2">
             {d.area_demand.map((a) => (

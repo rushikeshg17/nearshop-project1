@@ -108,6 +108,13 @@ def test_demand_model_gate_needs_ten_percent_better_than_last_week():
     assert not none["shown"] and none["code"] == "listing_history"
 
 
+def test_demand_history_gate_when_the_history_is_already_enough():
+    """A shop whose best listing meets every threshold but has no forecast is not told it lacks data."""
+    gate = analytics.demand_history_gate(analytics.demand_listing_progress(56, 56, 56))
+    assert not gate["shown"] and " of " not in gate["reason"]
+    assert gate["reason"].startswith("No forecasts for your listings yet")
+
+
 def test_bundles_gate_boundary():
     assert analytics.bundles_gate(1000)["shown"]
     below = analytics.bundles_gate(999)
@@ -239,8 +246,12 @@ def test_price_flags_need_verified_shops_and_distinct_peer_shops(db, ids, clean,
         return ps
 
     listings([a, b, extra[0].id])  # 3 peer shops: below 4
+    stale = db.price_anomalies.insert(PriceAnomaly(product_id=ids["charger"], shop_id=a, catalog_item_id=1, price=1,
+                                                   reference_price=1, deviation_pct=50, score=0.7, direction="high",
+                                                   peer_count=4, model_run_id=1, review_note=tag))
     run = anomaly.detect(db)
     assert run.metrics["gate"]["shown"] and run.metrics["listings_checked"] == 0
+    assert db.price_anomalies.get(stale.id) is None  # too few listings to compare: older open flags are withdrawn
     listings([extra[1].id])  # a fourth shop
     run = anomaly.detect(db)
     assert run.metrics["listings_checked"] == 4
@@ -331,6 +342,8 @@ def test_search_insights_need_five_distinct_users_nearby_in_30_days(db, ids, cle
     assert not gate["shown"] and gate["progress"] == [{"label": "people", "have": 4, "need": 5}]
     assert gate["reason"] == ("Not enough searches near you yet: 4 of 5 people searched for the same thing in the "
                               "last 30 days")
+
+    assert out["search_rule"] == {"window_days": 30, "min_users": 5}  # the owner page's subtitle uses these
 
     db.search_history.insert(search(107))  # a fifth person
     out = analytics.owner_insights(db, shop)

@@ -74,7 +74,12 @@ def detect(db: Database) -> ModelRun:
         run.metrics = {"listings_checked": len(feats), "flagged": 0, "verified_live_shops": verified_live,
                        "gate": gate}
         run.data_note = "Not enough shops selling the same items to compare prices yet."
-        db.model_runs.insert(run)
+
+        def publish_too_few() -> None:  # as above: no current flags, so older open ones are withdrawn
+            db.price_anomalies.delete_many({"status": AnomalyStatus.OPEN})
+            db.model_runs.insert(run)
+
+        db.transaction(publish_too_few)
         return run
 
     X = np.array(feats)
