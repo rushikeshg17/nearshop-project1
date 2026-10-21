@@ -8,6 +8,7 @@ Stock is held when the shop confirms (so the unit is physically set aside) and r
 to stock if the reservation is cancelled or expires.
 """
 import logging
+import secrets
 from datetime import timedelta
 
 from pymongo.errors import DuplicateKeyError
@@ -124,13 +125,20 @@ def _actor_for(user: User | None, res: Reservation, shop_owner_id: int) -> str:
 
 
 def transition(db: Database, reservation_id: int, action: str, user: User | None,
-               reason: str | None = None) -> Reservation:
+               reason: str | None = None, code: str | None = None) -> Reservation:
     """Move a reservation through its state machine. The reservation, the stock hold, the audit
-    event, the sale and the notifications commit together or not at all."""
-    return db.transaction(lambda: _transition(db, reservation_id, action, user, reason))
+    event, the sale and the notifications commit together or not at all. Completing needs the reservation
+    code the customer shows at the counter (P3.5, plan section 8.2), compared case-insensitively."""
+    return db.transaction(lambda: _transition(db, reservation_id, action, user, reason, code))
 
 
-def _transition(db: Database, reservation_id: int, action: str, user: User | None, reason: str | None) -> Reservation:
+def code_matches(entered: str | None, expected: str) -> bool:
+    """Whether the code the shop typed is the reservation's: case and outer spaces do not matter."""
+    return bool(entered) and secrets.compare_digest(entered.strip().upper().encode(), expected.upper().encode())
+
+
+def _transition(db: Database, reservation_id: int, action: str, user: User | None, reason: str | None,
+                code: str | None = None) -> Reservation:
     # Loaded inside the transaction: if someone else changes it first, this transaction is
     # retried and sees the new status instead of overwriting it.
     res = db.reservations.get(reservation_id)
@@ -145,6 +153,9 @@ def _transition(db: Database, reservation_id: int, action: str, user: User | Non
     to_status, actors = TRANSITIONS[key]
     if actor not in actors and actor != "admin":
         raise Forbidden(f"Only the {' or '.join(sorted(actors))} can {action} this reservation")
+    if action == "complete" and not code_matches(code, res.code):
+        raise Conflict("Enter the reservation code the customer shows you" if not (code or "").strip()
+                       else "That is not this reservation's code", code="wrong_code")
 
     now = utcnow()
     from_status = res.status

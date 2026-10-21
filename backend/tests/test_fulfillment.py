@@ -21,13 +21,17 @@ def test_reservation_happy_path_holds_stock_and_records_sale(customer, owner_a, 
 
     r = owner_a.post(f"/api/owner/reservations/{r['id']}/ready", json={}, headers=HEADERS).json()
     assert r["status"] == "READY_FOR_PICKUP"
-    r = owner_a.post(f"/api/owner/reservations/{r['id']}/complete", json={}, headers=HEADERS).json()
+    # Completing needs the code the customer shows (P3.5; tests/test_reviews.py covers wrong codes).
+    r = owner_a.post(f"/api/owner/reservations/{r['id']}/complete", json={"code": r["code"]}, headers=HEADERS).json()
     assert r["status"] == "COMPLETED"
     assert stock(ids["tape"]) == before - 2  # the held units left with the customer
 
     assert Database().sales_history.count({"basket_id": r["code"], "is_demo": False}) == 1
 
-    # One review per completed reservation.
+    # One review per completed reservation, from an account created at least 3 days before the purchase (P3.5).
+    db = Database()
+    db.users.update_one({"email": "cust@example.com", "created_at": {"$gt": utcnow() - timedelta(days=3)}},
+                        {"$set": {"created_at": utcnow() - timedelta(days=30)}})
     ok = customer.post("/api/reviews", json={"reservation_id": r["id"], "rating": 5}, headers=HEADERS)
     assert ok.status_code == 200
     dup = customer.post("/api/reviews", json={"reservation_id": r["id"], "rating": 4}, headers=HEADERS)
@@ -100,7 +104,9 @@ def test_delivery_order_lifecycle(customer, owner_a, ids):
     assert o["status"] == "PENDING" and o["total"] == 80 + 30
     for action, expected in [("confirm", "SHOP_CONFIRMED"), ("prepare", "PREPARING"), ("dispatch", "OUT_FOR_DELIVERY"),
                              ("deliver", "DELIVERED")]:
-        o = owner_a.post(f"/api/owner/orders/{o['id']}/{action}", json={}, headers=HEADERS).json()
+        # Delivering needs the 4-digit code only the customer sees (P3.5).
+        body = {"code": Database().orders.get(o["id"]).delivery_code} if action == "deliver" else {}
+        o = owner_a.post(f"/api/owner/orders/{o['id']}/{action}", json=body, headers=HEADERS).json()
         assert o["status"] == expected
     assert o["payment_status"] == "paid"
     assert stock(ids["tape"]) == before - 2

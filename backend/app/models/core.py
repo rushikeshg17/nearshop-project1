@@ -46,6 +46,9 @@ class User(Document, Timestamps):
     name: str
     email: str
     phone: str | None = None
+    # Set when the phone is verified by a one-time code (P4.1). Reviews require it once
+    # settings.review_requires_verified_phone is on (P3.5).
+    phone_verified_at: datetime | None = None
     password_hash: str
     role: Role = Role.CUSTOMER
     is_active: bool = True
@@ -174,6 +177,7 @@ def evidence_keys(evidence: dict[str, Any] | None) -> list[str]:
     return [k for k in ((evidence or {}).get("kyc_document_key"), (evidence or {}).get("kyc_storefront_key")) if k]
 
 
+MIN_RATED_CUSTOMERS = 5  # a shop shows a rating only from this many distinct customers (P3.5)
 VERIFICATION_MONTHS = 12  # an approval lasts this long
 RENEWAL_WINDOW_DAYS = 30  # the owner may submit fresh evidence from this many days before it ends
 
@@ -240,10 +244,12 @@ class Shop(Document, Timestamps):
     previous_kyc: dict[str, Any] | None = None
     inventory_updated_at: datetime | None = None
     category_ids: list[int] = Field(default_factory=list)
-    # Computed on write: kept in step with `reviews` in the same transaction, so listing shops
-    # never needs to aggregate reviews.
+    # Recomputed from the shop's counted, visible, unheld reviews in the same transaction as every review change
+    # (app/services/reviews.py, P3.5), so listing shops never needs to aggregate reviews. rating_customers is the
+    # number of distinct customers behind rating_count: no rating is shown below MIN_RATED_CUSTOMERS.
     rating_sum: int = 0
     rating_count: int = 0
+    rating_customers: int = 0
 
     categories: list[Category] = Field(default_factory=list, exclude=True)
     owner: User | None = Field(default=None, exclude=True)
@@ -267,7 +273,11 @@ class Shop(Document, Timestamps):
 
     @property
     def rating_avg(self) -> float | None:
-        return round(self.rating_sum / self.rating_count, 1) if self.rating_count else None
+        """The average of the counted reviews, or None ("New shop") while fewer than MIN_RATED_CUSTOMERS distinct
+        customers have counted reviews (P3.5, plan section 8.2)."""
+        if not self.rating_count or self.rating_customers < MIN_RATED_CUSTOMERS:
+            return None
+        return round(self.rating_sum / self.rating_count, 1)
 
     @property
     def renewal_pending(self) -> bool:

@@ -8,6 +8,7 @@ Stock is held at SHOP_CONFIRMED and released on cancel or return. Payment is cas
 delivery in V1; payment_method/payment_status keep the model open for UPI/cards later.
 """
 import logging
+import secrets
 from datetime import timedelta
 
 from app.core.database import Database, transactional, utcnow
@@ -163,12 +164,19 @@ def _actor_for(user: User | None, order: Order, shop_owner_id: int) -> str:
     raise Forbidden("This order belongs to someone else")
 
 
-def transition(db: Database, order_id: int, action: str, user: User | None, reason: str | None = None) -> Order:
-    """Move an order through its state machine as one all-or-nothing transaction."""
-    return db.transaction(lambda: _transition(db, order_id, action, user, reason))
+def transition(db: Database, order_id: int, action: str, user: User | None, reason: str | None = None,
+               code: str | None = None) -> Order:
+    """Move an order through its state machine as one all-or-nothing transaction. Confirming creates the
+    4-digit delivery code only the customer sees; delivering needs it (P3.5, plan section 8.2)."""
+    return db.transaction(lambda: _transition(db, order_id, action, user, reason, code))
 
 
-def _transition(db: Database, order_id: int, action: str, user: User | None, reason: str | None) -> Order:
+def new_delivery_code() -> str:
+    return f"{secrets.randbelow(10_000):04d}"
+
+
+def _transition(db: Database, order_id: int, action: str, user: User | None, reason: str | None,
+                code: str | None = None) -> Order:
     order = db.orders.get(order_id)  # loaded inside the transaction, see reservations._transition
     if order is None:
         raise NotFound("Order not found")
@@ -180,6 +188,12 @@ def _transition(db: Database, order_id: int, action: str, user: User | None, rea
     to_status, actors = TRANSITIONS[key]
     if actor not in actors and actor != "admin":
         raise Forbidden(f"Only the {' or '.join(sorted(actors))} can {action} this order")
+    if action == "deliver":
+        entered = (code or "").strip()
+        if not entered:
+            raise Conflict("Enter the 4-digit delivery code the customer gives you", code="wrong_code")
+        if not order.delivery_code or not secrets.compare_digest(entered.encode(), order.delivery_code.encode()):
+            raise Conflict("That is not this order's delivery code", code="wrong_code")
 
     now = utcnow()
     from_status = order.status
@@ -192,7 +206,7 @@ def _transition(db: Database, order_id: int, action: str, user: User | None, rea
         # All-or-nothing: if any item is short, change_stock raises and the whole transaction aborts.
         for item in order.items:
             change_stock(db, products[item.product_id], -item.quantity, InventoryReason.ORDER_HOLD, actor_id)
-        changes["stock_held"] = True
+        changes.update(stock_held=True, delivery_code=new_delivery_code())
     elif action == "deliver":
         changes.update(delivered_at=now, payment_status="paid", stock_held=False)  # COD collected at the door
         record_sales(db, [(products[i.product_id], i.quantity, i.unit_price) for i in order.items],
@@ -210,6 +224,8 @@ def _transition(db: Database, order_id: int, action: str, user: User | None, rea
     if actor != "customer" and to_status in CUSTOMER_MESSAGES:
         title, body = CUSTOMER_MESSAGES[to_status]
         body = body.format(shop=shop.name, total=order.total)
+        if to_status == OS.SHOP_CONFIRMED:  # the customer's own notification: the code is theirs to give
+            body += f" Your delivery code is {order.delivery_code}: give it to the shop only when the order arrives."
         if order.close_reason and to_status in {OS.CANCELLED, OS.DELIVERY_FAILED}:
             body += f" Reason: {order.close_reason}"
         notify(db, order.customer_id, f"order_{to_status.lower()}", title, body, f"/account/orders/{order.id}")

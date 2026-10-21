@@ -133,6 +133,9 @@ class Settings(BaseSettings):
     # Fulfillment defaults
     reservation_hold_minutes: int = 30
     request_response_minutes: int = 20  # shop must respond to a reservation request within this window
+    # Reviews (P3.5, plan section 8.2): only from a verified phone (User.phone_verified_at). Off until phone
+    # sign-in (P4.1) verifies phones; NEARSHOP_REVIEW_REQUIRES_VERIFIED_PHONE=true turns it on.
+    review_requires_verified_phone: bool = False
 
     # AI
     embedding_provider: str = "fastembed"  # fastembed | tfidf

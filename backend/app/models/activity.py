@@ -75,6 +75,9 @@ class Order(Document, Timestamps):
     delivered_at: datetime | None = None
     closed_at: datetime | None = None
     close_reason: str | None = None
+    # Four digits created when the shop confirms (P3.5): only the customer sees it, and the shop must enter it
+    # to mark the order delivered. Never in an owner's response.
+    delivery_code: str | None = None
     items: list[OrderItem] = Field(default_factory=list)
 
     customer: User | None = Field(default=None, exclude=True)
@@ -97,7 +100,12 @@ class StatusEvent(Document):
 
 class Review(Document):
     """Collection `reviews`. Exactly one of reservation_id / order_id is set, and each is unique:
-    one review per completed reservation or delivered order."""
+    one review per completed reservation or delivered order.
+
+    Integrity (P3.5, app/services/reviews.py): status is visible until moderation hides or removes it (P3.6).
+    counted is false for a second review of the same shop by the same customer within 30 days. held marks a
+    review held out of the rating by the self-dealing rule, flagged for the admin queue at held_at. The shop's
+    rating counts only visible, counted, unheld reviews."""
 
     customer_id: int
     shop_id: int
@@ -109,6 +117,11 @@ class Review(Document):
     delivery_rating: int | None = None
     comment: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
+    status: str = "visible"  # visible | hidden | removed (P3.6)
+    counted: bool = True
+    held: bool = False
+    held_at: datetime | None = None
+    held_reason: str | None = None  # self_dealing
 
     customer: User | None = Field(default=None, exclude=True)
 

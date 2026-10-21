@@ -25,7 +25,8 @@ How the relational model maps to documents
   search_history.lat / lng       -> `search_history.location` GeoJSON point (2dsphere index)
   text_embeddings (model, hash)  -> `text_embeddings._id` = "<model>:<sha256>"
   autoincrement primary keys     -> integer `_id` issued from the `counters` collection
-  AVG(rating) per shop           -> `shops.rating_sum` / `rating_count`, updated with each review
+  AVG(rating) per shop           -> `shops.rating_sum` / `rating_count` / `rating_customers`, recomputed
+                                    from the counted reviews on every review change (app/services/reviews.py)
 
 Everything else stays a reference by id (products -> shops, reservations -> products, ...):
 those documents are read on their own, change independently and grow without bound, which is
@@ -131,6 +132,7 @@ VALIDATORS: dict[str, dict] = {
         hold_minutes=POSITIVE_INT, is_active=BOOL, is_verified=BOOL, inventory_updated_at=DATE_N,
         category_ids={"bsonType": "array", "items": {"bsonType": INT}},
         rating_sum={"bsonType": INT, "minimum": 0}, rating_count={"bsonType": INT, "minimum": 0},
+        rating_customers={"bsonType": INT, "minimum": 0},  # P3.5, optional: migration 6 recomputes it
         created_at=DATE, updated_at=DATE,
         # KYC and verification (P3.3). Optional, so shops written before it pass; migration 5 backfilled them.
         verification_status=enum(VerificationStatus),
@@ -178,6 +180,7 @@ VALIDATORS: dict[str, dict] = {
                                      "unit_price": NON_NEGATIVE, "quantity": POSITIVE_INT}},
         },
         delivered_at=DATE_N, closed_at=DATE_N, created_at=DATE, updated_at=DATE,
+        delivery_code={"bsonType": STR_N, "pattern": "^[0-9]{4}$"},  # P3.5, optional
     ),
     "status_events": schema(
         ["entity", "entity_id", "shop_id", "to_status", "actor_role", "created_at"],
@@ -189,6 +192,9 @@ VALIDATORS: dict[str, dict] = {
             ["customer_id", "shop_id", "reservation_id", "order_id", "rating", "created_at"],
             customer_id=INT, shop_id=INT, product_id=INT_N, rating=RATING, accuracy_rating=RATING_N,
             delivery_rating=RATING_N, comment=STR_N, created_at=DATE,
+            # Review integrity (P3.5), optional: migration 6 sets counted and held on older reviews.
+            status={"enum": ["visible", "hidden", "removed"]}, counted=BOOL, held=BOOL, held_at=DATE_N,
+            held_reason=STR_N,
         )["$jsonSchema"],
         # A review belongs to exactly one purchase: a pickup reservation or a delivery order.
         "oneOf": [

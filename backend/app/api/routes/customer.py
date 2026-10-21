@@ -13,6 +13,7 @@ from app.schemas.requests import NotificationsReadIn, OrderIn, OrderQuoteIn, Res
 from app.schemas.serializers import listing, notification_out, order_out, reservation_out, shop_brief
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
+from app.services import reviews as review_service
 from app.services.loaders import hydrate_orders, hydrate_reservations, timelines, with_shops
 from app.services.search import recent_searches
 from app.utils.geo import haversine_km
@@ -40,8 +41,11 @@ def _res_json(db: Database, rows: list[Reservation], reviewed: set[int], with_ev
 def _order_json(db: Database, rows: list[Order], reviewed: set[int], with_events: bool = False) -> list[dict]:
     hydrate_orders(db, rows)
     events = timelines(db, "order", [o.id for o in rows]) if with_events else {}
-    return [order_out(o, actions=order_service.allowed_actions(o, "customer"),
-                      events=events.get(o.id) if with_events else None, reviewed=o.id in reviewed)
+    # The delivery code (P3.5) is the customer's alone: added here, to their own orders, and never by order_out,
+    # which the owner's responses use too.
+    return [{**order_out(o, actions=order_service.allowed_actions(o, "customer"),
+                         events=events.get(o.id) if with_events else None, reviewed=o.id in reviewed),
+             "delivery_code": o.delivery_code if o.status in order_service.ACTIVE else None}
             for o in rows]
 
 
@@ -150,26 +154,34 @@ def cancel_order(order_id: int, body: TransitionIn, user: CustomerUser, db: DB):
 
 @router.post("/reviews")
 def create_review(body: ReviewIn, user: CustomerUser, db: DB):
+    """Review a completed pickup or a delivered order, if the review rules allow it (P3.5, plan section 8.2:
+    app/services/reviews.py). The shop's rating is then recomputed from its counted reviews in the same
+    transaction."""
     if body.reservation_id:
         r = _own_reservation(db, user, body.reservation_id)
         if r.status != ReservationStatus.COMPLETED:
             raise Conflict("You can review a pickup once it is completed")
         shop_id, product_id = r.shop_id, r.product_id
+        purchased_at, completed_at = r.created_at, r.completed_at or r.updated_at
         delivery_rating = None
     else:
         o = _own_order(db, user, body.order_id)
         if o.status != OrderStatus.DELIVERED:
             raise Conflict("You can review a delivery once it has arrived")
         shop_id, product_id = o.shop_id, o.items[0].product_id if o.items else None
+        purchased_at, completed_at = o.created_at, o.delivered_at or o.updated_at
         delivery_rating = body.delivery_rating
+    review_service.check_eligibility(db, user, db.shops.get(shop_id), purchased_at=purchased_at,
+                                     completed_at=completed_at)
     review = Review(customer_id=user.id, shop_id=shop_id, product_id=product_id, reservation_id=body.reservation_id,
                     order_id=body.order_id, rating=body.rating, accuracy_rating=body.accuracy_rating,
                     delivery_rating=delivery_rating, comment=(body.comment or "").strip() or None)
 
     def save() -> None:
-        # The review and the shop's running rating total change together.
+        # The review and the shop's recomputed rating change together; two reviews of one shop at once conflict
+        # on the shop document, so the retried one recomputes with both.
         db.reviews.insert(review)
-        db.shops.update_one({"_id": shop_id}, {"$inc": {"rating_sum": body.rating, "rating_count": 1}})
+        review_service.recompute(db, shop_id)
 
     try:
         db.transaction(save)

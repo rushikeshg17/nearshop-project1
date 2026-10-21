@@ -420,6 +420,13 @@ def add_from_catalog(body: CatalogAddIn, shop: OwnerShop, user: OwnerUser, db: D
 
 # ------------------------------------------------------------------ reservations & orders
 
+class ShopTransitionIn(TransitionIn):
+    """An owner's action on a reservation or order. code is required to complete a pickup (the reservation code
+    the customer shows) and to deliver an order (the 4-digit delivery code only the customer sees); P3.5."""
+
+    code: str | None = Field(default=None, max_length=20)
+
+
 def _res(db: Database, rows: list[Reservation], with_events: bool = False) -> list[dict]:
     hydrate_reservations(db, rows, customers=True)
     events = timelines(db, "reservation", [r.id for r in rows]) if with_events else {}
@@ -467,9 +474,9 @@ def shop_reservation(reservation_id: int, shop: OwnerShop, db: DB):
 
 @router.post("/reservations/{reservation_id}/{action}")
 def act_on_reservation(reservation_id: int, action: Literal["confirm", "reject", "ready", "complete", "cancel"],
-                       body: TransitionIn, shop: OwnerShop, user: OwnerUser, db: DB):
+                       body: ShopTransitionIn, shop: OwnerShop, user: OwnerUser, db: DB):
     r = _shop_reservation(db, shop, reservation_id)
-    r = reservation_service.transition(db, r.id, action, user, body.reason)
+    r = reservation_service.transition(db, r.id, action, user, body.reason, code=body.code)
     return _res(db, [r], with_events=True)[0]
 
 
@@ -493,9 +500,9 @@ def shop_order(order_id: int, shop: OwnerShop, db: DB):
 @router.post("/orders/{order_id}/{action}")
 def act_on_order(order_id: int, action: Literal["confirm", "prepare", "dispatch", "deliver", "fail", "return",
                                                  "cancel"],
-                 body: TransitionIn, shop: OwnerShop, user: OwnerUser, db: DB):
+                 body: ShopTransitionIn, shop: OwnerShop, user: OwnerUser, db: DB):
     o = _shop_order(db, shop, order_id)
-    o = order_service.transition(db, o.id, action, user, body.reason)
+    o = order_service.transition(db, o.id, action, user, body.reason, code=body.code)
     return _ord(db, [o], with_events=True)[0]
 
 
