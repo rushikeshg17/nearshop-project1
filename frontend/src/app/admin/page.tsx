@@ -137,7 +137,9 @@ type FreshnessShop = {
   name: string;
   slug: string;
   locality: string | null;
+  city: string | null;
   is_verified: boolean;
+  in_city_metric: boolean;
   listings: number;
   median_age_hours: number | null;
   fresh_share: number | null;
@@ -147,11 +149,14 @@ type FreshnessReport = {
   as_of: string;
   fresh_hours: number;
   stale_days: number;
+  city: string;
+  target_shops: number;
   live_shops: number;
   verified_live_shops: number;
   listings: number;
   city_median_age_hours: number | null;
   city_fresh_share: number | null;
+  meets_check_10_3: boolean;
   shops: FreshnessShop[];
   stale_shops: FreshnessShop[];
 };
@@ -163,12 +168,12 @@ const share = (value: number | null) => (value === null ? "–" : `${Math.round(
 function FreshnessCard() {
   const q = useQuery({ queryKey: ["admin", "freshness"], queryFn: () => api.get<FreshnessReport>("/admin/freshness") });
   const f = q.data;
-  const meets = f && f.city_median_age_hours !== null && f.city_median_age_hours <= f.fresh_hours;
+  const medianMet = f && f.city_median_age_hours !== null && f.city_median_age_hours <= f.fresh_hours;
   return (
     <section className="mt-6 rounded-2xl border bg-card p-5" aria-labelledby="freshness-heading">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 id="freshness-heading" className="flex items-center gap-2 font-semibold"><Clock3 className="size-4 text-muted-foreground" /> Stock freshness</h2>
-        {f && <span className="text-xs text-muted-foreground">{formatNumber(f.live_shops)} live shops ({formatNumber(f.verified_live_shops)} verified) · {formatNumber(f.listings)} listings</span>}
+        {f && <span className="text-xs text-muted-foreground">{formatNumber(f.live_shops)} live shops · {formatNumber(f.verified_live_shops)} verified in {f.city} · {formatNumber(f.listings)} of their listings</span>}
       </div>
       {q.isError ? (
         <p className="mt-3 text-sm text-muted-foreground">Freshness figures could not be loaded. <button type="button" className="underline" onClick={() => q.refetch()}>Retry</button></p>
@@ -177,11 +182,13 @@ function FreshnessCard() {
       ) : (
         <div className="mt-4 grid gap-6 lg:grid-cols-3">
           <div>
-            <p className="text-xs text-muted-foreground">City median listing age</p>
+            <p className="text-xs text-muted-foreground">{f.city} median listing age (verified live shops)</p>
             <p className="mt-1 text-2xl font-semibold tabular">{age(f.city_median_age_hours)}</p>
             <p className="mt-1 text-xs text-muted-foreground">{share(f.city_fresh_share)} of listings confirmed within {f.fresh_hours} hours</p>
-            <p className={cn("mt-3 rounded-xl px-3 py-2 text-sm", meets ? "bg-success-soft text-success-ink" : "bg-warning-soft text-warning-ink")}>
-              {meets ? `Within the ${f.fresh_hours}-hour target (check 10.3)` : `Above the ${f.fresh_hours}-hour target (check 10.3)`}
+            <p className={cn("mt-3 rounded-xl px-3 py-2 text-sm", f.meets_check_10_3 ? "bg-success-soft text-success-ink" : "bg-warning-soft text-warning-ink")}>
+              {f.meets_check_10_3
+                ? `Check 10.3 met: ${formatNumber(f.verified_live_shops)} verified live shops and a median within ${f.fresh_hours} hours`
+                : `Check 10.3 not met: median ${medianMet ? "within" : "above"} the ${f.fresh_hours}-hour target; ${formatNumber(f.verified_live_shops)} of ${formatNumber(f.target_shops)} verified live shops`}
             </p>
             <h3 className="mt-5 mb-2 text-sm font-medium">Shops beyond {f.stale_days} days</h3>
             {f.stale_shops.length === 0 ? <p className="text-sm text-muted-foreground">None.</p> : (

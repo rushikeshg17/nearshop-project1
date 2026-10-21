@@ -74,7 +74,7 @@ def storage(_: AdminUser, db: DB):
 @router.get("/freshness")
 def freshness(_: AdminUser, db: DB):
     """Stock freshness per live shop (median listing age, share confirmed within 48 hours), the shops beyond 7 days
-    and the city-wide median listing age: check 10.3's metric (P7.4)."""
+    and the median listing age across verified live shops in the launch city: check 10.3's metric (P7.4)."""
     return analytics.freshness_report(db)
 
 

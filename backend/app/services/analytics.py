@@ -18,6 +18,7 @@ from app.core.database import Database, utcnow
 from app.models import AnomalyStatus, InventoryReason, OrderStatus, ReservationStatus, Role, Shop
 from app.schemas.serializers import FRESH_HOURS, STALE_DAYS, iso, listing
 from app.services.loaders import categories, with_category
+from app.services.meta import city_config
 from app.services.search import keyword_scores
 from app.utils.geo import within_km
 from app.utils.text import normalize_query
@@ -551,6 +552,9 @@ def admin_overview(db: Database) -> dict:
 
 # ------------------------------------------------------------------ stock freshness (P7.4)
 
+CHECK_10_3_SHOPS = 50  # check 10.3: at least 50 verified live shops in the launch city
+
+
 def median(values: list[float]) -> float | None:
     """The median (the mean of the middle two for an even count); None for no values."""
     if not values:
@@ -563,11 +567,19 @@ def median(values: list[float]) -> float | None:
 def freshness_report(db: Database, now: datetime | None = None) -> dict:
     """Stock freshness across live (active) shops, from each active listing's stock_updated_at. Per shop: the median
     listing age in hours and the share of listings confirmed within FRESH_HOURS. The shops beyond STALE_DAYS are
-    those whose median listing age is more than STALE_DAYS. The city median is the median age of every active
-    listing in a live shop: check 10.3's metric (at least 50 verified live shops, median 48 hours or less)."""
+    those whose median listing age is more than STALE_DAYS. Check 10.3 is "at least CHECK_10_3_SHOPS verified live
+    shops in the launch city, median stock age FRESH_HOURS or less", so the city median, the city fresh share and
+    verified_live_shops count only verified live shops in the launch city (settings.seed_city, matched by name
+    ignoring case); the per-shop rows still cover every live shop."""
     now = now or utcnow()
+    city_name = city_config()["name"]
     shops = {s["_id"]: s for s in db.shops.find_raw(
-        {"is_active": True}, {"name": 1, "slug": 1, "locality": 1, "is_verified": 1, "inventory_updated_at": 1})}
+        {"is_active": True},
+        {"name": 1, "slug": 1, "locality": 1, "city": 1, "is_verified": 1, "inventory_updated_at": 1})}
+
+    def counts(s: dict) -> bool:  # in check 10.3's population
+        return bool(s.get("is_verified")) and str(s.get("city") or "").strip().casefold() == city_name.casefold()
+
     ages: dict[int, list[float]] = {sid: [] for sid in shops}
     for r in db.products.find_raw({"is_active": True, "shop_id": {"$in": list(shops)}},
                                   {"shop_id": 1, "stock_updated_at": 1}):
@@ -579,25 +591,30 @@ def freshness_report(db: Database, now: datetime | None = None) -> dict:
         s, a = shops[sid], ages[sid]
         med = median(a)
         return {"id": sid, "name": s["name"], "slug": s["slug"], "locality": s.get("locality"),
-                "is_verified": bool(s.get("is_verified")), "listings": len(a),
+                "city": s.get("city"), "is_verified": bool(s.get("is_verified")), "in_city_metric": counts(s),
+                "listings": len(a),
                 "median_age_hours": round(med, 1) if med is not None else None,
                 "fresh_share": round(sum(h <= FRESH_HOURS for h in a) / len(a), 3) if a else None,
                 "inventory_updated_at": iso(s.get("inventory_updated_at"))}
 
     rows = sorted((row(sid) for sid in shops),
                   key=lambda r: (r["median_age_hours"] is None, -(r["median_age_hours"] or 0), r["name"]))
-    every = [h for a in ages.values() for h in a]
+    every = [h for sid, a in ages.items() if counts(shops[sid]) for h in a]
     city = median(every)
+    verified = sum(counts(s) for s in shops.values())
     stale_hours = STALE_DAYS * 24
     return {
         "as_of": iso(now),
         "fresh_hours": FRESH_HOURS,
         "stale_days": STALE_DAYS,
+        "city": city_name,
+        "target_shops": CHECK_10_3_SHOPS,
         "live_shops": len(shops),
-        "verified_live_shops": sum(bool(s.get("is_verified")) for s in shops.values()),
+        "verified_live_shops": verified,
         "listings": len(every),
         "city_median_age_hours": round(city, 1) if city is not None else None,
         "city_fresh_share": round(sum(h <= FRESH_HOURS for h in every) / len(every), 3) if every else None,
+        "meets_check_10_3": verified >= CHECK_10_3_SHOPS and city is not None and city <= FRESH_HOURS,
         "shops": rows,
         "stale_shops": [r for r in rows if r["median_age_hours"] is not None and r["median_age_hours"] > stale_hours],
     }

@@ -126,9 +126,9 @@ def fresh_db(ids):
     mongo_client.drop_database(name)
 
 
-def _shop(db, n, active=True, verified=True):
+def _shop(db, n, active=True, verified=True, city="Ballari"):
     return db.shops.insert(Shop(owner_id=100 + n, name=f"Shop {n}", slug=f"shop-{n}", address_line="a", locality="l",
-                                city="Ballari", lat=15.14, lng=76.92, is_active=active, is_verified=verified))
+                                city=city, lat=15.14, lng=76.92, is_active=active, is_verified=verified))
 
 
 def _listings(db, shop, ages_hours, active=True):
@@ -141,25 +141,41 @@ def test_freshness_report_medians(fresh_db):
     a, b, c = _shop(fresh_db, 1), _shop(fresh_db, 2, verified=False), _shop(fresh_db, 3)
     closed = _shop(fresh_db, 4, active=False)
     empty = _shop(fresh_db, 5)
+    elsewhere = _shop(fresh_db, 6, city="Hosapete")
     _listings(fresh_db, a, [1, 10, 30, 100])          # median 20 h, 3 of 4 within 48 h
     _listings(fresh_db, a, [5000], active=False)      # inactive listings do not count
     _listings(fresh_db, b, [200, 300, 400])           # median 300 h: beyond 7 days (168 h)
     _listings(fresh_db, c, [48, 49])                  # median 48.5 h, 1 of 2 within 48 h
     _listings(fresh_db, closed, [9000])               # a closed shop does not count
+    _listings(fresh_db, elsewhere, [500])             # outside the launch city: listed, but not in the city median
 
     r = analytics.freshness_report(fresh_db, now=T0)
     by_id = {s["id"]: s for s in r["shops"]}
-    assert set(by_id) == {a.id, b.id, c.id, empty.id}
+    assert set(by_id) == {a.id, b.id, c.id, empty.id, elsewhere.id}
     assert (by_id[a.id]["median_age_hours"], by_id[a.id]["fresh_share"], by_id[a.id]["listings"]) == (20.0, 0.75, 4)
     assert (by_id[b.id]["median_age_hours"], by_id[b.id]["fresh_share"]) == (300.0, 0.0)
     assert (by_id[c.id]["median_age_hours"], by_id[c.id]["fresh_share"]) == (48.5, 0.5)
     assert (by_id[empty.id]["median_age_hours"], by_id[empty.id]["fresh_share"]) == (None, None)
-    assert [s["id"] for s in r["stale_shops"]] == [b.id]
-    assert [s["id"] for s in r["shops"]] == [b.id, c.id, a.id, empty.id]  # stalest first, no listings last
-    # City median over every active listing in a live shop: 1, 10, 30, 48, 49, 100, 200, 300, 400 -> 49.
-    assert r["city_median_age_hours"] == 49.0
-    assert r["city_fresh_share"] == round(4 / 9, 3)
-    assert (r["live_shops"], r["verified_live_shops"], r["listings"]) == (4, 3, 9)
+    assert [s["id"] for s in r["stale_shops"]] == [elsewhere.id, b.id]
+    assert [s["id"] for s in r["shops"]] == [elsewhere.id, b.id, c.id, a.id, empty.id]  # stalest first, none last
+    assert [s["id"] for s in r["shops"] if s["in_city_metric"]] == [c.id, a.id, empty.id]
+    # Check 10.3's population is verified live shops in the launch city (a, c and empty): the unverified shop b and
+    # the Hosapete shop are left out. Listings 1, 10, 30, 48, 49, 100 -> median (30 + 48) / 2 = 39.
+    assert r["city"] == "Ballari"
+    assert r["city_median_age_hours"] == 39.0
+    assert r["city_fresh_share"] == round(4 / 6, 3)
+    assert (r["live_shops"], r["verified_live_shops"], r["listings"]) == (5, 3, 6)
+    assert r["meets_check_10_3"] is False  # median within 48 hours, but 3 verified shops is short of 50
+
+
+def test_check_10_3_needs_fifty_verified_shops_and_a_fresh_median(fresh_db):
+    shops = [_shop(fresh_db, n, city="ballari" if n % 2 else "Ballari") for n in range(1, 51)]  # city name, any case
+    for s in shops:
+        _listings(fresh_db, s, [12])
+    r = analytics.freshness_report(fresh_db, now=T0)
+    assert (r["verified_live_shops"], r["city_median_age_hours"], r["meets_check_10_3"]) == (50, 12.0, True)
+    stale = analytics.freshness_report(fresh_db, now=T0 + timedelta(hours=40))  # every listing now 52 hours old
+    assert (stale["city_median_age_hours"], stale["meets_check_10_3"]) == (52.0, False)
 
 
 def test_freshness_report_with_no_listings(fresh_db):
@@ -172,6 +188,6 @@ def test_admin_freshness_endpoint_shows_the_city_median(admin, customer):
     res = admin.get("/api/admin/freshness", headers=HEADERS)
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["city_median_age_hours"] is not None and body["live_shops"] >= 2
+    assert body["live_shops"] >= 2 and {"city", "city_median_age_hours", "verified_live_shops", "meets_check_10_3"} <= set(body)
     assert {"median_age_hours", "fresh_share"} <= set(body["shops"][0])
     assert customer.get("/api/admin/freshness", headers=HEADERS).status_code == 403
