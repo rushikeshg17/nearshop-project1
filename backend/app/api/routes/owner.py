@@ -1,10 +1,11 @@
 """Shop owner: shop settings, inventory, catalog, reservation and delivery queues, insights."""
 import re
-from typing import Literal
+from datetime import date
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, File, Query, UploadFile
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Discriminator, Field, Tag
 
 from app.ai.semantic_index import index
 from app.core.config import settings
@@ -403,6 +404,36 @@ class ImportCommitIn(BaseModel):
     rows: list[ImportRow] = Field(min_length=1, max_length=importer.MAX_ROWS)
 
 
+# A sales report (P7.2): the lines the owner kept from the preview, with the report's first and last dates. Every
+# imported row the shop already has from start to end is replaced. is_demo and source are never taken from here.
+class SalesImportRow(BaseModel):
+    model_config = {"extra": "ignore"}
+    row: int | None = None
+    product_id: int
+    date: date
+    quantity: int = Field(ge=1, le=100_000)
+    unit_price: float = Field(ge=0, le=10_000_000)
+    bill: str | None = Field(default=None, max_length=importer.BILL_MAX_LENGTH)
+
+
+class SalesImportCommitIn(BaseModel):
+    kind: Literal["sales"]
+    start: date
+    end: date
+    rows: list[SalesImportRow] = Field(min_length=1, max_length=importer.MAX_ROWS)
+
+
+def _commit_kind(body: Any) -> str:
+    kind = body.get("kind") if isinstance(body, dict) else getattr(body, "kind", None)
+    return "sales" if kind == "sales" else "stock"
+
+
+# The stock and sales imports share the preview and commit routes (and so their rate limits): the preview takes
+# ?kind=sales, and a sales commit body has kind "sales".
+CommitBody = Annotated[Annotated[ImportCommitIn, Tag("stock")] | Annotated[SalesImportCommitIn, Tag("sales")],
+                       Discriminator(_commit_kind)]
+
+
 @router.get("/import/template", response_class=PlainTextResponse)
 def import_template(_: OwnerShop):
     return PlainTextResponse(importer.TEMPLATE_CSV, media_type="text/csv",
@@ -410,13 +441,18 @@ def import_template(_: OwnerShop):
 
 
 @router.post("/import/preview")
-def import_preview(shop: OwnerShop, db: DB, file: UploadFile = File(...)):
+def import_preview(shop: OwnerShop, db: DB, file: UploadFile = File(...),
+                   kind: Literal["stock", "sales"] = Query("stock")):
     data = file.file.read(settings.import_max_mb * 1024 * 1024 + 1)
+    if kind == "sales":
+        return importer.sales_preview(db, shop, data, file.filename or "upload.csv")
     return importer.preview(db, shop, data, file.filename or "upload.csv")
 
 
 @router.post("/import/commit")
-def import_commit(body: ImportCommitIn, shop: OwnerShop, user: OwnerUser, db: DB):
+def import_commit(body: CommitBody, shop: OwnerShop, user: OwnerUser, db: DB):
+    if isinstance(body, SalesImportCommitIn):
+        return importer.sales_commit(db, shop, body.start, body.end, [r.model_dump() for r in body.rows])
     result = importer.commit(db, shop, [r.model_dump() for r in body.rows], user.id)
     _listings_changed()
     return result

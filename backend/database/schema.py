@@ -374,6 +374,10 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("customer_id", A), ("sold_at", D)], name="customer_sold",
                    partialFilterExpression={"customer_id": IS_INT}),
         IndexModel([("catalog_item_id", A)], name="catalog_item"),
+        # P7.2: one imported row per shop, product, date and bill (basket_id carries the date and bill number), so
+        # a sales report can never be imported twice. Only imported rows: reservations and orders are left alone.
+        IndexModel([("shop_id", A), ("product_id", A), ("sold_at", A), ("basket_id", A)], name="uq_import_sale",
+                   unique=True, partialFilterExpression={"source": SaleSource.IMPORT.value}),
     ],
     "model_runs": [IndexModel([("name", A), ("created_at", D)], name="name_created")],
     "recommendations": [IndexModel([("antecedent_key", A)], name="antecedent_key")],

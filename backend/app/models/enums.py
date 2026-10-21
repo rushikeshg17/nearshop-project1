@@ -62,3 +62,4 @@ class SaleSource(StrEnum):
     RESERVATION = "reservation"
     ORDER = "order"
     DEMO = "demo"
+    IMPORT = "import"  # a sales report uploaded from the shop's billing app (P7.2; services/importer.py)
