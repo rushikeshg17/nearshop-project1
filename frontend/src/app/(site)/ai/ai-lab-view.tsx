@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, BrainCircuit, Database, Filter, Loader2, MapPin, RefreshCw, Search, Sparkles, SplitSquareHorizontal } from "lucide-react";
+import { ArrowRight, BrainCircuit, Database, Filter, Loader2, Lock, MapPin, RefreshCw, Search, Sparkles, SplitSquareHorizontal, Unlock } from "lucide-react";
 import { motion, MotionConfig } from "motion/react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -98,6 +98,23 @@ function EvalTable({ run }: { run: EvalRun }) {
   );
 }
 
+// Whether owners see a model's output (P7.3, plan section 8.9): null for a model owners never see.
+type ModelGate = { shown: boolean; code: string | null; reason: string | null; progress: { label: string; have: number; need: number }[] } | null;
+type GatedModel = AiModel & { gate?: ModelGate };
+
+function GateLine({ gate }: { gate: ModelGate }) {
+  if (!gate) return null;
+  return (
+    <div className="mt-3 rounded-xl border border-dashed p-2.5 text-xs">
+      <p className="flex items-center gap-1.5 font-medium">
+        {gate.shown ? <Unlock className="size-3.5 text-success-ink" /> : <Lock className="size-3.5 text-warning-ink" />}
+        {gate.shown ? "Shown to shop owners" : "Gated: hidden from shop owners"}
+      </p>
+      {!gate.shown && gate.reason && <p className="mt-1 text-muted-foreground">{gate.reason}</p>}
+    </div>
+  );
+}
+
 function metricLines(m: AiModel): [string, string][] {
   const x = m.metrics as Record<string, number | null | Record<string, number>>;
   switch (m.name) {
@@ -139,7 +156,7 @@ export function AiLabView() {
 
   const models = useQuery({
     queryKey: ["ai", "models"],
-    queryFn: () => api.get<{ training: boolean; queued?: boolean; models: AiModel[] }>("/ai/models"),
+    queryFn: () => api.get<{ training: boolean; queued?: boolean; models: GatedModel[] }>("/ai/models"),
     // Every 3 s while a retrain runs; once a minute while one waits for the retrain job (up to 30 minutes).
     refetchInterval: (q) => (q.state.data?.training ? 3000 : q.state.data?.queued ? 60000 : false),
   });
@@ -279,9 +296,13 @@ export function AiLabView() {
                 <article key={m.name} className="flex flex-col rounded-2xl border bg-card p-5">
                   <div className="flex items-start justify-between gap-3">
                     <h3 className="font-semibold">{m.title}</h3>
-                    {m.uses_demo_data && <Badge variant="outline" className="shrink-0 text-[10px]">Demo data</Badge>}
+                    <span className="flex shrink-0 gap-1">
+                      {m.gate && !m.gate.shown && <Badge variant="outline" className="text-[10px]">Gated</Badge>}
+                      {m.uses_demo_data && <Badge variant="outline" className="text-[10px]">Demo data</Badge>}
+                    </span>
                   </div>
                   <p className="mt-1 text-sm text-muted-foreground">{m.purpose}</p>
+                  <GateLine gate={m.gate ?? null} />
                   <p className="mt-3 font-mono text-xs text-brand-ink">{m.algorithm ?? "not trained"}</p>
                   <dl className="mt-4 grid grid-cols-2 gap-2">
                     {metricLines(m).map(([k, v]) => (

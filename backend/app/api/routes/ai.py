@@ -12,6 +12,7 @@ from app.ai.semantic_index import index
 from app.core.deps import DB, AdminUser
 from app.models import ModelRun
 from app.schemas.serializers import iso
+from app.services.analytics import price_flag_review_counts, price_flags_precision_gate
 from app.services.loaders import with_category
 from app.services.meta import city_config
 from app.services.search import SearchParams, keyword_scores, run_search
@@ -61,10 +62,27 @@ def _card_status(run: ModelRun | None, state: dict) -> str:
     return "trained" if run is not None else "not_trained"
 
 
+# The models whose output owners see, each behind a real-data gate (P7.3, plan section 8.9).
+GATED_MODELS = ("demand", "recommendations", "anomalies")
+
+
+def _card_gate(name: str, run: ModelRun | None, review_counts: tuple[int, int]) -> dict | None:
+    """Whether owners see this model's output: the gate its last run stored, and for price flags the live
+    admin-review precision as well. None for a model owners never see."""
+    if name not in GATED_MODELS:
+        return None
+    stored = (run.metrics or {}).get("gate") if run is not None else None
+    if not stored:
+        return {"shown": False, "code": "not_trained", "reason": "Not trained yet", "progress": []}
+    if name == "anomalies" and stored["shown"]:
+        return price_flags_precision_gate(*review_counts)
+    return stored
+
+
 @router.get("/models")
 def models(db: DB):
-    runs, state = db.gather(lambda: db.model_runs.find(sort=[("created_at", -1)], limit=200),
-                            lambda: jobs.retrain_state(db))
+    runs, state, review_counts = db.gather(lambda: db.model_runs.find(sort=[("created_at", -1)], limit=200),
+                                           lambda: jobs.retrain_state(db), lambda: price_flag_review_counts(db))
     latest: dict[str, ModelRun] = {}
     history: dict[str, list] = {}
     for r in runs:
@@ -89,7 +107,9 @@ def models(db: DB):
              "note": latest[name].data_note if name in latest else "Not trained yet",
              "uses_demo_data": latest[name].uses_demo_data if name in latest else False,
              "duration_ms": latest[name].duration_ms if name in latest else 0,
-             "runs": history.get(name, [])[:5]}
+             "runs": history.get(name, [])[:5],
+             # Whether owners see the output (P7.3): null for a model they never see.
+             "gate": _card_gate(name, latest.get(name), review_counts)}
             for name, info in MODEL_INFO.items()
         ],
     }

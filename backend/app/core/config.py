@@ -260,6 +260,71 @@ class Settings(BaseSettings):
     # The admin storage card and the daily snapshot's 70% and 85% warnings are measured against it.
     storage_limit_mb: int = 512
 
+    # Model gating (P7.3, plan section 8.9): owners see a model's output only when the data meets these
+    # thresholds, and otherwise the reason and the progress towards them (app/services/analytics.py, model
+    # gates). models_real_data_only: training and the thresholds leave out is_demo sales; defaults to true in
+    # production and false elsewhere (the demo site and development run on seeded sales, which then count).
+    models_real_data_only: bool | None = None
+    # Demand forecast: a listing is eligible with demand_min_history_days or more days since its first sale,
+    # sales on demand_min_sale_days or more distinct days and demand_min_units or more units. Forecasts are
+    # shown only when, on the last demand_backtest_days days, the eligible listings' MAE is at least
+    # demand_min_improvement_pct percent below the naive same-as-last-week forecast's.
+    demand_min_history_days: int = 56
+    demand_min_sale_days: int = 20
+    demand_min_units: int = 30
+    demand_backtest_days: int = 14
+    demand_min_improvement_pct: float = 10.0
+    # Bundles: bundles_min_baskets or more multi-item baskets city-wide in the last bundles_window_days days.
+    bundles_min_baskets: int = 1000
+    bundles_window_days: int = 90
+    # Price flags: an item is compared across price_flags_min_peers or more shops, and only once the city has
+    # price_flags_min_verified_shops or more verified live shops. Owners see flags only once admins have
+    # reviewed price_flags_min_reviewed or more and price_flags_min_precision_pct percent of those were upheld
+    # (reviewed, not dismissed); until then they stay in the admin queue.
+    price_flags_min_peers: int = 4
+    price_flags_min_verified_shops: int = 25
+    price_flags_min_reviewed: int = 50
+    price_flags_min_precision_pct: float = 70.0
+    # Owner search insights: a query is shown only when search_insights_min_users or more distinct signed-in
+    # users (5 or more) searched it within the shop's radius in the last search_insights_window_days days. The
+    # radius is the shop's delivery radius when it delivers, else search_insights_radius_km.
+    search_insights_min_users: int = 5
+    search_insights_window_days: int = 30
+    search_insights_radius_km: float = 3.0
+
+    @field_validator("demand_min_history_days", "demand_min_sale_days", "demand_min_units", "demand_backtest_days",
+                     "bundles_min_baskets", "bundles_window_days", "price_flags_min_peers",
+                     "price_flags_min_verified_shops", "price_flags_min_reviewed", "search_insights_window_days",
+                     mode="after")
+    @classmethod
+    def _check_gate_count(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_DEMAND_MIN_*, NEARSHOP_BUNDLES_*, NEARSHOP_PRICE_FLAGS_MIN_* and "
+                             "NEARSHOP_SEARCH_INSIGHTS_WINDOW_DAYS must be 1 or more")
+        return value
+
+    @field_validator("demand_min_improvement_pct", "price_flags_min_precision_pct", mode="after")
+    @classmethod
+    def _check_gate_pct(cls, value: float) -> float:
+        if not 0 <= value <= 100:
+            raise ValueError("NEARSHOP_DEMAND_MIN_IMPROVEMENT_PCT and NEARSHOP_PRICE_FLAGS_MIN_PRECISION_PCT must be "
+                             "between 0 and 100")
+        return value
+
+    @field_validator("search_insights_min_users", mode="after")
+    @classmethod
+    def _check_search_insights_min_users(cls, value: int) -> int:
+        if value < 5:  # plan section 8.9: a few people's searches must never reach a shop owner
+            raise ValueError("NEARSHOP_SEARCH_INSIGHTS_MIN_USERS must be 5 or more")
+        return value
+
+    @field_validator("search_insights_radius_km", mode="after")
+    @classmethod
+    def _check_search_insights_radius(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("NEARSHOP_SEARCH_INSIGHTS_RADIUS_KM must be more than 0")
+        return value
+
     @field_validator("embedding_model", mode="after")
     @classmethod
     def _check_embedding_model(cls, value: str) -> str:
@@ -399,6 +464,8 @@ class Settings(BaseSettings):
     def _default_signups_open(self) -> "Settings":
         if self.signups_open is None:
             self.signups_open = self.environment != "production"
+        if self.models_real_data_only is None:
+            self.models_real_data_only = self.environment == "production"
         return self
 
     @field_validator("rate_limit_mode", mode="before")
