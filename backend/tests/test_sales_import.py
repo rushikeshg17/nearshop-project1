@@ -97,8 +97,33 @@ def test_tally_style_export_is_detected_below_its_title_lines(owner_a, ids):
     assert [(r["name"], r["date"], r["quantity"], r["bill"], r["unit_price"]) for r in body["rows"]] == [
         (CHARGER, day(6).isoformat(), 1, "101", 1249.0), (TAPE, day(6).isoformat(), 3, "101", 40.0),
         (TAPE, day(2).isoformat(), 2, "102", 40.0)]  # the Grand Total line is not a sale
+    assert [r["row"] for r in body["rows"]] == [6, 7, 8]  # line numbers in the file, below the title lines
     assert {r["product_id"] for r in body["rows"]} == {ids["charger"], ids["tape"]}
     assert body["start"] == day(6).isoformat() and body["end"] == day(2).isoformat()
+
+
+def test_tally_item_wise_lines_take_the_date_and_voucher_of_the_bill_above(owner_a, ids):
+    # Tally's item-wise register writes the date and voucher number on a bill's first line only, and ends with a
+    # Grand Total line that carries the quantity total.
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    first, second = (datetime.combine(day(n), datetime.min.time()) for n in (4, 3))
+    ws.append(["Shop A Hardware"])
+    ws.append(["Date", "Particulars", "Voucher No.", "Billed Qty", "GST Rate", "Rate", "Taxable Value", "Amount"])
+    ws.append([first, CHARGER, "S-1", 1, 18, 1249, 1058.47, 1249])
+    ws.append([None, TAPE, None, 2, 18, 40, 67.8, 80])
+    ws.append([second, TAPE, "S-2", 1, 18, 40, 33.9, 40])
+    ws.append([None, CHARGER, None, 1, 18, 1249, 1058.47, 1249])
+    ws.append([None, "Grand Total", None, 5, None, None, 2218.64, 2618])
+    buf = io.BytesIO()
+    wb.save(buf)
+    body = preview(owner_a, "item-register.xlsx", buf.getvalue()).json()
+    assert body["columns"]["rate"] == "Rate" and body["columns"]["amount"] == "Amount"  # never the GST columns
+    assert [(r["row"], r["date"], r["bill"], r["quantity"], r["unit_price"], r["status"]) for r in body["rows"]] == [
+        (3, day(4).isoformat(), "S-1", 1, 1249, "matched"), (4, day(4).isoformat(), "S-1", 2, 40, "matched"),
+        (5, day(3).isoformat(), "S-2", 1, 40, "matched"), (6, day(3).isoformat(), "S-2", 1, 1249, "matched")]
 
 
 def test_vyapar_style_export_is_detected(owner_a, ids):
@@ -130,6 +155,15 @@ def test_detection_and_date_reading_units():
     detect = importer._detect_columns
     assert detect(["Voucher Date", "Particulars", "Sold Qty", "Vch No.", "Amount"], importer.SALES_COLUMN_ALIASES) == {
         "date": "Voucher Date", "item": "Particulars", "quantity": "Sold Qty", "bill": "Vch No.", "amount": "Amount"}
+    # A tax column is never the price or the amount, even when it comes first or no exact name is present.
+    assert detect(["Date", "Invoice No", "Item Name", "Quantity", "GST Rate", "Price/Unit", "Taxable Value", "Amount"],
+                  importer.SALES_COLUMN_ALIASES) == {"date": "Date", "item": "Item Name", "quantity": "Quantity",
+                                                     "bill": "Invoice No", "rate": "Price/Unit", "amount": "Amount"}
+    assert detect(["Bill Date", "Item", "Qty", "Tax Rate", "Disc %", "Taxable Value", "Net Value"],
+                  importer.SALES_COLUMN_ALIASES) == {"date": "Bill Date", "item": "Item", "quantity": "Qty",
+                                                     "amount": "Net Value"}
+    assert detect(["Item name", "GST Rate", "Opening Qty", "Closing Qty"]) == {"name": "Item name",
+                                                                               "quantity": "Closing Qty"}
     parse = importer._parse_date
     assert parse("2026-04-01 00:00:00") == parse("01/04/2026") == parse("1-Apr-2026") == parse("01-04-26") \
         == parse("1 April 2026") == parse("46113") == date(2026, 4, 1)

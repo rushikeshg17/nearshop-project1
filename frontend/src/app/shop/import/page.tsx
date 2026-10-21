@@ -107,8 +107,9 @@ export default function ImportPage() {
         <TabsTrigger value="stock">Stock list</TabsTrigger>
         <TabsTrigger value="sales">Sales report</TabsTrigger>
       </TabsList>
-      <TabsContent value="stock"><StockImport /></TabsContent>
-      <TabsContent value="sales"><SalesImport /></TabsContent>
+      {/* Both panels stay mounted, so switching tabs keeps a preview the owner is part-way through. */}
+      <TabsContent value="stock" forceMount className="data-[state=inactive]:hidden"><StockImport /></TabsContent>
+      <TabsContent value="sales" forceMount className="data-[state=inactive]:hidden"><SalesImport /></TabsContent>
     </Tabs>
   );
 }
@@ -178,7 +179,7 @@ function SalesImport() {
           <Button className="mt-5" onClick={() => fileRef.current?.click()} disabled={upload.isPending}>
             {upload.isPending ? <Loader2 className="animate-spin" /> : <Upload />} Choose file
           </Button>
-          <input ref={fileRef} type="file" accept=".xlsx,.csv" className="hidden" onChange={(e) => pick(e.target.files)} />
+          <input ref={fileRef} type="file" accept=".xlsx,.csv" className="hidden" onChange={(e) => { pick(e.target.files); e.target.value = ""; }} />
         </div>
         <div className="mt-6 grid gap-4 md:grid-cols-3">
           <div className="rounded-2xl border bg-card p-5">
@@ -351,7 +352,7 @@ function StockImport() {
           <Button className="mt-5" onClick={() => fileRef.current?.click()} disabled={upload.isPending}>
             {upload.isPending ? <Loader2 className="animate-spin" /> : <Upload />} Choose file
           </Button>
-          <input ref={fileRef} type="file" accept=".xlsx,.csv" className="hidden" onChange={(e) => pick(e.target.files)} />
+          <input ref={fileRef} type="file" accept=".xlsx,.csv" className="hidden" onChange={(e) => { pick(e.target.files); e.target.value = ""; }} />
         </div>
         <div className="mt-6 grid gap-4 md:grid-cols-3">
           <div className="rounded-2xl border bg-card p-5">

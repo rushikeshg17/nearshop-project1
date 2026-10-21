@@ -89,18 +89,36 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9. ]+", " ", str(s).lower()).strip()
 
 
+# A header naming a tax or discount (GST Rate, Tax Amount, Taxable Value, Disc %) is never a price, amount,
+# quantity or item column, however its other words read: billing reports, Indian ones especially, carry them.
+_TAX_WORDS = ("gst", "cgst", "sgst", "igst", "utgst", "tax", "vat", "cess", "disc")
+
+
+def _is_tax_column(normed: str) -> bool:
+    return any(word.startswith(_TAX_WORDS) for word in normed.split())
+
+
 def _detect_columns(columns: list[str], aliases_by_field: dict[str, list[str]] = COLUMN_ALIASES) -> dict[str, str]:
+    """Map each field to a column. Exact header names are matched first, for every field, and only then
+    headers that merely contain an alias: so an exact "Price/Unit" or "Amount" is never lost to a "GST Rate"
+    or "Taxable Value" that happens to contain "rate" or "value". Tax and discount columns never match by
+    containment. Within each pass, a field's aliases are tried in order of preference."""
     found: dict[str, str] = {}
     normed = {c: _norm(c) for c in columns}
-    for field, aliases in aliases_by_field.items():
+
+    def claim(field: str, aliases: list[str], exact: bool) -> None:
         for alias in aliases:  # aliases are ordered by preference
-            hit = next((c for c, n in normed.items() if n == alias and c not in found.values()), None)
-            if hit is None:
-                hit = next((c for c, n in normed.items() if alias in n and c not in found.values()), None)
+            hit = next((c for c, n in normed.items() if c not in found.values() and (
+                n == alias if exact else alias in n and not _is_tax_column(n))), None)
             if hit is not None:
                 found[field] = hit
-                break
-    return found
+                return
+
+    for exact in (True, False):
+        for field, aliases in aliases_by_field.items():
+            if field not in found:
+                claim(field, aliases, exact)
+    return {field: found[field] for field in aliases_by_field if field in found}
 
 
 def _number(v) -> float | None:
@@ -148,14 +166,16 @@ def _csv_rows(data: bytes) -> Iterator[list]:
     yield from csv.reader(io.StringIO(text, newline=""))
 
 
-def _bounded_table(rows: Iterator[list]) -> tuple[list[str], list[list]]:
+def _bounded_table(rows: Iterator[list]) -> tuple[list[str], list[list], list[int]]:
     """The header and data rows, read one row at a time and stopped at the first row past a limit: more
     than settings.import_max_rows non-blank data rows, or a row with a value beyond column
-    settings.import_max_columns. Blank rows are skipped, and the first non-blank row is the header."""
+    settings.import_max_columns. Blank rows are skipped, and the first non-blank row is the header. The third
+    value is each data row's line number in the file (1 is the first line), for the messages that name a row."""
     max_rows, max_cols = settings.import_max_rows, settings.import_max_columns
     header: list | None = None
     body: list[list] = []
-    for raw in rows:
+    lines: list[int] = []
+    for line, raw in enumerate(rows, start=1):
         width = len(raw)
         while width and (raw[width - 1] is None or str(raw[width - 1]).strip() == ""):
             width -= 1
@@ -171,10 +191,11 @@ def _bounded_table(rows: Iterator[list]) -> tuple[list[str], list[list]]:
             raise AppError(f"That file has more than {max_rows} rows; the limit is {max_rows} per upload.",
                            code="too_many_rows")
         body.append(raw[:width])
+        lines.append(line)
     if header is None:
         raise AppError("Couldn't read that file. Check it opens in Excel and has a header row.", code="bad_file")
     width = max([len(header), *(len(r) for r in body)])
-    return _column_names(header, width), [r + [None] * (width - len(r)) for r in body]
+    return _column_names(header, width), [r + [None] * (width - len(r)) for r in body], lines
 
 
 def _column_names(header: list, width: int) -> list[str]:
@@ -208,7 +229,7 @@ def read_table(data: bytes, filename: str) -> pd.DataFrame:
     else:
         raise AppError("Upload a .xlsx or .csv file. Old .xls files: open and 'Save as' .xlsx first.", code="bad_file")
     try:
-        columns, body = _bounded_table(rows)
+        columns, body, lines = _bounded_table(rows)
     except AppError:
         raise
     except Exception:
@@ -217,7 +238,9 @@ def read_table(data: bytes, filename: str) -> pd.DataFrame:
         close = getattr(rows, "close", None)
         if close:
             close()  # stops the generator early, closing the workbook
-    return pd.DataFrame(body, columns=columns, dtype=object)
+    df = pd.DataFrame(body, columns=columns, dtype=object)
+    df.attrs["lines"] = lines
+    return df
 
 
 def preview(db: Database, shop: Shop, data: bytes, filename: str) -> dict:
@@ -482,23 +505,32 @@ def _check_period(start: date, end: date) -> None:
                        f"{SALES_MAX_DAYS} days at a time: export the report month by month.", code="range_too_long")
 
 
-def _sales_columns(df: pd.DataFrame) -> tuple[dict[str, str], pd.DataFrame]:
-    """The detected columns and the data rows. A report whose first lines are a title (the shop's name, the
-    period) has its header further down: the first HEADER_SCAN_ROWS rows are searched for it."""
+def _sales_columns(df: pd.DataFrame) -> tuple[dict[str, str], pd.DataFrame, list[int]]:
+    """The detected columns, the data rows and each data row's line number in the file. A report whose first
+    lines are a title (the shop's name, the period) has its header further down: the first HEADER_SCAN_ROWS rows
+    are searched for it."""
     import pandas as pd
 
+    lines: list[int] = df.attrs.get("lines") or list(range(2, len(df) + 2))
     cols = _detect_columns([str(c) for c in df.columns], SALES_COLUMN_ALIASES)
     if all(f in cols for f in SALES_REQUIRED):
-        return cols, df
+        return cols, df, lines
     for i, raw in enumerate(df.head(HEADER_SCAN_ROWS).itertuples(index=False, name=None)):
         names = _column_names(list(raw), len(raw))
         found = _detect_columns(names, SALES_COLUMN_ALIASES)
         if all(f in found for f in SALES_REQUIRED):
-            return found, pd.DataFrame(df.iloc[i + 1:].values.tolist(), columns=names, dtype=object)
+            return found, pd.DataFrame(df.iloc[i + 1:].values.tolist(), columns=names, dtype=object), lines[i + 1:]
     missing = [f for f in SALES_REQUIRED if f not in cols]
     raise AppError(f"Couldn't find the {' and '.join(missing)} column{'s' if len(missing) > 1 else ''} in that "
                    "report. A sales report needs a date (Date, Voucher Date or Bill Date), an item (Particulars or "
                    "Item Name) and a quantity (Qty, Quantity or Sold Qty).", code="no_sales_columns")
+
+
+_TOTAL_LINE = re.compile(r"grand total.*|(sub ?|net |bill |voucher |day )?totals?")
+
+
+def _blank(v) -> bool:
+    return v is None or (isinstance(v, float) and v != v) or str(v).strip().lower() in ("", "nan")
 
 
 def _imported_between(shop: Shop, start: date, end: date) -> dict:
@@ -511,24 +543,36 @@ def sales_preview(db: Database, shop: Shop, data: bytes, filename: str) -> dict:
 
     Each row has a status: matched (confidently one of the shop's listings), check (a likely listing the owner
     should confirm), unmatched (no listing: the item must be listed first) or invalid (no usable date or
-    quantity, a return, or a future date). Matched and check rows are included by default."""
+    quantity, a return, or a future date). Matched and check rows are included by default.
+
+    Tally's item-wise registers write the date and voucher number only on a bill's first line: a line whose date
+    cell is blank takes the date of the line above, and its bill number too when that cell is also blank, so the
+    bill's other lines stay in its basket. Total lines ("Grand Total", "Sub Total") are skipped."""
     df = read_table(data, filename)
-    cols, df = _sales_columns(df)
+    cols, df, line_numbers = _sales_columns(df)
     matcher = _Matcher(db, shop)
     today = _today()
     rows: list[dict] = []
-    for i, rec in enumerate(df.to_dict("records"), start=2):
+    last_date: date | None = None
+    last_bill: str | None = None
+    for i, rec in zip(line_numbers, df.to_dict("records"), strict=True):
         name = str(rec.get(cols["item"]) or "").strip()
-        if not name or name.lower() == "nan":
+        if not name or name.lower() == "nan" or _TOTAL_LINE.fullmatch(_norm(name)):
             continue
         raw_date = rec.get(cols["date"])
-        d = _parse_date(raw_date)
         qty = _number(rec.get(cols["quantity"]))
         rate = _number(rec.get(cols["rate"])) if "rate" in cols else None
         amount = _number(rec.get(cols["amount"])) if "amount" in cols else None
         bill = _clean_bill(rec.get(cols["bill"])) if "bill" in cols else None
+        carried = _blank(raw_date) and last_date is not None
+        if carried:
+            d = last_date  # a later line of the bill above
+            bill = bill if bill is not None else last_bill
+        else:
+            d = _parse_date(raw_date)
+            last_date, last_bill = d, bill
         if d is None and qty is None:
-            continue  # a subtotal or footer line ("Grand Total")
+            continue  # a subtotal or footer line
         row = {"row": i, "date": d.isoformat() if d else None, "name": name[:200], "bill": bill,
                "quantity": None, "unit_price": None, "status": "invalid", "include": False,
                "product_id": None, "match_name": None, "score": 0, "issues": []}
