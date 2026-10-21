@@ -18,6 +18,7 @@ from rapidfuzz import fuzz, process
 from app.ai.semantic_index import index
 from app.core.database import Database
 from app.models import Product, SearchEvent, Shop
+from app.models.core import live_shop_filter
 from app.schemas.serializers import listing, shop_brief
 from app.services.loaders import categories, category_by_slug, with_categories, with_category
 from app.services.privacy import consent_granted
@@ -52,7 +53,8 @@ class SearchParams:
 
 def nearby_shops(db: Database, lat: float, lng: float, radius_km: float, fulfillment: str | None = None,
                  shop_id: int | None = None) -> dict[int, tuple[Shop, float]]:
-    query: dict = {"is_active": True, "location": within_km(lat, lng, radius_km)}
+    # Only shops customers may see (P3.3): active, and verified with the approval in force.
+    query: dict = {**live_shop_filter(), "location": within_km(lat, lng, radius_km)}
     if shop_id:
         query["_id"] = shop_id
     out = {}

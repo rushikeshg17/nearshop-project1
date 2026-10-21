@@ -33,6 +33,8 @@ from app.utils.text import short_code
 log = logging.getLogger(__name__)
 
 ACTIVE = {RS.REQUESTED, RS.CONFIRMED, RS.READY_FOR_PICKUP}
+# Customers cannot see or reserve from a shop whose verification is not in force (P3.3).
+SHOP_NOT_VERIFIED = "This shop is not available on NearShop right now"
 MAX_ACTIVE_PER_CUSTOMER = 5
 
 # (from_status, action) -> (to_status, who may do it)
@@ -70,6 +72,8 @@ def _create_reservation(db: Database, customer: User, product_id: int, quantity:
     shop = db.shops.get(product.shop_id)
     if not shop.is_active or not shop.offers_pickup:
         raise Conflict("This shop is not accepting pickup reservations right now")
+    if not shop.is_live:  # not verified, or its approval has ended (P3.3, plan section 8.1)
+        raise Conflict(SHOP_NOT_VERIFIED, code="shop_not_verified")
     if quantity < 1 or quantity > 20:
         raise Conflict("You can reserve between 1 and 20 units")
     if product.quantity < quantity:

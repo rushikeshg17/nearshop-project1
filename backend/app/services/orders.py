@@ -28,6 +28,7 @@ from app.models import (
 from app.services.fulfillment_common import record_event, record_sales
 from app.services.inventory import change_stock
 from app.services.notifications import notify
+from app.services.reservations import SHOP_NOT_VERIFIED
 from app.utils.geo import haversine_km
 from app.utils.text import short_code
 
@@ -63,6 +64,12 @@ def allowed_actions(order: Order, actor: str) -> list[str]:
 
 
 def quote_delivery(shop: Shop, lat: float, lng: float, subtotal: float) -> dict:
+    """Delivery eligibility and fee. Refused (409) for a shop customers cannot see: paused, or not verified
+    (P3.3), so POST /orders/quote blocks it like create_order does."""
+    if not shop.is_active:
+        raise Conflict("This shop is not taking orders right now")
+    if not shop.is_live:
+        raise Conflict(SHOP_NOT_VERIFIED, code="shop_not_verified")
     distance = haversine_km(shop.lat, shop.lng, lat, lng)
     eligible = shop.offers_delivery and distance <= shop.delivery_radius_km
     fee = shop.delivery_fee
@@ -112,6 +119,8 @@ def create_order(
     shop = db.shops.get(products[0][0].shop_id)
     if not shop.is_active:
         raise Conflict("This shop is not taking orders right now")
+    if not shop.is_live:  # not verified, or its approval has ended (P3.3, plan section 8.1)
+        raise Conflict(SHOP_NOT_VERIFIED, code="shop_not_verified")
 
     subtotal = round(sum(p.price * q for p, q in products), 2)
     quote = quote_delivery(shop, lat, lng, subtotal)

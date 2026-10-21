@@ -1,7 +1,9 @@
 """Users, categories, catalog, shops and products."""
 from __future__ import annotations
 
+import re
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 from pydantic import Field, model_validator
@@ -108,6 +110,86 @@ class CatalogItem(Document):
     category: Category | None = Field(default=None, exclude=True)
 
 
+class VerificationStatus(StrEnum):
+    """A shop's KYC review (P3.3, plan section 8.1). Customers see a shop only while it is verified and its
+    approval is in force (Shop.is_live)."""
+
+    DRAFT = "draft"  # nothing submitted yet: a new shop starts here
+    SUBMITTED = "submitted"  # waiting for an admin (also after a verified shop changes its address or phone)
+    VERIFIED = "verified"
+    REJECTED = "rejected"
+    SUSPENDED = "suspended"
+
+
+class KycType(StrEnum):
+    GSTIN = "gstin"
+    UDYAM = "udyam"
+    TRADE_LICENCE = "trade_licence"
+
+
+GSTIN_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+GSTIN_PATTERN = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
+UDYAM_PATTERN = re.compile(r"^UDYAM-[A-Z]{2}-[0-9]{2}-[0-9]{7}$")
+TRADE_LICENCE_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9 /.-]{2,38}[A-Z0-9]$")
+# Twelve digits in a row once spaces, dots and hyphens are removed: what an Aadhaar number looks like.
+AADHAAR_LIKE = re.compile(r"(?<![0-9])[0-9]{12}(?![0-9])")
+
+
+def gstin_check_char(first14: str) -> str:
+    """The GSTIN check character for its first 14 characters (the published mod-36 scheme)."""
+    total = 0
+    for i, ch in enumerate(first14):
+        product = GSTIN_CHARS.index(ch) * (2 if i % 2 else 1)
+        total += product // 36 + product % 36
+    return GSTIN_CHARS[(36 - total % 36) % 36]
+
+
+def looks_like_aadhaar(value: str) -> bool:
+    return bool(AADHAAR_LIKE.search(re.sub(r"[\s.-]", "", value)))
+
+
+def validate_kyc_number(kyc_type: KycType | str, number: str) -> str:
+    """The KYC number, normalised (upper case, outer spaces removed), or ValueError with a message an owner can
+    act on. Anything that looks like an Aadhaar number is refused whatever the type: NearShop never stores one."""
+    kyc_type = KycType(kyc_type)
+    value = " ".join((number or "").split()).upper()
+    if looks_like_aadhaar(value):
+        raise ValueError("That looks like an Aadhaar number. NearShop never collects Aadhaar: enter your GSTIN, "
+                         "Udyam number or trade licence number")
+    if kyc_type == KycType.GSTIN:
+        if len(value) != 15 or not GSTIN_PATTERN.match(value):
+            raise ValueError("A GSTIN has 15 characters, like 27AAPFU0939F1ZV")
+        if gstin_check_char(value[:14]) != value[14]:
+            raise ValueError("That GSTIN's last character does not match: check it for a typing mistake")
+    elif kyc_type == KycType.UDYAM:
+        if not UDYAM_PATTERN.match(value):
+            raise ValueError("A Udyam number looks like UDYAM-KR-03-0012345")
+    elif not (4 <= len(value) <= 40 and TRADE_LICENCE_PATTERN.match(value)):
+        raise ValueError("A trade licence number has 4 to 40 letters, digits, spaces, slashes, dots or hyphens")
+    return value
+
+
+def evidence_keys(evidence: dict[str, Any] | None) -> list[str]:
+    """The private photo keys in a stashed set of KYC evidence (Shop.previous_kyc)."""
+    return [k for k in ((evidence or {}).get("kyc_document_key"), (evidence or {}).get("kyc_storefront_key")) if k]
+
+
+VERIFICATION_MONTHS = 12  # an approval lasts this long
+RENEWAL_WINDOW_DAYS = 30  # the owner may submit fresh evidence from this many days before it ends
+
+
+def months_after(when: datetime, months: int = VERIFICATION_MONTHS) -> datetime:
+    """The same day and time `months` later (the last day of the month when that day does not exist)."""
+    total = when.month - 1 + months
+    year, month = when.year + total // 12, total % 12 + 1
+    for day in range(when.day, 27, -1):
+        try:
+            return when.replace(year=year, month=month, day=day)
+        except ValueError:
+            continue
+    return when.replace(year=year, month=month, day=min(when.day, 28))
+
+
 class Shop(Document, Timestamps):
     """Collection `shops`. `location` is GeoJSON (2dsphere index) and `category_ids` embeds the
     shop-to-category relation, so "shops near me selling X" is a single indexed query."""
@@ -135,8 +217,27 @@ class Shop(Document, Timestamps):
     hold_minutes: int = 30
 
     is_active: bool = True
+    # Kept in step with verification_status (true only while it is verified) for older readers.
     is_verified: bool = False
     image_path: str | None = None
+    # KYC and verification (P3.3, plan section 8.1). The document and storefront photos are private storage
+    # keys (app/services/media.py, save_private_image), never public URLs; admins see them through 5-minute
+    # signed links. Never an Aadhaar number or image. A renewal is pending while the shop is verified and
+    # submitted_at is later than decided_at.
+    verification_status: VerificationStatus = VerificationStatus.DRAFT
+    kyc_type: KycType | None = None
+    kyc_number: str | None = None
+    kyc_document_key: str | None = None
+    kyc_storefront_key: str | None = None
+    phone_verified_at: datetime | None = None
+    submitted_at: datetime | None = None
+    decided_at: datetime | None = None
+    decided_by: int | None = None
+    rejection_reason: str | None = None
+    verified_until: datetime | None = None
+    # While a renewal waits, the evidence behind the approval still in force (kyc_type, kyc_number,
+    # kyc_document_key, kyc_storefront_key): restored if the renewal is rejected, deleted once it is approved.
+    previous_kyc: dict[str, Any] | None = None
     inventory_updated_at: datetime | None = None
     category_ids: list[int] = Field(default_factory=list)
     # Computed on write: kept in step with `reviews` in the same transaction, so listing shops
@@ -167,6 +268,31 @@ class Shop(Document, Timestamps):
     @property
     def rating_avg(self) -> float | None:
         return round(self.rating_sum / self.rating_count, 1) if self.rating_count else None
+
+    @property
+    def renewal_pending(self) -> bool:
+        """Fresh evidence from a verified shop waits for an admin (renewals are accepted only before
+        verified_until, so this also keeps a shop visible past it until the renewal is decided)."""
+        return (self.verification_status == VerificationStatus.VERIFIED and self.submitted_at is not None
+                and (self.decided_at is None or self.submitted_at > self.decided_at))
+
+    def is_verified_at(self, now: datetime) -> bool:
+        return self.verification_status == VerificationStatus.VERIFIED and (
+            (self.verified_until is not None and self.verified_until > now) or self.renewal_pending)
+
+    @property
+    def is_live(self) -> bool:
+        """Whether customers may see and buy from this shop: active, and verified with the approval in force
+        (or a renewal submitted in time still waiting). The same rule as live_shop_filter, on a loaded shop."""
+        return self.is_active and self.is_verified_at(utcnow())
+
+
+def live_shop_filter(now: datetime | None = None) -> dict[str, Any]:
+    """The MongoDB filter for shops customers may see (Shop.is_live as a query). Expiry needs no job: a shop
+    drops out once verified_until has passed, unless it submitted a renewal before then."""
+    now = now or utcnow()
+    return {"is_active": True, "verification_status": VerificationStatus.VERIFIED.value,
+            "$or": [{"verified_until": {"$gt": now}}, {"$expr": {"$gt": ["$submitted_at", "$decided_at"]}}]}
 
 
 class Product(Document, Timestamps):

@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     media_s3_secret_access_key: SecretStr = SecretStr("")
     media_s3_region: str = "auto"  # R2 uses auto
     media_public_base_url: str = ""  # https://media.example.com, no trailing slash needed
+    # Private KYC documents (P3.3, app/services/media.py): shop document and storefront photos, never public.
+    # local backend: files under kyc_media_dir, which nothing serves (outside media_dir); admins open them only
+    # through 5-minute signed API links. s3 backend: kyc_s3_bucket, a separate bucket with no public access,
+    # reached with the media endpoint and key pair; admins get 5-minute presigned links. Until it is set (and
+    # different from media_s3_bucket), KYC submission answers 503 kyc_storage_unavailable.
+    kyc_media_dir: Path = BACKEND_DIR / "private_media"
+    kyc_s3_bucket: str = ""
 
     # Upload and import limits (P2.7, plan section 8.13). Every request body over max_request_body_mb is
     # refused with 413 before it is parsed, on every route (app/main.py). Photos: at most max_upload_mb,

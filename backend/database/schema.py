@@ -41,6 +41,7 @@ from pymongo import ASCENDING, DESCENDING, GEOSPHERE, TEXT, IndexModel, MongoCli
 from pymongo.database import Database as MongoDatabase
 from pymongo.errors import OperationFailure
 
+from app.models.core import KycType, VerificationStatus
 from app.models.enums import (
     AnomalyStatus,
     InventoryReason,
@@ -91,6 +92,10 @@ RATING_N = {"oneOf": [{"bsonType": "null"}, RATING]}
 POSITIVE_INT = {"bsonType": INT, "minimum": 1}
 NON_NEGATIVE = {"bsonType": NUM, "minimum": 0}
 
+# The shop verification actions admins take (P3.3, app/api/routes/admin.py), each one row in admin_audit.
+SHOP_AUDIT_ACTIONS = ("shop_phone_verified", "shop_verification_approve", "shop_verification_reject",
+                      "shop_verification_reject_renewal", "shop_verification_suspend")
+
 VALIDATORS: dict[str, dict] = {
     "users": schema(
         ["name", "email", "password_hash", "role", "is_active", "created_at", "updated_at"],
@@ -127,6 +132,13 @@ VALIDATORS: dict[str, dict] = {
         category_ids={"bsonType": "array", "items": {"bsonType": INT}},
         rating_sum={"bsonType": INT, "minimum": 0}, rating_count={"bsonType": INT, "minimum": 0},
         created_at=DATE, updated_at=DATE,
+        # KYC and verification (P3.3). Optional, so shops written before it pass; migration 5 backfilled them.
+        verification_status=enum(VerificationStatus),
+        kyc_type={"enum": [*enum(KycType)["enum"], None]},
+        kyc_number={"bsonType": STR_N, "maxLength": 40}, kyc_document_key=STR_N, kyc_storefront_key=STR_N,
+        phone_verified_at=DATE_N, submitted_at=DATE_N, decided_at=DATE_N, decided_by=INT_N,
+        rejection_reason={"bsonType": STR_N, "maxLength": 500}, verified_until=DATE_N,
+        previous_kyc=["object", "null"],
     ),
     "products": schema(
         ["shop_id", "category_id", "name", "keywords", "price", "quantity", "low_stock_threshold", "is_active",
@@ -259,14 +271,17 @@ VALIDATORS: dict[str, dict] = {
         "_id": {"bsonType": STR}, "rule": {"bsonType": STR}, "count": {"bsonType": INT, "minimum": 0},
         "expires_at": {"bsonType": DATE},
     }}},
-    # Admin audit trail (P2.4): one row per sensitive admin action, such as revealing a user's email
-    # (action reveal_email). Who (admin_id), when (created_at), which user (target_user_id) and why (reason).
-    # The TTL index on created_at removes a row after a year.
-    "admin_audit": schema(
-        ["admin_id", "action", "target_user_id", "reason", "created_at"],
-        admin_id=INT, action={"enum": ["reveal_email"]}, target_user_id=INT,
-        reason={"bsonType": STR, "minLength": 10, "maxLength": 500}, created_at=DATE,
-    ),
+    # Admin audit trail (P2.4): one row per sensitive admin action. Who (admin_id), when (created_at), what
+    # (action), on whom (target_user_id for reveal_email; target_shop_id for the shop verification actions,
+    # P3.3) and why (reason). The TTL index on created_at removes a row after a year.
+    "admin_audit": {"$jsonSchema": {
+        **schema(["admin_id", "action", "reason", "created_at"],
+                 admin_id=INT, action={"enum": ["reveal_email", *SHOP_AUDIT_ACTIONS]}, target_user_id=INT,
+                 target_shop_id=INT, reason={"bsonType": STR, "minLength": 10, "maxLength": 500},
+                 created_at=DATE)["$jsonSchema"],
+        "oneOf": [{"properties": {"action": {"enum": ["reveal_email"]}}, "required": ["target_user_id"]},
+                  {"properties": {"action": {"enum": list(SHOP_AUDIT_ACTIONS)}}, "required": ["target_shop_id"]}],
+    }},
     # Consent records (P3.1, plan section 8.5): append-only, one row per purpose and one for the 18-or-older
     # declaration (purpose age_18_plus) at each registration, against the notice version then current. A later
     # change of mind is a new row; the newest row for a (user, purpose) is the one in force. Never updated.
@@ -313,6 +328,7 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("owner_id", A)], name="owner"),
         IndexModel([("location", GEOSPHERE)], name="location_2dsphere"),
         IndexModel([("category_ids", A)], name="categories"),
+        IndexModel([("verification_status", A), ("submitted_at", A)], name="verification_queue"),  # P3.3
     ],
     "products": [
         IndexModel([("shop_id", A), ("is_active", A), ("quantity", A)], name="shop_active_stock"),
