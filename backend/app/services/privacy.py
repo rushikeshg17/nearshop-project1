@@ -149,6 +149,8 @@ def _clean(doc: dict, drop: Iterable[str] = ()) -> dict:
 # wrote the reply. The export shows the review's and the reply's status instead.
 REVIEW_INTERNAL = ("decided_by", "decision_note", "report_count", "triaged_at", "kept_held")
 REPLY_INTERNAL = ("decided_by", "decision_note", "report_count", "triaged_at", "author_id")
+# Which admin resolved a grievance (P3.8) is the team's record; the export shows the status and resolution.
+GRIEVANCE_INTERNAL = ("resolved_by",)
 
 
 def _review_out(doc: dict) -> dict:
@@ -188,7 +190,8 @@ def export_data(db: Database, user: User) -> dict:
         "review_reports": [_clean(d, ("reporter_id",)) for d in db.mongo["review_reports"].find(
             {"reporter_id": user.id}, sort=newest_first)],
         "notifications": find("notifications", {"user_id": user.id}),
-        "grievances": find("grievances", {"user_id": user.id}),  # filed while signed in (P3.8)
+        "grievances": [_clean(d, GRIEVANCE_INTERNAL) for d in db.mongo["grievances"].find(  # filed signed in
+            {"user_id": user.id}, sort=newest_first)],
         "search_history": [_clean(d, ("user_id",)) for d in db.mongo["search_history"].find(
             {"user_id": user.id}, sort=newest_first)],
     }

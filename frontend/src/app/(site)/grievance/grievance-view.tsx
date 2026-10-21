@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Copy, Loader2, Mail, MapPin, MessageSquareWarning, Phone, Search, TriangleAlert, UserRound } from "lucide-react";
 import { useId, useState } from "react";
 import { toast } from "sonner";
@@ -142,11 +142,14 @@ function FileForm() {
   const [orderCode, setOrderCode] = useState("");
   const [description, setDescription] = useState("");
   const contactValue = contact ?? me?.phone ?? me?.email ?? "";
+  const queryClient = useQueryClient();
   const submit = useMutation({
     mutationFn: () =>
       api.post<Grievance & { message: string }>("/grievances", {
         category, contact: contactValue.trim(), order_code: orderCode.trim() || null, description: description.trim(),
       }),
+    // A signed-in visitor sees the new ticket under "Your grievances" without reloading.
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["grievances", "mine"] }),
   });
 
   if (submit.data) {

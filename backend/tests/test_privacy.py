@@ -324,6 +324,30 @@ def test_export_holds_every_section_including_the_nominee(db, made, ids):
     assert "password_hash" not in res.text and "token_version" not in res.text and "sessions" not in data["profile"]
 
 
+def test_grievances_are_exported_without_the_resolver_and_unlinked_on_deletion(db, made):
+    user, officer = make_user(db, made), make_user(db, made, Role.ADMIN)
+    c = signed_in(user)
+    grievances = db.mongo["grievances"]
+    resolved = {**grievance_doc(-11, category="order", contact="9876500011", description="about my order",
+                                user_id=user.id),
+                "status": "resolved", "resolved_at": utcnow(), "resolved_by": officer.id, "resolution": "Refunded"}
+    grievances.insert_many([resolved, grievance_doc(-12, category="other", contact="9876500011",
+                                                    description="still looking into it", user_id=user.id)])
+    try:
+        data = c.get("/api/me/export").json()
+        exported = {g["id"]: g for g in data["grievances"]}
+        assert set(exported) == {-11, -12}
+        assert exported[-11]["resolution"] == "Refunded" and exported[-11]["status"] == "resolved"
+        assert all("resolved_by" not in g for g in exported.values())
+
+        assert c.post("/api/auth/delete", json={"password": PASSWORD}, headers=HEADERS).json() == {"status": "deleted"}
+        kept = list(grievances.find({"_id": {"$in": [-11, -12]}}))
+        assert len(kept) == 2 and all(g["user_id"] is None for g in kept)
+        assert all(g["contact"] == "9876500011" for g in kept)  # still answerable through the contact given
+    finally:
+        grievances.delete_many({"_id": {"$in": [-11, -12]}})
+
+
 def test_export_of_500_records_takes_under_60_seconds(db, made, ids):
     user = make_user(db, made)
     c = signed_in(user)
