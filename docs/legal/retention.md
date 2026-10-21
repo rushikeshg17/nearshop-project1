@@ -30,7 +30,7 @@ GET /api/me/export returns one JSON file. It holds the profile (with signed-in d
 
 ## Correction
 
-Users correct their name and home location on the account page (/account, "Your details"), which calls PATCH /api/auth/me. A phone change needs a code sent to the new number (P4.1) and ends every session. Support corrects anything else on request, after checking that the request comes from the account holder.
+Users correct their name and home location on the account page (/account, "Your details"), which calls PATCH /api/auth/me. A phone change takes effect at once and ends every other session (this device continues on a new one). No code is sent to the new number yet; that check comes with phone verification (P4.1). Support corrects anything else on request, after checking that the request comes from the account holder.
 
 ## Consent withdrawal
 

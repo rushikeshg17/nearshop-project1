@@ -152,7 +152,8 @@ LOGIN_IP = Rule("login_ip", 20, 15 * MINUTE, (IP,), failures_only=True)
 LOGIN_ACCOUNT = Rule("login_account", 10, HOUR, (body("email"),), failures_only=True, cooldown=30 * MINUTE)
 # Password change (P2.4; no row in plan section 8.3, so the per-account login numbers are followed). Every attempt
 # counts, not only failures: a wrong current password answers 400, which FAILURE_STATUSES does not count, and a
-# held session cookie must not allow guessing the current password at the default rate.
+# held session cookie must not allow guessing the current password at the default rate. Account deletion (P3.2)
+# checks the password too, so it uses the same rules: one guessing budget per account across both routes.
 PASSWORD_CHANGE_HOUR = Rule("password_change_hour", 5, HOUR, (USER,))
 PASSWORD_CHANGE_DAY = Rule("password_change_day", 10, DAY, (USER,))
 REGISTER_HOUR = Rule("register_hour", 3, HOUR, (IP,))
@@ -179,6 +180,7 @@ DEFAULT = Rule("default", 600, MINUTE, (IP,))
 LIMITS: tuple[Row, ...] = (
     Row(("POST",), (LOGIN_ACCOUNT_IP, LOGIN_IP, LOGIN_ACCOUNT), route="/api/auth/login"),
     Row(("POST",), (PASSWORD_CHANGE_HOUR, PASSWORD_CHANGE_DAY), route="/api/auth/password"),
+    Row(("POST",), (PASSWORD_CHANGE_HOUR, PASSWORD_CHANGE_DAY), route="/api/auth/delete"),  # P3.2
     Row(("POST",), (REGISTER_HOUR, REGISTER_DAY), route="/api/auth/register"),
     Row(("POST",), (REGISTER_HOUR, REGISTER_DAY), route="/api/auth/register-shop"),
     Row(("POST",), (RESERVATION_HOUR, RESERVATION_DAY), route="/api/reservations"),
