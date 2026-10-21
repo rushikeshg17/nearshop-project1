@@ -1,15 +1,22 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Camera, Loader2, Save } from "lucide-react";
+import { BadgeCheck, Camera, Loader2, Save, ShieldCheck } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { ErrorState, ListSkeleton } from "@/components/common/states";
 import { PageTitle } from "@/components/dashboard/dashboard-shell";
 import { ShopAvatar } from "@/components/shop/shop-card";
+import { formatDay } from "@/app/shop/owner-shell";
 import {
+  KYC_TYPES,
+  KycFields,
+  type KycFormState,
+  kycFormReady,
+  normalizeKycNumber,
   parseHours,
+  reviewFieldsChanged,
   ShopBasicsFields,
   type ShopFormState,
   ShopLocationFields,
@@ -17,12 +24,21 @@ import {
   shopPayload,
 } from "@/components/shop/shop-form-fields";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useMeta } from "@/hooks/use-session";
-import { api } from "@/lib/api";
-import type { ShopDetail } from "@/lib/types";
+import { api, errorMessage } from "@/lib/api";
+import type { OwnerShopSettings, ShopDetail, ShopVerification } from "@/lib/types";
 
 function toForm(s: ShopDetail): ShopFormState {
   return {
@@ -48,27 +64,42 @@ function toForm(s: ShopDetail): ShopFormState {
 }
 
 export default function ShopSettingsPage() {
-  const shop = useQuery({ queryKey: ["owner", "shop"], queryFn: () => api.get<ShopDetail>("/owner/shop") });
+  const shop = useQuery({ queryKey: ["owner", "shop"], queryFn: () => api.get<OwnerShopSettings>("/owner/shop") });
   if (shop.isError) return <ErrorState error={shop.error} onRetry={() => shop.refetch()} />;
   if (!shop.data) return <ListSkeleton rows={4} />;
-  return <SettingsForm key={shop.data.id} initial={shop.data} />;
+  return (
+    <>
+      <SettingsForm key={shop.data.id} initial={shop.data} />
+      <VerifySection v={shop.data.verification} />
+    </>
+  );
 }
 
-function SettingsForm({ initial }: { initial: ShopDetail }) {
+function SettingsForm({ initial }: { initial: OwnerShopSettings }) {
   const qc = useQueryClient();
   const { data: meta } = useMeta();
   const [form, setForm] = useState<ShopFormState>(() => toForm(initial));
   const [active, setActive] = useState(initial.is_active);
+  const [confirming, setConfirming] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const save = useMutation({
-    mutationFn: () => api.patch<ShopDetail>("/owner/shop", { ...shopPayload(form), offers_pickup: form.offers_pickup, is_active: active }),
+    mutationFn: () => api.patch<OwnerShopSettings>("/owner/shop", { ...shopPayload(form), offers_pickup: form.offers_pickup, is_active: active }),
     onSuccess: (s) => {
+      setConfirming(false);
       qc.setQueryData(["owner", "shop"], s);
+      qc.setQueryData(["owner", "verification"], s.verification);
       qc.invalidateQueries({ queryKey: ["me"] });
-      toast.success("Shop settings saved");
+      if (s.review_started) toast.warning("Saved. Your shop is hidden until an admin approves the new details.");
+      else toast.success("Shop settings saved");
+    },
+    onError: (e) => {
+      setConfirming(false);
+      toast.error(errorMessage(e));
     },
   });
+  // A verified shop that changes its address or phone goes back to review and is hidden meanwhile (P3.3).
+  const needsReview = initial.verification.changes_need_review && reviewFieldsChanged(initial, form);
   const upload = useMutation({
     mutationFn: (f: File) => api.upload<{ image_url: string }>("/owner/shop/image", f),
     onSuccess: () => {
@@ -83,9 +114,9 @@ function SettingsForm({ initial }: { initial: ShopDetail }) {
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        save.mutate();
+        if (needsReview) setConfirming(true);
+        else save.mutate();
       }}
-      className="pb-24"
     >
       <PageTitle title="Shop settings" description="What customers see on your shop page and in search." />
       <div className="grid gap-6 lg:grid-cols-2">
@@ -134,6 +165,114 @@ function SettingsForm({ initial }: { initial: ShopDetail }) {
           <Button type="submit" disabled={save.isPending}>{save.isPending ? <Loader2 className="animate-spin" /> : <Save />} Save changes</Button>
         </div>
       </div>
+      <Dialog open={confirming} onOpenChange={(o) => !save.isPending && setConfirming(o)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Hide your shop until it is checked again?</DialogTitle>
+            <DialogDescription>
+              You changed your shop&apos;s address or phone. Customers will not see your shop until an admin approves the new details,
+              usually within 2 working days.{form.phone !== (initial.phone ?? "") && " A new phone number is checked again with a call-back."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline" disabled={save.isPending}>Keep editing</Button>
+            </DialogClose>
+            <Button type="button" onClick={() => save.mutate()} disabled={save.isPending}>
+              {save.isPending && <Loader2 className="animate-spin" />} Save and send for review
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </form>
+  );
+}
+
+const EMPTY_KYC: KycFormState = { kyc_type: "gstin", kyc_number: "", document_photo: null, storefront_photo: null };
+
+/** "Verify your shop" (P3.4): evidence type and number, a document photo and a storefront photo. */
+function VerifySection({ v }: { v: ShopVerification }) {
+  const qc = useQueryClient();
+  const [kyc, setKyc] = useState<KycFormState>(EMPTY_KYC);
+  const [formKey, setFormKey] = useState(0); // remounts the file inputs after a submission
+  const [touched, setTouched] = useState(false);
+  const [attempted, setAttempted] = useState(false);
+  const set = <K extends keyof KycFormState>(k: K, val: KycFormState[K]) => setKyc((f) => ({ ...f, [k]: val }));
+
+  const submit = useMutation({
+    mutationFn: () => {
+      const body = new FormData();
+      body.append("kyc_type", kyc.kyc_type);
+      body.append("kyc_number", normalizeKycNumber(kyc.kyc_number));
+      if (kyc.storefront_photo) body.append("storefront_photo", kyc.storefront_photo);
+      if (kyc.document_photo) body.append("document_photo", kyc.document_photo);
+      return api.post<ShopVerification>("/owner/verification", body);
+    },
+    onSuccess: (next) => {
+      qc.setQueryData(["owner", "verification"], next);
+      qc.setQueryData<OwnerShopSettings>(["owner", "shop"], (s) => (s ? { ...s, verification: next } : s));
+      setKyc(EMPTY_KYC);
+      setTouched(false);
+      setAttempted(false);
+      setFormKey((k) => k + 1);
+      toast.success("Sent for verification. An admin usually checks it within 2 working days.");
+    },
+    onError: (e) => toast.error(errorMessage(e)),
+  });
+
+  const renewing = v.status === "verified";
+  const typeLabel = KYC_TYPES.find((t) => t.value === v.kyc_type)?.label;
+  return (
+    <section id="verify" aria-labelledby="verify-title" className="mt-6 mb-24 scroll-mt-20 space-y-5 rounded-2xl border bg-card p-5 lg:max-w-[calc(50%-0.75rem)]">
+      <div className="flex items-start gap-3">
+        <ShieldCheck className="mt-0.5 size-5 shrink-0 text-primary" />
+        <div>
+          <h2 id="verify-title" className="text-lg font-semibold">{renewing ? "Renew your verification" : "Verify your shop"}</h2>
+          <p className="text-sm text-muted-foreground">
+            Customers only see shops whose registration an admin has checked. Verification lasts 12 months.
+          </p>
+        </div>
+      </div>
+      <VerificationSummary v={v} typeLabel={typeLabel} />
+      {v.can_submit ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            setAttempted(true);
+            if (kycFormReady(kyc)) submit.mutate();
+          }}
+          className="space-y-5"
+        >
+          <KycFields key={formKey} s={kyc} set={set} numberTouched={touched} attempted={attempted} onBlurNumber={() => setTouched(true)} />
+          <Button type="submit" disabled={submit.isPending}>
+            {submit.isPending ? <Loader2 className="animate-spin" /> : <BadgeCheck />} {renewing ? "Submit renewal" : "Submit for verification"}
+          </Button>
+        </form>
+      ) : null}
+    </section>
+  );
+}
+
+function VerificationSummary({ v, typeLabel }: { v: ShopVerification; typeLabel?: string }) {
+  const evidence = v.kyc_number ? `${typeLabel ?? "Number"}: ${v.kyc_number}` : null;
+  let line: string;
+  if (v.status === "verified" && v.renewal_pending) line = "Your renewal is waiting for an admin. Your shop stays visible meanwhile.";
+  else if (v.status === "verified" && v.visible_to_customers) {
+    line = `Verified until ${formatDay(v.verified_until)}.`;
+    if (!v.can_submit && v.renewal_opens_at) line += ` You can renew from ${formatDay(v.renewal_opens_at)}.`;
+  } else if (v.status === "verified") line = `Your verification ended on ${formatDay(v.verified_until)}. Renew it to be visible again.`;
+  else if (v.status === "submitted") line = "Waiting for an admin, usually within 2 working days. Your shop is hidden until it is approved.";
+  else if (v.status === "rejected") line = "Not approved. Correct the evidence and submit again.";
+  else if (v.status === "suspended") line = "Suspended. Submit fresh evidence to be verified again.";
+  else line = "Not submitted yet. Your shop is hidden from customers until it is verified.";
+  return (
+    <div className="space-y-1 rounded-xl bg-muted/50 p-3 text-sm" data-testid="verification-summary">
+      <p>{line}</p>
+      {v.rejection_reason && <p><span className="font-medium">Reason:</span> {v.rejection_reason}</p>}
+      {evidence && <p className="text-muted-foreground">{evidence}</p>}
+      {!v.phone_verified && v.status !== "draft" && (
+        <p className="text-muted-foreground">We will call your shop phone to confirm it before approving.</p>
+      )}
+    </div>
   );
 }

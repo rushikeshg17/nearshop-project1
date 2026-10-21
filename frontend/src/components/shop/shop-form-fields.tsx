@@ -8,10 +8,11 @@ import { ShopMap } from "@/components/map/shop-map";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
-import type { Meta } from "@/lib/types";
+import type { KycType, Meta, ShopDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export interface ShopFormState {
@@ -260,4 +261,153 @@ export function shopPayload(s: ShopFormState) {
     free_delivery_above: s.offers_delivery && s.free_delivery_above ? Number(s.free_delivery_above) : null,
     hold_minutes: s.hold_minutes,
   };
+}
+
+// ---------------------------------------------------------------- shop verification (P3.4; rules from P3.3)
+
+/** The fields whose change sends a verified shop back to review (backend/app/api/routes/owner.py, REVIEW_FIELDS). */
+export function reviewFieldsChanged(initial: ShopDetail, s: ShopFormState): boolean {
+  const p = shopPayload(s);
+  return (
+    p.address_line !== initial.address_line ||
+    (p.locality ?? null) !== (initial.locality ?? null) ||
+    (p.pincode ?? null) !== (initial.pincode ?? null) ||
+    (p.phone || null) !== (initial.phone || null) ||
+    p.lat !== initial.lat ||
+    p.lng !== initial.lng
+  );
+}
+
+export const KYC_TYPES: { value: KycType; label: string; hint: string; example: string }[] = [
+  { value: "gstin", label: "GSTIN", hint: "Your 15-character GST number.", example: "27AAPFU0939F1ZV" },
+  { value: "udyam", label: "Udyam registration", hint: "From your Udyam (MSME) certificate.", example: "UDYAM-KR-03-0012345" },
+  {
+    value: "trade_licence",
+    label: "Trade licence",
+    hint: "Trade licence or Shop and Establishment registration number.",
+    example: "MCC/TL/2025/00123",
+  },
+];
+
+const GSTIN_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const GSTIN_PATTERN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+const UDYAM_PATTERN = /^UDYAM-[A-Z]{2}-[0-9]{2}-[0-9]{7}$/;
+const TRADE_LICENCE_PATTERN = /^[A-Z0-9][A-Z0-9 /.-]{2,38}[A-Z0-9]$/;
+const AADHAAR_LIKE = /(?<![0-9])[0-9]{12}(?![0-9])/;
+
+function gstinCheckChar(first14: string) {
+  let total = 0;
+  for (let i = 0; i < first14.length; i++) {
+    const product = GSTIN_CHARS.indexOf(first14[i]) * (i % 2 ? 2 : 1);
+    total += Math.floor(product / 36) + (product % 36);
+  }
+  return GSTIN_CHARS[(36 - (total % 36)) % 36];
+}
+
+export function normalizeKycNumber(number: string) {
+  return number.split(/\s+/).filter(Boolean).join(" ").toUpperCase();
+}
+
+/** The same checks as the API (backend/app/models/core.py, validate_kyc_number), so mistakes show while typing.
+ * Returns an error message, or null when the number is acceptable. */
+export function kycNumberError(type: KycType, number: string): string | null {
+  const value = normalizeKycNumber(number);
+  if (!value) return "Enter the number";
+  if (AADHAAR_LIKE.test(value.replace(/[\s.-]/g, ""))) {
+    return "That looks like an Aadhaar number. NearShop never collects Aadhaar: enter your GSTIN, Udyam number or trade licence number";
+  }
+  if (type === "gstin") {
+    if (value.length !== 15 || !GSTIN_PATTERN.test(value)) return "A GSTIN has 15 characters, like 27AAPFU0939F1ZV";
+    if (gstinCheckChar(value.slice(0, 14)) !== value[14]) return "That GSTIN's last character does not match: check it for a typing mistake";
+  } else if (type === "udyam") {
+    if (!UDYAM_PATTERN.test(value)) return "A Udyam number looks like UDYAM-KR-03-0012345";
+  } else if (!(value.length >= 4 && value.length <= 40 && TRADE_LICENCE_PATTERN.test(value))) {
+    return "A trade licence number has 4 to 40 letters, digits, spaces, slashes, dots or hyphens";
+  }
+  return null;
+}
+
+export interface KycFormState {
+  kyc_type: KycType;
+  kyc_number: string;
+  document_photo: File | null;
+  storefront_photo: File | null;
+}
+
+type KycUpdate = <K extends keyof KycFormState>(k: K, v: KycFormState[K]) => void;
+
+const PHOTO_TYPES = "image/jpeg,image/png,image/webp";
+
+/** Evidence type, number (with inline format errors once the field is left or a submit was tried), document photo and storefront photo. */
+export function KycFields({
+  s,
+  set,
+  numberTouched,
+  attempted,
+  onBlurNumber,
+}: {
+  s: KycFormState;
+  set: KycUpdate;
+  numberTouched: boolean;
+  attempted: boolean;
+  onBlurNumber: () => void;
+}) {
+  const type = KYC_TYPES.find((t) => t.value === s.kyc_type) ?? KYC_TYPES[0];
+  const numberError = numberTouched || attempted ? kycNumberError(s.kyc_type, s.kyc_number) : null;
+  const documentRequired = s.kyc_type === "trade_licence";
+  return (
+    <div className="space-y-4">
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium">Evidence type</legend>
+        <RadioGroup value={s.kyc_type} onValueChange={(v) => set("kyc_type", v as KycType)} className="gap-3">
+          {KYC_TYPES.map((t) => (
+            <div key={t.value} className="flex items-start gap-2.5">
+              <RadioGroupItem id={`kyc-${t.value}`} value={t.value} className="mt-0.5" />
+              <Label htmlFor={`kyc-${t.value}`} className="flex flex-col items-start gap-0.5">
+                <span>{t.label}</span>
+                <span className="text-xs font-normal text-muted-foreground">{t.hint}</span>
+              </Label>
+            </div>
+          ))}
+        </RadioGroup>
+      </fieldset>
+      <div className="space-y-1.5">
+        <Label htmlFor="kyc-number">{type.label} number</Label>
+        <Input
+          id="kyc-number"
+          value={s.kyc_number}
+          onChange={(e) => set("kyc_number", e.target.value.slice(0, 60))}
+          onBlur={onBlurNumber}
+          placeholder={type.example}
+          autoComplete="off"
+          aria-invalid={numberError ? true : undefined}
+          aria-describedby={numberError ? "kyc-number-error" : "kyc-number-hint"}
+        />
+        {numberError ? (
+          <p id="kyc-number-error" className="text-xs text-destructive">{numberError}</p>
+        ) : (
+          <p id="kyc-number-hint" className="text-xs text-muted-foreground">Never enter an Aadhaar number: NearShop does not collect it.</p>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="kyc-document">
+          Photo of the {documentRequired ? "licence or registration" : "certificate"}{" "}
+          {!documentRequired && <span className="font-normal text-muted-foreground">(optional)</span>}
+        </Label>
+        <Input id="kyc-document" type="file" accept={PHOTO_TYPES} onChange={(e) => set("document_photo", e.target.files?.[0] ?? null)} />
+        {attempted && documentRequired && !s.document_photo && (
+          <p className="text-xs text-destructive">Add a photo of your trade licence or Shop and Establishment registration</p>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="kyc-storefront">Storefront photo showing your signboard</Label>
+        <Input id="kyc-storefront" type="file" accept={PHOTO_TYPES} onChange={(e) => set("storefront_photo", e.target.files?.[0] ?? null)} />
+        {attempted && !s.storefront_photo && <p className="text-xs text-destructive">Add a photo of your shopfront with the signboard</p>}
+      </div>
+    </div>
+  );
+}
+
+export function kycFormReady(s: KycFormState) {
+  return !kycNumberError(s.kyc_type, s.kyc_number) && !!s.storefront_photo && (s.kyc_type !== "trade_licence" || !!s.document_photo);
 }

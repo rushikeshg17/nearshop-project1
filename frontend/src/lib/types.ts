@@ -108,6 +108,74 @@ export interface ShopDetail extends ShopBrief {
   listing_counts?: { total: number; in_stock: number };
 }
 
+// ---------------------------------------------------------------- shop verification (P3.3, P3.4)
+
+export type VerificationStatus = "draft" | "submitted" | "verified" | "rejected" | "suspended";
+export type KycType = "gstin" | "udyam" | "trade_licence";
+
+/** The owner's view of their shop's verification (GET /owner/verification, and inside GET /owner/shop). */
+export interface ShopVerification {
+  status: VerificationStatus;
+  visible_to_customers: boolean;
+  kyc_type: KycType | null;
+  kyc_number: string | null;
+  has_document_photo: boolean;
+  has_storefront_photo: boolean;
+  phone_verified: boolean;
+  submitted_at: string | null;
+  decided_at: string | null;
+  /** Set by a rejection or suspension, and by a rejected renewal; cleared by the next submission or approval. */
+  rejection_reason: string | null;
+  verified_until: string | null;
+  renewal_pending: boolean;
+  /** From this date the owner may submit fresh evidence (30 days before verified_until); null when not in force. */
+  renewal_opens_at: string | null;
+  can_submit: boolean;
+  /** A change of address or phone sends the shop back to review, hidden until an admin approves it again. */
+  changes_need_review: boolean;
+}
+
+/** GET and PATCH /owner/shop. review_started: this save sent the verified shop back to review. */
+export interface OwnerShopSettings extends ShopDetail {
+  verification: ShopVerification;
+  review_started: boolean;
+}
+
+/** One row of GET /admin/shops. */
+export interface AdminShopRow extends ShopBrief {
+  is_active: boolean;
+  verification_status: VerificationStatus;
+  verified_until: string | null;
+  visible_to_customers: boolean;
+  owner: string;
+  owner_email: string;
+  listings: number;
+  created_at: string;
+}
+
+/** One shop in the admin verification queue (GET /admin/verification), oldest submission first. */
+export interface VerificationQueueItem {
+  id: number;
+  name: string;
+  slug: string;
+  locality: string | null;
+  address_line: string;
+  pincode: string | null;
+  phone: string | null;
+  owner: string | null;
+  kind: "new" | "renewal" | "review";
+  status: VerificationStatus;
+  kyc_type: KycType | null;
+  kyc_number: string | null;
+  submitted_at: string | null;
+  age_working_days: number | null;
+  phone_verified_at: string | null;
+  verified_until: string | null;
+  /** Signed links, valid for 5 minutes from the time the queue was loaded. */
+  document_photo_url: string | null;
+  storefront_photo_url: string | null;
+}
+
 export interface Listing {
   id: number;
   catalog_item_id: number | null;
