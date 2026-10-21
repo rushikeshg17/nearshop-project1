@@ -6,6 +6,7 @@
     uv run python -m database.admin_tasks list-admins
     uv run python -m database.admin_tasks create-admin --name "Asha Rao" --email asha@example.com
     uv run python -m database.admin_tasks backfill-thumbnails
+    uv run python -m database.admin_tasks consent-report --since 2027-01-17
 
 They act on the database in NEARSHOP_MONGODB_URI / NEARSHOP_MONGODB_DB, the same one the API uses,
 without wiping anything (the seed is the tool that replaces a database).
@@ -32,6 +33,9 @@ without wiping anything (the seed is the tool that replaces a database).
                    the database in batches (--batch-size, default 100). It never changes the database and
                    skips every photo whose thumbnail exists, so it is safe to run again; at the end it
                    prints how many photos still lack one and the median thumbnail size.
+  consent-report   read-only (P3.1). The number of users created on or after --since (a UTC date), and how
+                   many of them lack a granted consent row for a required purpose, an age-declaration row,
+                   or either, with the ids (at most 50) of those that lack one.
 
 Commands that write (backfill-thumbnails writes to the photo storage, not the database) show the
 database name and ask the operator to type it; anything else changes nothing. No command prints an email
@@ -49,7 +53,7 @@ import statistics
 import sys
 from collections import Counter
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import EmailStr, TypeAdapter, ValidationError
 from pymongo import UpdateOne
@@ -71,6 +75,7 @@ from app.core.security import (
     verify_password,
 )
 from app.models import Role, User
+from app.schemas.requests import AGE_PURPOSE, REQUIRED_PURPOSES
 from app.services import media
 from database.seed.seed import RETIRED_DEMO_PASSWORD_SHA256
 
@@ -441,6 +446,41 @@ def backfill_thumbnails(db: Database, ask: Ask = input, out: Out = print, batch_
     return 1 if counts["unreadable"] or counts["failed"] else 0
 
 
+# ---------------------------------------------------------------- consent report
+CONSENT_REPORT_IDS = 50
+
+
+def consent_report(db: Database, since: date, out: Out = print) -> int:
+    """Users created on or after `since` (UTC) and how many lack a granted row for each required purpose or
+    an age-declaration row (P3.1). Read-only; prints counts and ids, never an email address. Exits 1 when any
+    user lacks a row."""
+    start = datetime(since.year, since.month, since.day)
+    user_ids = [r["_id"] for r in db.users.find_raw({"created_at": {"$gte": start}}, {"_id": 1}, sort=[("_id", 1)])]
+    needed = (*REQUIRED_PURPOSES, AGE_PURPOSE)
+    have: dict[int, set[str]] = {}
+    for row in db.mongo["consents"].aggregate([
+        {"$match": {"user_id": {"$in": user_ids}, "purpose": {"$in": list(needed)}, "granted": True}},
+        {"$group": {"_id": "$user_id", "purposes": {"$addToSet": "$purpose"}}},
+    ]):
+        have[row["_id"]] = set(row["purposes"])
+    no_required = [u for u in user_ids if not set(REQUIRED_PURPOSES) <= have.get(u, set())]
+    no_age = [u for u in user_ids if AGE_PURPOSE not in have.get(u, set())]
+    missing = sorted(set(no_required) | set(no_age))
+    out(f"Consent report for database {db.mongo.name}, users created since {since.isoformat()} (UTC)")
+    out(f"  users created:                        {len(user_ids)}")
+    out(f"  missing a required-purpose consent:   {len(no_required)}")
+    out(f"  missing the age declaration:          {len(no_age)}")
+    out(f"  missing either:                       {len(missing)}")
+    complete = len(user_ids) - len(missing)
+    out(f"  complete:                             {complete} ({complete / len(user_ids):.1%})" if user_ids
+        else "  complete:                             no users in this period")
+    if missing:
+        shown = ", ".join(str(u) for u in missing[:CONSENT_REPORT_IDS])
+        more = f" (and {len(missing) - CONSENT_REPORT_IDS} more)" if len(missing) > CONSENT_REPORT_IDS else ""
+        out(f"  user ids missing a row: {shown}{more}")
+    return 1 if missing else 0
+
+
 # ---------------------------------------------------------------- command line
 def _retired_password_from_operator() -> str | None:
     """The old default, from the environment or hidden input, refused unless it matches the digest."""
@@ -469,6 +509,8 @@ def main(argv: list[str] | None = None, ask: Ask = input, out: Out = print) -> i
     create.add_argument("--email", required=True)
     backfill = sub.add_parser("backfill-thumbnails", help="create missing photo thumbnails; safe to run again")
     backfill.add_argument("--batch-size", type=int, default=THUMBNAIL_BATCH)
+    consents = sub.add_parser("consent-report", help="read-only: users since a date without consent rows")
+    consents.add_argument("--since", type=date.fromisoformat, required=True, help="a UTC date, YYYY-MM-DD")
     args = parser.parse_args(argv)
 
     db = Database()
@@ -482,6 +524,8 @@ def main(argv: list[str] | None = None, ask: Ask = input, out: Out = print) -> i
         return create_admin(db, args.name, args.email, ask, out)
     if args.command == "backfill-thumbnails":
         return backfill_thumbnails(db, ask, out, args.batch_size)
+    if args.command == "consent-report":
+        return consent_report(db, args.since, out)
     return list_admins(db, out)
 
 

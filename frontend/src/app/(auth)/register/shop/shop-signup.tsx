@@ -7,7 +7,15 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
-import { isSignupsClosed, SignupsChecking, SignupsPaused } from "@/app/(auth)/register/register-form";
+import {
+  type Consent,
+  consentComplete,
+  ConsentFields,
+  isSignupsClosed,
+  NO_CONSENT,
+  SignupsChecking,
+  SignupsPaused,
+} from "@/app/(auth)/register/register-form";
 import {
   ShopBasicsFields,
   type ShopFormState,
@@ -31,6 +39,7 @@ export function ShopSignup() {
   const { data: meta, isPending: metaPending } = useMeta();
   const [step, setStep] = useState(0);
   const [owner, setOwner] = useState({ name: "", email: "", password: "" });
+  const [consent, setConsent] = useState<Consent>(NO_CONSENT);
   const [shop, setShop] = useState<ShopFormState>({
     name: "", tagline: "", description: "", category_slugs: [], phone: "", address_line: "", locality: "", pincode: "",
     lat: 15.148, lng: 76.923, open_time: "9:30 AM", close_time: "9:00 PM", closed_on: "",
@@ -46,7 +55,7 @@ export function ShopSignup() {
   const submit = useMutation({
     mutationFn: () =>
       api.post<User>("/auth/register-shop", {
-        owner: { ...owner, phone: shop.phone || null },
+        owner: { ...owner, phone: shop.phone || null, consent },
         shop: shopPayload(shop),
       }),
     meta: { silent: true },
@@ -57,7 +66,7 @@ export function ShopSignup() {
   });
 
   const valid = [
-    owner.name.trim().length >= 2 && /\S+@\S+\.\S+/.test(owner.email) && owner.password.length >= 8,
+    owner.name.trim().length >= 2 && /\S+@\S+\.\S+/.test(owner.email) && owner.password.length >= 8 && consentComplete(consent),
     shop.name.trim().length >= 3 && shop.category_slugs.length > 0 && /^[6-9]\d{9}$/.test(shop.phone),
     shop.address_line.trim().length >= 5 && !!shop.locality,
     true,
@@ -105,6 +114,7 @@ export function ShopSignup() {
                     <Input id="opw" type="password" autoComplete="new-password" value={owner.password} onChange={(e) => setOwner({ ...owner, password: e.target.value })} className="h-11" />
                     <p className="text-xs text-muted-foreground">At least 8 characters</p>
                   </div>
+                  <ConsentFields idPrefix="owner" value={consent} onChange={setConsent} />
                 </div>
               )}
               {step === 1 && <ShopBasicsFields s={shop} set={set} meta={meta} />}

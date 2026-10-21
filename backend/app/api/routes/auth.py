@@ -29,7 +29,15 @@ from app.core.security import (
     verify_password,
 )
 from app.models import Role, Shop, User
-from app.schemas.requests import LoginIn, ProfileUpdateIn, RegisterIn, RegisterShopIn
+from app.schemas.requests import (
+    CONSENT_PURPOSES,
+    REQUIRED_PURPOSES,
+    ConsentIn,
+    LoginIn,
+    ProfileUpdateIn,
+    RegisterIn,
+    RegisterShopIn,
+)
 from app.schemas.serializers import iso
 from app.services.loaders import categories
 from app.services.meta import city_config
@@ -136,12 +144,44 @@ def _ensure_email_free(db: Database, email: str) -> None:
         raise EMAIL_TAKEN
 
 
+def check_consent(consent: ConsentIn) -> None:
+    """Registration needs the required purposes ticked (422 consent_required) and the 18-or-older
+    declaration (422 age_confirmation_required). Children's data would need verifiable parental consent
+    (DPDP Act section 9), which NearShop does not collect."""
+    if not all(getattr(consent, purpose) for purpose in REQUIRED_PURPOSES):
+        raise AppError("Please agree to the privacy notice and terms to create an account.",
+                       code="consent_required", status_code=422)
+    if not consent.age_18_plus:
+        raise AppError("NearShop is for adults. You need to be 18 or older to create an account.",
+                       code="age_confirmation_required", status_code=422)
+
+
+def record_consents(db: Database, user_id: int, consent: ConsentIn, *, source: str = "web") -> None:
+    """Append one consents row per purpose and one for the age declaration, against the current notice
+    version. Rows are never updated or deleted here: a later change of mind is written as a new row, and
+    the newest row for a purpose is the one in force. Joins the caller's transaction, if any."""
+    at = utcnow()
+    rows = [{"_id": row_id, "user_id": user_id, "purpose": purpose, "notice_version": settings.notice_version,
+             "granted": bool(getattr(consent, purpose)), "at": at, "source": source}
+            for row_id, purpose in zip(db.next_ids("consents", len(CONSENT_PURPOSES)), CONSENT_PURPOSES)]
+    db.mongo["consents"].insert_many(rows, session=db.session)
+
+
 @router.post("/register", dependencies=[Depends(require_open_signups)])
 def register(body: RegisterIn, request: Request, response: Response, db: DB):
+    check_consent(body.consent)
     _ensure_email_free(db, body.email)
-    try:
+
+    def create() -> User:
+        # The account and its consent rows are written together or not at all.
         user = db.users.insert(User(name=body.name, email=body.email.lower(), phone=body.phone,
-                                    password_hash=hash_password(body.password), role=Role.CUSTOMER))
+                                    password_hash=password_hash, role=Role.CUSTOMER))
+        record_consents(db, user.id, body.consent)
+        return user
+
+    password_hash = hash_password(body.password)
+    try:
+        user = db.transaction(create)
     except DuplicateKeyError:  # two sign-ups raced: the unique index on email decides
         raise EMAIL_TAKEN from None
     user = _start_session(request, response, db, user)
@@ -150,6 +190,7 @@ def register(body: RegisterIn, request: Request, response: Response, db: DB):
 
 @router.post("/register-shop", dependencies=[Depends(require_open_signups)])
 def register_shop(body: RegisterShopIn, request: Request, response: Response, db: DB):
+    check_consent(body.owner.consent)
     _ensure_email_free(db, body.owner.email)
     cats = [c for c in categories(db).values() if c.slug in set(body.shop.category_slugs)]
     if len(cats) != len(set(body.shop.category_slugs)):
@@ -169,6 +210,7 @@ def register_shop(body: RegisterShopIn, request: Request, response: Response, db
                                     role=Role.OWNER))
         db.shops.insert(Shop(**data, owner_id=user.id, slug=slug, city=city_config()["name"],
                              category_ids=[c.id for c in cats], inventory_updated_at=utcnow()))
+        record_consents(db, user.id, body.owner.consent)
         return user
 
     try:

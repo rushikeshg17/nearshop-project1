@@ -1,15 +1,17 @@
 from tests.conftest import CENTER, HEADERS, PASSWORD
 
+CONSENT = {"account_and_orders": True, "age_18_plus": True}  # P3.1
+
 
 def test_register_login_and_me(client):
-    res = client.post("/api/auth/register", json={"name": "New Person", "email": "new@example.com", "password": "longenough1"},
-                      headers=HEADERS)
+    res = client.post("/api/auth/register", json={"name": "New Person", "email": "new@example.com", "password": "longenough1",
+                                                  "consent": CONSENT}, headers=HEADERS)
     assert res.status_code == 200
     assert res.json()["role"] == "customer"
     assert client.get("/api/auth/me").json()["email"] == "new@example.com"
 
-    dup = client.post("/api/auth/register", json={"name": "Again", "email": "new@example.com", "password": "longenough1"},
-                      headers=HEADERS)
+    dup = client.post("/api/auth/register", json={"name": "Again", "email": "new@example.com", "password": "longenough1",
+                                                  "consent": CONSENT}, headers=HEADERS)
     assert dup.status_code == 409
 
 

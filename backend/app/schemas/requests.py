@@ -10,11 +10,32 @@ class _Strict(BaseModel):
     model_config = {"extra": "forbid", "str_strip_whitespace": True}
 
 
+# Consent at registration (P3.1, plan section 8.5). Each purpose, and the age declaration, is written as a
+# row of the append-only consents collection against the current notice version (settings.notice_version).
+REQUIRED_PURPOSES: tuple[str, ...] = ("account_and_orders",)  # account and order fulfilment
+# Off unless the user turns them on. search_measurement: helping improve search (used by P5.6).
+OPTIONAL_PURPOSES: tuple[str, ...] = ("whatsapp", "personalised_suggestions", "search_measurement")
+AGE_PURPOSE = "age_18_plus"  # the declaration that the user is 18 or older
+CONSENT_PURPOSES: tuple[str, ...] = (*REQUIRED_PURPOSES, *OPTIONAL_PURPOSES, AGE_PURPOSE)
+
+
+class ConsentIn(_Strict):
+    """What the user ticked on the sign-up screen. Everything defaults to false, so a missing or empty
+    consent object is a refusal (422 consent_required or age_confirmation_required from the route)."""
+
+    account_and_orders: bool = False
+    age_18_plus: bool = False
+    whatsapp: bool = False
+    personalised_suggestions: bool = False
+    search_measurement: bool = False
+
+
 class RegisterIn(_Strict):
     name: str = Field(min_length=2, max_length=120)
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     phone: str | None = Field(default=None, pattern=PHONE_PATTERN)
+    consent: ConsentIn = Field(default_factory=ConsentIn)
 
 
 class ShopSetupIn(_Strict):

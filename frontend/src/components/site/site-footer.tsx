@@ -36,9 +36,13 @@ export function SiteFooter() {
         </div>
       </div>
       <div className="border-t">
-        <p className="mx-auto max-w-7xl px-4 py-5 text-xs text-muted-foreground md:px-6">
-          Map data from OpenStreetMap contributors. Demo data: shops, prices and sales are generated for demonstration.
-        </p>
+        <div className="mx-auto flex max-w-7xl flex-col gap-2 px-4 py-5 text-xs text-muted-foreground md:flex-row md:items-center md:justify-between md:px-6">
+          <p>Map data from OpenStreetMap contributors. Demo data: shops, prices and sales are generated for demonstration.</p>
+          <nav aria-label="Legal" className="flex gap-4">
+            <Link href="/privacy" className="hover:text-foreground">Privacy notice</Link>
+            <Link href="/terms" className="hover:text-foreground">Terms of use</Link>
+          </nav>
+        </div>
       </div>
     </footer>
   );

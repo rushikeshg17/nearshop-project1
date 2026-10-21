@@ -13,7 +13,8 @@ from tests.conftest import HEADERS
 OLD_DEFAULT = "nearshop123"
 
 SHOP_BODY = {
-    "owner": {"name": "Lock Owner", "email": "lock-owner@example.com", "password": "longenough1"},
+    "owner": {"name": "Lock Owner", "email": "lock-owner@example.com", "password": "longenough1",
+              "consent": {"account_and_orders": True, "age_18_plus": True}},
     "shop": {"name": "Lockdown Hardware", "category_slugs": ["plumbing"], "phone": "9876500001",
              "address_line": "3 Station Road", "locality": "Agrahara", "lat": 12.31, "lng": 76.65},
 }
@@ -70,7 +71,8 @@ def cleanup_signups(db):
 def test_register_works_when_signups_open(client, db, signups, cleanup_signups):
     signups(True)
     res = client.post("/api/auth/register", json={"name": "Open Person", "email": "open@example.com",
-                                                  "password": "longenough1"}, headers=HEADERS)
+                                                  "password": "longenough1",
+                                                  "consent": SHOP_BODY["owner"]["consent"]}, headers=HEADERS)
     assert res.status_code == 200, res.text
     assert res.json()["role"] == "customer"
 

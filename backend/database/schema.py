@@ -49,6 +49,7 @@ from app.models.enums import (
     Role,
     SaleSource,
 )
+from app.schemas.requests import CONSENT_PURPOSES
 
 log = logging.getLogger(__name__)
 
@@ -266,6 +267,15 @@ VALIDATORS: dict[str, dict] = {
         admin_id=INT, action={"enum": ["reveal_email"]}, target_user_id=INT,
         reason={"bsonType": STR, "minLength": 10, "maxLength": 500}, created_at=DATE,
     ),
+    # Consent records (P3.1, plan section 8.5): append-only, one row per purpose and one for the 18-or-older
+    # declaration (purpose age_18_plus) at each registration, against the notice version then current. A later
+    # change of mind is a new row; the newest row for a (user, purpose) is the one in force. Never updated.
+    "consents": schema(
+        ["user_id", "purpose", "notice_version", "granted", "at", "source"],
+        user_id=INT, purpose={"enum": list(CONSENT_PURPOSES)},
+        notice_version={"bsonType": STR, "minLength": 1, "maxLength": 40}, granted=BOOL, at=DATE,
+        source={"enum": ["web"]},
+    ),
     # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
     "counters": {},
     "text_embeddings": {},
@@ -379,6 +389,10 @@ INDEXES: dict[str, list[IndexModel]] = {
     # MongoDB's TTL monitor deletes a counter about a minute after its window ends; the limiter never relies on
     # that, because a new window has a new _id and a cooldown is checked against expires_at.
     "rate_limits": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
+    "consents": [
+        IndexModel([("user_id", A), ("purpose", A), ("at", D)], name="user_purpose_at"),  # the row in force
+        IndexModel([("purpose", A), ("at", D)], name="purpose_at"),
+    ],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),
         IndexModel([("target_user_id", A), ("created_at", D)], name="target_created"),

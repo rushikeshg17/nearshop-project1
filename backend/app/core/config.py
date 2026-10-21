@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # The site runs on generated data: every site page shows a banner asking visitors not to enter
     # real personal details.
     demo_mode: bool = False
+    # The privacy notice version that registrations consent to (P3.1): the version id of the newest
+    # docs/legal/privacy-<version>.md, which the /privacy page shows. Change it when a new version is published.
+    notice_version: str = "v1"
 
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
