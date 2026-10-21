@@ -190,7 +190,7 @@ export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail 
               <h2 className="font-semibold">Reviews</h2>
               <RatingSummary avg={s.rating_avg} />
             </div>
-            {reviews.data ? <ReviewList reviews={reviews.data.reviews} /> : <Skeleton className="h-40" />}
+            {reviews.data ? <ReviewList reviews={reviews.data.reviews} shopId={s.id} /> : <Skeleton className="h-40" />}
           </section>
         </aside>
       </div>

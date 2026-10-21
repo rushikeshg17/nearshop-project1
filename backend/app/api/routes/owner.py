@@ -448,7 +448,7 @@ def add_from_catalog(body: CatalogAddIn, shop: OwnerShop, user: OwnerUser, db: D
 class ShopTransitionIn(TransitionIn):
     """An owner's action on a reservation or order. code is required to complete a pickup (the reservation code
     the customer shows) and to deliver an order (the 4-digit delivery code only the customer sees), once
-    settings.completion_codes_required is on (P3.5; P3.7 turns it on with the screens that ask for it)."""
+    settings.completion_codes_required is on (P3.5; on by default since P3.7, whose screens ask for it)."""
 
     code: str | None = Field(default=None, max_length=20)
 

@@ -110,6 +110,18 @@ def test_three_distinct_reporters_hide_a_review_two_do_not_and_repeats_count_onc
     assert item["actions"] == ["keep", "hide", "remove"] and item["age_hours"] >= 0
 
 
+def test_the_queue_total_counts_beyond_the_limit(db, world, admin, monkeypatch):
+    """The admin nav badge counts total, not the items shown: the queue lists only the oldest QUEUE_LIMIT."""
+    full = admin.get("/api/admin/reviews/queue", headers=HEADERS).json()
+    assert full["total"] == len(full["items"])
+    held = [add_review(db, world, regular(db, world, f"held{i}")) for i in range(2)]
+    for r in held:
+        db.reviews.update_one({"_id": r.id}, {"$set": {"held": True, "held_at": utcnow()}})
+    monkeypatch.setattr(review_service, "QUEUE_LIMIT", 1)
+    capped = admin.get("/api/admin/reviews/queue", headers=HEADERS).json()
+    assert len(capped["items"]) == 1 and capped["total"] == full["total"] + 2
+
+
 def test_reports_are_validated_and_the_author_cannot_report_their_own_review(db, world):
     author = regular(db, world, "author")
     r = add_review(db, world, author)

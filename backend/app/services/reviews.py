@@ -330,8 +330,8 @@ def sla_filters(start: datetime, end: datetime) -> tuple[dict, dict]:
     return {"$or": [{"reported_at": window}, {"held_at": window}]}, {"reply.reported_at": window}
 
 
-def queue(db: Database) -> list[dict[str, Any]]:
-    """Everything waiting for an admin, oldest first (the first QUEUE_LIMIT): reported reviews and replies not
+def queue(db: Database) -> tuple[list[dict[str, Any]], int]:
+    """Everything waiting for an admin, oldest first (the first QUEUE_LIMIT), and how many wait in all: reported reviews and replies not
     yet decided, and held reviews an admin has not hidden or removed (keeping one releases it). A review kept
     after reports and held later by the self-dealing rule comes back, aged from its hold. Each branch of the
     query has its own index in database/schema.py (reported, held_open, reply_reported)."""
@@ -341,6 +341,7 @@ def queue(db: Database) -> list[dict[str, Any]]:
     items += [(REPLY, r, r["reply"]["reported_at"]) for r in reply_rows]
     items = [i for i in items if i[2] is not None]
     items.sort(key=lambda i: (i[2], i[1]["_id"]))
+    total = len(items)
     items = items[:QUEUE_LIMIT]
     ids = list({r["_id"] for _, r, _ in items})
     counts: dict[tuple[int, str], dict[str, Any]] = {}
@@ -370,7 +371,7 @@ def queue(db: Database) -> list[dict[str, Any]]:
                         **counts.get((r["_id"], target), {"reasons": {}, "notes": []})},
             "flags": flags, "actions": list(DECISION_STATUS),
         })
-    return out
+    return out, total
 
 
 def sla_shares(items: list[tuple[datetime, datetime | None, datetime | None]], now: datetime) -> dict[str, Any]:

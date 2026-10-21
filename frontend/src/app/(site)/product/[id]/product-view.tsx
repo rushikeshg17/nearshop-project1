@@ -271,7 +271,7 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
           <section>
             <h2 className="text-xl font-semibold">What customers say about {shop.name}</h2>
             <div className="mt-3">
-              <ReviewList rating={{ avg: shop.rating_avg }} reviews={p.reviews} empty="No reviews yet. Reviews come only from completed pickups and deliveries." />
+              <ReviewList rating={{ avg: shop.rating_avg }} reviews={p.reviews} shopId={shop.id} empty="No reviews yet. Reviews come only from completed pickups and deliveries." />
             </div>
             {shop.rating_count > p.reviews.length && (
               <Link href={`/shops/${shop.slug}#reviews`} className="mt-2 inline-flex items-center gap-1 text-sm font-medium hover:underline">

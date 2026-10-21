@@ -42,7 +42,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true },
     { href: "/admin/anomalies", label: "Price review", icon: Scale, badge: overview.data?.totals.open_price_flags },
     { href: "/admin/verification", label: "Verification", icon: BadgeCheck, badge: queue.data?.length },
-    { href: "/admin/moderation", label: "Moderation", icon: Flag, badge: moderation.data?.items.length },
+    { href: "/admin/moderation", label: "Moderation", icon: Flag, badge: moderation.data?.total },
     { href: "/admin/shops", label: "Shops", icon: Store },
     { href: "/admin/users", label: "Users", icon: Users },
     { href: "/ai", label: "AI Lab", icon: BrainCircuit },

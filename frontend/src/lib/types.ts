@@ -304,7 +304,10 @@ export interface ModerationQueueItem {
 }
 
 export interface ModerationQueue {
+  /** The oldest first, at most 200 (QUEUE_LIMIT in backend/app/services/reviews.py). */
   items: ModerationQueueItem[];
+  /** Everything waiting, beyond the 200 in items too. */
+  total: number;
   triage_hours: number;
   decide_hours: number;
 }

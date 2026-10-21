@@ -14,7 +14,7 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { useMe } from "@/hooks/use-session";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { timeAgo } from "@/lib/format";
 import type { Review, ReviewReportReason } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -64,12 +64,15 @@ function ReportDialog({
   open,
   onOpenChange,
   onReported,
+  onOwn,
 }: {
   reviewId: number;
   target: "review" | "reply";
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onReported: () => void;
+  /** The API refused because the viewer wrote it (409 own_review / own_reply): the button goes away. */
+  onOwn: () => void;
 }) {
   const id = useId();
   const [reason, setReason] = useState<ReviewReportReason | "">("");
@@ -84,6 +87,12 @@ function ReportDialog({
       toast.success(d.already_reported ? "You have already reported this." : "Thanks. An admin will look at it within 3 days.");
       onReported();
       onOpenChange(false);
+    },
+    onError: (e) => {
+      if (e instanceof ApiError && (e.code === "own_review" || e.code === "own_reply")) {
+        onOwn();
+        onOpenChange(false);
+      }
     },
   });
   return (
@@ -132,12 +141,18 @@ function ReportDialog({
   );
 }
 
-function ReportButton({ reviewId, target }: { reviewId: number; target: "review" | "reply" }) {
+/** `shopId` is the shop the list belongs to: its owner sees no report action on the shop's own replies. */
+function ReportButton({ reviewId, target, shopId }: { reviewId: number; target: "review" | "reply"; shopId?: number }) {
   const { data: me } = useMe();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [reported, setReported] = useState(false);
+  const [own, setOwn] = useState(false);
   const label = target === "reply" ? "Report reply" : "Report";
+  // The backend refuses reports on your own content (P3.6): the shop's owner on its replies, a customer on their
+  // own review. The owner is known up front; a customer's own review only once the API says so (public lists do
+  // not say who wrote a review), and then the action goes away instead of staying on screen.
+  if (own || (target === "reply" && shopId !== undefined && me?.shop?.id === shopId)) return null;
   if (reported) return <span className="text-xs text-muted-foreground">Reported</span>;
   if (!me) {
     return (
@@ -156,7 +171,10 @@ function ReportButton({ reviewId, target }: { reviewId: number; target: "review"
       >
         <Flag className="size-3" aria-hidden /> {label}
       </button>
-      {open && <ReportDialog reviewId={reviewId} target={target} open onOpenChange={setOpen} onReported={() => setReported(true)} />}
+      {open && (
+        <ReportDialog reviewId={reviewId} target={target} open onOpenChange={setOpen} onReported={() => setReported(true)}
+          onOwn={() => setOwn(true)} />
+      )}
     </>
   );
 }
@@ -167,18 +185,21 @@ const STATUS_LABEL: Record<string, string> = { hidden: "Hidden while an admin re
  * Reviews with the shop's public reply under each one, and a report action (P3.6). With `rating`, a heading line
  * shows the shop's rating, or "New shop" when it has none yet. `owner` is the shop owner's own list: it shows each
  * review's moderation status and leaves the reply to `footer` (the reply editor), and the owner cannot report it.
+ * `shopId` is the shop the reviews belong to: its signed-in owner sees no report action on the shop's replies.
  */
 export function ReviewList({
   reviews,
   empty = "No reviews yet.",
   rating,
   owner = false,
+  shopId,
   footer,
 }: {
   reviews: Review[];
   empty?: string;
   rating?: { avg: number | null; count?: number };
   owner?: boolean;
+  shopId?: number;
   footer?: (review: Review) => React.ReactNode;
 }) {
   return (
@@ -206,7 +227,7 @@ export function ReviewList({
                 {r.product_name && <span className="truncate">{r.product_name}</span>}
                 {r.accuracy_rating && <span>Item accuracy {r.accuracy_rating}/5</span>}
                 {r.delivery_rating && <span>Delivery {r.delivery_rating}/5</span>}
-                {!owner && <ReportButton reviewId={r.id} target="review" />}
+                {!owner && <ReportButton reviewId={r.id} target="review" shopId={shopId} />}
               </p>
               {!owner && r.reply && (
                 <div className="mt-3 rounded-xl border-l-2 border-brand/50 bg-muted/50 px-3 py-2">
@@ -215,7 +236,7 @@ export function ReviewList({
                     <span className="font-normal text-muted-foreground" suppressHydrationWarning>· {timeAgo(r.reply.created_at)}{r.reply.edited_at ? " · edited" : ""}</span>
                   </p>
                   <p className="mt-1 text-sm">{r.reply.text}</p>
-                  <p className="mt-1"><ReportButton reviewId={r.id} target="reply" /></p>
+                  <p className="mt-1"><ReportButton reviewId={r.id} target="reply" shopId={shopId} /></p>
                 </div>
               )}
               {footer?.(r)}

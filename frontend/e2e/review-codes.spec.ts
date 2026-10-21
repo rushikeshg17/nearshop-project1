@@ -9,7 +9,9 @@ import { type APIRequestContext, type Browser, expect, type Page, test as base }
  *    code dialog and the reservation stays open; the code from the customer's screen (typed without its R-, as the
  *    customer sees it) completes it.
  * 2. A confirmed delivery order shows its 4-digit delivery code on the customer's order page, and not on the
- *    owner's order card (nor in the owner's API response). The order is cancelled afterwards.
+ *    owner's order card (nor in the owner's API response). Out for delivery, "Delivered, cash collected" with a
+ *    wrong code shows the error in the code dialog and the order stays out; the customer's code delivers it. If
+ *    the test stops before that, the order is cancelled (or failed and returned) so the stock goes back.
  * 3. A shop review reported by 3 different users disappears from the shop page: two report through the API, the
  *    third through the report dialog on the page.
  *
@@ -114,7 +116,7 @@ test("completing a pickup needs the customer's code: a wrong one shows an error,
   await customer.close();
 });
 
-test("the delivery code shows on the customer's confirmed order and not on the owner's card", async ({ page, browser }, testInfo) => {
+test("the delivery code shows on the customer's confirmed order, not on the owner's card, and delivering needs it", async ({ page, browser }, testInfo) => {
   const owner = await newSignedIn(browser, testInfo.project.use.baseURL, OWNER);
   await signIn(page.request, CUSTOMER);
   const shop = await getJson<OwnerShop>(owner.request, "/api/owner/shop");
@@ -133,6 +135,7 @@ test("the delivery code shows on the customer's confirmed order and not on the o
   const code = (await getJson<Order>(page.request, `/api/orders/${order.id}`)).delivery_code;
   expect(code).toMatch(/^\d{4}$/);
 
+  let delivered = false;
   try {
     await page.goto(`/account/orders/${order.id}`);
     const panel = page.getByRole("region", { name: "Your delivery code" });
@@ -148,8 +151,40 @@ test("the delivery code shows on the customer's confirmed order and not on the o
     for (const owned of await getJson<Order[]>(owner.request, "/api/owner/orders?scope=active")) {
       expect(owned).not.toHaveProperty("delivery_code");
     }
+
+    // Out for delivery, then the doorstep: a wrong code fails, the customer's code delivers.
+    await post(owner.request, `/api/owner/orders/${order.id}/prepare`);
+    await post(owner.request, `/api/owner/orders/${order.id}/dispatch`);
+    await ownerPage.reload();
+    await expect(card).toBeVisible();
+    await card.getByRole("button", { name: "Delivered, cash collected" }).click();
+    const dialog = codeDialog(ownerPage);
+    await expect(dialog).toBeVisible();
+    const field = dialog.getByLabel("Delivery code");
+    await field.fill(code === "0000" ? "1111" : "0000");
+    await dialog.getByRole("button", { name: "Delivered, cash collected" }).click();
+    await expect(dialog.getByRole("alert")).toContainText("That is not this order's delivery code");
+    await expect(field).toHaveAttribute("aria-invalid", "true");
+    expect((await getJson<Order>(page.request, `/api/orders/${order.id}`)).status).toBe("OUT_FOR_DELIVERY");
+
+    await field.fill(code!);
+    await dialog.getByRole("button", { name: "Delivered, cash collected" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(ownerPage.getByText("Delivered. Cash collected and sale recorded.")).toBeVisible();
+    expect((await getJson<Order>(page.request, `/api/orders/${order.id}`)).status).toBe("DELIVERED");
+    delivered = true;
   } finally {
-    await post(owner.request, `/api/owner/orders/${order.id}/cancel`, { reason: "End-to-end check finished" });
+    if (!delivered) {
+      // Put the stock back: cancel before dispatch; once out for delivery, fail it and return it to the shop.
+      const { status } = await getJson<Order>(page.request, `/api/orders/${order.id}`);
+      const reason = { reason: "End-to-end check finished" };
+      if (status === "OUT_FOR_DELIVERY") {
+        await post(owner.request, `/api/owner/orders/${order.id}/fail`, reason);
+        await post(owner.request, `/api/owner/orders/${order.id}/return`, reason);
+      } else if (["PENDING", "SHOP_CONFIRMED", "PREPARING"].includes(status)) {
+        await post(owner.request, `/api/owner/orders/${order.id}/cancel`, reason);
+      }
+    }
     await owner.close();
   }
 });

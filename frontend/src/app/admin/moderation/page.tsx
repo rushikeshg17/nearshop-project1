@@ -192,11 +192,18 @@ export default function AdminModerationPage() {
       ) : !queue.data.items.length ? (
         <EmptyState icon={Flag} title="Nothing to moderate" description="Reported reviews and replies, and held reviews, appear here." />
       ) : (
-        <ul className="space-y-3">
-          {queue.data.items.map((item) => (
-            <QueueItem key={`${item.target}-${item.review_id}`} item={item} triageHours={queue.data.triage_hours} decideHours={queue.data.decide_hours} />
-          ))}
-        </ul>
+        <>
+          {queue.data.total > queue.data.items.length && (
+            <p className="mb-3 text-sm text-muted-foreground">
+              Showing the oldest {queue.data.items.length} of {queue.data.total}. Decide these and the rest move up.
+            </p>
+          )}
+          <ul className="space-y-3">
+            {queue.data.items.map((item) => (
+              <QueueItem key={`${item.target}-${item.review_id}`} item={item} triageHours={queue.data.triage_hours} decideHours={queue.data.decide_hours} />
+            ))}
+          </ul>
+        </>
       )}
     </>
   );

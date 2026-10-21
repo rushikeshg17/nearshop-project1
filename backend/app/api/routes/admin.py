@@ -108,10 +108,11 @@ def _queue_item(item: dict, shops: dict[int, Shop]) -> dict:
 @router.get("/reviews/queue")
 def review_queue(_: AdminUser, db: DB):
     """Reported reviews and replies, and reviews held out by the self-dealing rule, oldest first, with their age,
-    reports and flags. Each is decided with keep, hide or remove."""
-    items = review_service.queue(db)
+    reports and flags, the first QUEUE_LIMIT of them; total counts everything waiting. Each is decided with keep,
+    hide or remove."""
+    items, total = review_service.queue(db)
     shops = db.shops.by_ids({i["shop_id"] for i in items})
-    return {"items": [_queue_item(i, shops) for i in items], "triage_hours": review_service.TRIAGE_HOURS,
+    return {"items": [_queue_item(i, shops) for i in items], "total": total, "triage_hours": review_service.TRIAGE_HOURS,
             "decide_hours": review_service.DECIDE_HOURS}
 
 
