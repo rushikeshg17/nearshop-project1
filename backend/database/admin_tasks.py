@@ -453,9 +453,12 @@ CONSENT_REPORT_IDS = 50
 def consent_report(db: Database, since: date, out: Out = print) -> int:
     """Users created on or after `since` (UTC) and how many lack a granted row for each required purpose or
     an age-declaration row (P3.1). Read-only; prints counts and ids, never an email address. Exits 1 when any
-    user lacks a row."""
+    user lacks a row. Admin accounts are made by create-admin, not by sign-up, so they never have consent rows:
+    they are counted on a line of their own and left out of the check."""
     start = datetime(since.year, since.month, since.day)
-    user_ids = [r["_id"] for r in db.users.find_raw({"created_at": {"$gte": start}}, {"_id": 1}, sort=[("_id", 1)])]
+    rows = db.users.find_raw({"created_at": {"$gte": start}}, {"_id": 1, "role": 1}, sort=[("_id", 1)])
+    admins = sum(1 for r in rows if r.get("role") == Role.ADMIN.value)
+    user_ids = [r["_id"] for r in rows if r.get("role") != Role.ADMIN.value]
     needed = (*REQUIRED_PURPOSES, AGE_PURPOSE)
     have: dict[int, set[str]] = {}
     for row in db.mongo["consents"].aggregate([
@@ -467,7 +470,8 @@ def consent_report(db: Database, since: date, out: Out = print) -> int:
     no_age = [u for u in user_ids if AGE_PURPOSE not in have.get(u, set())]
     missing = sorted(set(no_required) | set(no_age))
     out(f"Consent report for database {db.mongo.name}, users created since {since.isoformat()} (UTC)")
-    out(f"  users created:                        {len(user_ids)}")
+    out(f"  users created by sign-up:             {len(user_ids)}")
+    out(f"  admins created (not checked):         {admins}")
     out(f"  missing a required-purpose consent:   {len(no_required)}")
     out(f"  missing the age declaration:          {len(no_age)}")
     out(f"  missing either:                       {len(missing)}")

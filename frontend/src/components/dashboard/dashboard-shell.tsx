@@ -106,8 +106,21 @@ export function DashboardShell({
           </div>
         </header>
         <main id="main" className="mx-auto max-w-6xl px-4 py-6 md:px-6 md:py-8">{children}</main>
+        <LegalFooter className="mx-auto max-w-6xl px-4 pb-6 md:px-6" />
       </div>
     </div>
+  );
+}
+
+/** Links to the privacy notice and terms (P3.1), shown on every owner and admin page. */
+export function LegalFooter({ className }: { className?: string }) {
+  return (
+    <footer className={className}>
+      <p className="flex flex-wrap gap-x-4 gap-y-1 border-t pt-4 text-xs text-muted-foreground">
+        <Link href="/privacy" className="hover:text-foreground">Privacy notice</Link>
+        <Link href="/terms" className="hover:text-foreground">Terms of use</Link>
+      </p>
+    </footer>
   );
 }
 

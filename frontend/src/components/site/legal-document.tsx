@@ -46,8 +46,13 @@ export function loadLegal(doc: LegalDoc): LegalText {
     .map(({ name, match }) => ({ name, version: Number(match[1]), lang: match[2] ?? "en" }));
   if (files.length === 0) return null;
   const newest = Math.max(...files.map((f) => f.version));
-  const languages = files
-    .filter((f) => f.version === newest)
+  // One file per language: <doc>-vN.md and <doc>-vN.en.md are both English, and the plain name wins, so a
+  // stray duplicate cannot render the same language twice (duplicate keys and ids break the switcher).
+  const byLang = new Map<string, (typeof files)[number]>();
+  for (const f of files.filter((f) => f.version === newest).sort((a, b) => a.name.length - b.name.length)) {
+    if (!byLang.has(f.lang)) byLang.set(f.lang, f);
+  }
+  const languages = [...byLang.values()]
     .sort((a, b) => (a.lang === "en" ? -1 : b.lang === "en" ? 1 : a.lang.localeCompare(b.lang)))
     .map(({ name, lang }) => {
       const text = fs.readFileSync(path.join(LEGAL_DIR, name), "utf-8");

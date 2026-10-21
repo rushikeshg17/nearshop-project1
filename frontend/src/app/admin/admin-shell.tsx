@@ -5,7 +5,7 @@ import { BrainCircuit, LayoutDashboard, Scale, ShieldCheck, Store, Users } from 
 import Link from "next/link";
 
 import { EmptyState, ListSkeleton } from "@/components/common/states";
-import { DashboardShell } from "@/components/dashboard/dashboard-shell";
+import { DashboardShell, LegalFooter } from "@/components/dashboard/dashboard-shell";
 import { Button } from "@/components/ui/button";
 import { useMe } from "@/hooks/use-session";
 import { api } from "@/lib/api";
@@ -14,12 +14,13 @@ import type { AdminOverview } from "@/lib/types";
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const { data: me, isLoading } = useMe();
   const overview = useQuery({ queryKey: ["admin", "overview"], queryFn: () => api.get<AdminOverview>("/admin/overview"), enabled: me?.role === "admin" });
-  if (isLoading) return <div className="p-10"><ListSkeleton /></div>;
+  if (isLoading) return <div className="p-10"><ListSkeleton /><LegalFooter className="mt-16" /></div>;
   if (!me || me.role !== "admin") {
     return (
       <div className="mx-auto max-w-lg px-4 py-24">
         <EmptyState icon={ShieldCheck} title="Admins only" description="Sign in with an admin account to see platform analytics."
           action={<Button asChild><Link href="/login?next=/admin">Sign in</Link></Button>} />
+        <LegalFooter className="mt-16" />
       </div>
     );
   }

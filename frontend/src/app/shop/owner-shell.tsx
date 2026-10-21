@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { BrainCircuit, ClipboardList, FileSpreadsheet, LayoutDashboard, Library, Package, Settings, Star, Truck } from "lucide-react";
 import Link from "next/link";
 
-import { DashboardShell } from "@/components/dashboard/dashboard-shell";
+import { DashboardShell, LegalFooter } from "@/components/dashboard/dashboard-shell";
 import { EmptyState, ListSkeleton } from "@/components/common/states";
 import { Button } from "@/components/ui/button";
 import { useMe } from "@/hooks/use-session";
@@ -20,12 +20,13 @@ export function OwnerShell({ children }: { children: React.ReactNode }) {
     refetchInterval: 15_000,
   });
 
-  if (isLoading) return <div className="p-10"><ListSkeleton /></div>;
+  if (isLoading) return <div className="p-10"><ListSkeleton /><LegalFooter className="mt-16" /></div>;
   if (!me || me.role !== "owner") {
     return (
       <div className="mx-auto max-w-lg px-4 py-24">
         <EmptyState icon={Package} title="The shop dashboard is for shop owners" description="Sign in with a shop owner account, or list your shop in a few minutes."
           action={<><Button asChild><Link href="/register/shop">List your shop</Link></Button><Button asChild variant="outline"><Link href="/login?next=/shop">Sign in</Link></Button></>} />
+        <LegalFooter className="mt-16" />
       </div>
     );
   }

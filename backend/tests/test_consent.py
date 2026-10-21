@@ -123,12 +123,15 @@ def test_consent_rows_are_appended_never_updated(client, db):
 
 def test_consent_report_counts_missing_rows_and_prints_no_email(db):
     created = datetime(2099, 1, 2)
-    complete, no_age, none = db.users.insert_many([
+    complete, no_age, none, _admin = db.users.insert_many([
         User(name="Report One", email="report-1@example.com", password_hash="x", role=Role.CUSTOMER,
              created_at=created),
         User(name="Report Two", email="report-2@example.com", password_hash="x", role=Role.CUSTOMER,
              created_at=created),
         User(name="Report Three", email="report-3@example.com", password_hash="x", role=Role.OWNER,
+             created_at=created),
+        # Made by create-admin, never by sign-up: counted apart, not reported as missing consent.
+        User(name="Report Admin", email="report-admin@example.com", password_hash="x", role=Role.ADMIN,
              created_at=created),
     ])
     record_consents(db, complete.id, ConsentIn(**FULL))
@@ -137,7 +140,8 @@ def test_consent_report_counts_missing_rows_and_prints_no_email(db):
     assert admin_tasks.consent_report(db, date(2099, 1, 1), lines.append) == 1
     text = "\n".join(lines)
     assert "@" not in text
-    assert "users created:                        3" in text
+    assert "users created by sign-up:             3" in text
+    assert "admins created (not checked):         1" in text
     assert "missing a required-purpose consent:   1" in text
     assert "missing the age declaration:          2" in text
     assert "missing either:                       2" in text
@@ -145,7 +149,7 @@ def test_consent_report_counts_missing_rows_and_prints_no_email(db):
 
     lines.clear()
     assert admin_tasks.consent_report(db, date(2099, 1, 3), lines.append) == 0
-    assert "users created:                        0" in "\n".join(lines)
+    assert "users created by sign-up:             0" in "\n".join(lines)
 
 
 def test_consent_report_command_line(db, monkeypatch):
