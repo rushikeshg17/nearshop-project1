@@ -163,6 +163,7 @@ RESERVATION_DAY = Rule("reservation_day", 30, DAY, (USER,))
 ORDER_HOUR = Rule("order_hour", 5, HOUR, (USER,))
 ORDER_DAY = Rule("order_day", 15, DAY, (USER,))
 REVIEW_DAY = Rule("review_day", 5, DAY, (USER,))
+REVIEW_REPORT = Rule("review_report", 10, DAY, (USER,))  # reports of reviews and of shop replies together (P3.6)
 SEARCH_IP = Rule("search_ip", 120, MINUTE, (IP,), admin_exempt=True)
 SEARCH_SESSION = Rule("search_session", 30, MINUTE, (SESSION,), admin_exempt=True)
 SUGGEST_IP = Rule("suggest_ip", 240, MINUTE, (IP,), admin_exempt=True)
@@ -174,7 +175,7 @@ DATA_EXPORT = Rule("data_export", 3, DAY, (USER,))
 CATALOG_READ = Rule("catalog_read", 300, MINUTE, (IP,))
 DEFAULT = Rule("default", 600, MINUTE, (IP,))
 
-# Later prompts add their rows here, with the plan section 8.3 limits: review report (P3.6), grievance
+# Later prompts add their rows here, with the plan section 8.3 limits: grievance
 # submission keyed by body("contact") (P3.8), OTP send and verify keyed by body("phone") (P4.1), search result
 # click (P5.6) and lead event (P9.2).
 LIMITS: tuple[Row, ...] = (
@@ -186,6 +187,8 @@ LIMITS: tuple[Row, ...] = (
     Row(("POST",), (RESERVATION_HOUR, RESERVATION_DAY), route="/api/reservations"),
     Row(("POST",), (ORDER_HOUR, ORDER_DAY), route="/api/orders"),
     Row(("POST",), (REVIEW_DAY,), route="/api/reviews"),
+    Row(("POST",), (REVIEW_REPORT,), route="/api/reviews/{review_id}/report"),  # P3.6
+    Row(("POST",), (REVIEW_REPORT,), route="/api/reviews/{review_id}/reply/report"),  # P3.6
     Row(("GET",), (SEARCH_IP, SEARCH_SESSION), route="/api/search"),
     Row(("GET",), (SUGGEST_IP,), route="/api/search/suggest"),
     Row(("GET",), (SEARCH_COMPARE_IP,), route="/api/ai/search-compare"),

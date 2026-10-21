@@ -190,7 +190,9 @@ def order_out(o: Order, *, actions: list[str], events: list[StatusEvent] | None 
     return out
 
 
-def review_out(r: Review, product_name: str | None = None) -> dict:
+def review_out(r: Review, product_name: str | None = None, *, for_owner: bool = False) -> dict:
+    """A review as lists show it, with the shop's reply under it (P3.6). Public lists show only visible reviews
+    and a reply only while it is visible; the owner's list also carries each one's moderation status."""
     if r.customer is None or r.customer.deleted_at is not None:
         display = "Former customer"  # the reviewer deleted their account (P3.2)
     else:
@@ -206,7 +208,20 @@ def review_out(r: Review, product_name: str | None = None) -> dict:
         "customer_name": display,
         "product_name": product_name,
         "source": "delivery" if r.order_id else "pickup",
+        "reply": reply_out(r, for_owner=for_owner),
+        **({"status": r.status} if for_owner else {}),
     }
+
+
+def reply_out(r: Review, *, for_owner: bool = False) -> dict | None:
+    rp = r.reply
+    if rp is None or (rp.status != "visible" and not for_owner):
+        return None
+    out = {"text": rp.text, "created_at": iso(rp.created_at), "edited_at": iso(rp.edited_at)}
+    if for_owner:
+        # The edit window (24 hours, app/services/reviews.py) and whether moderation has the reply.
+        out.update(status=rp.status, under_review=rp.reported_at is not None and rp.decided_at is None)
+    return out
 
 
 def notification_out(n: Notification) -> dict:

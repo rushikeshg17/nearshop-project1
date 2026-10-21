@@ -41,6 +41,7 @@ from app.schemas.serializers import (
 from app.services import analytics, importer
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
+from app.services import reviews as review_service
 from app.services.inventory import apply_bulk, change_stock, set_stock
 from app.services.loaders import (
     categories,
@@ -235,9 +236,33 @@ def insights(shop: OwnerShop, db: DB):
 
 @router.get("/reviews")
 def reviews(shop: OwnerShop, db: DB):
+    """The shop's latest reviews, with each one's moderation status and the shop's reply (P3.6)."""
     rows = with_customers(db, db.reviews.find({"shop_id": shop.id}, sort=[("created_at", -1)], limit=50))
     names = product_names(db, (r.product_id for r in rows))
-    return [review_out(r, names.get(r.product_id)) for r in rows]
+    return [review_out(r, names.get(r.product_id), for_owner=True) for r in rows]
+
+
+class ReplyIn(BaseModel):
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    text: str = Field(min_length=1, max_length=1000)
+
+
+def _reply_json(reply) -> dict:
+    return {"text": reply.text, "created_at": iso(reply.created_at), "edited_at": iso(reply.edited_at),
+            "editable_until": iso(reply.created_at + timedelta(hours=review_service.REPLY_EDIT_HOURS))}
+
+
+@router.post("/reviews/{review_id}/reply")
+def reply_to_review(review_id: int, body: ReplyIn, shop: OwnerShop, user: OwnerUser, db: DB):
+    """The shop's one public reply to a review of it (P3.6, plan section 8.2), shown under the review."""
+    return _reply_json(review_service.reply(db, shop, user, review_id, body.text))
+
+
+@router.put("/reviews/{review_id}/reply")
+def edit_reply(review_id: int, body: ReplyIn, shop: OwnerShop, db: DB):
+    """Edit the reply, within 24 hours of writing it and while it is not reported; 409 after that."""
+    return _reply_json(review_service.edit_reply(db, shop, review_id, body.text))
 
 
 # ------------------------------------------------------------------ inventory

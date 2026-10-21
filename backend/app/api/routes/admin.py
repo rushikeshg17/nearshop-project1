@@ -13,6 +13,7 @@ from app.models.core import VerificationStatus, evidence_keys, months_after
 from app.schemas.requests import AdminShopUpdateIn, AnomalyReviewIn
 from app.schemas.serializers import iso, listing, shop_brief
 from app.services import analytics
+from app.services import reviews as review_service
 from app.services.loaders import with_categories, with_category
 from app.services.media import (
     PrivateStorageUnavailable,
@@ -80,6 +81,73 @@ def review_anomaly(anomaly_id: int, body: AnomalyReviewIn, admin: AdminUser, db:
     db.price_anomalies.set(a, status=AnomalyStatus(body.status), review_note=body.note, reviewed_by=admin.id,
                            reviewed_at=utcnow())
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- review moderation (P3.6, plan section 8.2)
+
+class ReviewTargetIn(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    target: review_service.Target = "review"
+
+
+class ReviewDecisionIn(ReviewTargetIn):
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    decision: review_service.Decision
+    note: str | None = Field(default=None, max_length=500)
+
+
+def _queue_item(item: dict, shops: dict[int, Shop]) -> dict:
+    s = shops.get(item["shop_id"])
+    return {**item, "entered_at": iso(item["entered_at"]), "triaged_at": iso(item["triaged_at"]),
+            "created_at": iso(item["created_at"]),
+            "shop": {"id": s.id, "name": s.name, "slug": s.slug} if s else None}
+
+
+@router.get("/reviews/queue")
+def review_queue(_: AdminUser, db: DB):
+    """Reported reviews and replies, and reviews held out by the self-dealing rule, oldest first, with their age,
+    reports and flags. Each is decided with keep, hide or remove."""
+    items = review_service.queue(db)
+    shops = db.shops.by_ids({i["shop_id"] for i in items})
+    return {"items": [_queue_item(i, shops) for i in items], "triage_hours": review_service.TRIAGE_HOURS,
+            "decide_hours": review_service.DECIDE_HOURS}
+
+
+def _moderation_json(review_id: int, db: Database, target: str) -> dict:
+    r = db.reviews.get(review_id)
+    thing = r.reply if target == review_service.REPLY and r and r.reply else r
+    return {"review_id": review_id, "target": target, "status": thing.status, "decision": thing.decision,
+            "triaged_at": iso(thing.triaged_at), "decided_at": iso(thing.decided_at)}
+
+
+@router.post("/reviews/{review_id}/triage")
+def triage_review(review_id: int, body: ReviewTargetIn, _: AdminUser, db: DB):
+    """An admin has picked the item up (the 24-hour triage target)."""
+    review_service.triage(db, review_id, body.target)
+    return _moderation_json(review_id, db, body.target)
+
+
+@router.post("/reviews/{review_id}/decision")
+def decide_review(review_id: int, body: ReviewDecisionIn, admin: AdminUser, db: DB):
+    """keep, hide or remove a review or its reply (the 72-hour decision target). The shop's rating is recomputed."""
+    review_service.decide(db, admin, review_id, body.target, body.decision, body.note)
+    return _moderation_json(review_id, db, body.target)
+
+
+@router.get("/reviews/sla")
+def review_sla(_: AdminUser, db: DB, month: str | None = Query(None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$")):
+    """For the items that entered the queue in one month (India time; this month by default): the share triaged
+    within 24 hours and the share decided within 72 hours. Items still inside a deadline are pending, not misses."""
+    if month:
+        year, mon = int(month[:4]), int(month[5:])
+    else:
+        local = utcnow() + IST
+        year, mon = local.year, local.month
+    start = datetime(year, mon, 1) - IST
+    end = datetime(year + mon // 12, mon % 12 + 1, 1) - IST
+    return {"month": f"{year:04d}-{mon:02d}", **review_service.sla(db, start, end)}
 
 
 @router.get("/shops")

@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from app.core.database import utcnow
 from app.models.base import Document, Embedded, GeoPoint, Timestamps
@@ -101,14 +101,40 @@ class StatusEvent(Document):
     created_at: datetime = Field(default_factory=utcnow)
 
 
-class Review(Document):
+class Moderation(BaseModel):
+    """What moderation (P3.6, app/services/reviews.py) records on a review or a shop reply. report_count is the
+    number of distinct users who reported it (review_reports); reported_at is the first report. It is in the admin
+    queue from then (or, for a review, from held_at) until an admin decides it: triaged_at when an admin first
+    picks it up, decided_at and decision (keep, hide or remove) when one decides it, both set once and kept."""
+
+    status: str = "visible"  # visible | hidden | removed
+    report_count: int = 0
+    reported_at: datetime | None = None
+    triaged_at: datetime | None = None
+    decided_at: datetime | None = None
+    decision: str | None = None  # keep | hide | remove, the latest decision
+    decided_by: int | None = None
+    decision_note: str | None = None
+
+
+class ReviewReply(Embedded, Moderation):
+    """The shop's one public reply to a review (P3.6), embedded in it. Editable for 24 hours, and reportable."""
+
+    text: str
+    author_id: int  # the owner who wrote it
+    created_at: datetime = Field(default_factory=utcnow)
+    edited_at: datetime | None = None
+
+
+class Review(Document, Moderation):
     """Collection `reviews`. Exactly one of reservation_id / order_id is set, and each is unique:
     one review per completed reservation or delivered order.
 
-    Integrity (P3.5, app/services/reviews.py): status is visible until moderation hides or removes it (P3.6).
-    counted is false for a second review of the same shop by the same customer within 30 days. held marks a
-    review held out of the rating by the self-dealing rule, flagged for the admin queue at held_at. The shop's
-    rating counts only visible, counted, unheld reviews."""
+    Integrity (P3.5, app/services/reviews.py): status is visible until moderation hides or removes it (P3.6:
+    reports from 3 distinct users hide it until an admin decides). counted is false for a second review of the
+    same shop by the same customer within 30 days. held marks a review held out of the rating by the
+    self-dealing rule, flagged for the admin queue at held_at. The shop's rating counts only visible, counted,
+    unheld reviews. Public lists show only visible reviews, with the shop's reply when it is visible."""
 
     customer_id: int
     shop_id: int
@@ -120,13 +146,24 @@ class Review(Document):
     delivery_rating: int | None = None
     comment: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
-    status: str = "visible"  # visible | hidden | removed (P3.6)
     counted: bool = True
     held: bool = False
     held_at: datetime | None = None
     held_reason: str | None = None  # self_dealing
+    reply: ReviewReply | None = None
 
     customer: User | None = Field(default=None, exclude=True)
+
+
+class ReviewReport(Document):
+    """Collection `review_reports` (P3.6). One report per user per review, or per shop reply (target)."""
+
+    review_id: int
+    target: str = "review"  # review | reply
+    reporter_id: int
+    reason: str  # fake | abusive | personal_info | off_topic | other
+    note: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 class Notification(Document):

@@ -97,6 +97,13 @@ NON_NEGATIVE = {"bsonType": NUM, "minimum": 0}
 SHOP_AUDIT_ACTIONS = ("shop_phone_verified", "shop_verification_approve", "shop_verification_reject",
                       "shop_verification_reject_renewal", "shop_verification_suspend")
 
+# What moderation records on a review and on a shop reply (P3.6, app/models/activity.py Moderation).
+MODERATION: dict[str, dict | str | list] = dict(
+    status={"enum": ["visible", "hidden", "removed"]}, report_count={"bsonType": INT, "minimum": 0},
+    reported_at=DATE_N, triaged_at=DATE_N, decided_at=DATE_N, decision={"enum": ["keep", "hide", "remove", None]},
+    decided_by=INT_N, decision_note={"bsonType": STR_N, "maxLength": 500},
+)
+
 VALIDATORS: dict[str, dict] = {
     "users": schema(
         ["name", "email", "password_hash", "role", "is_active", "created_at", "updated_at"],
@@ -194,8 +201,14 @@ VALIDATORS: dict[str, dict] = {
             customer_id=INT, shop_id=INT, product_id=INT_N, rating=RATING, accuracy_rating=RATING_N,
             delivery_rating=RATING_N, comment=STR_N, created_at=DATE,
             # Review integrity (P3.5), optional: migration 6 sets counted and held on older reviews.
-            status={"enum": ["visible", "hidden", "removed"]}, counted=BOOL, held=BOOL, held_at=DATE_N,
-            held_reason=STR_N,
+            counted=BOOL, held=BOOL, held_at=DATE_N, held_reason=STR_N,
+            # Moderation (P3.6), optional: status (visible until moderation hides or removes it, P3.5), reports,
+            # the admin's decision and the shop's one reply.
+            **MODERATION, reply={"oneOf": [{"bsonType": "null"}, {
+                "bsonType": "object", "required": ["text", "author_id", "created_at"],
+                "properties": {"text": {"bsonType": STR, "minLength": 1, "maxLength": 1000}, "author_id": {
+                    "bsonType": INT}, "created_at": {"bsonType": DATE}, "edited_at": {"bsonType": DATE_N},
+                    **{k: v if isinstance(v, dict) else {"bsonType": v} for k, v in MODERATION.items()}}}]},
         )["$jsonSchema"],
         # A review belongs to exactly one purchase: a pickup reservation or a delivery order.
         "oneOf": [
@@ -203,6 +216,13 @@ VALIDATORS: dict[str, dict] = {
             {"properties": {"reservation_id": {"bsonType": "null"}, "order_id": {"bsonType": INT}}},
         ],
     }},
+    # Review and reply reports (P3.6): one per user per review or reply, enforced by uq_reporter.
+    "review_reports": schema(
+        ["review_id", "target", "reporter_id", "reason", "created_at"],
+        review_id=INT, target={"enum": ["review", "reply"]}, reporter_id=INT,
+        reason={"enum": ["fake", "abusive", "personal_info", "off_topic", "other"]},
+        note={"bsonType": STR_N, "maxLength": 500}, created_at=DATE,
+    ),
     "notifications": schema(["user_id", "kind", "title", "created_at"],
                             user_id=INT, kind=STR, title=STR, read_at=DATE_N, created_at=DATE),
     "search_history": schema(
@@ -380,6 +400,15 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("shop_id", A), ("created_at", D)], name="shop_created"),
         IndexModel([("product_id", A), ("created_at", D)], name="product_created"),
         IndexModel([("customer_id", A)], name="customer"),
+        # The moderation queue and the monthly SLA (P3.6): reported reviews, held reviews and reported replies.
+        IndexModel([("reported_at", A)], name="reported", partialFilterExpression={"reported_at": {"$type": "date"}}),
+        IndexModel([("held_at", A)], name="held", partialFilterExpression={"held_at": {"$type": "date"}}),
+        IndexModel([("reply.reported_at", A)], name="reply_reported",
+                   partialFilterExpression={"reply.reported_at": {"$type": "date"}}),
+    ],
+    "review_reports": [
+        IndexModel([("review_id", A), ("target", A), ("reporter_id", A)], unique=True, name="uq_reporter"),
+        IndexModel([("reporter_id", A), ("created_at", D)], name="reporter_created"),
     ],
     "notifications": [
         IndexModel([("user_id", A), ("created_at", D)], name="user_created"),

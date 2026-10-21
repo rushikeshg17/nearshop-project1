@@ -26,7 +26,7 @@ from app.services.loaders import (
 from app.services.meta import city_config
 from app.services.orders import quote_delivery
 from app.services.reliability import shop_reliability
-from app.services.reviews import RATED
+from app.services.reviews import PUBLIC, RATED
 from app.services.search import SearchParams, run_search
 from app.utils.geo import haversine_km, within_km
 
@@ -99,7 +99,7 @@ def product_detail(product_id: int, db: DB, user: OptionalUser, lat: float | Non
         own_shop,
         lambda: db.catalog_items.get(p.catalog_item_id),
         same_item,
-        lambda: db.reviews.find({"product_id": p.id}, sort=[("created_at", -1)], limit=6),
+        lambda: db.reviews.find({"product_id": p.id, **PUBLIC}, sort=[("created_at", -1)], limit=6),
         lambda: _sold_last_30d(db, p.id),
         my_reservation,
     )
@@ -113,10 +113,11 @@ def product_detail(product_id: int, db: DB, user: OptionalUser, lat: float | Non
     others.sort(key=lambda o: (o["quantity"] <= 0, o["shop"]["distance_km"] if o["shop"]["distance_km"]
                                is not None else o["price"]))
 
-    # Reviews of this exact listing first, then recent reviews of the shop.
+    # Reviews of this exact listing first, then recent reviews of the shop: only those moderation has not hidden
+    # or removed (P3.6), each with the shop's reply.
     reviews = list(own_reviews)
     if len(reviews) < 6:
-        reviews += db.reviews.find({"shop_id": shop.id, "product_id": {"$ne": p.id}},
+        reviews += db.reviews.find({"shop_id": shop.id, "product_id": {"$ne": p.id}, **PUBLIC},
                                    sort=[("created_at", -1)], limit=6 - len(reviews))
     reliability, _, names = db.gather(
         lambda: shop_reliability(db, shop),
@@ -278,9 +279,10 @@ def shop_products(
 
 @router.get("/shops/{slug}/reviews")
 def shop_reviews(slug: str, db: DB, page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=50)):
+    """The shop's reviews, newest first, without those moderation hid or removed (P3.6), with the shop's replies."""
     shop = _shop_by_slug(db, slug)
     rows, dist = db.gather(
-        lambda: with_customers(db, db.reviews.find({"shop_id": shop.id}, sort=[("created_at", -1)],
+        lambda: with_customers(db, db.reviews.find({"shop_id": shop.id, **PUBLIC}, sort=[("created_at", -1)],
                                                    skip=(page - 1) * page_size, limit=page_size)),
         lambda: {r["_id"]: r["n"] for r in db.reviews.aggregate([
             {"$match": {"shop_id": shop.id, **RATED}}, {"$group": {"_id": "$rating", "n": {"$sum": 1}}}])},

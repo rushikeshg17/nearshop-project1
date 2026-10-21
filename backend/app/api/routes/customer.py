@@ -2,6 +2,7 @@
 from typing import Literal
 
 from fastapi import APIRouter, Query
+from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
 
 from app.ai.recommend import bundle_for
@@ -188,6 +189,33 @@ def create_review(body: ReviewIn, user: CustomerUser, db: DB):
     except DuplicateKeyError:  # unique index: one review per reservation / order
         raise Conflict("You have already reviewed this purchase", code="duplicate_review") from None
     return {"id": review.id, "ok": True}
+
+
+class ReviewReportIn(BaseModel):
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    reason: review_service.ReportReason
+    note: str | None = Field(default=None, max_length=500)
+
+
+def _report(db: Database, user: User, review_id: int, target: str, body: ReviewReportIn) -> dict:
+    try:
+        return review_service.report(db, user, review_id, target, body.reason, body.note)
+    except DuplicateKeyError:  # the same user's report raced itself: it counts once
+        return {"ok": True, "already_reported": True}
+
+
+@router.post("/reviews/{review_id}/report")
+def report_review(review_id: int, body: ReviewReportIn, user: CurrentUser, db: DB):
+    """Report a review (P3.6, plan section 8.2): once per user, at most 10 reports a day (app/core/ratelimit.py).
+    Reports from 3 distinct users hide it until an admin decides it."""
+    return _report(db, user, review_id, review_service.REVIEW, body)
+
+
+@router.post("/reviews/{review_id}/reply/report")
+def report_reply(review_id: int, body: ReviewReportIn, user: CurrentUser, db: DB):
+    """Report the shop's reply to a review, under the same rules as reporting a review."""
+    return _report(db, user, review_id, review_service.REPLY, body)
 
 
 # ------------------------------------------------------------------ dashboard
