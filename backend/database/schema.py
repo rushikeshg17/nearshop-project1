@@ -283,12 +283,22 @@ VALIDATORS: dict[str, dict] = {
 
 A, D = ASCENDING, DESCENDING
 ADMIN_AUDIT_KEEP_SECONDS = 365 * 24 * 60 * 60  # admin_audit rows are kept for one year
+# Retention (P3.2; plan section 8.4; docs/legal/retention.md). Built on existing databases by migration 4.
+SEARCH_HISTORY_KEEP_SECONDS = 180 * 24 * 60 * 60  # search_history rows are deleted after 180 days
+NOTIFICATIONS_KEEP_SECONDS = 90 * 24 * 60 * 60  # notifications are deleted after 90 days
+SEARCH_HISTORY_TTL = IndexModel([("created_at", ASCENDING)], expireAfterSeconds=SEARCH_HISTORY_KEEP_SECONDS,
+                                name="created_ttl_180d")  # replaced the plain index "created" (migration 4)
+NOTIFICATIONS_TTL = IndexModel([("created_at", ASCENDING)], expireAfterSeconds=NOTIFICATIONS_KEEP_SECONDS,
+                               name="created_ttl_90d")
 IS_INT = {"$type": "number"}  # partial-index filter: "this optional reference is set"
 
 INDEXES: dict[str, list[IndexModel]] = {
     "users": [
         IndexModel([("email", A)], unique=True, name="uq_email"),
         IndexModel([("role", A), ("created_at", D)], name="role_created"),
+        # Deletions waiting for orders in flight (P3.2): the process_deletions job reads only these.
+        IndexModel([("deletion_due_at", A)], name="deletion_due",
+                   partialFilterExpression={"deletion_due_at": {"$type": "date"}}),
     ],
     "categories": [
         IndexModel([("slug", A)], unique=True, name="uq_slug"),
@@ -351,10 +361,11 @@ INDEXES: dict[str, list[IndexModel]] = {
     "notifications": [
         IndexModel([("user_id", A), ("created_at", D)], name="user_created"),
         IndexModel([("user_id", A), ("read_at", A)], name="user_read"),
+        NOTIFICATIONS_TTL,
     ],
     "search_history": [
         IndexModel([("normalized_query", A), ("results_count", A)], name="query_results"),
-        IndexModel([("created_at", D)], name="created"),
+        SEARCH_HISTORY_TTL,
         IndexModel([("user_id", A), ("created_at", D)], name="user_created"),
         IndexModel([("location", GEOSPHERE)], name="location_2dsphere"),
     ],

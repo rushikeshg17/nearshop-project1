@@ -22,6 +22,16 @@ class UserSession(Embedded):
     device: str = "Unknown device"
 
 
+class Nominee(Embedded):
+    """The one person a user names to exercise their rights after their death or incapacity (P3.2, plan
+    section 8.5): a name, and a phone or an email. Support acts on it only with documentary proof."""
+
+    name: str
+    phone: str | None = None
+    email: str | None = None
+    added_at: datetime = Field(default_factory=utcnow)
+
+
 class User(Document, Timestamps):
     """Collection `users`. Unique on email.
 
@@ -52,6 +62,15 @@ class User(Document, Timestamps):
     totp_last_step: int = 0
     totp_failures: int = 0
     totp_locked_until: datetime | None = None
+    # Privacy (P3.2, app/services/privacy.py). The nominee is declared here because models ignore undeclared
+    # fields. A deletion waiting for orders in flight carries deletion_requested_at and deletion_due_at (at
+    # most 7 days later), and deletion_flagged_at once it is overdue and flagged for an admin. deleted_at is
+    # set when the account is anonymised.
+    nominee: Nominee | None = None
+    deletion_requested_at: datetime | None = None
+    deletion_due_at: datetime | None = None
+    deletion_flagged_at: datetime | None = None
+    deleted_at: datetime | None = None
 
     @property
     def totp_enrolled(self) -> bool:

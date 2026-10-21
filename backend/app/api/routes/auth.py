@@ -1,9 +1,11 @@
 import logging
 import math
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Request, Response
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
@@ -31,6 +33,8 @@ from app.core.security import (
 from app.models import Role, Shop, User
 from app.schemas.requests import (
     CONSENT_PURPOSES,
+    OPTIONAL_PURPOSES,
+    PHONE_PATTERN,
     REQUIRED_PURPOSES,
     ConsentIn,
     LoginIn,
@@ -41,9 +45,22 @@ from app.schemas.requests import (
 from app.schemas.serializers import iso
 from app.services.loaders import categories
 from app.services.meta import city_config
+from app.services.privacy import (
+    DeletionBlocked,
+    consent_state,
+    deletion_plan,
+    export_data,
+    nominee_out,
+    remove_nominee,
+    request_deletion,
+    set_consent,
+    set_nominee,
+)
 from app.utils.text import slugify
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+# GET /api/me/export (P3.2): the data export, at the route the rate-limit table names (3 a day per user).
+me_router = APIRouter(prefix="/me", tags=["auth"])
 log = logging.getLogger("nearshop.auth")
 
 EMAIL_TAKEN = Conflict("An account with this email already exists", code="email_taken")
@@ -65,6 +82,34 @@ class PasswordChangeIn(BaseModel):
 
     current_password: str = Field(min_length=1, max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
+
+
+class NomineeIn(BaseModel):
+    """One nominee (plan section 8.5): a name, and a phone or an email (or both)."""
+
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    name: str = Field(min_length=2, max_length=120)
+    phone: str | None = Field(default=None, pattern=PHONE_PATTERN)
+    email: EmailStr | None = None
+
+    @model_validator(mode="after")
+    def _phone_or_email(self) -> "NomineeIn":
+        if not self.phone and not self.email:
+            raise ValueError("Give the nominee's phone number or email address")
+        return self
+
+
+class DeleteAccountIn(BaseModel):
+    """Deleting the account: the current password, and whether to cancel open reservations and orders first."""
+
+    model_config = {"extra": "forbid"}
+
+    password: str = Field(min_length=1, max_length=128)
+    cancel_open: bool = False
+
+
+OptionalPurpose = Literal[OPTIONAL_PURPOSES]  # one consent endpoint per optional purpose
 
 
 def user_out(user: User, db: Database) -> dict:
@@ -350,3 +395,72 @@ def update_me(body: ProfileUpdateIn, request: Request, response: Response, user:
     if changes:
         db.users.set(user, **changes)
     return _out_after_revoke(user, db) if revoked else user_out(user, db)
+
+
+# ---------------------------------------------------------------- privacy rights (P3.2, app/services/privacy.py)
+
+
+@router.get("/privacy")
+def privacy_settings(user: CurrentUser, db: DB):
+    """What the account page's privacy section shows: consents in force, the nominee and the deletion outcome."""
+    raw = db.users.raw.find_one({"_id": user.id}, {"nominee": 1}) or {}
+    return {"consents": consent_state(db, user.id), "optional_purposes": list(OPTIONAL_PURPOSES),
+            "nominee": nominee_out(raw.get("nominee")), "deletion": deletion_plan(db, user)}
+
+
+@router.put("/consents/{purpose}")
+def grant_consent(purpose: OptionalPurpose, user: CurrentUser, db: DB):
+    """Turn an optional purpose on: a new consents row, granted, against the current notice version."""
+    return {"consents": set_consent(db, user.id, purpose, True)}
+
+
+@router.delete("/consents/{purpose}")
+def withdraw_consent(purpose: OptionalPurpose, user: CurrentUser, db: DB):
+    """Withdraw an optional purpose: a new consents row, not granted. Takes effect on the next request."""
+    return {"consents": set_consent(db, user.id, purpose, False)}
+
+
+@router.put("/nominee")
+def put_nominee(body: NomineeIn, user: CurrentUser, db: DB):
+    """Name the account's nominee, replacing any earlier one."""
+    return {"nominee": set_nominee(db, user, body.name, body.phone, body.email)}
+
+
+@router.delete("/nominee")
+def delete_nominee(user: CurrentUser, db: DB):
+    remove_nominee(db, user)
+    return {"nominee": None}
+
+
+@router.get("/deletion")
+def deletion_preview(user: CurrentUser, db: DB):
+    """What deleting the account would do now (outcome, open work, the date for a scheduled deletion)."""
+    return deletion_plan(db, user)
+
+
+@router.post("/delete")
+def delete_account(body: DeleteAccountIn, response: Response, user: CurrentUser, db: DB):
+    """Delete the account (plan section 8.5): at once, or scheduled while orders are in flight. 409
+    deletion_blocked lists open reservations and orders unless cancel_open is set; admins get 403."""
+    if user.role == Role.ADMIN:
+        raise Forbidden("Admin accounts cannot delete themselves. Another admin removes the account with the "
+                        "operator command line.", code="admin_self_delete")
+    if not verify_password(body.password, user.password_hash):
+        raise AppError("Your password is not right", code="wrong_password")
+    try:
+        result = request_deletion(db, user, cancel_open=body.cancel_open)
+    except DeletionBlocked as exc:
+        return JSONResponse({"error": {"code": exc.code, "message": exc.message, "open": exc.open}},
+                            status_code=409)
+    if result["status"] == "deleted":
+        _end_cookie(response)
+    return result
+
+
+@me_router.get("/export")
+def export_my_data(user: CurrentUser, db: DB):
+    """Everything NearShop holds about the account, as a JSON download (3 a day, app/core/ratelimit.py)."""
+    data = export_data(db, user)
+    return JSONResponse(data, headers={
+        "Content-Disposition": f'attachment; filename="nearshop-export-{user.id}.json"',
+        "Cache-Control": "no-store"})

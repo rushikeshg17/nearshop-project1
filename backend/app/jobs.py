@@ -17,8 +17,11 @@ it holds the lease, so at any instance count each job runs once per tick.
     (scorecard check 4.2). /api/health/ready reports it, and an uptime monitor alerts on it
     (docs/runbooks/monitoring.md).
 
-The leased jobs are sweep_expired, every tick, and snapshot_storage (P2.2), which records each
-collection's data and index size in storage_snapshots once a day (app/services/analytics.py).
+The leased jobs are sweep_expired, every tick; snapshot_storage (P2.2), which records each
+collection's data and index size in storage_snapshots once a day (app/services/analytics.py); retention
+(P3.2), the nightly retention rules of plan section 8.4 (app/services/privacy.py, docs/legal/retention.md),
+once a day at RETENTION_AT; and process_deletions (P3.2), every tick, which runs account deletions that were
+waiting for orders in flight and flags overdue ones for the admins.
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -84,7 +87,8 @@ LEASES = "job_leases"
 TICK_SECONDS = 30
 LEASE_TTL = timedelta(seconds=60)
 # Jobs too costly, or too loud, to repeat on every tick after a failure: retried after this long.
-RETRY_AFTER_FAILURE: dict[str, timedelta] = {"snapshot_storage": timedelta(hours=1)}
+RETRY_AFTER_FAILURE: dict[str, timedelta] = {"snapshot_storage": timedelta(hours=1), "retention": timedelta(hours=1)}
+RETENTION_AT = time(21, 30)  # UTC: 03:00 IST, the nightly retention job (P3.2)
 
 RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
@@ -176,8 +180,39 @@ def snapshot_storage() -> dict[str, Any]:
     return record_storage_snapshot(Database().mongo, utcnow())
 
 
+def retention_slot(now: datetime) -> datetime:
+    """The most recent retention slot (RETENTION_AT, UTC) at or before now."""
+    slot = datetime.combine(now.date(), RETENTION_AT)
+    return slot if slot <= now else slot - timedelta(days=1)
+
+
+def retention(clock: Clock = utcnow) -> dict[str, Any]:
+    """Nightly retention (P3.2; plan section 8.4; app/services/privacy.py run_retention). Runs once per slot,
+    at RETENTION_AT or on the first tick after it: the slot it ran for is kept in the lease's last_result
+    (ran_for), and every later tick of that slot only repeats the last result. A failed run is retried an
+    hour later (RETRY_AFTER_FAILURE)."""
+    from app.services.privacy import run_retention
+
+    now = clock()
+    slot = retention_slot(now).isoformat()
+    db = Database()
+    last = (db.mongo[LEASES].find_one({"_id": "retention"}, {"last_result": 1}) or {}).get("last_result") or {}
+    if last.get("ok") is True and last.get("ran_for") == slot:
+        return {k: v for k, v in last.items() if k != "ok"}
+    return {"ran_for": slot, **run_retention(db, now)}
+
+
+def process_deletions() -> dict[str, int]:
+    """Scheduled account deletions (P3.2): each runs once its orders in flight have closed, and is flagged
+    for the admins when still waiting 7 days after the request. One indexed query per tick when none wait."""
+    from app.services.privacy import process_scheduled_deletions
+
+    return process_scheduled_deletions(Database(), utcnow())
+
+
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {
-    "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage}
+    "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage, "retention": retention,
+    "process_deletions": process_deletions}
 
 
 class SearchIndexRefresher:

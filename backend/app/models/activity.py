@@ -126,8 +126,9 @@ class Notification(Document):
 
 
 class SearchEvent(Document):
-    """Collection `search_history`. `location` (rounded to ~100 m) lets a shop see what people
-    nearby are searching for with a geo query."""
+    """Collection `search_history`. `location` (rounded to 2 decimals, about 1.1 km) lets a shop see what
+    people nearby are searching for with a geo query. Retention (P3.2): user_id only with the personalised-
+    suggestions consent and for 30 days; the row itself for 180 days (TTL index)."""
 
     user_id: int | None = None
     query: str

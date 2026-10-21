@@ -191,14 +191,13 @@ LIMITS: tuple[Row, ...] = (
     Row(("POST",), (IMAGE_UPLOAD,), route="/api/owner/products/{product_id}/image"),
     Row(("POST",), (IMPORT_PREVIEW,), route="/api/owner/import/preview"),
     Row(("POST",), (IMPORT_COMMIT,), route="/api/owner/import/commit"),
-    # P3.2 adds the data export at this route; if it chooses another, it changes this row.
-    Row(("GET",), (DATA_EXPORT,), route="/api/me/export"),
+    Row(("GET",), (DATA_EXPORT,), route="/api/me/export"),  # the data export (P3.2)
     Row(("GET",), (CATALOG_READ,), route="/api/meta"),
     # Product, recommendations, shop list, shop, shop products and reviews, and P2.8's sitemap endpoint.
     Row(("GET",), (CATALOG_READ,), router="app.api.routes.catalog"),
 )
 # Routes in LIMITS that a later prompt creates (the table test allows them to be missing until then).
-PLANNED_ROUTES = frozenset({"/api/me/export"})
+PLANNED_ROUTES: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

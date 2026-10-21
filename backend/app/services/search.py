@@ -20,6 +20,7 @@ from app.core.database import Database
 from app.models import Product, SearchEvent, Shop
 from app.schemas.serializers import listing, shop_brief
 from app.services.loaders import categories, category_by_slug, with_categories, with_category
+from app.services.privacy import consent_granted
 from app.utils.geo import haversine_km, within_km
 from app.utils.text import expand_synonyms, normalize_query, search_tokens
 
@@ -27,6 +28,7 @@ SEM_FLOOR, SEM_CEIL = 0.22, 0.62  # cosine range mapped to 0..1 for all-MiniLM-L
 SEM_MIN_MATCH = 0.34  # a listing with no keyword hit needs at least this much meaning overlap
 W_SEMANTIC, W_KEYWORD = 0.6, 0.4
 RELATIVE_CUTOFF = 0.42  # drop results far weaker than the best one
+LOCATION_DECIMALS = 2  # search_history locations: about 1.1 km (plan section 8.4)
 # Search results never show these, so they are not fetched.
 LISTING_FIELDS = {"description": 0, "specs": 0}
 
@@ -217,9 +219,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
 
     if log and norm:
         # Logged after the response is on its way: analytics must not make search slower.
-        event = SearchEvent(user_id=user_id, query=p.q[:200], normalized_query=norm[:200], category_slug=p.category,
-                            results_count=total, lat=round(p.lat, 3), lng=round(p.lng, 3))
-        db.background(lambda: Database(db.mongo.name).search_history.insert(event))
+        db.background(lambda: log_search(Database(db.mongo.name), user_id, p, norm, total))
 
     return {
         "query": p.q,
@@ -237,6 +237,18 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         "category_counts": dict(category_counts),
         "engine": {"semantic": index.provider_name or "loading", "keyword": "mongodb-text-index"},
     }
+
+
+def log_search(db: Database, user_id: int | None, p: SearchParams, norm: str, total: int) -> None:
+    """Write one search_history row (retention: plan section 8.4, docs/legal/retention.md). The location is
+    rounded to 2 decimals (about 1.1 km), and user_id is kept only while the user's personalised-suggestions
+    consent is in force; the nightly retention job removes it after 30 days, and the TTL index deletes the
+    row after 180."""
+    if user_id is not None and not consent_granted(db, user_id, "personalised_suggestions"):
+        user_id = None
+    db.search_history.insert(SearchEvent(
+        user_id=user_id, query=p.q[:200], normalized_query=norm[:200], category_slug=p.category,
+        results_count=total, lat=round(p.lat, LOCATION_DECIMALS), lng=round(p.lng, LOCATION_DECIMALS)))
 
 
 # ---------------------------------------------------------------- "did you mean"

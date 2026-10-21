@@ -191,8 +191,11 @@ def order_out(o: Order, *, actions: list[str], events: list[StatusEvent] | None 
 
 
 def review_out(r: Review, product_name: str | None = None) -> dict:
-    parts = (r.customer.name or "Customer").split()
-    display = parts[0] + (f" {parts[-1][0]}." if len(parts) > 1 else "")
+    if r.customer is None or r.customer.deleted_at is not None:
+        display = "Former customer"  # the reviewer deleted their account (P3.2)
+    else:
+        parts = (r.customer.name or "Customer").split()
+        display = parts[0] + (f" {parts[-1][0]}." if len(parts) > 1 else "")
     return {
         "id": r.id,
         "rating": r.rating,
