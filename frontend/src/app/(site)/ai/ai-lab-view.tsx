@@ -27,6 +27,76 @@ const PIPELINE = [
   { icon: SplitSquareHorizontal, t: "Rank and group", d: "75% relevance, 15% proximity, 10% availability. Same item across shops is grouped." },
 ];
 
+type EvalFigures = {
+  queries: number;
+  scored_queries: number;
+  "ndcg@10": number | null;
+  "recall@20": number | null;
+  mrr: number | null;
+  zero_result_rate: number | null;
+  latency_p95_ms: number | null;
+};
+type EvalRun = {
+  split: "dev" | "test";
+  at: string | null;
+  commit: string;
+  queries: number;
+  synthetic_queries: number;
+  embedding: string | null;
+  overall: EvalFigures;
+  by_language: Record<string, EvalFigures>;
+  note: string | null;
+};
+type SearchEval = { splits: { dev: EvalRun | null; test: EvalRun | null } };
+
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: "English",
+  kn: "Kannada",
+  "kn-Latn": "Kannada (Latin)",
+  te: "Telugu",
+  "te-Latn": "Telugu (Latin)",
+  hi: "Hindi",
+  "hi-Latn": "Hindi (Latin)",
+  misspelt: "Misspelt",
+};
+
+const fmt = (v: number | null | undefined, digits = 3) => (v === null || v === undefined ? "-" : v.toFixed(digits));
+
+function EvalTable({ run }: { run: EvalRun }) {
+  const rows: [string, EvalFigures][] = [["All languages", run.overall], ...Object.entries(run.by_language).map(([k, v]) => [LANGUAGE_NAMES[k] ?? k, v] as [string, EvalFigures])];
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[34rem] text-sm">
+        <caption className="sr-only">Search quality on the {run.split} split, by language</caption>
+        <thead>
+          <tr className="border-b text-left text-xs text-muted-foreground">
+            <th scope="col" className="py-2 pr-3 font-medium">Language</th>
+            <th scope="col" className="py-2 pr-3 text-right font-medium">Queries</th>
+            <th scope="col" className="py-2 pr-3 text-right font-medium">nDCG@10</th>
+            <th scope="col" className="py-2 pr-3 text-right font-medium">Recall@20</th>
+            <th scope="col" className="py-2 pr-3 text-right font-medium">MRR</th>
+            <th scope="col" className="py-2 pr-3 text-right font-medium">No results</th>
+            <th scope="col" className="py-2 text-right font-medium">p95 time</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([name, m], i) => (
+            <tr key={name} className={cn("border-b last:border-0", i === 0 && "font-semibold")}>
+              <th scope="row" className="py-2 pr-3 text-left font-[inherit]">{name}</th>
+              <td className="py-2 pr-3 text-right tabular">{m.scored_queries}/{m.queries}</td>
+              <td className="py-2 pr-3 text-right tabular">{fmt(m["ndcg@10"])}</td>
+              <td className="py-2 pr-3 text-right tabular">{fmt(m["recall@20"])}</td>
+              <td className="py-2 pr-3 text-right tabular">{fmt(m.mrr)}</td>
+              <td className="py-2 pr-3 text-right tabular">{m.zero_result_rate === null ? "-" : `${Math.round(m.zero_result_rate * 100)}%`}</td>
+              <td className="py-2 text-right tabular">{m.latency_p95_ms === null ? "-" : `${Math.round(m.latency_p95_ms)} ms`}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function metricLines(m: AiModel): [string, string][] {
   const x = m.metrics as Record<string, number | null | Record<string, number>>;
   switch (m.name) {
@@ -76,6 +146,10 @@ export function AiLabView() {
     queryKey: ["ai", "compare", query],
     queryFn: () => api.get<SearchCompare>("/ai/search-compare", { q: query }),
     enabled: query.length >= 2,
+  });
+  const searchEval = useQuery({
+    queryKey: ["ai", "search-eval"],
+    queryFn: () => api.get<SearchEval>("/ai/search-eval"),
   });
   const retrain = useMutation({
     mutationFn: () => api.post<{ queued: boolean; message?: string }>("/ai/retrain"),
@@ -145,6 +219,43 @@ export function AiLabView() {
               </li>
             ))}
           </ol>
+        </section>
+
+        {/* ------------------------------------------------------------ search quality */}
+        <section className="mt-16" aria-labelledby="search-quality">
+          <h2 id="search-quality" className="text-2xl font-semibold">Search quality, measured</h2>
+          <p className="mt-1 max-w-3xl text-muted-foreground">
+            Labelled queries run through the live search on a fixed copy of the demo city. Queries counts those with a relevant item in range out of all; no results is the share of those that found nothing.
+          </p>
+          <div className="mt-6 grid gap-4 xl:grid-cols-2">
+            {(["dev", "test"] as const).map((split) => {
+              const run = searchEval.data?.splits[split];
+              if (searchEval.isPending) return <Skeleton key={split} className="h-56 rounded-2xl" />;
+              return (
+                <article key={split} className="rounded-2xl border bg-card p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <h3 className="font-semibold">{split === "dev" ? "Dev split" : "Test split (held out)"}</h3>
+                    {run && run.synthetic_queries > 0 && <Badge variant="outline" className="shrink-0 text-[10px]">Example queries</Badge>}
+                  </div>
+                  {run ? (
+                    <>
+                      <p className="mt-1 text-xs text-muted-foreground" suppressHydrationWarning>
+                        {run.queries} queries, commit <span className="font-mono">{run.commit || "unknown"}</span>
+                        {run.at ? `, ${timeAgo(run.at)}` : ""}
+                        {run.embedding ? `, ${run.embedding}` : ""}
+                      </p>
+                      <div className="mt-4"><EvalTable run={run} /></div>
+                      {run.synthetic_queries > 0 && (
+                        <p className="mt-3 text-xs text-muted-foreground">Synthetic example rows only: not a quality measurement until the labelled set arrives.</p>
+                      )}
+                    </>
+                  ) : (
+                    <p className="mt-3 text-sm text-muted-foreground">{searchEval.isError ? "Could not load the evaluation results." : "Not measured yet. Run make eval."}</p>
+                  )}
+                </article>
+              );
+            })}
+          </div>
         </section>
 
         {/* ------------------------------------------------------------ model cards */}
