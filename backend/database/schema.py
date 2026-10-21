@@ -318,6 +318,21 @@ VALIDATORS: dict[str, dict] = {
         notice_version={"bsonType": STR, "minLength": 1, "maxLength": 40}, granted=BOOL, at=DATE,
         source={"enum": ["web"]},
     ),
+    # Grievances (P3.8, app/api/routes/grievances.py): acknowledged on receipt, resolution due 30 days later
+    # (due_at). contact is the complainant's email (lower-cased) or 10-digit mobile number; order_code is the order
+    # or reservation code they named, with order_id or reservation_id when it matched one.
+    "grievances": schema(
+        ["ticket", "category", "description", "contact", "contact_kind", "status", "source", "created_at",
+         "acknowledged_at", "due_at", "updated_at"],
+        ticket={"bsonType": STR, "pattern": r"^G-[A-HJ-NP-Z2-9]{6}$"},
+        category={"enum": ["order", "shop_conduct", "privacy", "account", "other"]},
+        description={"bsonType": STR, "minLength": 1, "maxLength": 2000},
+        contact={"bsonType": STR, "minLength": 1, "maxLength": 254}, contact_kind={"enum": ["email", "phone"]},
+        user_id=INT_N, order_code={"bsonType": STR_N, "maxLength": 20}, order_id=INT_N, reservation_id=INT_N,
+        status={"enum": ["open", "acknowledged", "in_progress", "resolved"]}, source={"enum": ["web"]},
+        created_at=DATE, acknowledged_at=DATE_N, due_at=DATE, in_progress_at=DATE_N, resolved_at=DATE_N,
+        resolved_by=INT_N, resolution={"bsonType": STR_N, "maxLength": 2000}, updated_at=DATE,
+    ),
     # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
     "counters": {},
     "text_embeddings": {},
@@ -458,6 +473,13 @@ INDEXES: dict[str, list[IndexModel]] = {
     "consents": [
         IndexModel([("user_id", A), ("purpose", A), ("at", D)], name="user_purpose_at"),  # the row in force
         IndexModel([("purpose", A), ("at", D)], name="purpose_at"),
+    ],
+    "grievances": [
+        IndexModel([("ticket", A)], unique=True, name="uq_ticket"),  # the status lookup
+        IndexModel([("status", A), ("created_at", A)], name="status_created"),  # the admin queue, oldest first
+        IndexModel([("user_id", A), ("created_at", D)], name="user_created",
+                   partialFilterExpression={"user_id": IS_INT}),  # a signed-in user's own grievances
+        IndexModel([("order_id", A)], name="order", partialFilterExpression={"order_id": IS_INT}),  # retention holds
     ],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),

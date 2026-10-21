@@ -122,8 +122,18 @@ def _email(value: str) -> str:
         return value
 
 
+def normalise_contact(value: str) -> str:
+    """A grievance contact (P3.8) as the route stores and compares it: an email as _email reads it, or a phone
+    number as its last ten digits, so +91 98765 43210 and 09876543210 are one contact."""
+    value = value.strip().lower()
+    if "@" in value:
+        return _email(value)
+    digits = re.sub(r"\D", "", value)
+    return digits[-10:] if len(digits) >= 10 else value
+
+
 # How a body field becomes its key, after trimming and lower-casing: the form the route itself looks up.
-BODY_NORMALISERS: dict[str, Callable[[str], str]] = {"email": _email}
+BODY_NORMALISERS: dict[str, Callable[[str], str]] = {"email": _email, "contact": normalise_contact}
 
 
 @dataclass(frozen=True)
@@ -172,12 +182,15 @@ IMAGE_UPLOAD = Rule("image_upload", 30, HOUR, (USER,))
 IMPORT_PREVIEW = Rule("import_preview", 20, HOUR, (USER,))
 IMPORT_COMMIT = Rule("import_commit", 10, HOUR, (USER,))
 DATA_EXPORT = Rule("data_export", 3, DAY, (USER,))
+GRIEVANCE_CONTACT = Rule("grievance_contact", 5, DAY, (body("contact"),))  # P3.8
+# Grievance status lookup (P3.8; no row in plan section 8.3): the ticket and the contact must match, and this
+# keeps guessing either slow.
+GRIEVANCE_LOOKUP = Rule("grievance_lookup", 30, HOUR, (IP,))
 CATALOG_READ = Rule("catalog_read", 300, MINUTE, (IP,))
 DEFAULT = Rule("default", 600, MINUTE, (IP,))
 
-# Later prompts add their rows here, with the plan section 8.3 limits: grievance
-# submission keyed by body("contact") (P3.8), OTP send and verify keyed by body("phone") (P4.1), search result
-# click (P5.6) and lead event (P9.2).
+# Later prompts add their rows here, with the plan section 8.3 limits: OTP send and verify keyed by
+# body("phone") (P4.1), search result click (P5.6) and lead event (P9.2).
 LIMITS: tuple[Row, ...] = (
     Row(("POST",), (LOGIN_ACCOUNT_IP, LOGIN_IP, LOGIN_ACCOUNT), route="/api/auth/login"),
     Row(("POST",), (PASSWORD_CHANGE_HOUR, PASSWORD_CHANGE_DAY), route="/api/auth/password"),
@@ -197,6 +210,8 @@ LIMITS: tuple[Row, ...] = (
     Row(("POST",), (IMPORT_PREVIEW,), route="/api/owner/import/preview"),
     Row(("POST",), (IMPORT_COMMIT,), route="/api/owner/import/commit"),
     Row(("GET",), (DATA_EXPORT,), route="/api/me/export"),  # the data export (P3.2)
+    Row(("POST",), (GRIEVANCE_CONTACT,), route="/api/grievances"),  # P3.8
+    Row(("POST",), (GRIEVANCE_LOOKUP,), route="/api/grievances/lookup"),  # P3.8
     Row(("GET",), (CATALOG_READ,), route="/api/meta"),
     # Product, recommendations, shop list, shop, shop products and reviews, and P2.8's sitemap endpoint.
     Row(("GET",), (CATALOG_READ,), router="app.api.routes.catalog"),

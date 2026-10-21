@@ -112,13 +112,14 @@ export function DashboardShell({
   );
 }
 
-/** Links to the privacy notice and terms (P3.1), shown on every owner and admin page. */
+/** Links to the privacy notice and terms (P3.1) and the grievance page (P3.8), shown on every owner and admin page. */
 export function LegalFooter({ className }: { className?: string }) {
   return (
     <footer className={className}>
       <p className="flex flex-wrap gap-x-4 gap-y-1 border-t pt-4 text-xs text-muted-foreground">
         <Link href="/privacy" className="hover:text-foreground">Privacy notice</Link>
         <Link href="/terms" className="hover:text-foreground">Terms of use</Link>
+        <Link href="/grievance" className="hover:text-foreground">Grievances</Link>
       </p>
     </footer>
   );

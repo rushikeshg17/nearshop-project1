@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { BadgeCheck, BrainCircuit, Flag, LayoutDashboard, Loader2, Scale, ShieldCheck, Store, Users } from "lucide-react";
+import { BadgeCheck, BrainCircuit, Flag, LayoutDashboard, Loader2, MessageSquareWarning, Scale, ShieldCheck, Store, Users } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
@@ -43,6 +43,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     { href: "/admin/anomalies", label: "Price review", icon: Scale, badge: overview.data?.totals.open_price_flags },
     { href: "/admin/verification", label: "Verification", icon: BadgeCheck, badge: queue.data?.length },
     { href: "/admin/moderation", label: "Moderation", icon: Flag, badge: moderation.data?.total },
+    { href: "/admin/grievances", label: "Grievances", icon: MessageSquareWarning },
     { href: "/admin/shops", label: "Shops", icon: Store },
     { href: "/admin/users", label: "Users", icon: Users },
     { href: "/ai", label: "AI Lab", icon: BrainCircuit },

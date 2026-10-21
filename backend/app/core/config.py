@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     # The privacy notice version that registrations consent to (P3.1): the version id of the newest
     # docs/legal/privacy-<version>.md, which the /privacy page shows. Change it when a new version is published.
     notice_version: str = "v1"
+    # The grievance officer (P3.8, plan check 6.4), shown on the public /grievance page. B10 appoints the officer;
+    # until all five are set, GET /api/grievances/officer answers clearly marked placeholder details instead
+    # (placeholder: true). Set all five on production (plan step 3-A).
+    grievance_officer_name: str = ""
+    grievance_officer_designation: str = ""
+    grievance_officer_email: str = ""
+    grievance_officer_phone: str = ""
+    grievance_officer_address: str = ""
 
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 

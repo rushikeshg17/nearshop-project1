@@ -5,9 +5,10 @@ from typing import Literal
 from fastapi import APIRouter, Query, Response
 from pydantic import BaseModel, Field
 
+from app.api.routes import grievances as grievance_routes
 from app.core.database import Database, utcnow
 from app.core.deps import DB, AdminUser
-from app.core.errors import Conflict, Forbidden, NotFound
+from app.core.errors import AppError, Conflict, Forbidden, NotFound
 from app.models import AnomalyStatus, Role, Shop, User
 from app.models.core import VerificationStatus, evidence_keys, months_after
 from app.schemas.requests import AdminShopUpdateIn, AnomalyReviewIn
@@ -149,6 +150,65 @@ def review_sla(_: AdminUser, db: DB, month: str | None = Query(None, pattern=r"^
     start = datetime(year, mon, 1) - IST
     end = datetime(year + mon // 12, mon % 12 + 1, 1) - IST
     return {"month": f"{year:04d}-{mon:02d}", **review_service.sla(db, start, end)}
+
+
+# ---------------------------------------------------------------- grievances (P3.8)
+
+GRIEVANCE_QUEUE_LIMIT = 200
+
+
+class GrievanceStatusIn(BaseModel):
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    status: Literal["in_progress", "resolved"]
+    # The answer the complainant reads with their ticket: required to resolve.
+    resolution: str | None = Field(default=None, min_length=10, max_length=grievance_routes.DESCRIPTION_MAX)
+
+
+@router.get("/grievances")
+def grievance_queue(_: AdminUser, db: DB, state: Literal["unresolved", "resolved", "all"] = "unresolved"):
+    """Grievances, oldest first (resolved ones newest first), each with its resolution due date (30 days after
+    receipt), the days it has been open and needs_attention once it is unresolved after 25 days."""
+    coll = db.mongo[grievance_routes.COLLECTION]
+    flt = {} if state == "all" else {"status": grievance_routes.RESOLVED} if state == "resolved" else {
+        "status": {"$ne": grievance_routes.RESOLVED}}
+    order = -1 if state == "resolved" else 1
+    now = utcnow()
+    rows = list(coll.find(flt, sort=[("created_at", order), ("_id", order)], limit=GRIEVANCE_QUEUE_LIMIT))
+    return {"items": [grievance_routes.admin_json(g, now) for g in rows], "total": coll.count_documents(flt),
+            "resolve_days": grievance_routes.RESOLVE_DAYS, "warn_days": grievance_routes.WARN_DAYS}
+
+
+@router.post("/grievances/{grievance_id}/status")
+def set_grievance_status(grievance_id: int, body: GrievanceStatusIn, admin: AdminUser, db: DB):
+    """Move a grievance to in_progress, or resolve it with the answer the complainant will read. A resolved
+    grievance is final. A signed-in complainant is told in the app."""
+    coll = db.mongo[grievance_routes.COLLECTION]
+    g = coll.find_one({"_id": grievance_id})
+    if g is None:
+        raise NotFound("Grievance not found")
+    if g["status"] == grievance_routes.RESOLVED:
+        raise Conflict("This grievance is already resolved", code="grievance_resolved")
+    now = utcnow()
+    update: dict = {"status": body.status, "updated_at": now}
+    if body.status == "resolved":
+        if not body.resolution:
+            raise AppError("Write the resolution the complainant will read (10 characters or more)",
+                           code="resolution_required", status_code=422)
+        update |= {"resolved_at": now, "resolved_by": admin.id, "resolution": body.resolution}
+    elif g["status"] == "in_progress":
+        raise Conflict("This grievance is already in progress", code="grievance_in_progress")
+    else:
+        update |= {"in_progress_at": now}
+    # Only from the status read above, so two admins acting at once cannot both change it.
+    if not coll.update_one({"_id": grievance_id, "status": g["status"]}, {"$set": update}).modified_count:
+        raise Conflict("This grievance was changed by someone else. Reload and try again.", code="grievance_changed")
+    g |= update
+    if g.get("user_id"):
+        title = (f"Grievance {g['ticket']} resolved" if body.status == "resolved"
+                 else f"Grievance {g['ticket']} is being worked on")
+        notify(db, g["user_id"], "grievance", title, link=f"/grievance?ticket={g['ticket']}")
+    return grievance_routes.admin_json(g, now)
 
 
 @router.get("/shops")

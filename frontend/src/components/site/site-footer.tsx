@@ -41,6 +41,7 @@ export function SiteFooter() {
           <nav aria-label="Legal" className="flex gap-4">
             <Link href="/privacy" className="hover:text-foreground">Privacy notice</Link>
             <Link href="/terms" className="hover:text-foreground">Terms of use</Link>
+            <Link href="/grievance" className="hover:text-foreground">Grievances</Link>
           </nav>
         </div>
       </div>

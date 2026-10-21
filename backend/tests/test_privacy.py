@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app import jobs
 from app.api.routes.auth import record_consents
+from app.api.routes.grievances import grievance_doc
 from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.core.database import client as mongo_client
@@ -415,9 +416,14 @@ def test_the_retention_job_with_a_controlled_clock(db, made, ids):
     settled = order(db, user.id, ids["tape"], OrderStatus.CANCELLED, closed_at=now - 200 * DAY)
     still_open = order(db, user.id, ids["tape"], OrderStatus.OUT_FOR_DELIVERY, created_at=now - 300 * DAY)
     grievances = db.mongo["grievances"]
-    grievances.insert_many([{"_id": -1, "order_id": disputed.id, "status": "in_progress"},
-                            {"_id": -2, "order_code": by_code.code, "status": "open"},
-                            {"_id": -3, "order_id": settled.id, "status": "resolved"}])
+
+    def grievance(_id: int, status: str, **ref) -> dict:  # a valid grievance (P3.8) naming an order
+        return {**grievance_doc(_id, category="order", contact="9876500011", description="about my order",
+                                ticket="G-PRV" + "ABC"[-_id - 1] * 3, **ref), "status": status}
+
+    grievances.insert_many([grievance(-1, "in_progress", order_id=disputed.id),
+                            grievance(-2, "open", order_code=by_code.code),
+                            grievance(-3, "resolved", order_id=settled.id)])
     try:
         result = privacy.run_retention(db, now)
     finally:

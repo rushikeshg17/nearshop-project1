@@ -12,6 +12,7 @@ export default function AuthLayout({ children }: LayoutProps<"/">) {
           <Link href="/" className="hover:text-foreground">Back to NearShop</Link>
           <Link href="/privacy" className="hover:text-foreground">Privacy notice</Link>
           <Link href="/terms" className="hover:text-foreground">Terms of use</Link>
+          <Link href="/grievance" className="hover:text-foreground">Grievances</Link>
         </p>
       </div>
       <aside className="relative hidden overflow-hidden bg-primary text-primary-foreground lg:block">

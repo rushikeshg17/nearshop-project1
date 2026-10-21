@@ -34,6 +34,7 @@ export default function NotFound() {
         <p className="mt-10 flex justify-center gap-4 text-xs text-muted-foreground">
           <a href="/privacy" className="hover:text-foreground">Privacy notice</a>
           <a href="/terms" className="hover:text-foreground">Terms of use</a>
+          <a href="/grievance" className="hover:text-foreground">Grievances</a>
         </p>
       </div>
     </div>

@@ -188,6 +188,7 @@ def export_data(db: Database, user: User) -> dict:
         "review_reports": [_clean(d, ("reporter_id",)) for d in db.mongo["review_reports"].find(
             {"reporter_id": user.id}, sort=newest_first)],
         "notifications": find("notifications", {"user_id": user.id}),
+        "grievances": find("grievances", {"user_id": user.id}),  # filed while signed in (P3.8)
         "search_history": [_clean(d, ("user_id",)) for d in db.mongo["search_history"].find(
             {"user_id": user.id}, sort=newest_first)],
     }
@@ -350,6 +351,9 @@ def anonymise(db: Database, user_id: int, now: datetime | None = None) -> None:
         # Reports the user filed (P3.6) stay, so a review's distinct-reporter count holds, without their note.
         db.mongo["review_reports"].update_many({"reporter_id": user_id}, {"$set": {"note": None}},
                                                session=db.session)
+        # Grievances (P3.8) stay until resolved, answered through the contact given with them, but no longer
+        # point at the account.
+        db.mongo["grievances"].update_many({"user_id": user_id}, {"$set": {"user_id": None}}, session=db.session)
         db.reservations.update_many({"customer_id": user_id}, {"$set": {"note": None}})
         db.orders.update_many({"customer_id": user_id}, clear_order_contact(now))
         db.sales_history.update_many({"customer_id": user_id}, {"$set": {"customer_id": None}})
