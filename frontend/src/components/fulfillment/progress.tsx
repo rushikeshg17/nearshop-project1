@@ -92,13 +92,16 @@ const EVENT_STATUSES = new Set<string>([
   "DELIVERY_FAILED",
   "RETURNED_TO_SHOP",
 ] satisfies (ReservationStatus | OrderStatus)[]);
-const ACTORS = new Set(["customer", "owner", "system", "admin"]);
+const ACTORS = new Set(["customer", "owner", "staff", "system", "admin"]);
 type Actor = "you" | "customer" | "shop" | "system" | "admin";
 
 export function EventTimeline({ events, viewer = "customer" }: { events: TimelineEvent[]; viewer?: "customer" | "owner" }) {
   const { t, language } = useI18n();
-  const actor = (role: string) => {
+  const actor = (e: TimelineEvent) => {
+    const role = e.actor_role;
     if (!ACTORS.has(role)) return role;
+    // A staff member (P9.13) acts as the shop; the shop's own timelines name them.
+    if (role === "staff") return viewer === "owner" && e.actor_name ? e.actor_name : t("common.progress.actors.shop");
     // Each side sees itself as "You".
     const who: Actor = role === viewer ? "you" : role === "owner" ? "shop" : (role as Actor);
     return t(`common.progress.actors.${who}`);
@@ -110,7 +113,7 @@ export function EventTimeline({ events, viewer = "customer" }: { events: Timelin
           <span className={cn("absolute top-1.5 -left-[25px] size-2.5 rounded-full border-2 border-card", i === 0 ? "bg-brand" : "bg-muted-foreground/40")} />
           <p className="text-sm font-medium">{EVENT_STATUSES.has(e.to_status) ? t(`common.progress.events.${e.to_status as ReservationStatus | OrderStatus}`) : e.to_status}</p>
           <p className="text-xs text-muted-foreground">
-            {formatTime(e.at, language)} · {actor(e.actor_role)}
+            {formatTime(e.at, language)} · {actor(e)}
             {e.note && <> · {t("common.progress.note", { note: e.note })}</>}
           </p>
         </li>

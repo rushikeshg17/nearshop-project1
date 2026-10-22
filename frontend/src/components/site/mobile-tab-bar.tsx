@@ -16,7 +16,7 @@ export function MobileTabBar() {
     { id: "home", href: "/", label: t("shell.nav.home"), icon: Home, match: (p: string) => p === "/" },
     { id: "search", href: "/search", label: t("shell.nav.search"), icon: Search, match: (p: string) => p.startsWith("/search") || p.startsWith("/product") },
     { id: "shops", href: "/shops", label: t("shell.nav.shops"), icon: Store, match: (p: string) => p.startsWith("/shops") },
-    me?.role === "owner"
+    me?.role === "owner" || me?.role === "staff"
       ? { id: "mine", href: "/shop", label: t("shell.nav.myShop"), icon: LayoutDashboard, match: (p: string) => p.startsWith("/shop/") || p === "/shop" }
       : { id: "mine", href: me ? "/account" : "/login?next=/account", label: t("shell.nav.activity"), icon: Receipt, match: (p: string) => p.startsWith("/account") },
   ];

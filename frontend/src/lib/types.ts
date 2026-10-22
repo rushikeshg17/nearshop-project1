@@ -1,6 +1,7 @@
 // Shapes returned by the NearShop API (see backend/app/schemas/serializers.py).
 
-export type Role = "customer" | "owner" | "admin";
+/** staff: counter staff of one shop, invited by its owner (P9.13). */
+export type Role = "customer" | "owner" | "staff" | "admin";
 export type StockStatus = "in_stock" | "low_stock" | "out_of_stock";
 
 export interface User {
@@ -12,7 +13,9 @@ export interface User {
   home_lat: number | null;
   home_lng: number | null;
   home_label: string | null;
-  shop: { id: number; slug: string; name: string } | null;
+  /** The owner's shop, or the shop a staff member works for (with staff_status: active, or suspended while the plan
+   * allows fewer logins). */
+  shop: { id: number; slug: string; name: string; staff_status?: "invited" | "active" | "suspended" } | null;
   /** P4.2: whether the phone is verified by a code (phone sign-in reaches only a verified phone). */
   phone_verified: boolean;
   /** The email sign-in sunset, an IST day (YYYY-MM-DD, NEARSHOP_EMAIL_LOGIN_SUNSET). */
@@ -447,6 +450,8 @@ export interface TimelineEvent {
   from_status: string | null;
   to_status: string;
   actor_role: string;
+  /** The staff member's name on their own entries, in the owner's timelines (P9.13). */
+  actor_name?: string | null;
   note: string | null;
   at: string;
 }
@@ -1018,4 +1023,24 @@ export interface StatementImport {
     payment_id?: number;
     status?: string | null;
   }[];
+}
+
+/** One staff member or invitation (GET /api/owner/staff, P9.13). */
+export interface StaffMember {
+  id: number;
+  name: string;
+  phone: string;
+  status: "invited" | "active" | "suspended";
+  invited_at: string;
+  activated_at: string | null;
+  suspended_at: string | null;
+  /** The WhatsApp invitation: sent, failed, or whatsapp_off where WhatsApp is not switched on. */
+  invitation: "sent" | "failed" | "whatsapp_off" | null;
+}
+
+/** GET /api/owner/staff: the shop's staff, the plan's logins (the owner counts as one) and the plan. */
+export interface StaffOverview {
+  staff: StaffMember[];
+  logins: { limit: number; used: number; available: number };
+  plan: { code: string; name: string; status: string; ends_at: string | null };
 }

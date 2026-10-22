@@ -1124,8 +1124,14 @@
         "insights": "",
         "reviews": "",
         "settings": "",
-        "billing": ""
-      }
+        "billing": "",
+        "staff": ""
+      },
+      "staffPausedTitle": "",
+      "staffPausedBody": "",
+      "ownerOnlyTitle": "",
+      "ownerOnlyBody": "",
+      "toQueue": ""
     },
     "verification": {
       "reason": "",
@@ -2002,6 +2008,48 @@
         "altered": "",
         "terms": ""
       }
+    },
+    "staff": {
+      "title": "",
+      "description": "",
+      "logins": "",
+      "planLine": "",
+      "planLineOne": "",
+      "seePlans": "",
+      "invite": {
+        "heading": "",
+        "name": "",
+        "phone": "",
+        "phoneHint": "",
+        "agreed": "",
+        "submit": "",
+        "done": "",
+        "full": ""
+      },
+      "list": {
+        "heading": "",
+        "empty": "",
+        "emptyBody": "",
+        "remove": "",
+        "withdraw": "",
+        "invitedOn": "",
+        "activeSince": "",
+        "suspendedOn": "",
+        "whatsappOff": "",
+        "failed": ""
+      },
+      "status": {
+        "invited": "",
+        "active": "",
+        "suspended": ""
+      },
+      "confirm": {
+        "title": "",
+        "body": "",
+        "action": "",
+        "cancel": ""
+      },
+      "removed": ""
     }
   },
   "support": {

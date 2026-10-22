@@ -55,7 +55,7 @@ export function UserMenu({ user }: { user: User }) {
             </Link>
           </DropdownMenuItem>
         )}
-        {user.role === "owner" && (
+        {(user.role === "owner" || user.role === "staff") && (
           <>
             <DropdownMenuItem asChild>
               <Link href="/shop">

@@ -36,7 +36,7 @@ export function useSignOut() {
 
 export function homeFor(user: User | null | undefined) {
   if (!user) return "/";
-  if (user.role === "owner") return "/shop";
+  if (user.role === "owner" || user.role === "staff") return "/shop";
   if (user.role === "admin") return "/admin";
   return "/account";
 }

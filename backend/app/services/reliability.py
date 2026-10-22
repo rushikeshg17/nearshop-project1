@@ -56,18 +56,18 @@ def shop_reliability(db: Database, shop: Shop) -> dict:
         update_days, reservations, transitions, delivered, accuracy)
 
     def moved(*, entity: str | None = "reservation", frm: set | None = None, to: set | None = None,
-              actor: str | None = None) -> int:
+              actor: set | None = None) -> int:
         return sum(e["n"] for e in events
                    if (entity is None or e["_id"]["entity"] == entity)
                    and (frm is None or e["_id"]["from"] in frm)
                    and (to is None or e["_id"]["to"] in to)
-                   and (actor is None or e["_id"]["actor"] == actor))
+                   and (actor is None or e["_id"]["actor"] in actor))
 
     # Held reservations that ended without a pickup (customer no-show, cancellation, expiry).
     dropped_after_hold = moved(frm=HELD, to={RS.CANCELLED.value, RS.EXPIRED.value})
     responded = moved(frm={RS.REQUESTED.value}, to={RS.CONFIRMED.value})
     request_expired = moved(frm={RS.REQUESTED.value}, to={RS.EXPIRED.value})
-    shop_cancels = moved(entity=None, to={"CANCELLED"}, actor="owner")
+    shop_cancels = moved(entity=None, to={"CANCELLED"}, actor={"owner", "staff"})  # staff act as the shop (P9.13)
     rejected = sum(1 for r in res_rows if r["status"] == RS.REJECTED)
     completed = sum(1 for r in res_rows if r["status"] == RS.COMPLETED)
     requests_decided = responded + rejected + request_expired

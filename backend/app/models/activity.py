@@ -103,7 +103,7 @@ class StatusEvent(Document):
     shop_id: int
     from_status: str | None = None
     to_status: str
-    actor_role: str  # customer | owner | admin | system
+    actor_role: str  # customer | owner | staff (P9.13) | admin | system
     actor_id: int | None = None
     note: str | None = None
     created_at: datetime = Field(default_factory=utcnow)

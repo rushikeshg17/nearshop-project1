@@ -1,4 +1,5 @@
-"""FastAPI dependencies: database handle, client address, current user, role guards, CSRF check."""
+"""FastAPI dependencies: database handle, client address, current user, role guards (the owner's shop, and the shop
+whose daily work an owner or its active staff do), CSRF check."""
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
@@ -107,3 +108,24 @@ def get_owner_shop(user: OwnerUser, db: DB) -> Shop:
 
 
 OwnerShop = Annotated[Shop, Depends(get_owner_shop)]
+
+
+def get_work_shop(user: CurrentUser, db: DB) -> Shop:
+    """The shop whose daily work the signed-in user may do (P9.13): the owner's own shop, or the shop of an active staff
+    member. Daily work is the reservation and order queues and their actions, listings and stock, the catalogue and
+    imports; everything else in backend/app/api/routes/owner.py stays owner-only (OwnerShop). A staff member's shop is
+    first fitted to its plan's logins (app/services/staff.py reconcile), so one suspended by a lapse never gets in."""
+    if user.role == Role.OWNER:
+        return get_owner_shop(user, db)
+    if user.role == Role.STAFF:
+        from app.services import staff  # imported here: staff -> plans -> this module
+
+        shop = staff.shop_for(db, user)
+        if shop is None:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Your staff access to this shop is paused or has ended. "
+                                                           "Ask the shop's owner.")
+        return with_categories(db, [shop])[0]
+    raise HTTPException(status.HTTP_403_FORBIDDEN, "You do not have access to this area")
+
+
+WorkShop = Annotated[Shop, Depends(get_work_shop)]

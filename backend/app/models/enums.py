@@ -6,6 +6,17 @@ class Role(StrEnum):
     CUSTOMER = "customer"
     OWNER = "owner"
     ADMIN = "admin"
+    STAFF = "staff"  # counter staff of one shop, invited by its owner (P9.13, app/services/staff.py)
+
+
+class StaffStatus(StrEnum):
+    """A shop_staff row (P9.13). invited -> active on the invitee's first phone sign-in; suspended while the shop's
+    plan allows fewer logins (reactivated on renewal); removed by the owner, for good."""
+
+    INVITED = "invited"
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+    REMOVED = "removed"
 
 
 class ReservationStatus(StrEnum):

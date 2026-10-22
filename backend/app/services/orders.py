@@ -169,13 +169,18 @@ def create_order(
     return order
 
 
-def _actor_for(user: User | None, order: Order, shop_owner_id: int) -> str:
+def _actor_for(db: Database, user: User | None, order: Order, shop_owner_id: int) -> str:
     if user is None:
         return "system"
     if user.role == Role.CUSTOMER and order.customer_id == user.id:
         return "customer"
     if user.role == Role.OWNER and shop_owner_id == user.id:
         return "owner"
+    if user.role == Role.STAFF:
+        from app.services import staff  # imported here: staff -> plans -> app.core.deps
+
+        if staff.is_member(db, user.id, order.shop_id):
+            return "staff"  # P9.13: acts as the shop, recorded as staff with the member's user id
     if user.role == Role.ADMIN:
         return "admin"
     raise Forbidden("This order belongs to someone else")
@@ -236,12 +241,12 @@ def _transition(db: Database, order_id: int, action: str, user: User | None, rea
     if order is None:
         raise NotFound("Order not found")
     shop = db.shops.get(order.shop_id)
-    actor = _actor_for(user, order, shop.owner_id)
+    actor = _actor_for(db, user, order, shop.owner_id)
     key = (order.status, action)
     if key not in TRANSITIONS:
         raise InvalidTransition(f"Cannot {action} an order that is {order.status.replace('_', ' ').lower()}")
     to_status, actors = TRANSITIONS[key]
-    if actor not in actors and actor != "admin":
+    if ("owner" if actor == "staff" else actor) not in actors and actor != "admin":
         raise Forbidden(f"Only the {' or '.join(sorted(actors))} can {action} this order")
     if action == "deliver" and settings.completion_codes_required:
         locked = order.code_locked_until

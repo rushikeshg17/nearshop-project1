@@ -1124,8 +1124,14 @@
         "insights": "AI insights",
         "reviews": "Reviews",
         "settings": "Shop settings",
-        "billing": "Plan and billing"
-      }
+        "billing": "Plan and billing",
+        "staff": "Staff"
+      },
+      "staffPausedTitle": "Your staff access is paused",
+      "staffPausedBody": "The shop's plan allows fewer logins just now, or the owner removed you. Ask the shop's owner.",
+      "ownerOnlyTitle": "This page is for the shop's owner",
+      "ownerOnlyBody": "Staff work on reservations, orders, stock and imports. Ask the owner for anything else.",
+      "toQueue": "Go to reservations"
     },
     "verification": {
       "reason": "Reason:",
@@ -2002,6 +2008,48 @@
         "altered": "This copy does not match the document as issued. Contact NearShop support.",
         "terms": "Payments to NearShop are covered by the {terms}."
       }
+    },
+    "staff": {
+      "title": "Staff",
+      "description": "Give your counter staff their own sign-in for reservations, orders, stock and imports. Shop settings, payments, KYC, your plan and staff stay with you.",
+      "logins": "{used} of {limit} logins in use, yours included",
+      "planLine": "Your plan, {plan}, allows {limit} logins, yours included.",
+      "planLineOne": "Your plan, {plan}, allows 1 login: yours. Staff logins come with a paid plan.",
+      "seePlans": "See plans",
+      "invite": {
+        "heading": "Invite a staff member",
+        "name": "Their name",
+        "phone": "Their mobile number",
+        "phoneHint": "Their own 10-digit number, one that is not on NearShop yet.",
+        "agreed": "They agreed to get the invitation on WhatsApp",
+        "submit": "Send invitation",
+        "done": "{name} is invited. They sign in with their phone number.",
+        "full": "All your plan's logins are in use. Remove someone, or choose a plan with more logins."
+      },
+      "list": {
+        "heading": "Your staff",
+        "empty": "No staff yet",
+        "emptyBody": "Invite your counter staff by phone. They sign in with a code sent to their number.",
+        "remove": "Remove",
+        "withdraw": "Withdraw",
+        "invitedOn": "Invited {date}",
+        "activeSince": "Active since {date}",
+        "suspendedOn": "Paused on {date}: beyond your plan's logins. Back when the plan is renewed.",
+        "whatsappOff": "No WhatsApp invitation was sent: tell them to sign in with their number.",
+        "failed": "The WhatsApp invitation could not be sent: tell them to sign in with their number."
+      },
+      "status": {
+        "invited": "Invited",
+        "active": "Active",
+        "suspended": "Paused"
+      },
+      "confirm": {
+        "title": "Remove {name}?",
+        "body": "They are signed out at once and can no longer work in your shop.",
+        "action": "Remove",
+        "cancel": "Cancel"
+      },
+      "removed": "{name} was removed"
     }
   },
   "support": {

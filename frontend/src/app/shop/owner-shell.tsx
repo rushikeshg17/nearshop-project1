@@ -17,8 +17,10 @@ import {
   ShieldAlert,
   Star,
   Truck,
+  Users,
 } from "lucide-react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 
 import { DashboardShell, LegalFooter } from "@/components/dashboard/dashboard-shell";
 import { EmptyState, ListSkeleton } from "@/components/common/states";
@@ -30,9 +32,20 @@ import { api } from "@/lib/api";
 import { DEFAULT_LANGUAGE, type LanguageCode, languageInfo } from "@/lib/i18n";
 import type { OwnerOverview, ShopVerification } from "@/lib/types";
 
+/** The console pages an active staff member may open (P9.13): the daily work. Every other page is the owner's alone,
+ * as the API's owner-only routes are (backend/app/core/deps.py WorkShop). */
+const STAFF_PAGES = ["/shop/reservations", "/shop/orders", "/shop/inventory", "/shop/import", "/shop/catalog"];
+
+export function staffMayOpen(pathname: string) {
+  return pathname === "/shop" || STAFF_PAGES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
+
 export function OwnerShell({ children }: { children: React.ReactNode }) {
   const { t } = useI18n();
+  const pathname = usePathname();
   const { data: me, isLoading } = useMe();
+  const isStaff = me?.role === "staff";
+  const staffActive = isStaff && me.shop?.staff_status === "active";
   const verification = useQuery({
     queryKey: ["owner", "verification"],
     queryFn: () => api.get<ShopVerification>("/owner/verification"),
@@ -42,12 +55,20 @@ export function OwnerShell({ children }: { children: React.ReactNode }) {
   const overview = useQuery({
     queryKey: ["owner", "overview"],
     queryFn: () => api.get<OwnerOverview>("/owner/overview"),
-    enabled: me?.role === "owner",
+    enabled: me?.role === "owner" || staffActive,
     refetchInterval: 15_000,
   });
 
   if (isLoading) return <div className="p-10"><ListSkeleton /><LegalFooter className="mt-16" /></div>;
-  if (!me || me.role !== "owner") {
+  if (isStaff && !staffActive) {
+    return (
+      <div className="mx-auto max-w-lg px-4 py-24">
+        <EmptyState icon={Users} title={t("owner.shell.staffPausedTitle")} description={t("owner.shell.staffPausedBody")} />
+        <LegalFooter className="mt-16" />
+      </div>
+    );
+  }
+  if (!me || (me.role !== "owner" && !isStaff)) {
     return (
       <div className="mx-auto max-w-lg px-4 py-24">
         <EmptyState icon={Package} title={t("owner.shell.notOwnerTitle")} description={t("owner.shell.notOwnerBody")}
@@ -58,7 +79,7 @@ export function OwnerShell({ children }: { children: React.ReactNode }) {
   }
 
   const q = overview.data?.queue;
-  const items = [
+  const all = [
     { href: "/shop", label: t("owner.shell.nav.overview"), icon: LayoutDashboard, exact: true },
     { href: "/shop/reservations", label: t("owner.shell.nav.reservations"), icon: ClipboardList, badge: q?.reservation_requests },
     { href: "/shop/orders", label: t("owner.shell.nav.orders"), icon: Truck, badge: q?.orders_pending },
@@ -68,12 +89,19 @@ export function OwnerShell({ children }: { children: React.ReactNode }) {
     { href: "/shop/insights", label: t("owner.shell.nav.insights"), icon: BrainCircuit },
     { href: "/shop/reviews", label: t("owner.shell.nav.reviews"), icon: Star },
     { href: "/shop/billing", label: t("owner.shell.nav.billing"), icon: CreditCard },
+    { href: "/shop/staff", label: t("owner.shell.nav.staff"), icon: Users },
     { href: "/shop/settings", label: t("owner.shell.nav.settings"), icon: Settings },
   ];
+  // Staff see the daily work only; the owner sees everything, Staff included.
+  const items = isStaff ? all.filter((i) => staffMayOpen(i.href)) : all;
+  const ownerOnly = isStaff && !staffMayOpen(pathname);
   return (
     <DashboardShell title={me.shop?.name ?? t("owner.shell.yourShop")} subtitle={me.name} items={items} publicHref={me.shop ? `/shops/${me.shop.slug}` : undefined}>
       {verification.data && <VerificationBanner v={verification.data} />}
-      {children}
+      {ownerOnly ? (
+        <EmptyState icon={ShieldAlert} title={t("owner.shell.ownerOnlyTitle")} description={t("owner.shell.ownerOnlyBody")}
+          action={<Button asChild><Link href="/shop/reservations">{t("owner.shell.toQueue")}</Link></Button>} />
+      ) : children}
     </DashboardShell>
   );
 }

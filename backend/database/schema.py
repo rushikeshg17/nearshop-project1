@@ -51,6 +51,7 @@ from app.models.enums import (
     ReservationStatus,
     Role,
     SaleSource,
+    StaffStatus,
 )
 from app.schemas.requests import CONSENT_PURPOSES, OTP_PURPOSES
 from app.services import billing, gateway
@@ -280,7 +281,18 @@ VALIDATORS: dict[str, dict] = {
     "status_events": schema(
         ["entity", "entity_id", "shop_id", "to_status", "actor_role", "created_at"],
         entity={"enum": ["reservation", "order"]}, entity_id=INT, shop_id=INT, from_status=STR_N, to_status=STR,
-        actor_role={"enum": ["customer", "owner", "admin", "system"]}, actor_id=INT_N, created_at=DATE,
+        # staff (P9.13): an active staff member of the shop, whose user id is actor_id.
+        actor_role={"enum": ["customer", "owner", "staff", "admin", "system"]}, actor_id=INT_N, created_at=DATE,
+    ),
+    # Staff logins (P9.13, app/services/staff.py; plan section 8.18): one row per invitation of a phone to a shop.
+    # user_id is set on the invitee's first phone sign-in (status active). phone stays on the row, which
+    # app/services/leads.py reads to leave the staff's own requests out of customer requests.
+    "shop_staff": schema(
+        ["shop_id", "phone", "name", "status", "invited_by", "invited_at", "created_at", "updated_at"],
+        shop_id=INT, user_id=INT_N, phone={"bsonType": STR, "pattern": "^[6-9][0-9]{9}$"},
+        name={"bsonType": STR, "minLength": 2, "maxLength": 120}, status=enum(StaffStatus), invited_by=INT,
+        invited_at=DATE, invitee_agreed_at=DATE, activated_at=DATE_N, suspended_at=DATE_N, removed_at=DATE_N,
+        removed_by=INT_N, invitation={"enum": ["sent", "failed", "whatsapp_off", None]}, created_at=DATE, updated_at=DATE,
     ),
     "reviews": {"$jsonSchema": {
         **schema(
@@ -987,6 +999,15 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("shop_id", A), ("month", A)], unique=True, name="uq_shop_month"),
         IndexModel([("month", A)], name="month"),
         IndexModel([("keep_until", A)], expireAfterSeconds=0, name="keep_until_ttl"),
+    ],
+    # Staff logins (P9.13). One open (invited, active or suspended) row per phone across every shop, so a phone is
+    # one shop's staff at most; removed rows are history.
+    "shop_staff": [
+        IndexModel([("phone", A)], unique=True, name="uq_open_phone",
+                   partialFilterExpression={"status": {"$in": [StaffStatus.INVITED.value, StaffStatus.ACTIVE.value,
+                                                               StaffStatus.SUSPENDED.value]}}),
+        IndexModel([("shop_id", A), ("status", A), ("invited_at", A)], name="shop_status_invited"),
+        IndexModel([("user_id", A)], name="user", partialFilterExpression={"user_id": IS_INT}),
     ],
     # Plans and subscriptions (P9.4, app/services/plans.py).
     "plans": [
