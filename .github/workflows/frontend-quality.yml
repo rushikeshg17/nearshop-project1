@@ -9,15 +9,21 @@
 #     Time 200 ms or less, CLS 0.1 or less.
 # Pages: home, search with a query, a product page and a shop page. Any missed budget fails the job.
 #
+# Every check here runs once per interface language in LAB_LANGUAGES (P7.10: English and Kannada), the language
+# chosen with the nearshop_lang cookie for the budgets and with the browser's language (Accept-Language) for the
+# Playwright specs. The build offers every language on the list, through NEXT_PUBLIC_NEARSHOP_PREVIEW_LANGUAGES, until
+# its text is reviewed (src/lib/i18n.ts), and each check confirms the page really is in that language (html lang).
+# Before any of it, scripts/check-i18n.mjs fails the job on literal English in the customer and owner screens or a
+# key missing from a language's message file (P7.10).
+#
 # Then every Playwright spec in frontend/e2e runs (frontend/playwright.config.ts), once per interface language in
-# E2E_LANGUAGES; a spec added there later joins with no change here. P2.10 added two (docs/accessibility.md):
+# LAB_LANGUAGES; a spec added there later joins with no change here. P2.10 added two (docs/accessibility.md):
 #   - accessibility.spec.ts: axe with the WCAG 2.2 A and AA rule tags on every customer and owner screen in the
 #     target, at 360 by 800 px, with its dialogs open; any serious or critical violation fails the job;
 #   - keyboard-reserve.spec.ts: search, open a product, reserve it and see the code with the keyboard only, with
 #     the focus visible at every step.
 # They sign in as the seeded demo customer and owner with the demo password generated below, and create a
 # reservation and a delivery order in the throwaway database, after the performance checks have run.
-# P7.10 adds Kannada to E2E_LANGUAGES.
 #
 # How the site runs here: MongoDB as the single-node replica set from docker-compose.yml, the demo city
 # seeded with a demo password generated for this run, the API (uvicorn) and the production frontend build
@@ -55,7 +61,9 @@ env:
   API_ORIGIN: http://127.0.0.1:8000
   SITE: http://127.0.0.1:3000
   LAB_SITE: https://127.0.0.1:3443 # the HTTP/2 proxy in front of SITE
-  E2E_LANGUAGES: "en" # comma-separated interface languages for frontend/e2e; P7.10 adds Kannada
+  # Comma-separated interface languages (src/lib/i18n.ts codes) for the budgets and frontend/e2e: English and, since
+  # P7.10, Kannada. A language added later (P8.4) joins every check by being listed here.
+  LAB_LANGUAGES: "en,kn"
   NEXT_TELEMETRY_DISABLED: "1"
 
 jobs:
@@ -102,6 +110,12 @@ jobs:
           (cd backend && uv sync --locked)
           (cd frontend && npm ci)
 
+      # Literal English in the (site), (auth) and shop screens, and keys missing from a language's message file
+      # (P7.10). First, so the job fails fast and needs no site.
+      - name: Interface strings (check-i18n)
+        working-directory: frontend
+        run: node scripts/check-i18n.mjs
+
       - name: Secrets for this run only
         run: |
           for name in NEARSHOP_DEMO_PASSWORD NEARSHOP_SECRET_KEY; do
@@ -135,6 +149,8 @@ jobs:
         env:
           NEARSHOP_API_ORIGIN: ${{ env.API_ORIGIN }}
           NEXT_PUBLIC_SENTRY_DSN: http://lighthouse@127.0.0.1:9/1 # placeholder: see the top of this file
+          # Every lab language is offered by this build, reviewed or not (English is always offered).
+          NEXT_PUBLIC_NEARSHOP_PREVIEW_LANGUAGES: ${{ env.LAB_LANGUAGES }}
         run: make build
 
       - name: Start the frontend, and the HTTP/2 proxy in front of it
@@ -197,11 +213,13 @@ jobs:
           // The gzip size (level 9) of every script the page's HTML loads in a modern browser (script tags with
           // a src), summed per route: the budget. The nomodule polyfill script, which only browsers without ES
           // modules load, is reported beside it and not counted (docs/perf/frontend-budget.md). Plan section 14
-          // describes the method.
+          // describes the method. Each page is fetched once per lab language (the nearshop_lang cookie), and its html
+          // lang must be that language's.
           import { gzipSync } from "node:zlib";
           const site = process.env.SITE;
           const budget = Number(process.env.FIRST_LOAD_BUDGET_KB);
           const paths = process.env.LAB_PATHS.split("\n").filter(Boolean);
+          const languages = process.env.LAB_LANGUAGES.split(",").map((l) => l.trim()).filter(Boolean);
           const sizes = new Map();
           async function gz(url) {
             if (!sizes.has(url)) {
@@ -213,13 +231,17 @@ jobs:
           }
           let failed = false;
           const rows = [
-            "| Route | First-load JS (KB gzip, the budget) | Scripts | With the nomodule polyfill (KB, not counted) | Budget |",
-            "|---|---:|---:|---:|---|",
+            "| Language | Route | First-load JS (KB gzip, the budget) | Scripts | With the nomodule polyfill (KB, not counted) | Budget |",
+            "|---|---|---:|---:|---:|---|",
           ];
-          for (const path of paths) {
-            const r = await fetch(site + path);
+          for (const language of languages) for (const path of paths) {
+            const r = await fetch(site + path, { headers: { cookie: `nearshop_lang=${language}` } });
             if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
             const html = await r.text();
+            const lang = /<html[^>]*\slang="([^"]+)"/i.exec(html)?.[1] ?? "";
+            if (!new RegExp(`^${language}(-|$)`).test(lang)) {
+              throw new Error(`${path} in ${language}: the page's html lang is "${lang}" (is ${language} offered by this build?)`);
+            }
             const tags = [...html.matchAll(/<script\b[^>]*\ssrc="([^"]+)"[^>]*>/gi)];
             const unique = (list) => [...new Set(list.map((m) => m[1].replace(/&amp;/g, "&")))];
             const srcs = unique(tags.filter((m) => !/\snomodule\b/i.test(m[0])));
@@ -232,8 +254,8 @@ jobs:
             const withPolyfill = (total + polyfill) / 1024;
             const ok = kb <= budget;
             failed ||= !ok;
-            rows.push(`| ${path} | ${kb.toFixed(1)} | ${srcs.length} | ${withPolyfill.toFixed(1)} | ${ok ? "pass" : `FAIL (over ${budget})`} |`);
-            console.log(`${path}: ${kb.toFixed(1)} KB gzip in ${srcs.length} scripts ${ok ? "ok" : "OVER BUDGET"} (${withPolyfill.toFixed(1)} KB with the nomodule polyfill)`);
+            rows.push(`| ${language} | ${path} | ${kb.toFixed(1)} | ${srcs.length} | ${withPolyfill.toFixed(1)} | ${ok ? "pass" : `FAIL (over ${budget})`} |`);
+            console.log(`[${language}] ${path}: ${kb.toFixed(1)} KB gzip in ${srcs.length} scripts ${ok ? "ok" : "OVER BUDGET"} (${withPolyfill.toFixed(1)} KB with the nomodule polyfill)`);
           }
           const fs = await import("node:fs");
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### First-load JavaScript\n\n${rows.join("\n")}\n\n`);
@@ -241,28 +263,52 @@ jobs:
           EOF
           node "$RUNNER_TEMP/first-load.mjs"
 
-      - name: Lighthouse (3 runs per page, median)
+      # Once per lab language: the language is set by the nearshop_lang cookie (Lighthouse's extraHeaders, in a copy
+      # of lighthouserc.json made for that language), and each language is collected, asserted and summarised on its own.
+      # The Chrome flags go in that copy too, not on the command line: a --collect.settings flag replaces the whole
+      # settings object of the file, which silently dropped pauseAfterLoadMs and onlyCategories before P7.10.
+      - name: Lighthouse (3 runs per page and language, median)
         if: ${{ !cancelled() }}
         working-directory: frontend
         run: |
           urls=()
           while read -r path; do [ -n "$path" ] && urls+=("--url=$LAB_SITE$path"); done <<< "$LAB_PATHS"
           lhci="npx --yes @lhci/cli@$LHCI_VERSION"
-          $lhci collect --config=lighthouserc.json "${urls[@]}" \
-            --collect.settings.chromeFlags="--no-sandbox --ignore-certificate-errors"
           status=0
-          $lhci assert --config=lighthouserc.json || status=$?
-          $lhci upload --config=lighthouserc.json > /dev/null || true
+          IFS=, read -ra languages <<< "$LAB_LANGUAGES"
+          for LAB_LANGUAGE in "${languages[@]}"; do
+          export LAB_LANGUAGE
+          config="$RUNNER_TEMP/lighthouserc-$LAB_LANGUAGE.json"
+          jq --arg lang "$LAB_LANGUAGE" '.ci.collect.settings.extraHeaders = ({Cookie: ("nearshop_lang=" + $lang)} | tojson)
+            | .ci.collect.settings.chromeFlags = "--no-sandbox --ignore-certificate-errors"' lighthouserc.json > "$config"
+          # The site answers this language with the cookie, through the proxy Lighthouse uses.
+          home=$(curl -fsSk --http2 -H "Cookie: nearshop_lang=$LAB_LANGUAGE" "$LAB_SITE/" || true)
+          if ! grep -Eq "<html[^>]* lang=\"$LAB_LANGUAGE(-|\")" <<< "$home"; then
+            echo "The site did not answer in $LAB_LANGUAGE (is it offered by this build?)." >&2
+            status=1
+            continue
+          fi
+          rm -rf .lighthouseci
+          $lhci collect --config="$config" "${urls[@]}" || status=1
+          $lhci assert --config="$config" || status=1
+          $lhci upload --config="$config" > /dev/null || true
           python3 - <<'EOF' || status=1
           import glob, gzip, json, os, statistics, sys
+          language = os.environ["LAB_LANGUAGE"]
           # The Sentry SDK's chunk: the one that names the SDK. The lab must include its download and start-up.
           sdk = {os.path.basename(f): len(gzip.compress(open(f, "rb").read(), 9))
                  for f in glob.glob(".next/static/chunks/*.js") if b"sentry.javascript" in open(f, "rb").read()}
-          runs, missing = {}, []
+          runs, missing, wrong_language = {}, [], []
           for f in glob.glob(".lighthouseci/lhr-*.json"):
               lhr = json.load(open(f))
               a = lhr["audits"]
               path = lhr["requestedUrl"].split("127.0.0.1:3443", 1)[-1]
+              # The run sent this language's cookie (the step before checked that the site answers it in this language).
+              headers = lhr.get("configSettings", {}).get("extraHeaders") or {}
+              if isinstance(headers, str):
+                  headers = json.loads(headers)
+              if headers.get("Cookie") != f"nearshop_lang={language}":
+                  wrong_language.append(path)
               requested = [r["url"] for r in a["network-requests"]["details"]["items"]]
               if not sdk or not any(u.rsplit("/", 1)[-1] in sdk for u in requested):
                   missing.append(path)
@@ -275,22 +321,27 @@ jobs:
                   a["cumulative-layout-shift"]["numericValue"],
                   boot,
               ))
-          rows = ["| Page | Performance | LCP (ms) | TBT (ms) | CLS | Sentry SDK start-up (ms, 4x CPU) | Runs |",
-                  "|---|---:|---:|---:|---:|---:|---:|"]
+          rows = ["| Language | Page | Performance | LCP (ms) | TBT (ms) | CLS | Sentry SDK start-up (ms, 4x CPU) | Runs |",
+                  "|---|---|---:|---:|---:|---:|---:|---:|"]
           for path, values in sorted(runs.items()):
               score, lcp, tbt, cls, boot = (statistics.median(v) for v in zip(*values))
-              rows.append(f"| {path} | {score:.0f} | {lcp:.0f} | {tbt:.0f} | {cls:.3f} | {boot:.0f} | {len(values)} |")
+              rows.append(f"| {language} | {path} | {score:.0f} | {lcp:.0f} | {tbt:.0f} | {cls:.3f} | {boot:.0f} | {len(values)} |")
           budgets = "Budgets: performance 85 or more, LCP 2500 ms or less, TBT 200 ms or less, CLS 0.1 or less."
           sdk_kb = sum(sdk.values()) / 1024
           note = (f"Sentry SDK: {sdk_kb:.1f} KB gzip, loaded after the load event, in every run." if not missing else
                   f"FAIL: the Sentry SDK ({', '.join(sdk) or 'chunk not found'}) was not loaded in the runs of "
                   f"{', '.join(sorted(set(missing)))}, so the lab no longer includes its cost.")
+          if wrong_language:
+              note += f"\n\nFAIL: these runs did not send the {language} cookie: {', '.join(sorted(set(wrong_language)))}."
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
-              out.write("### Lighthouse, median of 3 (mobile, slow 4G, 4x CPU)\n\n" + "\n".join(rows) + f"\n\n{budgets}\n\n{note}\n")
+              out.write(f"### Lighthouse ({language}), median of 3 (mobile, slow 4G, 4x CPU)\n\n" + "\n".join(rows)
+                        + f"\n\n{budgets}\n\n{note}\n")
           print("\n".join(rows))
           print(note)
-          sys.exit(1 if missing else 0)
+          sys.exit(1 if missing or wrong_language else 0)
           EOF
+          mv .lighthouseci "$RUNNER_TEMP/lighthouseci-$LAB_LANGUAGE" 2> /dev/null || true
+          done
           exit $status
 
       # Playwright's own Chromium (the version frontend/package-lock.json pins), with its system libraries.
@@ -304,7 +355,7 @@ jobs:
         working-directory: frontend
         env:
           NEARSHOP_E2E_BASE_URL: ${{ env.SITE }}
-          NEARSHOP_E2E_LANGUAGES: ${{ env.E2E_LANGUAGES }}
+          NEARSHOP_E2E_LANGUAGES: ${{ env.LAB_LANGUAGES }}
           NEARSHOP_E2E_OUTPUT_DIR: ${{ runner.temp }}/e2e
           NEARSHOP_E2E_AXE_SUMMARY: ${{ runner.temp }}/e2e/axe.jsonl
         run: |

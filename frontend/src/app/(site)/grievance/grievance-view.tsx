@@ -6,6 +6,7 @@ import { useId, useState } from "react";
 import { toast } from "sonner";
 
 import { ListSkeleton } from "@/components/common/states";
+import { useI18n } from "@/components/providers";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useMe } from "@/hooks/use-session";
 import { api, errorMessage } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
+import { type LanguageCode, languageInfo } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 // Shapes from backend/app/api/routes/grievances.py (P3.8).
@@ -46,6 +48,8 @@ export interface Grievance {
   updated_at: string | null;
 }
 
+// English labels for the admin console, which stays in English (plan section 8.16). This page shows
+// support.categories and support.statuses from the message files.
 export const CATEGORY_LABEL: Record<GrievanceCategory, string> = {
   order: "An order or reservation",
   shop_conduct: "A shop's conduct",
@@ -63,18 +67,23 @@ export const STATUS_LABEL: Record<GrievanceStatus, string> = {
 
 const DESCRIPTION_MAX = 2000;
 
-function formatDate(iso: string | null) {
-  return iso ? new Date(iso).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "-";
+const CATEGORIES = Object.keys(CATEGORY_LABEL) as GrievanceCategory[];
+
+function formatDate(iso: string | null, language: LanguageCode) {
+  return iso
+    ? new Date(iso).toLocaleDateString(languageInfo(language).htmlLang, { day: "numeric", month: "short", year: "numeric" })
+    : "-";
 }
 
 function OfficerCard() {
+  const { t } = useI18n();
   const officer = useQuery({ queryKey: ["grievance-officer"], queryFn: () => api.get<Officer>("/grievances/officer"), staleTime: 10 * 60_000 });
   const o = officer.data;
   return (
     <section aria-labelledby="officer-title" className="rounded-2xl border bg-card p-5">
-      <h2 id="officer-title" className="font-semibold">Grievance officer</h2>
+      <h2 id="officer-title" className="font-semibold">{t("support.officer.title")}</h2>
       {officer.isError ? (
-        <p className="mt-2 text-sm text-destructive">Could not load the grievance officer&apos;s details. You can still file a grievance below.</p>
+        <p className="mt-2 text-sm text-destructive">{t("support.officer.loadError")}</p>
       ) : !o ? (
         <ListSkeleton rows={2} />
       ) : (
@@ -82,24 +91,24 @@ function OfficerCard() {
           {o.placeholder && (
             <p className="mt-3 flex items-start gap-2 rounded-xl bg-warning-soft px-3 py-2 text-sm text-warning-ink">
               <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
-              Placeholder details: the grievance officer has not been published yet. Grievances filed here are still recorded and answered.
+              {t("support.officer.placeholder")}
             </p>
           )}
           <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2">
             <div className="flex gap-2">
-              <dt><UserRound className="size-4 text-muted-foreground" aria-label="Name" /></dt>
+              <dt><UserRound className="size-4 text-muted-foreground" aria-label={t("support.officer.name")} /></dt>
               <dd><span className="font-medium">{o.name}</span><br /><span className="text-muted-foreground">{o.designation}</span></dd>
             </div>
             <div className="flex gap-2">
-              <dt><Mail className="size-4 text-muted-foreground" aria-label="Email" /></dt>
+              <dt><Mail className="size-4 text-muted-foreground" aria-label={t("support.officer.email")} /></dt>
               <dd className="break-all">{o.placeholder ? o.email : <a href={`mailto:${o.email}`} className="underline-offset-4 hover:underline">{o.email}</a>}</dd>
             </div>
             <div className="flex gap-2">
-              <dt><Phone className="size-4 text-muted-foreground" aria-label="Phone" /></dt>
+              <dt><Phone className="size-4 text-muted-foreground" aria-label={t("support.officer.phone")} /></dt>
               <dd>{o.placeholder ? o.phone : <a href={`tel:${o.phone.replace(/[^\d+]/g, "")}`} className="underline-offset-4 hover:underline">{o.phone}</a>}</dd>
             </div>
             <div className="flex gap-2">
-              <dt><MapPin className="size-4 text-muted-foreground" aria-label="Postal address" /></dt>
+              <dt><MapPin className="size-4 text-muted-foreground" aria-label={t("support.officer.address")} /></dt>
               <dd className="whitespace-pre-line">{o.address}</dd>
             </div>
           </dl>
@@ -110,31 +119,38 @@ function OfficerCard() {
 }
 
 function Acknowledgement({ filed, message, onAnother }: { filed: Grievance; message: string; onAnother: () => void }) {
+  const { t, language } = useI18n();
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(filed.ticket);
-      toast.success("Ticket number copied");
+      toast.success(t("support.acknowledgement.copied"));
     } catch {
-      toast.error("Could not copy. Write the ticket number down instead.");
+      toast.error(t("support.acknowledgement.copyFailed"));
     }
   };
   return (
     <div role="status" className="rounded-2xl border border-success/30 bg-success-soft/40 p-5">
-      <p className="flex items-center gap-2 font-semibold"><CheckCircle2 className="size-5 text-success" aria-hidden /> Grievance received and acknowledged</p>
-      <p className="mt-3 text-sm text-muted-foreground">Your ticket number</p>
+      <p className="flex items-center gap-2 font-semibold"><CheckCircle2 className="size-5 text-success" aria-hidden /> {t("support.acknowledgement.title")}</p>
+      <p className="mt-3 text-sm text-muted-foreground">{t("support.acknowledgement.ticket")}</p>
       <div className="mt-1 flex flex-wrap items-center gap-3">
         <span className="font-mono text-2xl font-semibold tracking-wider">{filed.ticket}</span>
-        <Button size="sm" variant="outline" onClick={copy}><Copy /> Copy</Button>
+        <Button size="sm" variant="outline" onClick={copy}><Copy /> {t("support.acknowledgement.copy")}</Button>
       </div>
       <p className="mt-3 text-sm">{message}</p>
-      <p className="mt-2 text-sm text-muted-foreground">Received {formatDateTime(filed.received_at)}. Resolution due by {formatDate(filed.due_at)}.</p>
-      <Button className="mt-4" variant="ghost" size="sm" onClick={onAnother}>File another grievance</Button>
+      <p className="mt-2 text-sm text-muted-foreground">
+        {t("support.acknowledgement.dates", {
+          received: formatDateTime(filed.received_at, language),
+          due: formatDate(filed.due_at, language),
+        })}
+      </p>
+      <Button className="mt-4" variant="ghost" size="sm" onClick={onAnother}>{t("support.acknowledgement.another")}</Button>
     </div>
   );
 }
 
 function FileForm() {
   const id = useId();
+  const { t } = useI18n();
   const { data: me } = useMe();
   const [category, setCategory] = useState<GrievanceCategory | "">("");
   // null: the signed-in account's phone or email, until the visitor types their own.
@@ -174,72 +190,73 @@ function FileForm() {
       }}
     >
       <div>
-        <h2 id={`${id}-title`} className="font-semibold">File a grievance</h2>
-        <p className="text-sm text-muted-foreground">
-          {me ? "It is linked to your account, and you will see the acknowledgement in the app too." : "You do not need an account. Give a phone number or email so we can reach you and you can track the grievance."}
-        </p>
+        <h2 id={`${id}-title`} className="font-semibold">{t("support.file.title")}</h2>
+        <p className="text-sm text-muted-foreground">{t(me ? "support.file.signedIn" : "support.file.signedOut")}</p>
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor={`${id}-category`}>What is it about?</Label>
+        <Label htmlFor={`${id}-category`}>{t("support.file.category")}</Label>
         <Select value={category} onValueChange={(v) => setCategory(v as GrievanceCategory)}>
-          <SelectTrigger id={`${id}-category`} className="w-full"><SelectValue placeholder="Choose a category" /></SelectTrigger>
+          <SelectTrigger id={`${id}-category`} className="w-full"><SelectValue placeholder={t("support.file.categoryPlaceholder")} /></SelectTrigger>
           <SelectContent>
-            {(Object.keys(CATEGORY_LABEL) as GrievanceCategory[]).map((c) => <SelectItem key={c} value={c}>{CATEGORY_LABEL[c]}</SelectItem>)}
+            {CATEGORIES.map((c) => <SelectItem key={c} value={c}>{t(`support.categories.${c}`)}</SelectItem>)}
           </SelectContent>
         </Select>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
-          <Label htmlFor={`${id}-contact`}>Phone or email</Label>
+          <Label htmlFor={`${id}-contact`}>{t("support.file.contact")}</Label>
           <Input id={`${id}-contact`} value={contactValue} onChange={(e) => setContact(e.target.value.slice(0, 254))} autoComplete="email"
-            placeholder="98765 43210 or you@example.com" required aria-describedby={`${id}-contact-hint`} />
-          <p id={`${id}-contact-hint`} className="text-xs text-muted-foreground">You need it with the ticket number to check the status.</p>
+            placeholder={t("support.file.contactPlaceholder")} required aria-describedby={`${id}-contact-hint`} />
+          <p id={`${id}-contact-hint`} className="text-xs text-muted-foreground">{t("support.file.contactHint")}</p>
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor={`${id}-code`}>Order or reservation code <span className="font-normal text-muted-foreground">(optional)</span></Label>
+          <Label htmlFor={`${id}-code`}>
+            {t("support.file.code")} <span className="font-normal text-muted-foreground">{t("support.file.optional")}</span>
+          </Label>
           <Input id={`${id}-code`} value={orderCode} onChange={(e) => setOrderCode(e.target.value.slice(0, 20))} placeholder="D-7KQ2MX" autoCapitalize="characters" />
         </div>
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor={`${id}-description`}>What happened?</Label>
+        <Label htmlFor={`${id}-description`}>{t("support.file.description")}</Label>
         <Textarea id={`${id}-description`} rows={5} value={description} onChange={(e) => setDescription(e.target.value.slice(0, DESCRIPTION_MAX))}
-          placeholder="Tell us what went wrong, when, and what you would like us to do." required aria-describedby={`${id}-description-count`} />
+          placeholder={t("support.file.descriptionPlaceholder")} required aria-describedby={`${id}-description-count`} />
         <p id={`${id}-description-count`} className="text-right text-xs text-muted-foreground tabular">{description.length} / {DESCRIPTION_MAX}</p>
       </div>
       {submit.isError && <p role="alert" className="text-sm text-destructive">{errorMessage(submit.error)}</p>}
       <Button type="submit" disabled={!ready || submit.isPending}>
-        {submit.isPending ? <Loader2 className="animate-spin" /> : <MessageSquareWarning />} Submit grievance
+        {submit.isPending ? <Loader2 className="animate-spin" /> : <MessageSquareWarning />} {t("support.file.submit")}
       </Button>
     </form>
   );
 }
 
 export function GrievanceStatusCard({ g }: { g: Grievance }) {
+  const { t, language } = useI18n();
   const steps: [string, string | null][] = [
-    ["Received and acknowledged", g.acknowledged_at ?? g.received_at],
-    ["In progress", g.in_progress_at],
-    ["Resolved", g.resolved_at],
+    [t("support.status.received"), g.acknowledged_at ?? g.received_at],
+    [t("support.status.inProgress"), g.in_progress_at],
+    [t("support.status.resolved"), g.resolved_at],
   ];
   return (
     <div className="rounded-2xl border bg-card p-4">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono font-semibold">{g.ticket}</span>
-        <Badge variant={g.status === "resolved" ? "secondary" : "outline"}>{STATUS_LABEL[g.status]}</Badge>
-        <span className="ml-auto text-xs text-muted-foreground">{CATEGORY_LABEL[g.category]}</span>
+        <Badge variant={g.status === "resolved" ? "secondary" : "outline"}>{t(`support.statuses.${g.status}`)}</Badge>
+        <span className="ml-auto text-xs text-muted-foreground">{t(`support.categories.${g.category}`)}</span>
       </div>
       <p className="mt-2 line-clamp-3 text-sm text-muted-foreground">{g.description}</p>
       <ol className="mt-3 space-y-1 text-sm">
         {steps.map(([label, at]) => (
           <li key={label} className={cn("flex justify-between gap-3", !at && "text-muted-foreground")}>
             <span>{label}</span>
-            <span className="tabular">{at ? formatDateTime(at) : "-"}</span>
+            <span className="tabular">{at ? formatDateTime(at, language) : "-"}</span>
           </li>
         ))}
       </ol>
-      {g.status !== "resolved" && <p className="mt-2 text-xs text-muted-foreground">Resolution due by {formatDate(g.due_at)}.</p>}
+      {g.status !== "resolved" && <p className="mt-2 text-xs text-muted-foreground">{t("support.status.due", { date: formatDate(g.due_at, language) })}</p>}
       {g.resolution && (
         <p className="mt-3 rounded-xl border-l-2 border-brand/50 bg-muted/50 px-3 py-2 text-sm">
-          <span className="block text-xs font-medium">The grievance officer&apos;s answer</span>
+          <span className="block text-xs font-medium">{t("support.status.answer")}</span>
           {g.resolution}
         </p>
       )}
@@ -249,6 +266,7 @@ export function GrievanceStatusCard({ g }: { g: Grievance }) {
 
 function LookupForm({ initialTicket }: { initialTicket: string }) {
   const id = useId();
+  const { t } = useI18n();
   const [ticket, setTicket] = useState(initialTicket);
   const [contact, setContact] = useState("");
   const lookup = useMutation({
@@ -257,8 +275,8 @@ function LookupForm({ initialTicket }: { initialTicket: string }) {
   return (
     <section aria-labelledby={`${id}-title`} className="space-y-4 rounded-2xl border bg-card p-5">
       <div>
-        <h2 id={`${id}-title`} className="font-semibold">Check a grievance</h2>
-        <p className="text-sm text-muted-foreground">Enter the ticket number and the phone or email you gave when you filed it.</p>
+        <h2 id={`${id}-title`} className="font-semibold">{t("support.lookup.title")}</h2>
+        <p className="text-sm text-muted-foreground">{t("support.lookup.intro")}</p>
       </div>
       <form
         className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end"
@@ -268,15 +286,15 @@ function LookupForm({ initialTicket }: { initialTicket: string }) {
         }}
       >
         <div className="space-y-1.5">
-          <Label htmlFor={`${id}-ticket`}>Ticket number</Label>
+          <Label htmlFor={`${id}-ticket`}>{t("support.lookup.ticket")}</Label>
           <Input id={`${id}-ticket`} value={ticket} onChange={(e) => setTicket(e.target.value.slice(0, 20))} placeholder="G-7KQ2MX" autoCapitalize="characters" required />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor={`${id}-contact`}>Phone or email</Label>
+          <Label htmlFor={`${id}-contact`}>{t("support.lookup.contact")}</Label>
           <Input id={`${id}-contact`} value={contact} onChange={(e) => setContact(e.target.value.slice(0, 254))} required />
         </div>
         <Button type="submit" variant="outline" disabled={lookup.isPending || !ticket.trim() || !contact.trim()}>
-          {lookup.isPending ? <Loader2 className="animate-spin" /> : <Search />} Check status
+          {lookup.isPending ? <Loader2 className="animate-spin" /> : <Search />} {t("support.lookup.submit")}
         </Button>
       </form>
       {lookup.isError && <p role="alert" className="text-sm text-destructive">{errorMessage(lookup.error)}</p>}
@@ -286,12 +304,13 @@ function LookupForm({ initialTicket }: { initialTicket: string }) {
 }
 
 function MyGrievances() {
+  const { t } = useI18n();
   const { data: me } = useMe();
   const mine = useQuery({ queryKey: ["grievances", "mine"], queryFn: () => api.get<Grievance[]>("/grievances/mine"), enabled: !!me });
   if (!me || !mine.data?.length) return null;
   return (
     <section aria-labelledby="mine-title" className="space-y-3">
-      <h2 id="mine-title" className="font-semibold">Your grievances</h2>
+      <h2 id="mine-title" className="font-semibold">{t("support.mine")}</h2>
       <ul className="space-y-3">
         {mine.data.map((g) => <li key={g.ticket}><GrievanceStatusCard g={g} /></li>)}
       </ul>
@@ -300,14 +319,13 @@ function MyGrievances() {
 }
 
 export function GrievanceView({ initialTicket }: { initialTicket: string }) {
+  const { t } = useI18n();
   return (
     <div className="mx-auto max-w-3xl space-y-6 px-4 pt-8 md:px-6 md:pt-12">
       <div>
-        <p className="text-sm text-muted-foreground">Help</p>
-        <h1 className="text-3xl font-semibold">Grievances</h1>
-        <p className="mt-2 text-muted-foreground">
-          If something went wrong with an order, a shop, your account or your personal data, tell us here. Every grievance gets a ticket number and is acknowledged as soon as you file it, and the grievance officer resolves it within 30 days.
-        </p>
+        <p className="text-sm text-muted-foreground">{t("support.eyebrow")}</p>
+        <h1 className="text-3xl font-semibold">{t("support.title")}</h1>
+        <p className="mt-2 text-muted-foreground">{t("support.intro")}</p>
       </div>
       <OfficerCard />
       <MyGrievances />

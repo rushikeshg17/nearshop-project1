@@ -4,12 +4,14 @@ import { Crosshair, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { useI18n } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Slider } from "@/components/ui/slider";
 import { useMeta } from "@/hooks/use-session";
+import { formatNumber } from "@/lib/format";
 import { useLocation } from "@/lib/location";
 import { cn } from "@/lib/utils";
 
@@ -28,6 +30,7 @@ export function LocationPanel({
 }) {
   const { location, radiusKm, setLocation, setRadiusKm, requestGps } = useLocation();
   const { data: meta } = useMeta();
+  const { t } = useI18n();
   const [filter, setFilter] = useState("");
   const [locating, setLocating] = useState(false);
 
@@ -38,9 +41,9 @@ export function LocationPanel({
     const res = await requestGps();
     setLocating(false);
     if (res.ok) {
-      toast.success("Showing shops near your current location");
+      toast.success(t("common.location.gpsFound"));
       setOpen(false);
-    } else toast.error(res.message ?? "Couldn't get your location");
+    } else toast.error(res.message ?? t("common.location.gpsFailed"));
   }
 
   return (
@@ -48,15 +51,15 @@ export function LocationPanel({
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent align={align} className="w-80 p-0">
         <div className="space-y-3 border-b p-4">
-          <p className="text-sm font-semibold">Where are you shopping?</p>
+          <p className="text-sm font-semibold">{t("common.location.panelTitle")}</p>
           <Button variant="outline" className="w-full justify-start" onClick={useGps} disabled={locating}>
             {locating ? <Loader2 className="animate-spin" /> : <Crosshair />}
-            Use my current location
+            {t("common.location.useGps")}
           </Button>
           <div>
             <div className="mb-2 flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Search radius</span>
-              <span className="font-medium tabular">{radiusKm} km</span>
+              <span className="text-muted-foreground">{t("common.location.radius")}</span>
+              <span className="font-medium tabular">{t("common.location.km", { km: formatNumber(radiusKm) })}</span>
             </div>
             <Slider
               min={1}
@@ -64,13 +67,13 @@ export function LocationPanel({
               step={1}
               value={[radiusKm]}
               onValueChange={([v]) => setRadiusKm(v)}
-              aria-label="Search radius in kilometres"
+              aria-label={t("common.location.radiusLabel")}
             />
           </div>
         </div>
         <div className="p-2">
           <Input
-            placeholder={`Search areas in ${meta?.city.name ?? "your city"}`}
+            placeholder={meta ? t("common.location.searchAreasIn", { city: meta.city.name }) : t("common.location.searchAreas")}
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             className="mb-1 h-9"
@@ -97,7 +100,7 @@ export function LocationPanel({
                   </li>
                 );
               })}
-              {!localities.length && <li className="px-2.5 py-6 text-center text-sm text-muted-foreground">No matching area</li>}
+              {!localities.length && <li className="px-2.5 py-6 text-center text-sm text-muted-foreground">{t("common.location.noMatch")}</li>}
             </ul>
           </ScrollArea>
         </div>

@@ -50,6 +50,13 @@
       "menu": "Menu",
       "customerView": "Customer view",
       "viewPublicPage": "View public page"
+    },
+    "skipToContent": "Skip to content",
+    "phoneBanner": {
+      "region": "Verify your phone number",
+      "text": "From {date} you sign in with a code sent to your phone.",
+      "link": "Verify your phone number",
+      "dismiss": "Dismiss for today"
     }
   },
   "common": {
@@ -136,6 +143,95 @@
     },
     "confirm": {
       "keep": "Keep it"
+    },
+    "location": {
+      "change": "Change location",
+      "set": "Set location",
+      "current": "Current location",
+      "cityCentre": "{city} centre",
+      "km": "{km} km",
+      "panelTitle": "Where are you shopping?",
+      "useGps": "Use my current location",
+      "radius": "Search radius",
+      "radiusLabel": "Search radius in kilometres",
+      "searchAreasIn": "Search areas in {city}",
+      "searchAreas": "Search areas",
+      "noMatch": "No matching area",
+      "gpsFound": "Showing shops near your current location",
+      "gpsUnsupported": "Location is not available in this browser",
+      "gpsOutside": "You're outside {city}, where NearShop's shops are right now. Pick an area instead.",
+      "gpsDenied": "Location permission was denied",
+      "gpsFailed": "Couldn't get your location"
+    },
+    "notifications": {
+      "title": "Notifications",
+      "unread": {
+        "one": "Notifications, {count} unread",
+        "other": "Notifications, {count} unread"
+      },
+      "markAllRead": "Mark all read",
+      "empty": "You're all caught up."
+    },
+    "stock": {
+      "out": "Out of stock",
+      "left": "{count} left",
+      "only": "Only {count} left",
+      "inStock": "{count} in stock"
+    },
+    "freshness": {
+      "updated": "Updated {time}",
+      "notConfirmed": "Stock not confirmed yet"
+    },
+    "price": {
+      "offMrp": "{percent}% off MRP"
+    },
+    "rating": {
+      "newShop": "New shop",
+      "summary": {
+        "one": "rated {value} out of 5 from {count} review",
+        "other": "rated {value} out of 5 from {count} reviews"
+      }
+    },
+    "verified": {
+      "label": "Verified shop",
+      "explanation": "Verified by NearShop: address and owner checked in person"
+    },
+    "errorPage": {
+      "title": "Something went wrong",
+      "body": "It's on our side, not yours. Try again, and if it keeps happening, go back home.",
+      "home": "Home"
+    },
+    "notFound": {
+      "homeLabel": "NearShop home",
+      "title": "This page isn't nearby",
+      "body": "The link may be old, or the listing was removed. Try searching instead.",
+      "search": "Search nearby",
+      "home": "Home"
+    },
+    "apiErrors": {
+      "network": "Can't reach NearShop right now. Check your connection and try again.",
+      "server_error": "Something went wrong on our side. Please try again.",
+      "request_failed": "That did not work. Please try again.",
+      "unknown": "Something went wrong",
+      "unauthorized": "Please sign in to continue.",
+      "rate_limited": "Too many requests. Please wait a little and try again.",
+      "signups_closed": "Sign-ups are paused while we prepare for launch.",
+      "shop_not_verified": "This shop is not available on NearShop right now.",
+      "consent_required": "Please agree to the privacy notice and terms to create an account.",
+      "age_confirmation_required": "NearShop is for adults. You need to be 18 or older to create an account.",
+      "insufficient_stock": "There is not enough stock left for this. Lower the quantity, or try another shop.",
+      "duplicate_reservation": "You already have an active reservation for this item.",
+      "invalid_credentials": "Email or password is incorrect.",
+      "email_taken": "An account with this email already exists.",
+      "otp_expired": "This code has expired or has already been used. Ask for a new code.",
+      "otp_locked": "Too many wrong codes. Ask for a new code.",
+      "otp_send_failed": "We could not send the code just now. Please try again in a minute.",
+      "otp_unavailable": "Signing in with a phone code is not available right now. Please sign in with your email and password, or try again later.",
+      "phone_signin_required": "Email sign-in has ended for customer and shop accounts. Sign in with your phone number instead. If you never verified a phone number on this account, contact us through the grievance page.",
+      "account_inactive": "The account with this phone number is switched off. To ask about it, contact us through the grievance page.",
+      "duplicate_review": "You have already reviewed this purchase.",
+      "review_not_allowed": "Shops cannot be reviewed from their own phone number.",
+      "own_review": "You cannot report your own review."
     }
   },
   "discovery": {
@@ -574,6 +670,12 @@
       "open": "Open my shop",
       "continue": "Continue",
       "alreadyListed": "Already listed? {link}"
+    },
+    "demo": {
+      "title": "Demo accounts",
+      "customer": "Customer",
+      "owner": "Shop owner",
+      "admin": "Admin"
     }
   },
   "transactions": {
@@ -1482,6 +1584,140 @@
       "tagsReplaces": "(replaces existing)",
       "tagsPlaceholder": "switch, light switch, modular, 6 amp",
       "description": "Description"
+    }
+  },
+  "support": {
+    "eyebrow": "Help",
+    "title": "Grievances",
+    "intro": "If something went wrong with an order, a shop, your account or your personal data, tell us here. Every grievance gets a ticket number and is acknowledged as soon as you file it, and the grievance officer resolves it within 30 days.",
+    "categories": {
+      "order": "An order or reservation",
+      "shop_conduct": "A shop's conduct",
+      "privacy": "Privacy or my data",
+      "account": "My account",
+      "other": "Something else"
+    },
+    "statuses": {
+      "open": "Open",
+      "acknowledged": "Acknowledged",
+      "in_progress": "In progress",
+      "resolved": "Resolved"
+    },
+    "officer": {
+      "title": "Grievance officer",
+      "loadError": "Could not load the grievance officer's details. You can still file a grievance below.",
+      "placeholder": "Placeholder details: the grievance officer has not been published yet. Grievances filed here are still recorded and answered.",
+      "name": "Name",
+      "email": "Email",
+      "phone": "Phone",
+      "address": "Postal address"
+    },
+    "acknowledgement": {
+      "title": "Grievance received and acknowledged",
+      "ticket": "Your ticket number",
+      "copy": "Copy",
+      "copied": "Ticket number copied",
+      "copyFailed": "Could not copy. Write the ticket number down instead.",
+      "dates": "Received {received}. Resolution due by {due}.",
+      "another": "File another grievance"
+    },
+    "file": {
+      "title": "File a grievance",
+      "signedIn": "It is linked to your account, and you will see the acknowledgement in the app too.",
+      "signedOut": "You do not need an account. Give a phone number or email so we can reach you and you can track the grievance.",
+      "category": "What is it about?",
+      "categoryPlaceholder": "Choose a category",
+      "contact": "Phone or email",
+      "contactPlaceholder": "98765 43210 or you@example.com",
+      "contactHint": "You need it with the ticket number to check the status.",
+      "code": "Order or reservation code",
+      "optional": "(optional)",
+      "description": "What happened?",
+      "descriptionPlaceholder": "Tell us what went wrong, when, and what you would like us to do.",
+      "submit": "Submit grievance"
+    },
+    "status": {
+      "received": "Received and acknowledged",
+      "inProgress": "In progress",
+      "resolved": "Resolved",
+      "due": "Resolution due by {date}.",
+      "answer": "The grievance officer's answer"
+    },
+    "lookup": {
+      "title": "Check a grievance",
+      "intro": "Enter the ticket number and the phone or email you gave when you filed it.",
+      "ticket": "Ticket number",
+      "contact": "Phone or email",
+      "submit": "Check status"
+    },
+    "mine": "Your grievances"
+  },
+  "aiLab": {
+    "badge": "AI Lab",
+    "title": "The machine learning behind NearShop",
+    "intro": "Five models, all trained on this deployment's own data, all with their numbers on show. Where a model learned from seeded demo data, it says so.",
+    "compare": {
+      "title": "Search: four methods, one query",
+      "intro": "Keyword search only finds exact words. Watch what meaning-based search adds.",
+      "query": "Query to compare",
+      "submit": "Compare",
+      "noResults": "No results"
+    },
+    "pipeline": {
+      "understand": {
+        "title": "Understand",
+        "body": "Normalise the query, fix spelling, add local synonyms (chappal, nali, adaptor)."
+      },
+      "match": {
+        "title": "Match",
+        "body": "Sentence embeddings for meaning plus a MongoDB text index for exact words."
+      },
+      "locate": {
+        "title": "Locate",
+        "body": "MongoDB geo index finds shops in range, then exact Haversine distance to each."
+      },
+      "filter": {
+        "title": "Filter",
+        "body": "Stock, price range, pickup or delivery eligibility."
+      },
+      "rank": {
+        "title": "Rank and group",
+        "body": "75% relevance, 15% proximity, 10% availability. Same item across shops is grouped."
+      },
+      "step": "{number}. {title}"
+    },
+    "models": {
+      "title": "Model cards",
+      "intro": "Live from the last training run.",
+      "training": "Training...",
+      "queued": "Queued...",
+      "retrain": "Retrain all models",
+      "retrainQueued": "Retrain queued. The model cards update when it finishes.",
+      "demoData": "Demo data",
+      "notTrained": "not trained",
+      "drivers": "What drives the forecast",
+      "trained": "Trained {ago} in {seconds} s",
+      "notTrainedYet": "Not trained yet"
+    },
+    "metrics": {
+      "listingsIndexed": "Listings indexed",
+      "vectorSize": "Vector size",
+      "trainingSentences": "Training sentences",
+      "vocabulary": "Vocabulary",
+      "mae": "Error per week (MAE)",
+      "naiveMae": "Naive baseline MAE",
+      "betterThanBaseline": "Better than baseline",
+      "r2": "R squared",
+      "units": "{value} units",
+      "percent": "{value}%",
+      "baskets": "Baskets analysed",
+      "rules": "Rules found",
+      "avgConfidence": "Avg confidence",
+      "avgLift": "Avg lift",
+      "listingsCompared": "Listings compared",
+      "itemGroups": "Item groups",
+      "isolated": "Isolated by forest",
+      "flagged": "Flagged for review"
     }
   }
 }

@@ -2,8 +2,10 @@
 
 import { BadgeCheck, Clock3, Star } from "lucide-react";
 
+import { useI18n } from "@/components/providers";
 import { useNow } from "@/hooks/use-debounce";
-import { formatDistance, formatPrice, freshnessLevel, timeAgo } from "@/lib/format";
+import { formatDistance, formatNumber, formatPrice, freshnessLevel, timeAgo } from "@/lib/format";
+import { plural } from "@/lib/i18n";
 import type { StockStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -18,20 +20,22 @@ export function StockPill({
   className?: string;
   compact?: boolean;
 }) {
+  const { t } = useI18n();
   const styles = {
     in_stock: "bg-success-soft text-success-ink",
     low_stock: "bg-warning-soft text-warning-ink",
     out_of_stock: "bg-muted text-muted-foreground",
   }[status];
   const dot = { in_stock: "bg-success", low_stock: "bg-warning", out_of_stock: "bg-muted-foreground/50" }[status];
+  const count = formatNumber(quantity);
   const label =
     status === "out_of_stock"
-      ? "Out of stock"
+      ? t("common.stock.out")
       : compact
-        ? `${quantity} left`
+        ? t("common.stock.left", { count })
         : status === "low_stock"
-          ? `Only ${quantity} left`
-          : `${quantity} in stock`;
+          ? t("common.stock.only", { count })
+          : t("common.stock.inStock", { count });
   return (
     <span
       className={cn(
@@ -46,9 +50,12 @@ export function StockPill({
   );
 }
 
-/** "Updated 4 min ago": the core trust signal. */
-export function Freshness({ at, className, prefix = "Updated" }: { at: string | null; className?: string; prefix?: string }) {
+/** "Updated 4 min ago": the core trust signal. A prefix replaces "Updated" (a translated one from the caller, or
+ * empty for the time alone). */
+export function Freshness({ at, className, prefix }: { at: string | null; className?: string; prefix?: string }) {
   const now = useNow(30_000);
+  const { t, language } = useI18n();
+  const ago = at ? timeAgo(at, now, language) : "";
   const level = freshnessLevel(at);
   return (
     <span
@@ -60,7 +67,11 @@ export function Freshness({ at, className, prefix = "Updated" }: { at: string | 
       suppressHydrationWarning
     >
       <Clock3 className="size-3" aria-hidden />
-      {at ? `${prefix} ${timeAgo(at, now)}` : "Stock not confirmed yet"}
+      {!at
+        ? t("common.freshness.notConfirmed")
+        : prefix === undefined
+          ? t("common.freshness.updated", { time: ago })
+          : `${prefix} ${ago}`.trim()}
     </span>
   );
 }
@@ -76,6 +87,7 @@ export function Price({
   className?: string;
   size?: "sm" | "md" | "lg" | "xl";
 }) {
+  const { t } = useI18n();
   const sizes = { sm: "text-sm", md: "text-base", lg: "text-xl", xl: "text-3xl" }[size];
   const off = mrp && mrp > value ? Math.round(((mrp - value) / mrp) * 100) : 0;
   return (
@@ -84,7 +96,7 @@ export function Price({
       {off >= 3 && (
         <>
           <span className="text-xs text-muted-foreground line-through">{formatPrice(mrp)}</span>
-          <span className="text-xs font-medium text-success-ink">{off}% off MRP</span>
+          <span className="text-xs font-medium text-success-ink">{t("common.price.offMrp", { percent: formatNumber(off) })}</span>
         </>
       )}
     </span>
@@ -92,17 +104,18 @@ export function Price({
 }
 
 export function Rating({ value, count, className, showCount = true }: { value: number | null; count: number; className?: string; showCount?: boolean }) {
+  const { t, language } = useI18n();
   // No rating_avg: fewer than 5 distinct customers have counted reviews yet (P3.5, plan section 8.2).
-  if (!value || !count) return <span className={cn("text-xs text-muted-foreground", className)}>New shop</span>;
+  if (!value || !count) return <span className={cn("text-xs text-muted-foreground", className)}>{t("common.rating.newShop")}</span>;
   return (
     // relative: the sr-only text is absolutely positioned, and must stay inside a horizontal scroller (the home
     // page's shop cards), or it widens the page and a phone zooms out and shifts the layout (P2.9).
     <span className={cn("relative inline-flex items-center gap-1 text-xs tabular", className)}>
       <Star className="size-3.5 fill-warning text-warning" aria-hidden />
       <span className="font-medium text-foreground">{value.toFixed(1)}</span>
-      {showCount && <span className="text-muted-foreground">({count})</span>}
+      {showCount && <span className="text-muted-foreground">({formatNumber(count)})</span>}
       <span className="sr-only">
-        rated {value} out of 5 from {count} reviews
+        {t(`common.rating.summary.${plural(language, count)}`, { value: value.toFixed(1), count: formatNumber(count) })}
       </span>
     </span>
   );
@@ -134,9 +147,10 @@ export function OpenBadge({ isOpen, label, className }: { isOpen: boolean | null
 /** The verified badge. Its explanation is the icon's SVG title (shown on hover, read by screen readers), not
  * a Radix tooltip: the badge is on every shop card, and the tooltip's code was first-load JavaScript (P2.9). */
 export function VerifiedMark({ className }: { className?: string }) {
+  const { t } = useI18n();
   return (
-    <BadgeCheck className={cn("size-4 shrink-0 text-info", className)} role="img" aria-label="Verified shop">
-      <title>Verified by NearShop: address and owner checked in person</title>
+    <BadgeCheck className={cn("size-4 shrink-0 text-info", className)} role="img" aria-label={t("common.verified.label")}>
+      <title>{t("common.verified.explanation")}</title>
     </BadgeCheck>
   );
 }

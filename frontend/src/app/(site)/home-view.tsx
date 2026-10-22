@@ -37,6 +37,10 @@ import { cn, revealFocused } from "@/lib/utils";
 // Example searches, in the interface language (discovery.home.quick in the message files).
 const QUICK = ["charger", "elbow", "shoes", "bulb", "umbrella", "oil"] as const;
 
+// The query behind the hero's live results, shown as typed: the panel shows what the search returns for it, so it is
+// the query itself, not a message to translate.
+const DEMO_QUERY = "fast charger";
+
 // Entrance animations are CSS (tw-animate-css), not an animation library, so none of it is first-load
 // JavaScript (P2.9). The hero's heading and text are not animated: they are the page's largest paint.
 const ENTER = "animate-in fade-in fill-mode-both duration-500 ease-out";
@@ -49,7 +53,7 @@ export function HomeView() {
   const live = useQuery({
     queryKey: ["home-live", location?.lat, location?.lng],
     queryFn: () =>
-      api.get<SearchResponse>("/search", { q: "fast charger", lat: location!.lat, lng: location!.lng, radius_km: 6, page_size: 3 }),
+      api.get<SearchResponse>("/search", { q: DEMO_QUERY, lat: location!.lat, lng: location!.lng, radius_km: 6, page_size: 3 }),
     enabled: ready,
     staleTime: 5 * 60_000,
   });
@@ -117,7 +121,7 @@ export function HomeView() {
             <div className="relative rounded-3xl border bg-card/90 p-4 shadow-lift backdrop-blur">
               <div className="flex items-center gap-2 rounded-xl border bg-background px-3 py-2.5 text-sm">
                 <Search className="size-4 text-muted-foreground" />
-                <span>fast charger</span>
+                <span>{DEMO_QUERY}</span>
                 <span className="ml-auto text-xs text-muted-foreground">
                   {live.data
                     ? `${t(`discovery.home.demoItems.${plural(language, live.data.total)}`, { count: formatNumber(live.data.total) })} · ${t(

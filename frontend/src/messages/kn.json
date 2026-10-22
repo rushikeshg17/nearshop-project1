@@ -50,6 +50,13 @@
       "menu": "",
       "customerView": "",
       "viewPublicPage": ""
+    },
+    "skipToContent": "",
+    "phoneBanner": {
+      "region": "",
+      "text": "",
+      "link": "",
+      "dismiss": ""
     }
   },
   "common": {
@@ -136,6 +143,95 @@
     },
     "confirm": {
       "keep": ""
+    },
+    "location": {
+      "change": "",
+      "set": "",
+      "current": "",
+      "cityCentre": "",
+      "km": "",
+      "panelTitle": "",
+      "useGps": "",
+      "radius": "",
+      "radiusLabel": "",
+      "searchAreasIn": "",
+      "searchAreas": "",
+      "noMatch": "",
+      "gpsFound": "",
+      "gpsUnsupported": "",
+      "gpsOutside": "",
+      "gpsDenied": "",
+      "gpsFailed": ""
+    },
+    "notifications": {
+      "title": "",
+      "unread": {
+        "one": "",
+        "other": ""
+      },
+      "markAllRead": "",
+      "empty": ""
+    },
+    "stock": {
+      "out": "",
+      "left": "",
+      "only": "",
+      "inStock": ""
+    },
+    "freshness": {
+      "updated": "",
+      "notConfirmed": ""
+    },
+    "price": {
+      "offMrp": ""
+    },
+    "rating": {
+      "newShop": "",
+      "summary": {
+        "one": "",
+        "other": ""
+      }
+    },
+    "verified": {
+      "label": "",
+      "explanation": ""
+    },
+    "errorPage": {
+      "title": "",
+      "body": "",
+      "home": ""
+    },
+    "notFound": {
+      "homeLabel": "",
+      "title": "",
+      "body": "",
+      "search": "",
+      "home": ""
+    },
+    "apiErrors": {
+      "network": "",
+      "server_error": "",
+      "request_failed": "",
+      "unknown": "",
+      "unauthorized": "",
+      "rate_limited": "",
+      "signups_closed": "",
+      "shop_not_verified": "",
+      "consent_required": "",
+      "age_confirmation_required": "",
+      "insufficient_stock": "",
+      "duplicate_reservation": "",
+      "invalid_credentials": "",
+      "email_taken": "",
+      "otp_expired": "",
+      "otp_locked": "",
+      "otp_send_failed": "",
+      "otp_unavailable": "",
+      "phone_signin_required": "",
+      "account_inactive": "",
+      "duplicate_review": "",
+      "review_not_allowed": "",
+      "own_review": ""
     }
   },
   "discovery": {
@@ -574,6 +670,12 @@
       "open": "",
       "continue": "",
       "alreadyListed": ""
+    },
+    "demo": {
+      "title": "",
+      "customer": "",
+      "owner": "",
+      "admin": ""
     }
   },
   "transactions": {
@@ -1482,6 +1584,140 @@
       "tagsReplaces": "",
       "tagsPlaceholder": "",
       "description": ""
+    }
+  },
+  "support": {
+    "eyebrow": "",
+    "title": "",
+    "intro": "",
+    "categories": {
+      "order": "",
+      "shop_conduct": "",
+      "privacy": "",
+      "account": "",
+      "other": ""
+    },
+    "statuses": {
+      "open": "",
+      "acknowledged": "",
+      "in_progress": "",
+      "resolved": ""
+    },
+    "officer": {
+      "title": "",
+      "loadError": "",
+      "placeholder": "",
+      "name": "",
+      "email": "",
+      "phone": "",
+      "address": ""
+    },
+    "acknowledgement": {
+      "title": "",
+      "ticket": "",
+      "copy": "",
+      "copied": "",
+      "copyFailed": "",
+      "dates": "",
+      "another": ""
+    },
+    "file": {
+      "title": "",
+      "signedIn": "",
+      "signedOut": "",
+      "category": "",
+      "categoryPlaceholder": "",
+      "contact": "",
+      "contactPlaceholder": "",
+      "contactHint": "",
+      "code": "",
+      "optional": "",
+      "description": "",
+      "descriptionPlaceholder": "",
+      "submit": ""
+    },
+    "status": {
+      "received": "",
+      "inProgress": "",
+      "resolved": "",
+      "due": "",
+      "answer": ""
+    },
+    "lookup": {
+      "title": "",
+      "intro": "",
+      "ticket": "",
+      "contact": "",
+      "submit": ""
+    },
+    "mine": ""
+  },
+  "aiLab": {
+    "badge": "",
+    "title": "",
+    "intro": "",
+    "compare": {
+      "title": "",
+      "intro": "",
+      "query": "",
+      "submit": "",
+      "noResults": ""
+    },
+    "pipeline": {
+      "understand": {
+        "title": "",
+        "body": ""
+      },
+      "match": {
+        "title": "",
+        "body": ""
+      },
+      "locate": {
+        "title": "",
+        "body": ""
+      },
+      "filter": {
+        "title": "",
+        "body": ""
+      },
+      "rank": {
+        "title": "",
+        "body": ""
+      },
+      "step": ""
+    },
+    "models": {
+      "title": "",
+      "intro": "",
+      "training": "",
+      "queued": "",
+      "retrain": "",
+      "retrainQueued": "",
+      "demoData": "",
+      "notTrained": "",
+      "drivers": "",
+      "trained": "",
+      "notTrainedYet": ""
+    },
+    "metrics": {
+      "listingsIndexed": "",
+      "vectorSize": "",
+      "trainingSentences": "",
+      "vocabulary": "",
+      "mae": "",
+      "naiveMae": "",
+      "betterThanBaseline": "",
+      "r2": "",
+      "units": "",
+      "percent": "",
+      "baskets": "",
+      "rules": "",
+      "avgConfidence": "",
+      "avgLift": "",
+      "listingsCompared": "",
+      "itemGroups": "",
+      "isolated": "",
+      "flagged": ""
     }
   }
 }

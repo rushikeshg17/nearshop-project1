@@ -9,7 +9,7 @@ import { ThemeProvider } from "next-themes";
 import { createContext, Suspense, use, useEffect, useOptimistic, useState, useTransition } from "react";
 
 import { useMe } from "@/hooks/use-session";
-import { ApiError, errorMessage } from "@/lib/api";
+import { ApiError, errorMessage, setErrorTranslator } from "@/lib/api";
 import {
   createTranslator,
   type Language,
@@ -79,6 +79,12 @@ function I18nProvider({
     t: createTranslator(messages),
     setLanguage,
   };
+  // API errors with a known code are shown in this language (errorMessage in src/lib/api.ts, P7.10). Their text is in
+  // the common area, which these messages always include.
+  useEffect(() => {
+    setErrorTranslator(createTranslator(messages));
+    return () => setErrorTranslator(null);
+  }, [messages]);
   return (
     <I18nMessagesContext value={messages}>
       <I18nContext value={value}>{children}</I18nContext>
@@ -154,6 +160,7 @@ function dismissedToday() {
  * and accounts with a verified phone get null: nothing. */
 function PhoneMigration() {
   const { data: me } = useMe();
+  const { t, info } = useI18n();
   const pathname = usePathname();
   const router = useRouter();
   const [dismissed, setDismissed] = useState(dismissedToday);
@@ -165,21 +172,21 @@ function PhoneMigration() {
   }, [state, open, pathname, router]);
 
   if (state !== "warn" || dismissed || pathname.startsWith("/verify-phone") || !me) return null;
-  const sunset = new Date(`${me.email_login_sunset}T00:00:00Z`).toLocaleDateString("en-IN", {
+  const sunset = new Date(`${me.email_login_sunset}T00:00:00Z`).toLocaleDateString(info.htmlLang, {
     day: "numeric", month: "long", year: "numeric", timeZone: "UTC",
   });
   return (
-    <div role="region" aria-label="Verify your phone number" className="border-b border-info/30 bg-info-soft text-info-ink">
+    <div role="region" aria-label={t("shell.phoneBanner.region")} className="border-b border-info/30 bg-info-soft text-info-ink">
       <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-2 text-sm md:px-6">
         <Smartphone className="size-4 shrink-0" aria-hidden />
         <p className="flex-1">
-          From {sunset} you sign in with a code sent to your phone.{" "}
-          <Link href="/verify-phone" className="font-medium underline underline-offset-4">Verify your phone number</Link>
+          {t("shell.phoneBanner.text", { date: sunset })}{" "}
+          <Link href="/verify-phone" className="font-medium underline underline-offset-4">{t("shell.phoneBanner.link")}</Link>
         </p>
         <button
           type="button"
           className="grid size-8 shrink-0 place-items-center rounded-md hover:bg-info/10"
-          aria-label="Dismiss for today"
+          aria-label={t("shell.phoneBanner.dismiss")}
           onClick={() => {
             setDismissed(true);
             try {
@@ -242,7 +249,7 @@ export function Providers({
           <Suspense fallback={null}>
             <PhoneMigration />
           </Suspense>
-          <LocationProvider>{children}</LocationProvider>
+          <LocationProvider t={createTranslator(messages)}>{children}</LocationProvider>
           <IdleToaster />
         </QueryClientProvider>
       </I18nProvider>
