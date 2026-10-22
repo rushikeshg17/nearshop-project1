@@ -17,7 +17,8 @@ import { expect, type Page, type Route, test as base } from "@playwright/test";
  *    number and the reason, and the credit leaves the unmatched queue.
  *
  * The owner tests sign in as the seeded demo owner with NEARSHOP_DEMO_PASSWORD, so the console around the page is
- * real. The billing API itself is served from page.route: the frontend-quality CI job runs the API without NearShop's
+ * real. One test reads the real API unmocked, so the page and the shapes copied below stay in step with it. In the
+ * others the billing API itself is served from page.route: the frontend-quality CI job runs the API without NearShop's
  * UPI ID and payee name (payment requests answer 503 until they are set, docs/runbooks/billing.md) and before
  * billing starts (1 Aug 2027), and its database holds no payments, documents or credits to show. The backend's own
  * rules are tested in backend/tests (test_plans.py, test_billing.py, test_autopay.py). The admin test also serves
@@ -117,8 +118,9 @@ function paymentRequest() {
   };
 }
 
+// The number in the backend's format, {prefix}/{yy-yy}/{seq:06d} (billing.next_number), slashes and all.
 const DOCUMENT = {
-  id: 501, number: "NS2627000012", financial_year: "2026-27", seq: 12, type: "receipt", issued_at: iso(Date.now() - 300 * DAY),
+  id: 501, number: "NS/26-27/000012", financial_year: "2026-27", seq: 12, type: "receipt", issued_at: iso(Date.now() - 300 * DAY),
   payment_date: iso(Date.now() - 300 * DAY), format: "draft", draft_line: "Draft format, not for use",
   wording: "[The CA's approved wording (B22) goes here]",
   supplier: { legal_name: "NearShop Test Supplier Private Limited", address: "1 Test Road, Ballari, Karnataka 583101", state_code: "29", gstin: null },
@@ -224,6 +226,24 @@ test("a lapsed shop's page shows Free and a renew action", async ({ page, langua
   await expect(page.getByTestId("lapsed-note")).toHaveText(message(language, "owner.billing.current.lapsed"));
   await expect(page.getByTestId("request-payment")).toHaveText(message(language, "owner.billing.current.renew"));
   await expect(page.getByTestId("free-tools")).toBeVisible();
+});
+
+test("against the real API, the seeded owner's page shows their plan and the free tools", async ({ page, language }) => {
+  // Nothing served from page.route here: the shapes the mocks above copy must still be what the API sends.
+  await signInOwner(page);
+  const [plan, billing] = await Promise.all(["/api/owner/plan", "/api/owner/billing"].map(async (url) => {
+    const r = await page.request.get(url, { headers: CLIENT_HEADER });
+    expect(r.ok(), `${url}: HTTP ${r.status()}`).toBeTruthy();
+    return r.json();
+  }));
+  await page.goto("/shop/billing");
+  await expect(page.getByTestId("current-plan")).toHaveAttribute("data-plan", plan.plan.code);
+  await expect(page.getByTestId("plan-name")).toHaveText(plan.plan.name);
+  await expect(page.getByTestId("free-tools")).toContainText(message(language, "owner.billing.freeTools.listings"));
+  if (!billing.configured && (await page.getByTestId("pay-section").count()) > 0) {
+    await expect(page.getByTestId("pay-section")).toContainText(message(language, "owner.billing.pay.notOpen"));
+  }
+  await audit(page, "/shop/billing from the real API");
 });
 
 test("the document page shows its number, fits 360 px and an A4 page", async ({ page, language }) => {
