@@ -17,6 +17,7 @@ import {
   usePhoneSignin,
   useSendCode,
 } from "@/app/(auth)/login/login-form";
+import { useI18n } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -24,6 +25,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useMeta } from "@/hooks/use-session";
 import { api, ApiError, errorMessage } from "@/lib/api";
+import { richText } from "@/lib/i18n";
 import type { PhoneSignin, User } from "@/lib/types";
 
 /** True when the API refused a sign-up because sign-ups are closed (403 signups_closed). */
@@ -33,9 +35,10 @@ export function isSignupsClosed(error: unknown) {
 
 /** Shown on both sign-up screens while /api/meta is loading, so no form appears before we know. */
 export function SignupsChecking() {
+  const { t } = useI18n();
   return (
     <div role="status" className="flex items-center gap-2 py-16 text-sm text-muted-foreground">
-      <Loader2 className="size-4 animate-spin" aria-hidden /> Loading sign-up…
+      <Loader2 className="size-4 animate-spin" aria-hidden /> {t("auth.signup.loading")}
     </div>
   );
 }
@@ -43,21 +46,20 @@ export function SignupsChecking() {
 /** Shown on both sign-up screens while /api/meta reports signups_open: false, or when the API
  * refuses a sign-up with signups_closed (for example if /api/meta could not be loaded). */
 export function SignupsPaused({ signInHref = "/login" }: { signInHref?: string }) {
+  const { t } = useI18n();
   return (
     <div role="status">
       <div className="mb-5 grid size-12 place-items-center rounded-2xl bg-warning-soft text-warning-ink">
         <PauseCircle className="size-6" aria-hidden />
       </div>
-      <h1 className="text-3xl font-semibold">Sign-ups are paused while we prepare for launch</h1>
-      <p className="mt-3 text-sm text-muted-foreground">
-        New accounts cannot be created right now. You can still search what nearby shops have in stock.
-      </p>
+      <h1 className="text-3xl font-semibold">{t("auth.signup.pausedTitle")}</h1>
+      <p className="mt-3 text-sm text-muted-foreground">{t("auth.signup.pausedBody")}</p>
       <div className="mt-8 flex flex-wrap gap-3">
         <Button asChild size="lg" className="h-11">
-          <Link href="/search">Search nearby</Link>
+          <Link href="/search">{t("auth.signup.searchNearby")}</Link>
         </Button>
         <Button asChild variant="outline" size="lg" className="h-11">
-          <Link href={signInHref}>Sign in</Link>
+          <Link href={signInHref}>{t("auth.common.signIn")}</Link>
         </Button>
       </div>
     </div>
@@ -87,43 +89,56 @@ export function consentComplete(c: Consent) {
   return c.account_and_orders && c.age_18_plus;
 }
 
-const OPTIONAL_PURPOSES: { key: keyof Consent; label: string; hint: string }[] = [
-  { key: "whatsapp", label: "WhatsApp messages", hint: "Reservation and order updates on WhatsApp." },
-  { key: "personalised_suggestions", label: "Personalised suggestions", hint: "Suggestions based on your search history." },
-  { key: "search_measurement", label: "Help improve search", hint: "Use my searches to measure and improve search results." },
-];
+const OPTIONAL_PURPOSES = [
+  { key: "whatsapp", text: "whatsapp" },
+  { key: "personalised_suggestions", text: "personalised" },
+  { key: "search_measurement", text: "measurement" },
+] as const satisfies readonly { key: keyof Consent; text: string }[];
 
 /** The consent block on both sign-up screens: two required boxes, then optional toggles, off by default. */
 export function ConsentFields({ value, onChange, idPrefix }: { value: Consent; onChange: (c: Consent) => void; idPrefix: string }) {
+  const { t } = useI18n();
   const set = (key: keyof Consent) => (checked: boolean) => onChange({ ...value, [key]: checked });
   const link = "font-medium text-foreground underline underline-offset-4";
   return (
     <fieldset className="space-y-4">
-      <legend className="sr-only">Privacy and consent</legend>
+      <legend className="sr-only">{t("auth.consent.legend")}</legend>
       <div className="flex items-start gap-3">
         <Checkbox id={`${idPrefix}-consent`} checked={value.account_and_orders} onCheckedChange={(c) => set("account_and_orders")(c === true)} className="mt-0.5" aria-required />
         <Label htmlFor={`${idPrefix}-consent`} className="block text-sm leading-snug font-normal">
-          I agree that NearShop uses my details to run my account and fulfil my reservations and orders, as described in the{" "}
-          <Link href="/privacy" target="_blank" className={link}>privacy notice</Link> and{" "}
-          <Link href="/terms" target="_blank" className={link}>terms</Link>.
+          {/* The notices open in the interface language: /privacy and /terms show the text of the visitor's language
+              (the same nearshop_lang cookie, or Accept-Language) when that language's version exists (P3.1,
+              src/components/site/legal-document.tsx), and English otherwise. */}
+          {richText(t("auth.consent.required"), {
+            privacy: (
+              <Link href="/privacy" target="_blank" className={link}>
+                {t("auth.consent.privacyLink")}
+              </Link>
+            ),
+            terms: (
+              <Link href="/terms" target="_blank" className={link}>
+                {t("auth.consent.termsLink")}
+              </Link>
+            ),
+          })}
         </Label>
       </div>
       <div className="flex items-start gap-3">
         <Checkbox id={`${idPrefix}-age`} checked={value.age_18_plus} onCheckedChange={(c) => set("age_18_plus")(c === true)} className="mt-0.5" aria-required aria-describedby={`${idPrefix}-age-hint`} />
         <div>
-          <Label htmlFor={`${idPrefix}-age`} className="block text-sm leading-snug font-normal">I am 18 or older.</Label>
+          <Label htmlFor={`${idPrefix}-age`} className="block text-sm leading-snug font-normal">{t("auth.consent.age")}</Label>
           <p id={`${idPrefix}-age-hint`} className="mt-1 text-xs text-muted-foreground">
-            NearShop is for adults. We do not create accounts for children, because that needs a parent&apos;s verified consent.
+            {t("auth.consent.ageHint")}
           </p>
         </div>
       </div>
       <div className="space-y-3 rounded-lg border p-3">
-        <p className="text-xs font-medium text-muted-foreground">Optional. You can leave these off.</p>
-        {OPTIONAL_PURPOSES.map(({ key, label, hint }) => (
+        <p className="text-xs font-medium text-muted-foreground">{t("auth.consent.optional")}</p>
+        {OPTIONAL_PURPOSES.map(({ key, text }) => (
           <div key={key} className="flex items-start justify-between gap-3">
             <div>
-              <Label htmlFor={`${idPrefix}-${key}`} className="text-sm">{label}</Label>
-              <p id={`${idPrefix}-${key}-hint`} className="text-xs text-muted-foreground">{hint}</p>
+              <Label htmlFor={`${idPrefix}-${key}`} className="text-sm">{t(`auth.consent.${text}.label`)}</Label>
+              <p id={`${idPrefix}-${key}-hint`} className="text-xs text-muted-foreground">{t(`auth.consent.${text}.hint`)}</p>
             </div>
             <Switch id={`${idPrefix}-${key}`} checked={value[key]} onCheckedChange={set(key)} aria-describedby={`${idPrefix}-${key}-hint`} className="mt-0.5" />
           </div>
@@ -133,12 +148,14 @@ export function ConsentFields({ value, onChange, idPrefix }: { value: Consent; o
   );
 }
 
-/** The message for a sign-up the API refused for missing consent or a missing age declaration. */
+/** The message key for a sign-up without the required consent or the age declaration, or null when both are given. */
 export function consentMessage(consent: Consent) {
-  if (!consent.account_and_orders) return "Please agree to the privacy notice and terms to create an account.";
-  if (!consent.age_18_plus) return "NearShop is for adults. You need to be 18 or older to create an account.";
+  if (!consent.account_and_orders) return "auth.consent.needAgree" as const;
+  if (!consent.age_18_plus) return "auth.consent.needAge" as const;
   return null;
 }
+
+type Problem = "auth.register.nameMissing" | NonNullable<ReturnType<typeof consentMessage>>;
 
 export function RegisterForm() {
   const { data: meta, isPending } = useMeta();
@@ -153,13 +170,14 @@ export function RegisterForm() {
 /** Registration by phone (P4.2): name, mobile number, an optional email and the consent, then the 6-digit code sent to
  * the phone, which creates the account (POST /api/auth/otp/verify, purpose register) and signs it in. */
 function PhoneRegisterForm({ status }: { status: PhoneSignin }) {
+  const { t } = useI18n();
   const router = useRouter();
   const params = useSearchParams();
   const qc = useQueryClient();
   const otp = useSendCode("register");
   const [form, setForm] = useState({ name: "", phone: "", email: "" });
   const [consent, setConsent] = useState<Consent>(NO_CONSENT);
-  const [problem, setProblem] = useState<string | null>(null);
+  const [problem, setProblem] = useState<Problem | null>(null);
   const [tried, setTried] = useState(false);
   const [step, setStep] = useState<"details" | "code">("details");
   const [code, setCode] = useState("");
@@ -184,7 +202,7 @@ function PhoneRegisterForm({ status }: { status: PhoneSignin }) {
   const details = () => {
     setTried(true);
     // A wrong phone number shows inline under its field; the other problems show above the button.
-    const missing = form.name.trim().length < 2 ? "Please enter your full name." : consentMessage(consent);
+    const missing = form.name.trim().length < 2 ? "auth.register.nameMissing" : consentMessage(consent);
     setProblem(missing);
     if (missing || phoneProblem(form.phone)) return;
     register.reset();
@@ -194,8 +212,8 @@ function PhoneRegisterForm({ status }: { status: PhoneSignin }) {
 
   return (
     <div>
-      <h1 className="text-3xl font-semibold">Create your account</h1>
-      <p className="mt-2 text-sm text-muted-foreground">Reserve items at nearby shops and track pickups in one place. You sign in with a code sent to your phone.</p>
+      <h1 className="text-3xl font-semibold">{t("auth.register.title")}</h1>
+      <p className="mt-2 text-sm text-muted-foreground">{t("auth.register.phoneIntro")}</p>
       {step === "details" ? (
         <form
           className="mt-8 space-y-4"
@@ -206,13 +224,13 @@ function PhoneRegisterForm({ status }: { status: PhoneSignin }) {
           }}
         >
           <div className="space-y-1.5">
-            <Label htmlFor="name">Full name</Label>
+            <Label htmlFor="name">{t("auth.register.fullName")}</Label>
             <Input id="name" autoComplete="name" required minLength={2} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} className="h-11" />
           </div>
           <PhoneField id="phone" value={form.phone} onChange={(v) => setForm((f) => ({ ...f, phone: v }))} showError={tried} />
           <div className="space-y-1.5">
             <Label htmlFor="email">
-              Email <span className="font-normal text-muted-foreground">(optional)</span>
+              {t("auth.common.email")} <span className="font-normal text-muted-foreground">{t("auth.register.optional")}</span>
             </Label>
             <Input id="email" type="email" autoComplete="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} className="h-11" />
           </div>
@@ -224,9 +242,9 @@ function PhoneRegisterForm({ status }: { status: PhoneSignin }) {
               if (problem) setProblem(null);
             }}
           />
-          {(problem || otp.send.isError) && <FormError>{problem ?? errorMessage(otp.send.error)}</FormError>}
+          {(problem || otp.send.isError) && <FormError>{problem ? t(problem) : errorMessage(otp.send.error)}</FormError>}
           <Button type="submit" size="lg" className="h-11 w-full" disabled={otp.send.isPending}>
-            {otp.send.isPending ? <Loader2 className="animate-spin" /> : <Smartphone />} Send code
+            {otp.send.isPending ? <Loader2 className="animate-spin" /> : <Smartphone />} {t("auth.code.send")}
           </Button>
         </form>
       ) : (
@@ -245,13 +263,13 @@ function PhoneRegisterForm({ status }: { status: PhoneSignin }) {
               {phoneTaken && (
                 <>
                   {" "}
-                  <Link href="/login" className="font-medium underline underline-offset-4">Sign in</Link>
+                  <Link href="/login" className="font-medium underline underline-offset-4">{t("auth.common.signIn")}</Link>
                 </>
               )}
             </FormError>
           )}
           <Button type="submit" size="lg" className="h-11 w-full" disabled={register.isPending || code.length !== 6}>
-            {register.isPending && <Loader2 className="animate-spin" />} Create account
+            {register.isPending && <Loader2 className="animate-spin" />} {t("auth.register.create")}
           </Button>
           <button
             type="button"
@@ -261,27 +279,39 @@ function PhoneRegisterForm({ status }: { status: PhoneSignin }) {
               setCode("");
             }}
           >
-            Change your details
+            {t("auth.register.changeDetails")}
           </button>
         </form>
       )}
-      <p className="mt-6 text-sm text-muted-foreground">
-        Already have an account? <Link href="/login" className="font-medium text-foreground underline underline-offset-4">Sign in</Link>
-      </p>
-      <p className="mt-2 text-sm text-muted-foreground">
-        Own a shop? <Link href="/register/shop" className="font-medium text-foreground underline underline-offset-4">List it on NearShop</Link>
-      </p>
+      <RegisterLinks />
     </div>
   );
 }
 
+/** The links under both registration forms: sign in, or list a shop instead. */
+function RegisterLinks() {
+  const { t } = useI18n();
+  const link = "font-medium text-foreground underline underline-offset-4";
+  return (
+    <>
+      <p className="mt-6 text-sm text-muted-foreground">
+        {richText(t("auth.register.haveAccount"), { link: <Link href="/login" className={link}>{t("auth.common.signIn")}</Link> })}
+      </p>
+      <p className="mt-2 text-sm text-muted-foreground">
+        {richText(t("auth.register.ownShop"), { link: <Link href="/register/shop" className={link}>{t("auth.register.listIt")}</Link> })}
+      </p>
+    </>
+  );
+}
+
 function OpenRegisterForm() {
+  const { t } = useI18n();
   const router = useRouter();
   const params = useSearchParams();
   const qc = useQueryClient();
   const [form, setForm] = useState({ name: "", email: "", phone: "", password: "" });
   const [consent, setConsent] = useState<Consent>(NO_CONSENT);
-  const [consentError, setConsentError] = useState<string | null>(null);
+  const [consentError, setConsentError] = useState<ReturnType<typeof consentMessage>>(null);
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
   const register = useMutation({
@@ -299,8 +329,8 @@ function OpenRegisterForm() {
 
   return (
     <div>
-      <h1 className="text-3xl font-semibold">Create your account</h1>
-      <p className="mt-2 text-sm text-muted-foreground">Reserve items at nearby shops and track pickups in one place.</p>
+      <h1 className="text-3xl font-semibold">{t("auth.register.title")}</h1>
+      <p className="mt-2 text-sm text-muted-foreground">{t("auth.register.emailIntro")}</p>
       <form
         className="mt-8 space-y-4"
         onSubmit={(e) => {
@@ -311,16 +341,16 @@ function OpenRegisterForm() {
         }}
       >
         <div className="space-y-1.5">
-          <Label htmlFor="name">Full name</Label>
+          <Label htmlFor="name">{t("auth.register.fullName")}</Label>
           <Input id="name" autoComplete="name" required minLength={2} value={form.name} onChange={set("name")} className="h-11" aria-invalid={fieldError("name")} />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="email">Email</Label>
+          <Label htmlFor="email">{t("auth.common.email")}</Label>
           <Input id="email" type="email" autoComplete="email" required value={form.email} onChange={set("email")} className="h-11" aria-invalid={fieldError("email")} />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="phone">
-            Mobile number <span className="font-normal text-muted-foreground">(optional, for delivery)</span>
+            {t("auth.phone.label")} <span className="font-normal text-muted-foreground">{t("auth.register.phoneOptional")}</span>
           </Label>
           <Input
             id="phone"
@@ -333,9 +363,9 @@ function OpenRegisterForm() {
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="password">Password</Label>
+          <Label htmlFor="password">{t("auth.common.password")}</Label>
           <Input id="password" type="password" autoComplete="new-password" required minLength={8} value={form.password} onChange={set("password")} className="h-11" aria-invalid={fieldError("password")} aria-describedby="pw-hint" />
-          <p id="pw-hint" className={strong ? "text-xs text-success-ink" : "text-xs text-muted-foreground"}>At least 8 characters</p>
+          <p id="pw-hint" className={strong ? "text-xs text-success-ink" : "text-xs text-muted-foreground"}>{t("auth.common.passwordHint")}</p>
         </div>
         <ConsentFields
           idPrefix="reg"
@@ -346,18 +376,13 @@ function OpenRegisterForm() {
           }}
         />
         {(consentError || register.isError) && (
-          <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{consentError ?? errorMessage(register.error)}</p>
+          <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{consentError ? t(consentError) : errorMessage(register.error)}</p>
         )}
         <Button type="submit" size="lg" className="h-11 w-full" disabled={register.isPending}>
-          {register.isPending && <Loader2 className="animate-spin" />} Create account
+          {register.isPending && <Loader2 className="animate-spin" />} {t("auth.register.create")}
         </Button>
       </form>
-      <p className="mt-6 text-sm text-muted-foreground">
-        Already have an account? <Link href="/login" className="font-medium text-foreground underline underline-offset-4">Sign in</Link>
-      </p>
-      <p className="mt-2 text-sm text-muted-foreground">
-        Own a shop? <Link href="/register/shop" className="font-medium text-foreground underline underline-offset-4">List it on NearShop</Link>
-      </p>
+      <RegisterLinks />
     </div>
   );
 }

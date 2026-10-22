@@ -11,19 +11,22 @@ import { AppIcon } from "@/components/common/app-icon";
 import { ProductThumb } from "@/components/common/product-thumb";
 import { ErrorState, ListSkeleton } from "@/components/common/states";
 import { PageTitle } from "@/components/dashboard/dashboard-shell";
+import { useI18n } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { useDebounce } from "@/hooks/use-debounce";
 import { useMeta } from "@/hooks/use-session";
 import { api } from "@/lib/api";
-import { formatPrice } from "@/lib/format";
+import { formatNumber, formatPrice } from "@/lib/format";
+import { plural, richText } from "@/lib/i18n";
 import type { CatalogEntry } from "@/lib/types";
 import { cn, revealFocused } from "@/lib/utils";
 
 type Picked = Record<number, { price: string; quantity: string }>;
 
 export function CatalogView() {
+  const { t, language } = useI18n();
   const router = useRouter();
   const params = useSearchParams();
   const qc = useQueryClient();
@@ -46,7 +49,8 @@ export function CatalogView() {
         items: Object.entries(picked).map(([id, v]) => ({ catalog_item_id: Number(id), price: Number(v.price), quantity: Number(v.quantity) || 0 })),
       }),
     onSuccess: (r) => {
-      toast.success(`${r.added + r.reactivated} products added. Customers nearby can find them now.`);
+      const n = r.added + r.reactivated;
+      toast.success(t(`owner.catalog.added.${plural(language, n)}`, { count: formatNumber(n) }));
       setPicked({});
       qc.invalidateQueries({ queryKey: ["owner"] });
       router.push("/shop/inventory?sort=updated");
@@ -70,22 +74,22 @@ export function CatalogView() {
           <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mb-6 flex items-start gap-3 rounded-2xl border border-brand/30 bg-brand-soft/60 p-4">
             <PartyPopper className="mt-0.5 size-5 shrink-0 text-brand" />
             <div>
-              <p className="font-semibold">Your shop is live.</p>
-              <p className="text-sm text-muted-foreground">Tick what you have on the shelf, check the price and count, and add them all at once. It takes a couple of minutes.</p>
+              <p className="font-semibold">{t("owner.catalog.welcomeTitle")}</p>
+              <p className="text-sm text-muted-foreground">{t("owner.catalog.welcomeBody")}</p>
             </div>
           </motion.div>
         )}
-        <PageTitle title="Add from catalogue" description="Ready-made listings with specs and search words. Prices start at the local typical price; change them to yours." />
+        <PageTitle title={t("owner.catalog.title")} description={t("owner.catalog.description")} />
 
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <div className="relative min-w-56 flex-1">
             <Search className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search the catalogue" className="h-9 pl-9" />
+            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t("owner.catalog.searchPlaceholder")} className="h-9 pl-9" />
           </div>
         </div>
         <div className="-mx-4 mb-4 flex gap-2 overflow-x-auto px-4 scrollbar-none md:mx-0 md:flex-wrap md:px-0" onFocus={revealFocused}>
           <button onClick={() => setCategory(null)} className={cn("shrink-0 rounded-full border px-3 py-1.5 text-sm", !category ? "border-primary bg-primary text-primary-foreground" : "bg-card hover:bg-accent")}>
-            My categories
+            {t("owner.catalog.myCategories")}
           </button>
           {meta?.categories.map((c) => (
             <button key={c.slug} onClick={() => setCategory(c.slug)}
@@ -105,17 +109,25 @@ export function CatalogView() {
               const sel = picked[c.id];
               return (
                 <li key={c.id} className={cn("flex flex-wrap items-center gap-3 p-3 sm:flex-nowrap", sel && "bg-brand-soft/40")}>
-                  <Checkbox checked={!!sel || c.already_listed} disabled={c.already_listed} onCheckedChange={() => toggle(c)} aria-label={`Select ${c.name}`} />
+                  <Checkbox checked={!!sel || c.already_listed} disabled={c.already_listed} onCheckedChange={() => toggle(c)} aria-label={t("owner.catalog.select", { name: c.name })} />
                   <ProductThumb icon={c.icon} category={c.category} alt="" size="sm" />
                   <button type="button" className="min-w-0 flex-1 basis-48 text-left" onClick={() => !c.already_listed && toggle(c)} disabled={c.already_listed}>
                     <p className="truncate text-sm font-medium">{c.name}</p>
                     <p className="text-xs text-muted-foreground">
                       {c.already_listed ? (
-                        <span className="inline-flex items-center gap-1 text-success-ink"><Check className="size-3" /> Already in your shop</span>
+                        <span className="inline-flex items-center gap-1 text-success-ink"><Check className="size-3" /> {t("owner.catalog.alreadyListed")}</span>
                       ) : (
                         <>
-                          {c.local_median ? `Typical here ${formatPrice(c.local_median)}` : c.typical_price ? `Typical ${formatPrice(c.typical_price)}` : ""}
-                          {c.mrp ? ` · MRP ${formatPrice(c.mrp)}` : ""}
+                          {[
+                            c.local_median
+                              ? t("owner.catalog.typicalHere", { price: formatPrice(c.local_median) })
+                              : c.typical_price
+                                ? t("owner.catalog.typical", { price: formatPrice(c.typical_price) })
+                                : "",
+                            c.mrp ? t("owner.catalog.mrp", { price: formatPrice(c.mrp) }) : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
                         </>
                       )}
                     </p>
@@ -124,13 +136,13 @@ export function CatalogView() {
                     {sel && (
                       <motion.div initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }} className="flex items-center gap-2">
                         <label className="flex items-center gap-1 text-xs text-muted-foreground">
-                          Rs
-                          <Input value={sel.price} inputMode="decimal" className="h-8 w-20 text-right tabular" aria-label="Your price"
+                          {t("owner.catalog.rupee")}
+                          <Input value={sel.price} inputMode="decimal" className="h-8 w-20 text-right tabular" aria-label={t("owner.catalog.yourPrice")}
                             onChange={(e) => setPicked((p) => ({ ...p, [c.id]: { ...p[c.id], price: e.target.value.replace(/[^\d.]/g, "") } }))} />
                         </label>
                         <label className="flex items-center gap-1 text-xs text-muted-foreground">
-                          Qty
-                          <Input value={sel.quantity} inputMode="numeric" className="h-8 w-14 text-right tabular" aria-label="Quantity"
+                          {t("owner.catalog.qty")}
+                          <Input value={sel.quantity} inputMode="numeric" className="h-8 w-14 text-right tabular" aria-label={t("owner.catalog.quantity")}
                             onChange={(e) => setPicked((p) => ({ ...p, [c.id]: { ...p[c.id], quantity: e.target.value.replace(/\D/g, "") } }))} />
                         </label>
                       </motion.div>
@@ -139,7 +151,7 @@ export function CatalogView() {
                 </li>
               );
             })}
-            {!list.data.items.length && <li className="p-8 text-center text-sm text-muted-foreground">Nothing in the catalogue matches. Use &ldquo;New product&rdquo; in Inventory to add your own.</li>}
+            {!list.data.items.length && <li className="p-8 text-center text-sm text-muted-foreground">{t("owner.catalog.noMatch")}</li>}
           </ul>
         )}
 
@@ -148,10 +160,10 @@ export function CatalogView() {
             <motion.div initial={{ y: 80 }} animate={{ y: 0 }} exit={{ y: 80 }} transition={{ type: "spring", stiffness: 400, damping: 36 }}
               className="fixed inset-x-0 bottom-0 z-40 border-t bg-background/95 p-3 backdrop-blur lg:left-[248px]">
               <div className="mx-auto flex max-w-6xl items-center gap-3 px-1 md:px-3">
-                <p className="text-sm"><span className="font-semibold tabular">{count}</span> selected</p>
-                <Button variant="ghost" size="sm" onClick={() => setPicked({})}>Clear</Button>
+                <p className="text-sm">{richText(t("owner.catalog.selected"), { count: <span className="font-semibold tabular">{formatNumber(count)}</span> })}</p>
+                <Button variant="ghost" size="sm" onClick={() => setPicked({})}>{t("owner.catalog.clear")}</Button>
                 <Button className="ml-auto" disabled={!valid || add.isPending} onClick={() => add.mutate()}>
-                  {add.isPending && <Loader2 className="animate-spin" />} Add {count} to my shop
+                  {add.isPending && <Loader2 className="animate-spin" />} {t(`owner.catalog.add.${plural(language, count)}`, { count: formatNumber(count) })}
                 </Button>
               </div>
             </motion.div>

@@ -4,6 +4,7 @@ import { Loader2 } from "lucide-react";
 import { useState } from "react";
 
 import { ResponsiveDialog } from "@/components/common/responsive-dialog";
+import { useI18n } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -36,6 +37,7 @@ export function ConfirmAction({
   pending?: boolean;
   onConfirm: (reason: string | null) => void;
 }) {
+  const { t } = useI18n();
   const [openState, setOpenState] = useState(false);
   const open = openProp ?? openState;
   const setOpen = onOpenChange ?? setOpenState;
@@ -50,7 +52,7 @@ export function ConfirmAction({
         description={description}
         footer={
           <>
-            <Button variant="ghost" onClick={() => setOpen(false)}>Keep it</Button>
+            <Button variant="ghost" onClick={() => setOpen(false)}>{t("common.confirm.keep")}</Button>
             <Button
               variant={destructive ? "destructive" : "default"}
               disabled={pending || (reasonRequired && !reason.trim())}

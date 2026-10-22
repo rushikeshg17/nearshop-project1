@@ -9,6 +9,7 @@ import { EmptyState, ErrorState, ListSkeleton } from "@/components/common/states
 import { StatusBadge } from "@/components/common/status";
 import { PageTitle } from "@/components/dashboard/dashboard-shell";
 import { OwnerOrderCard } from "@/components/owner/queue-cards";
+import { useI18n } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -17,6 +18,7 @@ import { formatDateTime, formatPrice } from "@/lib/format";
 import type { Order, OwnerOverview } from "@/lib/types";
 
 export default function OwnerOrdersPage() {
+  const { t, language } = useI18n();
   const [scope, setScope] = useState<"active" | "history">("active");
   const overview = useQuery({ queryKey: ["owner", "overview"], queryFn: () => api.get<OwnerOverview>("/owner/overview") });
   const q = useQuery({
@@ -28,9 +30,9 @@ export default function OwnerOrdersPage() {
   if (overview.data && !overview.data.shop.offers_delivery && scope === "active" && !q.data?.length) {
     return (
       <>
-        <PageTitle title="Delivery orders" />
-        <EmptyState icon={Bike} title="You offer pickup only" description="Turn on delivery in settings to accept delivery orders. You set the radius and fee; you or your staff deliver, and customers pay cash."
-          action={<Button asChild><Link href="/shop/settings">Set up delivery</Link></Button>} />
+        <PageTitle title={t("owner.orders.title")} />
+        <EmptyState icon={Bike} title={t("owner.orders.pickupOnlyTitle")} description={t("owner.orders.pickupOnlyBody")}
+          action={<Button asChild><Link href="/shop/settings">{t("owner.orders.setUpDelivery")}</Link></Button>} />
       </>
     );
   }
@@ -38,13 +40,13 @@ export default function OwnerOrdersPage() {
   return (
     <>
       <PageTitle
-        title="Delivery orders"
-        description="You deliver with your own staff. Customers pay cash on delivery."
+        title={t("owner.orders.title")}
+        description={t("owner.orders.description")}
         action={
           <Tabs value={scope} onValueChange={(v) => setScope(v as "active" | "history")}>
             <TabsList>
-              <TabsTrigger value="active">Active</TabsTrigger>
-              <TabsTrigger value="history">History</TabsTrigger>
+              <TabsTrigger value="active">{t("owner.common.active")}</TabsTrigger>
+              <TabsTrigger value="history">{t("owner.common.history")}</TabsTrigger>
             </TabsList>
           </Tabs>
         }
@@ -57,19 +59,19 @@ export default function OwnerOrdersPage() {
         q.data.length ? (
           <ul className="grid grid-cols-1 gap-4 lg:grid-cols-2">{q.data.map((o) => <OwnerOrderCard key={o.id} o={o} />)}</ul>
         ) : (
-          <EmptyState icon={Bike} title="No active deliveries" description="New delivery orders appear here with the customer's address and route." />
+          <EmptyState icon={Bike} title={t("owner.orders.emptyTitle")} description={t("owner.orders.emptyBody")} />
         )
       ) : (
         <div className="overflow-hidden rounded-2xl border bg-card">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Code</TableHead>
-                <TableHead>Items</TableHead>
-                <TableHead className="hidden md:table-cell">Customer</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Total</TableHead>
-                <TableHead className="hidden lg:table-cell">When</TableHead>
+                <TableHead>{t("owner.common.table.code")}</TableHead>
+                <TableHead>{t("owner.orders.table.items")}</TableHead>
+                <TableHead className="hidden md:table-cell">{t("owner.common.table.customer")}</TableHead>
+                <TableHead>{t("owner.common.table.status")}</TableHead>
+                <TableHead className="text-right">{t("owner.common.table.total")}</TableHead>
+                <TableHead className="hidden lg:table-cell">{t("owner.orders.table.when")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -80,7 +82,7 @@ export default function OwnerOrdersPage() {
                   <TableCell className="hidden md:table-cell">{o.customer?.name}</TableCell>
                   <TableCell><StatusBadge status={o.status} kind="order" /></TableCell>
                   <TableCell className="text-right tabular">{formatPrice(o.total)}</TableCell>
-                  <TableCell className="hidden text-muted-foreground lg:table-cell">{formatDateTime(o.delivered_at ?? o.closed_at ?? o.created_at)}</TableCell>
+                  <TableCell className="hidden text-muted-foreground lg:table-cell">{formatDateTime(o.delivered_at ?? o.closed_at ?? o.created_at, language)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>

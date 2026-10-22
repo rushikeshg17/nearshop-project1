@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
+import { cookies, headers } from "next/headers";
 import { notFound } from "next/navigation";
 
 import { formatPrice } from "@/lib/format";
+import { requestI18n, type Translate } from "@/lib/i18n";
 import { absoluteUrl, getProduct, indexingEnabled, isCrawler, jsonLdScript, type ApiResult } from "@/lib/server-api";
 import type { ProductDetail } from "@/lib/types";
 
@@ -41,20 +43,24 @@ async function load(raw: string): Promise<ProductDetail | null> {
   return result.data;
 }
 
-function stockText(p: ProductDetail): string {
-  if (p.stock_status === "out_of_stock") return "Out of stock";
-  return p.stock_status === "low_stock" ? `Only ${p.quantity} left` : `${p.quantity} in stock`;
+function stockText(p: ProductDetail, t: Translate): string {
+  if (p.stock_status === "out_of_stock") return t("common.stock.out");
+  return t(p.stock_status === "low_stock" ? "common.stock.only" : "common.stock.inStock", { count: p.quantity });
 }
 
 export async function generateMetadata({ params }: PageProps<"/product/[id]">): Promise<Metadata> {
   const { id } = await params;
-  const p = await load(id);
-  if (!p) return { title: "Product", robots: { index: false, follow: false } };
+  const [p, { t }] = await Promise.all([load(id), requestI18n({ cookies, headers })]);
+  if (!p) return { title: t("pages.titles.product"), robots: { index: false, follow: false } };
   const shop = p.shop;
-  const title = `${p.name} at ${shop.name}, ${shop.city}`;
-  const description =
-    `${formatPrice(p.price)} at ${shop.name}, ${shop.address_line}, ${shop.city}. ${stockText(p)}. ` +
-    "Reserve for pickup on NearShop and pay at the shop.";
+  const title = t("pages.meta.productTitle", { product: p.name, shop: shop.name, city: shop.city });
+  const description = t("pages.meta.productDescription", {
+    price: formatPrice(p.price),
+    shop: shop.name,
+    address: shop.address_line,
+    city: shop.city,
+    stock: stockText(p, t),
+  });
   const url = absoluteUrl(`/product/${p.id}`);
   return {
     title,

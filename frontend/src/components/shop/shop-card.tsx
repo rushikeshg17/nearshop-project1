@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { AppIcon } from "@/components/common/app-icon";
 import { Distance, Freshness, OpenBadge, Rating, VerifiedMark } from "@/components/common/indicators";
+import { useI18n } from "@/components/providers";
 import type { Category, ShopBrief } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -40,6 +41,7 @@ export function ShopAvatar({ shop, categories, className }: { shop: ShopBrief; c
 }
 
 export function ShopCard({ shop, categories, className }: { shop: ShopBrief; categories?: Category[]; className?: string }) {
+  const { t } = useI18n();
   const catNames = shop.categories
     .map((s) => categories?.find((c) => c.slug === s)?.name)
     .filter(Boolean)
@@ -73,14 +75,14 @@ export function ShopCard({ shop, categories, className }: { shop: ShopBrief; cat
       {catNames && <p className="truncate text-xs text-muted-foreground">{catNames}</p>}
       <div className="mt-auto flex flex-wrap items-center gap-x-3 gap-y-1">
         <Rating value={shop.rating_avg} count={shop.rating_count} />
-        <OpenBadge isOpen={shop.is_open} label={shop.is_open ? "Open" : "Closed"} />
+        <OpenBadge isOpen={shop.is_open} label={shop.is_open ? t("common.shopCard.open") : t("common.shopCard.closed")} />
         {shop.offers_delivery && (
           <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-            <Bike className="size-3.5" /> Delivers
+            <Bike className="size-3.5" /> {t("common.shopCard.delivers")}
           </span>
         )}
       </div>
-      <Freshness at={shop.inventory_updated_at} prefix="Stock updated" />
+      <Freshness at={shop.inventory_updated_at} stock />
     </Link>
   );
 }

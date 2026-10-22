@@ -58,6 +58,9 @@ boost (P10.12, app/services/boost.py), every tick, closes the Boost periods that
 earns its free make-good period, once per purchase; any other ends), and once per IST day (the first tick of the day)
 records each city's eligibility figures and pauses the packs of a city below a threshold, or resumes them with the
 paused days added back; the day the daily part ran for is kept in the lease's last_result (ran_for).
+demand_report (P9.7), once a week, on Monday at 03:00 IST or on the first tick after it, builds the "asked for near you"
+report of every verified live shop and draws R5's weekly audit sample (app/services/demand_report.py build_week); the
+ISO week it ran for is kept in the lease's last_result (ran_for), like lead_counts. Counts only, never a query.
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -129,7 +132,8 @@ RETRY_AFTER_FAILURE: dict[str, timedelta] = {"snapshot_storage": timedelta(hours
                                               "phone_migration": timedelta(hours=1),
                                               "stock_check": timedelta(minutes=15), "lead_counts": timedelta(hours=1),
                                               "billing_reconciliation": timedelta(hours=1),
-                                              "boost": timedelta(minutes=15)}
+                                              "boost": timedelta(minutes=15),
+                                              "demand_report": timedelta(hours=1)}
 RETENTION_AT = time(21, 30)  # UTC: 03:00 IST, the nightly retention job (P3.2)
 # The phone migration (P4.2): in-app warnings this many days before the email sign-in sunset, and accounts still
 # without a verified phone switched off this many days after it.
@@ -148,6 +152,7 @@ LEAD_COUNTS_AT = time(2, 0)  # IST, on the 1st of each month
 SUBSCRIPTIONS_JOB = "subscriptions"  # plans and subscriptions (P9.4)
 BILLING_JOB = "billing_reconciliation"  # the daily unmatched-credit alert (P9.5)
 BOOST_JOB = "boost"  # Boost periods every tick, city eligibility once per IST day (P10.12)
+DEMAND_REPORT_JOB = "demand_report"  # the weekly "asked for near you" report (P9.7)
 
 RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
@@ -514,11 +519,28 @@ def boost(clock: Clock = utcnow) -> dict[str, Any]:
     return {**result, "ran_for": today, "daily": boost_service.run_daily(db, now)}
 
 
+def demand_report(clock: Clock = utcnow) -> dict[str, Any]:
+    """The weekly demand report (P9.7, app/services/demand_report.py build_week), once per week from Monday 03:00 IST:
+    the ISO week it ran for is kept in the lease's last_result (ran_for), and every later tick that week only repeats
+    the last result. A failed run is retried an hour later (RETRY_AFTER_FAILURE)."""
+    from app.services import demand_report as report
+
+    now = clock()
+    week = report.week_of(report.weekly_slot(now))
+    db = Database()
+    last = (db.mongo[LEASES].find_one({"_id": DEMAND_REPORT_JOB}, {"last_result": 1}) or {}).get("last_result") or {}
+    if last.get("ok") is True and last.get("ran_for") == week:
+        return {k: v for k, v in last.items() if k != "ok"}
+    built = report.build_week(db, now)
+    return {"ran_for": week, **{k: v for k, v in built.items() if k != "week"}}
+
+
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {
     "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage, "retention": retention,
     "process_deletions": process_deletions, PHONE_MIGRATION_JOB: phone_migration,
     SEND_NOTIFICATIONS_JOB: send_notifications, STOCK_CHECK_JOB: stock_check, LEAD_COUNTS_JOB: lead_counts,
-    SUBSCRIPTIONS_JOB: subscriptions, BILLING_JOB: billing_reconciliation, BOOST_JOB: boost}
+    SUBSCRIPTIONS_JOB: subscriptions, BILLING_JOB: billing_reconciliation, BOOST_JOB: boost,
+    DEMAND_REPORT_JOB: demand_report}
 
 
 class SearchIndexRefresher:

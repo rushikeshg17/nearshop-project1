@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
+import { cookies, headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
+import { plural, requestI18n } from "@/lib/i18n";
 import { absoluteUrl, getShop, indexingEnabled, isCrawler, jsonLdScript, type ApiResult } from "@/lib/server-api";
 import type { ShopDetail } from "@/lib/types";
 
@@ -41,14 +43,24 @@ function place(s: ShopDetail): string {
 
 export async function generateMetadata({ params }: PageProps<"/shops/[slug]">): Promise<Metadata> {
   const { slug } = await params;
-  const s = await load(slug);
-  if (!s) return { title: "Shop", robots: { index: false, follow: false } };
-  const title = `${s.name}, ${place(s)}`;
-  const rating = s.rating_avg !== null && s.rating_count > 0 ? ` Rated ${s.rating_avg.toFixed(1)} from ${s.rating_count} reviews.` : "";
-  const description =
-    `${s.tagline ? `${s.tagline}. ` : ""}${s.address_line}, ${s.city}.` +
-    `${s.opening_hours ? ` Open ${s.opening_hours}${s.closed_on ? `, closed ${s.closed_on}s` : ""}.` : ""}${rating}` +
-    " See what is in stock now and reserve for pickup on NearShop.";
+  const [s, { t, language }] = await Promise.all([load(slug), requestI18n({ cookies, headers })]);
+  if (!s) return { title: t("pages.titles.shop"), robots: { index: false, follow: false } };
+  const title = t("pages.meta.shopTitle", { shop: s.name, place: place(s) });
+  const description = [
+    s.tagline ? `${s.tagline}.` : "",
+    t("pages.meta.shopAddress", { address: s.address_line, city: s.city }),
+    s.opening_hours
+      ? s.closed_on
+        ? t("pages.meta.shopOpenClosed", { hours: s.opening_hours, day: s.closed_on })
+        : t("pages.meta.shopOpen", { hours: s.opening_hours })
+      : "",
+    s.rating_avg !== null && s.rating_count > 0
+      ? t(`pages.meta.shopRating.${plural(language, s.rating_count)}`, { rating: s.rating_avg.toFixed(1), count: s.rating_count })
+      : "",
+    t("pages.meta.shopCta"),
+  ]
+    .filter(Boolean)
+    .join(" ");
   const url = absoluteUrl(`/shops/${s.slug}`);
   return {
     title,

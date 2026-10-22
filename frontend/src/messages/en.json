@@ -1,0 +1,2204 @@
+{
+  "shell": {
+    "nav": {
+      "home": "Home",
+      "search": "Search",
+      "shops": "Shops",
+      "aiLab": "AI Lab",
+      "listShop": "List your shop",
+      "signIn": "Sign in",
+      "shopDashboard": "Shop dashboard",
+      "myShop": "My shop",
+      "activity": "Activity"
+    },
+    "language": {
+      "label": "Language"
+    },
+    "tabBar": {
+      "label": "Primary"
+    },
+    "footer": {
+      "tagline": "Local inventory, online. See what the shops around you have in stock, then reserve it or get it delivered by the shop.",
+      "shopHeading": "Shop",
+      "searchNearby": "Search nearby",
+      "browseShops": "Browse shops",
+      "yourReservations": "Your reservations",
+      "forShopsHeading": "For shops",
+      "howItWorksHeading": "How it works",
+      "pickupDelivery": "Pickup and delivery",
+      "legal": "Legal",
+      "privacy": "Privacy notice",
+      "terms": "Terms of use",
+      "grievances": "Grievances",
+      "mapCredit": "Map data from OpenStreetMap contributors.",
+      "demoData": "Demo data: shops, prices and sales are generated for demonstration."
+    },
+    "userMenu": {
+      "trigger": "Account menu",
+      "reservations": "My reservations and orders",
+      "viewShopPage": "View my shop page",
+      "adminConsole": "Admin console",
+      "priceReview": "Price review queue",
+      "theme": "Theme",
+      "themeLight": "Light",
+      "themeDark": "Dark",
+      "themeSystem": "System",
+      "signOut": "Sign out"
+    },
+    "dashboard": {
+      "navLabel": "Dashboard",
+      "openMenu": "Open menu",
+      "menu": "Menu",
+      "customerView": "Customer view",
+      "viewPublicPage": "View public page"
+    },
+    "skipToContent": "Skip to content",
+    "phoneBanner": {
+      "region": "Verify your phone number",
+      "text": "From {date} you sign in with a code sent to your phone.",
+      "link": "Verify your phone number",
+      "dismiss": "Dismiss for today"
+    },
+    "homeLabel": "NearShop home",
+    "themeToggle": "Toggle dark mode",
+    "demoBanner": "Demo with generated data. Do not enter real personal details."
+  },
+  "common": {
+    "states": {
+      "retry": "Try again",
+      "loading": "Loading"
+    },
+    "searchBox": {
+      "placeholder": "Search for a product, brand or need",
+      "label": "Search products",
+      "clear": "Clear search",
+      "submit": "Find nearby",
+      "recentAndPopular": "Recent and popular",
+      "popularNearYou": "Popular near you",
+      "searchFor": "Search for {query}",
+      "category": "Category"
+    },
+    "travel": {
+      "walk": "{minutes} min walk",
+      "ride": "{minutes} min ride"
+    },
+    "status": {
+      "reservation": {
+        "REQUESTED": "Waiting for shop",
+        "CONFIRMED": "Held for you",
+        "READY_FOR_PICKUP": "Ready for pickup",
+        "COMPLETED": "Picked up",
+        "REJECTED": "Declined by shop",
+        "CANCELLED": "Cancelled",
+        "EXPIRED": "Expired"
+      },
+      "order": {
+        "PENDING": "Waiting for shop",
+        "SHOP_CONFIRMED": "Confirmed",
+        "PREPARING": "Packing",
+        "OUT_FOR_DELIVERY": "On the way",
+        "DELIVERED": "Delivered",
+        "CANCELLED": "Cancelled",
+        "DELIVERY_FAILED": "Delivery failed",
+        "RETURNED_TO_SHOP": "Returned to shop"
+      },
+      "timeUp": "Time's up",
+      "hoursMinutes": "{hours}h {minutes}m"
+    },
+    "progress": {
+      "label": "Progress",
+      "reservationSteps": {
+        "REQUESTED": "Requested",
+        "CONFIRMED": "Held for you",
+        "READY_FOR_PICKUP": "Ready",
+        "COMPLETED": "Picked up"
+      },
+      "orderSteps": {
+        "PENDING": "Placed",
+        "SHOP_CONFIRMED": "Confirmed",
+        "PREPARING": "Packing",
+        "OUT_FOR_DELIVERY": "On the way",
+        "DELIVERED": "Delivered"
+      },
+      "events": {
+        "REQUESTED": "Reservation requested",
+        "CONFIRMED": "Shop confirmed and set it aside",
+        "READY_FOR_PICKUP": "Packed and ready at the counter",
+        "COMPLETED": "Picked up",
+        "REJECTED": "Shop declined",
+        "CANCELLED": "Cancelled",
+        "EXPIRED": "Expired",
+        "PENDING": "Order placed",
+        "SHOP_CONFIRMED": "Shop confirmed the order",
+        "PREPARING": "Packing your order",
+        "OUT_FOR_DELIVERY": "Out for delivery",
+        "DELIVERED": "Delivered",
+        "DELIVERY_FAILED": "Delivery attempt failed",
+        "RETURNED_TO_SHOP": "Returned to shop"
+      },
+      "actors": {
+        "you": "You",
+        "customer": "Customer",
+        "shop": "Shop",
+        "system": "NearShop",
+        "admin": "Admin"
+      },
+      "note": "“{note}”"
+    },
+    "confirm": {
+      "keep": "Keep it"
+    },
+    "location": {
+      "change": "Change location",
+      "set": "Set location",
+      "current": "Current location",
+      "cityCentre": "{city} centre",
+      "km": "{km} km",
+      "panelTitle": "Where are you shopping?",
+      "useGps": "Use my current location",
+      "radius": "Search radius",
+      "radiusLabel": "Search radius in kilometres",
+      "searchAreasIn": "Search areas in {city}",
+      "searchAreas": "Search areas",
+      "noMatch": "No matching area",
+      "gpsFound": "Showing shops near your current location",
+      "gpsUnsupported": "Location is not available in this browser",
+      "gpsOutside": "You're outside {city}, where NearShop's shops are right now. Pick an area instead.",
+      "gpsDenied": "Location permission was denied",
+      "gpsFailed": "Couldn't get your location"
+    },
+    "notifications": {
+      "title": "Notifications",
+      "unread": {
+        "one": "Notifications, {count} unread",
+        "other": "Notifications, {count} unread"
+      },
+      "markAllRead": "Mark all read",
+      "empty": "You're all caught up."
+    },
+    "stock": {
+      "out": "Out of stock",
+      "left": "{count} left",
+      "only": "Only {count} left",
+      "inStock": "{count} in stock"
+    },
+    "freshness": {
+      "updated": "Updated {time}",
+      "notConfirmed": "Stock not confirmed yet",
+      "stockUpdated": "Stock updated {time}"
+    },
+    "price": {
+      "offMrp": "{percent}% off MRP"
+    },
+    "rating": {
+      "newShop": "New shop",
+      "summary": {
+        "one": "rated {value} out of 5 from {count} review",
+        "other": "rated {value} out of 5 from {count} reviews"
+      }
+    },
+    "verified": {
+      "label": "Verified shop",
+      "explanation": "Verified by NearShop: address and owner checked in person"
+    },
+    "errorPage": {
+      "title": "Something went wrong",
+      "body": "It's on our side, not yours. Try again, and if it keeps happening, go back home.",
+      "home": "Home"
+    },
+    "notFound": {
+      "homeLabel": "NearShop home",
+      "title": "This page isn't nearby",
+      "body": "The link may be old, or the listing was removed. Try searching instead.",
+      "search": "Search nearby",
+      "home": "Home"
+    },
+    "apiErrors": {
+      "network": "Can't reach NearShop right now. Check your connection and try again.",
+      "server_error": "Something went wrong on our side. Please try again.",
+      "request_failed": "That did not work. Please try again.",
+      "unknown": "Something went wrong",
+      "unauthorized": "Please sign in to continue.",
+      "rate_limited": "Too many requests. Please wait a little and try again.",
+      "signups_closed": "Sign-ups are paused while we prepare for launch.",
+      "shop_not_verified": "This shop is not available on NearShop right now.",
+      "consent_required": "Please agree to the privacy notice and terms to create an account.",
+      "age_confirmation_required": "NearShop is for adults. You need to be 18 or older to create an account.",
+      "insufficient_stock": "There is not enough stock left for this. Lower the quantity, or try another shop.",
+      "duplicate_reservation": "You already have an active reservation for this item.",
+      "invalid_credentials": "Email or password is incorrect.",
+      "email_taken": "An account with this email already exists.",
+      "otp_expired": "This code has expired or has already been used. Ask for a new code.",
+      "otp_locked": "Too many wrong codes. Ask for a new code.",
+      "otp_send_failed": "We could not send the code just now. Please try again in a minute.",
+      "otp_unavailable": "Signing in with a phone code is not available right now. Please sign in with your email and password, or try again later.",
+      "phone_signin_required": "Email sign-in has ended for customer and shop accounts. Sign in with your phone number instead. If you never verified a phone number on this account, contact us through the grievance page.",
+      "account_inactive": "The account with this phone number is switched off. To ask about it, contact us through the grievance page.",
+      "duplicate_review": "You have already reviewed this purchase.",
+      "review_not_allowed": "Shops cannot be reviewed from their own phone number.",
+      "own_review": "You cannot report your own review."
+    },
+    "stockErrors": {
+      "outOfStock": "This item is out of stock.",
+      "onlyLeft": "Only {count} in stock.",
+      "outOfStockOf": "{product} is out of stock.",
+      "onlyLeftOf": "Only {count} of {product} in stock."
+    },
+    "shopCard": {
+      "open": "Open",
+      "closed": "Closed",
+      "delivers": "Delivers"
+    },
+    "dialog": {
+      "close": "Close"
+    },
+    "quantity": {
+      "label": "Quantity",
+      "decrease": "Decrease quantity",
+      "increase": "Increase quantity"
+    },
+    "map": {
+      "show": "Show map"
+    },
+    "reviews": {
+      "stars": "{value} out of 5 stars",
+      "newShopHint": "A rating shows once 5 different customers have reviewed this shop",
+      "empty": "No reviews yet.",
+      "verified": {
+        "pickup": "Verified pickup",
+        "delivery": "Verified delivery"
+      },
+      "itemAccuracy": "Item accuracy {value}/5",
+      "delivery": "Delivery {value}/5",
+      "replyFromShop": "Reply from the shop",
+      "edited": "edited",
+      "status": {
+        "hidden": "Hidden while an admin reviews it",
+        "removed": "Removed by an admin"
+      },
+      "report": "Report",
+      "reportReply": "Report reply",
+      "reportReviewLabel": "Report this review",
+      "reportReplyLabel": "Report the shop's reply",
+      "reported": "Reported",
+      "reportDescription": "Reports are private. When several people report the same review, it is hidden until an admin decides.",
+      "cancel": "Cancel",
+      "sendReport": "Send report",
+      "whatIsWrong": "What is wrong with it?",
+      "whatProblem": "What is the problem?",
+      "anythingElse": "Anything else? (optional)",
+      "alreadyReported": "You have already reported this.",
+      "thanks": "Thanks. An admin will look at it within 3 days.",
+      "reasons": {
+        "fake": {
+          "label": "Fake",
+          "hint": "Not from a real customer, or written by the shop"
+        },
+        "abusive": {
+          "label": "Abusive",
+          "hint": "Insults, threats or hate"
+        },
+        "personal_info": {
+          "label": "Personal information",
+          "hint": "A phone number, address or someone's private details"
+        },
+        "off_topic": {
+          "label": "Off-topic",
+          "hint": "Not about this shop or this purchase"
+        },
+        "other": {
+          "label": "Something else",
+          "hint": "Tell us below"
+        }
+      }
+    }
+  },
+  "discovery": {
+    "home": {
+      "heroTitle": "Find it nearby.",
+      "heroSubtitle": "Skip the five-shop hunt.",
+      "heroBody": "See which shops around you have it on the shelf right now, what they charge, and how fresh that stock count is. Reserve it and walk in, or let the shop deliver.",
+      "searchPlaceholder": "Try 'phone charging adapter' or 'tap leaking'",
+      "quick": {
+        "charger": "phone charger",
+        "elbow": "PVC elbow joint",
+        "shoes": "school shoes",
+        "bulb": "9W LED bulb",
+        "umbrella": "umbrella",
+        "oil": "bike engine oil"
+      },
+      "statShopsIn": "local shops in {city}",
+      "statShopsHere": "local shops in your city",
+      "statItems": "items in stock right now",
+      "statRiders": "delivery riders needed",
+      "demoItems": {
+        "one": "{count} item",
+        "other": "{count} items"
+      },
+      "demoShops": {
+        "one": "{count} shop",
+        "other": "{count} shops"
+      },
+      "searching": "searching...",
+      "moreShops": {
+        "one": "+{count} more shop",
+        "other": "+{count} more shops"
+      },
+      "reserveBanner": "Reserve now, pick up in 30 min",
+      "browseTitle": "Browse by what you need",
+      "browseBody": "The everyday things that are hard to find online and easy to find nearby.",
+      "categoryInStock": "{count} in stock",
+      "shopsNear": "Shops near {place}",
+      "shopsNearYou": "Shops near you",
+      "shopsBody": "Sorted by distance. The freshness line tells you how recently they counted their shelves.",
+      "seeMap": "See map",
+      "howTitle": "Check the shelf before you leave home",
+      "howBody": "Pickup is the default because you get to see it before you pay. Delivery is there when the shop offers it, handled by the shop itself.",
+      "steps": {
+        "search": {
+          "title": "Search the way you talk",
+          "body": "Type 'charging adapter' or 'tap leaking'. NearShop understands meaning, not just exact product names.",
+          "tag": "AI search"
+        },
+        "reserve": {
+          "title": "Reserve in one tap",
+          "body": "The shop confirms and sets it aside for 30 minutes. You get a pickup code and a live countdown.",
+          "tag": "No payment upfront"
+        },
+        "pay": {
+          "title": "Walk in, check, pay",
+          "body": "Inspect it at the counter and pay there. If the shop delivers, cash on delivery works too.",
+          "tag": "Pickup or delivery"
+        }
+      },
+      "owners": {
+        "badge": "For shop owners",
+        "title": "Your shelf, online by this evening.",
+        "body": "Pick products from a ready catalogue, set your price and count. Customers nearby find you, reserve, and walk in ready to buy.",
+        "listFree": "List your shop free",
+        "seeDashboard": "See the dashboard",
+        "features": {
+          "alerts": {
+            "title": "Reservation alerts",
+            "body": "Confirm or decline with one tap."
+          },
+          "forecasts": {
+            "title": "Restock forecasts",
+            "body": "Know what will run out next week."
+          },
+          "demand": {
+            "title": "Local demand",
+            "body": "See what people nearby search for."
+          },
+          "trust": {
+            "title": "Earn trust",
+            "body": "Fresh stock counts rank you higher."
+          },
+          "delivery": {
+            "title": "Your delivery, your rules",
+            "body": "Set radius, fee and free-delivery limit."
+          },
+          "commission": {
+            "title": "No commission to start",
+            "body": "Pay at the counter, as always."
+          }
+        }
+      }
+    },
+    "search": {
+      "sort": {
+        "label": "Sort results",
+        "relevance": "Best match",
+        "distance": "Nearest first",
+        "priceAsc": "Price: low to high",
+        "priceDesc": "Price: high to low"
+      },
+      "filters": "Filters",
+      "all": "All",
+      "everythingNearby": "Everything nearby",
+      "checking": "Checking shelves nearby...",
+      "items": {
+        "one": "{count} item",
+        "other": "{count} items"
+      },
+      "shops": {
+        "one": "{count} shop",
+        "other": "{count} shops"
+      },
+      "summary": "{items} at {shops} within {radius} km",
+      "summaryOf": "{items} at {shops} within {radius} km of {place}",
+      "corrected": "Showing results for {query}. No matches for “{original}”.",
+      "didYouMean": "Did you mean {suggestion}?",
+      "matched": "Matched by meaning and keywords",
+      "matchedAlso": "Matched by meaning and keywords, also looked for {terms}",
+      "noShopsTitle": "No shops in this radius yet",
+      "noShopsBody": "Try a wider radius or a different area.",
+      "nothingTitle": "Nothing matching within {radius} km",
+      "nothingBody": "Shops nearby don't list this yet. Try a wider radius, fewer filters, or a simpler word.",
+      "expand": "Expand to {radius} km",
+      "clearFilters": "Clear filters",
+      "showMore": "Show more results",
+      "pinOutOfStock": "Out of stock",
+      "pinTitle": {
+        "one": "{shop}, {count} matching item in stock",
+        "other": "{shop}, {count} matching items in stock"
+      },
+      "close": "Close",
+      "delivers": "Delivers",
+      "matchingInStock": {
+        "one": "{count} matching item in stock, from {price}",
+        "other": "{count} matching items in stock, from {price}"
+      },
+      "matchingOutOfStock": "Has matching items, but they're out of stock",
+      "openShop": "Open shop",
+      "list": "List",
+      "map": "Map"
+    },
+    "result": {
+      "label": "{name}, from {price}",
+      "upTo": "up to {price}",
+      "pickup": "Pickup",
+      "delivery": "Delivery",
+      "shopsHaveThis": {
+        "one": "{count} shop nearby has this",
+        "other": "{count} shops nearby have this"
+      },
+      "inStock": "{count} in stock",
+      "compareAll": "Compare all",
+      "freshness": {
+        "aging": {
+          "one": "Updated {count} day ago",
+          "other": "Updated {count} days ago"
+        },
+        "stale": "Stock not confirmed recently"
+      }
+    },
+    "product": {
+      "opening": "Opening…",
+      "breadcrumb": "Breadcrumb",
+      "goneTitle": "This listing is gone",
+      "goneBody": "The shop may have removed it. Search to find it elsewhere nearby.",
+      "searchNearby": "Search nearby",
+      "compareTitle": "Compare shops nearby",
+      "shopsList": {
+        "one": "{count} shop lists this item.",
+        "other": "{count} shops list this item."
+      },
+      "onlyThisShop": "Only this shop lists this item right now.",
+      "typicalPrice": "Typical price {price}.",
+      "columns": {
+        "shop": "Shop",
+        "price": "Price",
+        "stock": "Stock",
+        "distance": "Distance"
+      },
+      "viewing": "You're viewing",
+      "boughtTogether": "Often bought together",
+      "popularIn": "Popular in {category}",
+      "basketAi": "Market-basket AI",
+      "boughtTogetherBody": "Learned from what customers nearby buy in the same visit. Save a second trip.",
+      "popularBody": "Bestsellers in this category near you.",
+      "alsoAtShop": "Also at this shop",
+      "buyersShare": "{percent}% of buyers",
+      "reviewsTitle": "What customers say about {shop}",
+      "reviewsEmpty": "No reviews yet. Reviews come only from completed pickups and deliveries.",
+      "allReviews": {
+        "one": "All {count} review",
+        "other": "All {count} reviews"
+      },
+      "sold30d": {
+        "one": "{count} sold here in the last 30 days",
+        "other": "{count} sold here in the last 30 days"
+      },
+      "youReserved": "You reserved this · {code}",
+      "reserve": "Reserve for pickup",
+      "requestDelivery": "Request delivery",
+      "hintCustomer": "Sign in with a customer account to reserve.",
+      "hintOut": "Out of stock here. Compare other shops below.",
+      "hintPickupOnly": "Pickup only. Held {minutes} min after the shop confirms.",
+      "hintDelivery": "Delivery {fee} · {distance} away · Cash on delivery",
+      "free": "free",
+      "hintPayAtShop": "Pay at the shop. No online payment.",
+      "hours": "Hours {hours}",
+      "closedOn": "closed every {day}",
+      "directions": "Directions",
+      "callShop": "Call shop",
+      "trustTitle": "Why you can trust this listing",
+      "stickyStock": "{count} in stock · {shop}",
+      "reserveShort": "Reserve"
+    },
+    "shop": {
+      "notFoundTitle": "Shop not found",
+      "notFoundBody": "It may have paused its listing.",
+      "browseShops": "Browse shops",
+      "stockUpdated": "Stock updated",
+      "closedOn": "closed every {day}",
+      "pickupHold": "Pickup: items held {minutes} min after confirming",
+      "delivers": "Delivers within {radius} km · {fee}",
+      "deliversFreeAbove": "Delivers within {radius} km · {fee}, free above {threshold}",
+      "free": "free",
+      "pickupOnly": "Pickup only",
+      "servingSince": "Serving since {year}",
+      "directions": "Directions",
+      "call": "Call",
+      "shelfTitle": "On the shelf",
+      "shelfCount": {
+        "one": "{inStock} of {total} item in stock right now",
+        "other": "{inStock} of {total} items in stock right now"
+      },
+      "inStockOnly": "In stock only",
+      "searchShop": "Search {shop}",
+      "all": "All",
+      "nothingMatches": "Nothing matches here. {link}",
+      "searchAllShops": "Search all shops nearby",
+      "trackRecord": "Track record",
+      "reviews": "Reviews"
+    },
+    "trust": {
+      "inventoryUpdated": "Inventory updated",
+      "notYet": "Not yet",
+      "updateDays": {
+        "one": "on {count} of the last 7 days",
+        "other": "on {count} of the last 7 days"
+      },
+      "noUpdatesWeek": "No updates this week",
+      "reservationsConfirmed": "Reservations confirmed",
+      "confirmedOf": "{confirmed} of {requests}",
+      "newShop": "New shop",
+      "acceptance": "{percent}% in the last 90 days",
+      "noRequests": "No requests yet",
+      "typicalConfirmation": "Typical confirmation",
+      "minutes": {
+        "one": "{count} min",
+        "other": "{count} min"
+      },
+      "noData": "No data",
+      "confirmationSub": "from request to 'held for you'",
+      "rating": "Customer rating",
+      "ratingValue": "{rating} / 5",
+      "ratingPending": "A rating shows once 5 customers have reviewed it",
+      "purchases": {
+        "one": "{count} verified purchase",
+        "other": "{count} verified purchases"
+      },
+      "purchasesAccuracy": {
+        "one": "{count} verified purchase, accuracy {accuracy}",
+        "other": "{count} verified purchases, accuracy {accuracy}"
+      },
+      "reviewsCompletedOnly": "Reviews come from completed purchases only",
+      "fulfilment": "{delivered} and {cancelled} by the shop in the last 90 days.",
+      "fulfilmentDelivered": {
+        "one": "{count} delivery completed",
+        "other": "{count} deliveries completed"
+      },
+      "fulfilmentCancelled": {
+        "one": "{count} cancelled",
+        "other": "{count} cancelled"
+      }
+    },
+    "shops": {
+      "title": "Shops near you",
+      "description": "Local shops that keep their stock online. Freshness shows when they last counted.",
+      "searchPlaceholder": "Shop name or area",
+      "sort": {
+        "distance": "Nearest first",
+        "rating": "Highest rated",
+        "fresh": "Freshest stock"
+      },
+      "all": "All",
+      "emptyTitle": "No shops match",
+      "emptyBody": "Try a wider radius or another category.",
+      "count": {
+        "one": "{count} shop within {km} km",
+        "other": "{count} shops within {km} km"
+      }
+    },
+    "filterSheet": {
+      "inStock": "In stock only",
+      "inStockHint": "Hide items shops have run out of",
+      "how": "How you want it",
+      "any": "Any",
+      "pickup": "Pickup",
+      "delivery": "Delivery",
+      "priceRange": "Price range (Rs)",
+      "min": "Min",
+      "max": "Max",
+      "minLabel": "Minimum price",
+      "maxLabel": "Maximum price",
+      "to": "to",
+      "clearAll": "Clear all"
+    }
+  },
+  "auth": {
+    "layout": {
+      "back": "Back to NearShop",
+      "pitchTitle": "Stop calling five shops for one spare part.",
+      "pitchBody": "NearShop shows what local shops actually have on the shelf, how much it costs, and how recently they counted it.",
+      "pillars": {
+        "search": {
+          "title": "Search",
+          "body": "by meaning"
+        },
+        "reserve": {
+          "title": "Reserve",
+          "body": "no prepayment"
+        },
+        "pickUp": {
+          "title": "Pick up",
+          "body": "or get delivery"
+        }
+      }
+    },
+    "common": {
+      "signIn": "Sign in",
+      "email": "Email",
+      "password": "Password",
+      "passwordHint": "At least 8 characters"
+    },
+    "phone": {
+      "label": "Mobile number",
+      "hint": "10 digits, with or without +91.",
+      "empty": "Enter your 10-digit mobile number.",
+      "invalid": "Enter a 10-digit mobile number that starts with 6, 7, 8 or 9, with or without +91."
+    },
+    "code": {
+      "label": "{length}-digit code",
+      "sent": {
+        "whatsapp": "We sent a 6-digit code to {phone} on WhatsApp. It is valid for 5 minutes.",
+        "sms": "We sent a 6-digit code to {phone} by SMS. It is valid for 5 minutes.",
+        "console": "We sent a 6-digit code to {phone} (development: the code is in the API log). It is valid for 5 minutes."
+      },
+      "resendIn": "You can ask for a new code in {seconds} s.",
+      "resend": "Send a new code",
+      "bySms": "Send it by SMS instead",
+      "send": "Send code",
+      "differentNumber": "Use a different number"
+    },
+    "login": {
+      "loading": "Loading sign-in…",
+      "welcome": "Welcome back",
+      "phoneIntro": "Sign in with a code sent to your phone.",
+      "emailIntro": "Sign in to reserve items and track your pickups.",
+      "createAccount": "Create an account",
+      "listShop": "list your shop",
+      "newHere": "New here? {create} or {listShop}",
+      "passwordPrompt": "Admin, or a shop owner with a verified phone? {link}",
+      "signInWithPassword": "Sign in with your password",
+      "useEmail": "Use email and password",
+      "until": "(until {date})",
+      "showPassword": "Show password",
+      "hidePassword": "Hide password",
+      "authCode": "Authentication code",
+      "authCodeHint": "Enter the 6-digit code from your authenticator app, or one of your recovery codes.",
+      "signInWithPhone": "Sign in with your phone",
+      "verifyAndSignIn": "Verify and sign in",
+      "useCode": "Sign in with a code sent to your phone"
+    },
+    "verify": {
+      "loading": "Loading…",
+      "title": "Verify your phone number",
+      "signInFirst": "Sign in first, then verify the phone number on your account.",
+      "notYours": "Not your account? {signOut}",
+      "signOut": "Sign out",
+      "nothingTitle": "Nothing to verify",
+      "verifiedTitle": "Your phone number is verified",
+      "adminBody": "Admins sign in with their email, password and authenticator code.",
+      "verifiedBody": "You sign in with a code sent to {phone}.",
+      "verifiedBodyNoPhone": "You sign in with a code sent to your phone.",
+      "continue": "Continue",
+      "unavailable": "Phone verification is not available yet. Keep signing in with your email and password; we will tell you when it is.",
+      "requiredTitle": "Verify your phone number to continue",
+      "requiredBody": "Email sign-in ended on {date}. Verify your mobile number with a code to keep using NearShop.",
+      "warnBody": "From {date} you sign in with a code sent to your phone instead of your email and password. Verify your number now: it takes a minute.",
+      "contactSupport": "Contact support",
+      "verify": "Verify"
+    },
+    "signup": {
+      "loading": "Loading sign-up…",
+      "pausedTitle": "Sign-ups are paused while we prepare for launch",
+      "pausedBody": "New accounts cannot be created right now. You can still search what nearby shops have in stock.",
+      "searchNearby": "Search nearby"
+    },
+    "consent": {
+      "legend": "Privacy and consent",
+      "required": "I agree that NearShop uses my details to run my account and fulfil my reservations and orders, as described in the {privacy} and {terms}.",
+      "privacyLink": "privacy notice",
+      "termsLink": "terms",
+      "age": "I am 18 or older.",
+      "ageHint": "NearShop is for adults. We do not create accounts for children, because that needs a parent's verified consent.",
+      "optional": "Optional. You can leave these off.",
+      "whatsapp": {
+        "label": "WhatsApp messages",
+        "hint": "Reservation and order updates on WhatsApp."
+      },
+      "personalised": {
+        "label": "Personalised suggestions",
+        "hint": "Suggestions based on your search history."
+      },
+      "measurement": {
+        "label": "Help improve search",
+        "hint": "Use my searches to measure and improve search results."
+      },
+      "needAgree": "Please agree to the privacy notice and terms to create an account.",
+      "needAge": "NearShop is for adults. You need to be 18 or older to create an account."
+    },
+    "register": {
+      "title": "Create your account",
+      "phoneIntro": "Reserve items at nearby shops and track pickups in one place. You sign in with a code sent to your phone.",
+      "emailIntro": "Reserve items at nearby shops and track pickups in one place.",
+      "fullName": "Full name",
+      "nameMissing": "Please enter your full name.",
+      "optional": "(optional)",
+      "phoneOptional": "(optional, for delivery)",
+      "create": "Create account",
+      "changeDetails": "Change your details",
+      "haveAccount": "Already have an account? {link}",
+      "ownShop": "Own a shop? {link}",
+      "listIt": "List it on NearShop"
+    },
+    "shopSignup": {
+      "steps": {
+        "account": "Your account",
+        "shop": "Your shop",
+        "location": "Location",
+        "hours": "Hours and delivery",
+        "verify": "Verify your phone"
+      },
+      "stepOf": "Step {step} of {total}",
+      "name": "Your name",
+      "verifyNote": "This number becomes your sign-in number, and your shop's phone counts as verified when an admin reviews it.",
+      "back": "Back",
+      "open": "Open my shop",
+      "continue": "Continue",
+      "alreadyListed": "Already listed? {link}"
+    },
+    "demo": {
+      "title": "Demo accounts",
+      "customer": "Customer",
+      "owner": "Shop owner",
+      "admin": "Admin"
+    }
+  },
+  "transactions": {
+    "common": {
+      "yourActivity": "Your activity",
+      "quantityPrice": "{count} x {price}",
+      "timeline": "Timeline",
+      "directions": "Directions",
+      "call": "Call"
+    },
+    "reserve": {
+      "title": "Reserve for pickup",
+      "description": "{shop} will set it aside for you. No payment now.",
+      "submitOne": "Reserve it · {price}",
+      "submitMany": "Reserve {count} units · {price}",
+      "eachInStock": "{price} each · {count} in stock",
+      "steps": {
+        "check": {
+          "title": "The shop checks the shelf",
+          "body": "Usually within a few minutes. You get a notification."
+        },
+        "held": {
+          "title": "Held for {minutes} minutes",
+          "body": "Once confirmed, walk in any time before the timer ends."
+        },
+        "pay": {
+          "title": "Inspect, then pay the shop",
+          "body": "Cash at the counter, or UPI to the shop directly if it takes UPI. NearShop never charges you."
+        }
+      },
+      "note": "Note for the shop (optional)",
+      "notePlaceholder": "e.g. Size 8 please, or I'll come by 6 pm",
+      "sent": "Reservation {code} sent to {shop}",
+      "sentBody": "You'll be notified the moment they confirm."
+    },
+    "delivery": {
+      "title": "Request delivery",
+      "description": "{shop} delivers this themselves. Pay the shop on delivery, in cash or by UPI if it takes UPI.",
+      "placeOrder": "Place order",
+      "placeOrderTotal": "Place order · {price}",
+      "each": "{price} each",
+      "deliverNear": "Deliver near",
+      "ineligible": "{reason}. Try pickup instead, or change the delivery location.",
+      "items": "Items",
+      "fee": "Delivery ({distance})",
+      "free": "Free",
+      "freeAbove": "Free delivery on orders above {price}",
+      "payOnDelivery": "Pay on delivery",
+      "address": "Full address",
+      "addressPlaceholder": "House no., street, landmark",
+      "phone": "Phone",
+      "phonePlaceholder": "10 digits",
+      "note": "Note (optional)",
+      "notePlaceholder": "Call before coming",
+      "sent": "Order {code} sent to {shop}",
+      "sentBody": "Pay the shop when it arrives."
+    },
+    "account": {
+      "ownerTitle": "Your activity is on your dashboard",
+      "ownerBody": "Shop owners manage reservations from the shop dashboard. Your account and privacy settings are below.",
+      "goToDashboard": "Go to dashboard",
+      "yourActivity": "Your activity",
+      "hi": "Hi {name}",
+      "hiThere": "Hi there",
+      "stats": {
+        "pickups": {
+          "one": "pickup",
+          "other": "pickups"
+        },
+        "deliveries": {
+          "one": "delivery",
+          "other": "deliveries"
+        },
+        "shops": {
+          "one": "shop",
+          "other": "shops"
+        }
+      },
+      "inProgress": "In progress",
+      "nothingHeld": "Nothing on hold right now",
+      "nothingHeldBody": "Find something nearby and reserve it. The shop sets it aside for you.",
+      "searchNearby": "Search nearby",
+      "rateRecent": "Rate your recent visits",
+      "items": {
+        "one": "{count} item",
+        "other": "{count} items"
+      },
+      "rate": "Rate",
+      "history": "History",
+      "tabs": {
+        "all": "All",
+        "pickups": "Pickups",
+        "deliveries": "Deliveries"
+      },
+      "noPast": {
+        "deliveries": "No past deliveries yet.",
+        "pickups": "No past pickups yet.",
+        "activity": "No past activity yet."
+      },
+      "nextTitle": "You might need next",
+      "nextBody": "Based on what people buy along with your recent purchases.",
+      "recentSearches": "Recent searches",
+      "settingsTitle": "Account and privacy",
+      "settingsBody": "Correct your details, choose what we may use, and download or delete your data.",
+      "privacyNotice": "Privacy notice",
+      "details": {
+        "title": "Your details",
+        "saved": "Your details are saved",
+        "name": "Name",
+        "home": "Home location name",
+        "homePlaceholder": "For example, Agrahara",
+        "savedPoint": "Saved point: {lat}, {lng}",
+        "noPoint": "No home point saved.",
+        "useLocation": "Use my current location",
+        "clearHome": "Clear home",
+        "save": "Save details"
+      },
+      "choices": {
+        "title": "Your choices",
+        "required": "Account and order messages are needed to run your account. To stop them, delete the account."
+      },
+      "purposes": {
+        "whatsapp": {
+          "title": "WhatsApp messages",
+          "description": "Updates about your reservations and orders on WhatsApp."
+        },
+        "personalised": {
+          "title": "Personalised suggestions",
+          "description": "Use your search history for suggestions. Off means new searches are not linked to you, and past ones are unlinked."
+        },
+        "measurement": {
+          "title": "Help improve search",
+          "description": "Count which results you open, without linking them to your account."
+        }
+      },
+      "nominee": {
+        "title": "Nominee",
+        "body": "One person who may use your data rights if you die or cannot act yourself. Support acts on it only with documentary proof.",
+        "name": "Nominee's name",
+        "phone": "Phone",
+        "phonePlaceholder": "10-digit mobile",
+        "email": "Email",
+        "contactHint": "Give a phone number, an email address or both.",
+        "save": "Save nominee",
+        "replace": "Replace nominee",
+        "remove": "Remove",
+        "saved": "Nominee saved",
+        "removed": "Nominee removed"
+      },
+      "devices": {
+        "title": "Signed-in devices",
+        "thisDevice": "{device} (this device)",
+        "lastUsed": "Last used {time}",
+        "revoke": "Revoke",
+        "revokeLabel": "Revoke {device}",
+        "signedOut": "{device} is signed out",
+        "everywhere": "Sign out everywhere"
+      },
+      "export": {
+        "title": "Your data",
+        "body": "Download your profile, choices, nominee, reservations, orders, reviews, notifications and search history as a JSON file. Up to 3 times a day.",
+        "preparing": "Preparing...",
+        "download": "Download my data"
+      },
+      "itemStatus": {
+        "REQUESTED": "requested",
+        "CONFIRMED": "confirmed",
+        "READY_FOR_PICKUP": "ready for pickup",
+        "PENDING": "pending",
+        "SHOP_CONFIRMED": "shop confirmed",
+        "PREPARING": "preparing",
+        "OUT_FOR_DELIVERY": "out for delivery"
+      },
+      "deletion": {
+        "title": "Delete account",
+        "body": "Your name, email, phone, password, home, nominee and choices are removed, and your notifications and searches deleted. Shops keep the reservations and orders they handled, without your phone or address. Reviews keep their rating and show as “Former customer”.",
+        "shopHidden": "Your shop ({shops}) is hidden and its listings switched off.",
+        "pickup": "Pickup {code}",
+        "delivery": "Delivery {code}",
+        "shop": "Shop",
+        "scheduled": "Deletion is scheduled for {date}.",
+        "scheduledInFlight": "Some orders are on their way. Your account will be deleted when they close, at the latest by {date}.",
+        "cancelFirst": "These will be cancelled first, and the items released back to the shop.",
+        "thenScheduled": "Orders already on their way then keep your account until they close, at the latest {date}.",
+        "thenImmediate": "Then your account is deleted at once.",
+        "immediate": "Your account is deleted at once.",
+        "onTheirWay": "On their way:",
+        "cancelAndDelete": "Cancel all and delete",
+        "delete": "Delete my account",
+        "confirmTitle": "Delete your NearShop account?",
+        "cannotUndo": "This cannot be undone.",
+        "password": "Your password",
+        "keep": "Keep my account",
+        "deleted": "Your account has been deleted",
+        "willDelete": "Your account will be deleted by {date}"
+      }
+    },
+    "reservation": {
+      "status": {
+        "REQUESTED": {
+          "title": "Waiting for the shop",
+          "body": "{shop} is checking the shelf. You'll get a notification when it's set aside."
+        },
+        "CONFIRMED": {
+          "title": "It's held for you",
+          "body": "Walk in before the timer ends and show code {code} at the counter."
+        },
+        "READY_FOR_PICKUP": {
+          "title": "Ready at the counter",
+          "body": "Packed and waiting. Show code {code} and pay at the shop."
+        },
+        "COMPLETED": {
+          "title": "Picked up",
+          "body": "Thanks for shopping local.",
+          "bodyCash": "Paid in cash. Thanks for shopping local.",
+          "bodyUpi": "Paid to the shop by UPI. Thanks for shopping local."
+        },
+        "REJECTED": {
+          "title": "The shop couldn't hold it",
+          "body": "Try another shop nearby."
+        },
+        "CANCELLED": {
+          "title": "Reservation cancelled",
+          "body": "Nothing was charged."
+        },
+        "EXPIRED": {
+          "title": "Reservation expired",
+          "body": "The shop didn't respond in time.",
+          "bodyHeld": "The hold time ran out and the item went back on the shelf."
+        }
+      },
+      "cancelled": "Reservation cancelled",
+      "respondsWithin": "Shop responds within",
+      "heldFor": "Held for",
+      "showAtCounter": "Show this at the counter",
+      "pickupCodeHint": "Pickup code. The shop enters it to hand over your item. Pay {price} at the shop.",
+      "yourNote": "Your note: “{note}”",
+      "cancelTitle": "Cancel this reservation?",
+      "cancelBody": "The shop will put the item back on the shelf.",
+      "cancel": "Cancel reservation",
+      "cancelReason": "Reason (optional, helps the shop)",
+      "cancelReasonPlaceholder": "e.g. Found it elsewhere",
+      "rate": "Rate this pickup",
+      "findElsewhere": "Find it at another shop",
+      "pickupCodeHintUpi": "Pickup code. The shop enters it to hand over your item. Pay {price} at the shop, in cash or by UPI."
+    },
+    "order": {
+      "status": {
+        "PENDING": "Waiting for the shop to confirm",
+        "SHOP_CONFIRMED": "Confirmed, items set aside",
+        "PREPARING": "Packing your order",
+        "OUT_FOR_DELIVERY": "On the way to you",
+        "DELIVERED": "Delivered",
+        "CANCELLED": "Order cancelled",
+        "DELIVERY_FAILED": "Delivery attempt failed",
+        "RETURNED_TO_SHOP": "Returned to the shop"
+      },
+      "cancelled": "Order cancelled",
+      "reason": "Reason: {reason}",
+      "keepReady": "Keep {price} ready. {shop} is delivering it themselves.",
+      "deliveryCode": "Your delivery code",
+      "deliveryCodeHint": "Give it to the person from {shop} only when the order is in your hands. Never share it by phone or message.",
+      "items": "Items",
+      "fee": "Delivery ({distance})",
+      "free": "Free",
+      "paidOnDelivery": "Paid on delivery",
+      "payOnDelivery": "Pay on delivery",
+      "cancelTitle": "Cancel this order?",
+      "cancelBody": "The shop will be notified straight away.",
+      "cancel": "Cancel order",
+      "cancelReason": "Reason (optional)",
+      "rate": "Rate this delivery",
+      "mapYou": "You",
+      "mapAddress": "Delivery address",
+      "callShop": "Call shop",
+      "keepReadyUpi": "Keep {price} ready in cash, or pay by UPI. {shop} is delivering it themselves.",
+      "paidCash": "Paid in cash",
+      "paidUpi": "Paid to the shop by UPI",
+      "payOnDeliveryUpi": "Pay on delivery: cash or UPI"
+    },
+    "review": {
+      "title": "How was {shop}?",
+      "description": "Reviews are only accepted for completed purchases, one per visit.",
+      "post": "Post review",
+      "overall": "Overall experience",
+      "accuracy": "Item matched the listing",
+      "delivery": "Delivery",
+      "commentLabel": "Anything others should know? (optional)",
+      "commentPlaceholder": "Was it ready on time? Was the stock count right?",
+      "stars": {
+        "one": "{count} star",
+        "other": "{count} stars"
+      },
+      "thanks": "Thanks! Your review helps neighbours pick the right shop.",
+      "rulesIntro": "To keep ratings honest, NearShop accepts a review only when:",
+      "rules": {
+        "review_window_closed": "Reviews can be written within 14 days of the pickup or delivery.",
+        "account_too_new": "Your account must have been created at least 3 days before the purchase.",
+        "review_not_allowed": "A shop cannot be reviewed from the shop’s or its owner’s phone number.",
+        "phone_not_verified": "Your phone number must be verified.",
+        "duplicate_review": "Each pickup or delivery can be reviewed once."
+      },
+      "whyRefused": "(this is why the review was not accepted)",
+      "countsNote": "Only some reviews count toward a shop’s rating: one per customer per shop every 30 days."
+    },
+    "activity": {
+      "pickup": "Pickup",
+      "delivery": "Delivery",
+      "shopHas": "Shop has {time}",
+      "heldFor": "Held for {time}"
+    },
+    "policy": {
+      "title": "Cancellation and refunds",
+      "reserveBody": "Free cancellation before pickup. If you paid the shop directly by UPI and the reservation is cancelled, the shop refunds you within {days} days under its agreement with NearShop.",
+      "deliveryBody": "Cancelling is free before dispatch: cancel it yourself until the shop starts packing, then ask the shop to cancel it before it goes out. If you paid the shop directly by UPI and the order is cancelled, the shop refunds you within {days} days under its agreement with NearShop.",
+      "link": "Read the cancellation and refund policy"
+    },
+    "upi": {
+      "title": "Pay the shop by UPI",
+      "body": "Pay {payee} {price} directly with any UPI app. The money goes straight to the shop: NearShop never holds it.",
+      "qrLabel": "QR code to pay {payee} {price} by UPI",
+      "payButton": "Pay {price} by UPI",
+      "scanHint": "On a computer or another phone? Scan the QR code with any UPI app.",
+      "upiId": "UPI ID",
+      "note": "Note",
+      "refund": "Show the shop the payment confirmation. If it is cancelled after you pay, the shop refunds you within {days} days. {policy}",
+      "cashOnDelivery": "Or pay cash when it arrives.",
+      "cashAtCounter": "Or pay cash at the counter."
+    }
+  },
+  "owner": {
+    "shell": {
+      "notOwnerTitle": "The shop dashboard is for shop owners",
+      "notOwnerBody": "Sign in with a shop owner account, or list your shop in a few minutes.",
+      "listShop": "List your shop",
+      "signIn": "Sign in",
+      "yourShop": "Your shop",
+      "nav": {
+        "overview": "Overview",
+        "reservations": "Reservations",
+        "orders": "Delivery orders",
+        "inventory": "Inventory",
+        "import": "Import from Excel",
+        "catalog": "Add from catalogue",
+        "insights": "AI insights",
+        "reviews": "Reviews",
+        "settings": "Shop settings"
+      }
+    },
+    "verification": {
+      "reason": "Reason:",
+      "draft": {
+        "title": "Customers cannot see your shop yet",
+        "body": "Verify your shop with your GSTIN, Udyam number or trade licence. You can set up everything else meanwhile.",
+        "action": "Verify your shop"
+      },
+      "submitted": {
+        "title": "Verification submitted",
+        "body": "An admin is checking your evidence, usually within 2 working days. Your shop stays hidden from customers until it is approved."
+      },
+      "rejected": {
+        "title": "Your verification was not approved",
+        "body": "Fix the problem and submit again. Customers cannot see your shop until it is verified.",
+        "action": "Resubmit"
+      },
+      "suspended": {
+        "title": "Your shop is suspended",
+        "body": "Customers cannot see your shop until it is verified again.",
+        "action": "Submit fresh evidence"
+      },
+      "renewalPending": {
+        "title": "Renewal submitted",
+        "body": "An admin is checking your fresh evidence. Your shop stays visible while it is reviewed."
+      },
+      "renew": {
+        "title": "Renew your verification by {date}",
+        "body": "Your verification ends on {date}. Submit fresh evidence before then to stay visible to customers.",
+        "action": "Renew"
+      },
+      "expired": {
+        "title": "Your verification has ended",
+        "body": "It ended on {date}. Your shop is hidden from customers until it is renewed.",
+        "action": "Renew"
+      }
+    },
+    "common": {
+      "active": "Active",
+      "history": "History",
+      "nothingHere": "Nothing here",
+      "quantityItem": "{count} x {name}",
+      "table": {
+        "code": "Code",
+        "customer": "Customer",
+        "status": "Status",
+        "total": "Total"
+      }
+    },
+    "overview": {
+      "greeting": {
+        "morning": "Good morning",
+        "afternoon": "Good afternoon",
+        "evening": "Good evening"
+      },
+      "stockUpdated": "Your stock counts were updated",
+      "updateNow": "Update now",
+      "viewAsCustomer": "View as customer",
+      "demoData": "Sales history includes seeded demo data so charts and forecasts have something to learn from. Real pickups and deliveries are added as they complete.",
+      "revenueToday": "Revenue today",
+      "unitsSold": {
+        "one": "{count} unit sold",
+        "other": "{count} units sold"
+      },
+      "last7Days": "Last 7 days",
+      "vsPreviousWeek": "{delta}% vs previous week",
+      "pickupsWaiting": "Pickups waiting",
+      "newRequests": {
+        "one": "{count} new request",
+        "other": "{count} new requests"
+      },
+      "lowOrOut": "Low or out of stock",
+      "ofListings": {
+        "one": "of {count} listing",
+        "other": "of {count} listings"
+      },
+      "needsAttention": "Needs your attention",
+      "allReservations": "All reservations",
+      "noRequestsTitle": "No new requests",
+      "noRequestsBody": "New reservations and delivery orders appear here instantly.",
+      "deliveriesInProgress": {
+        "one": "{count} delivery in progress",
+        "other": "{count} deliveries in progress"
+      },
+      "sales30d": "Sales, last 30 days",
+      "fromReviews": {
+        "one": "from {count} review",
+        "other": "from {count} reviews"
+      },
+      "readReviews": "Read reviews",
+      "runningLow": "Running low",
+      "restockPlan": "AI restock plan",
+      "runsOut": {
+        "one": "Runs out in ~{count} day",
+        "other": "Runs out in ~{count} days"
+      },
+      "noRecentSales": "No recent sales",
+      "restock": "restock {count}",
+      "wellStocked": "Everything is well stocked.",
+      "topSellers": "Top sellers, 30 days",
+      "sold": "{count} sold",
+      "noSales": "No sales yet.",
+      "autoRefresh": "Refreshes automatically every 15 seconds."
+    },
+    "reservations": {
+      "title": "Reservations",
+      "description": "Customers reserve, you confirm, they pick up and pay at the counter.",
+      "emptyTitle": "No active reservations",
+      "emptyBody": "When a customer reserves something from your shop it appears here, and you get a notification.",
+      "columns": {
+        "REQUESTED": {
+          "title": "New requests",
+          "hint": "Check the shelf, then confirm or decline"
+        },
+        "CONFIRMED": {
+          "title": "Held for customer",
+          "hint": "Set aside. Mark ready when packed."
+        },
+        "READY_FOR_PICKUP": {
+          "title": "Ready at counter",
+          "hint": "Complete when they pay and collect"
+        }
+      },
+      "table": {
+        "item": "Item",
+        "updated": "Updated"
+      }
+    },
+    "orders": {
+      "title": "Delivery orders",
+      "description": "You deliver with your own staff. Customers pay cash on delivery.",
+      "pickupOnlyTitle": "You offer pickup only",
+      "pickupOnlyBody": "Turn on delivery in settings to accept delivery orders. You set the radius and fee; you or your staff deliver, and customers pay cash.",
+      "setUpDelivery": "Set up delivery",
+      "emptyTitle": "No active deliveries",
+      "emptyBody": "New delivery orders appear here with the customer's address and route.",
+      "table": {
+        "items": "Items",
+        "when": "When"
+      }
+    },
+    "queue": {
+      "done": {
+        "confirm": "Confirmed. The customer has been notified.",
+        "reject": "Declined. The customer has been notified.",
+        "ready": "Marked ready. The customer has been told to come by.",
+        "complete": "Completed. Sale recorded.",
+        "prepare": "Marked as packing.",
+        "dispatch": "Out for delivery. Customer notified.",
+        "deliver": "Delivered. Cash collected and sale recorded.",
+        "fail": "Marked as failed.",
+        "return": "Returned to shop. Stock restored.",
+        "cancel": "Cancelled. Stock returned to the shelf.",
+        "completePaid": {
+          "cash": "Completed. Cash payment and sale recorded.",
+          "upi": "Completed. UPI payment and sale recorded."
+        },
+        "deliverPaid": {
+          "cash": "Delivered. Cash payment and sale recorded.",
+          "upi": "Delivered. UPI payment and sale recorded."
+        }
+      },
+      "code": {
+        "wrongPickup": "That is not this reservation's code. Check the code with the customer and try again.",
+        "wrongDelivery": "That is not this order's delivery code. Check the code with the customer and try again.",
+        "deliveryDescription": "Ask the customer for the 4-digit delivery code on their order screen, and choose how they paid. Hand over the order only after it is accepted.",
+        "pickupDescription": "Ask the customer to show the pickup code on their reservation screen, type it here, and choose how they paid.",
+        "notYet": "Not yet",
+        "deliveryLabel": "Delivery code",
+        "pickupLabel": "Pickup code",
+        "deliveryPlaceholder": "4 digits",
+        "pickupPlaceholder": "e.g. 7KQ2MX"
+      },
+      "respondWithin": "Respond within",
+      "holdEndsIn": "Hold ends in",
+      "onShelf": "{count} on your shelf",
+      "reasonForCustomer": "Reason for the customer",
+      "reservation": {
+        "confirm": "Confirm and hold",
+        "ready": "Mark ready",
+        "complete": "Picked up and paid",
+        "completeTitle": "Complete this pickup",
+        "declineTitle": "Decline this reservation?",
+        "declineBody": "The customer will be told and pointed to other shops.",
+        "decline": "Decline",
+        "declinePlaceholder": "e.g. Last piece just sold at the counter",
+        "cancelTitle": "Cancel this reservation?",
+        "cancelBody": "Use this when the customer didn't show up. The item goes back into stock.",
+        "cancelConfirm": "Cancel reservation",
+        "cancelReason": "Reason",
+        "cancelPlaceholder": "e.g. Customer did not come",
+        "noShow": "No-show"
+      },
+      "order": {
+        "cod": "COD",
+        "note": "Note: {note}",
+        "openRoute": "Open route",
+        "confirm": "Confirm order",
+        "prepare": "Start packing",
+        "dispatch": "Out for delivery",
+        "deliver": "Delivered and paid",
+        "deliverTitle": "Deliver this order",
+        "failTitle": "Delivery failed?",
+        "failConfirm": "Mark failed",
+        "failReason": "What happened?",
+        "failPlaceholder": "e.g. Customer not reachable",
+        "couldNotDeliver": "Couldn't deliver",
+        "return": "Back in shop",
+        "cancelTitle": "Cancel this order?",
+        "cancelBody": "The customer is notified and any held stock goes back on the shelf.",
+        "cancelConfirm": "Cancel order",
+        "decline": "Decline",
+        "cancel": "Cancel",
+        "paidUpi": "Paid by UPI",
+        "paidCash": "Paid in cash",
+        "payOnDelivery": "Pay on delivery",
+        "cashOrUpi": "Cash or UPI"
+      },
+      "payment": {
+        "legend": "How did the customer pay?",
+        "cash": "Cash",
+        "cashHint": "The customer paid you in cash.",
+        "upi": "UPI",
+        "upiHint": "The customer paid your UPI ID. Check the payment reached your UPI app first.",
+        "checkingUpi": "Checking whether your shop takes UPI",
+        "addUpi": "To take UPI payments, add your UPI ID in {settings}.",
+        "settingsLink": "Shop settings"
+      }
+    },
+    "inventory": {
+      "title": "Inventory",
+      "description": "Keep counts honest. Customers see how recently you updated, and fresh shops rank higher.",
+      "importExcel": "Import Excel",
+      "addFromCatalogue": "Add from catalogue",
+      "newProduct": "New product",
+      "searchPlaceholder": "Search your products or SKU",
+      "tabs": {
+        "all": "All",
+        "low_stock": "Low",
+        "out_of_stock": "Out",
+        "inactive": "Removed"
+      },
+      "category": "Category",
+      "allCategories": "All categories",
+      "sortLabel": "Sort products",
+      "sort": {
+        "name": "Name",
+        "stock_asc": "Lowest stock",
+        "stock_desc": "Highest stock",
+        "price_asc": "Price: low to high",
+        "updated": "Recently updated"
+      },
+      "noMatchTitle": "No products match",
+      "noMatchBody": "Try another search or filter.",
+      "noProductsTitle": "No products yet",
+      "noProductsBody": "Add products from the ready catalogue in a couple of minutes.",
+      "openCatalogue": "Open catalogue",
+      "listings": {
+        "one": "{count} listing",
+        "other": "{count} listings"
+      },
+      "toast": {
+        "stockSet": "{name}: stock set to {count}",
+        "priceUpdated": "Price updated to {price}",
+        "removed": "Removed from your shop. Past orders keep their history.",
+        "listedAgain": "Listed again",
+        "photoUpdated": "Photo updated"
+      },
+      "uploadPhotoFor": "Upload photo for {name}",
+      "rupee": "Rs",
+      "priceOf": "Price of {name}",
+      "decrease": "Decrease stock",
+      "stockOf": "Stock of {name}",
+      "increase": "Increase stock",
+      "save": "Save",
+      "recount": "Recount",
+      "moreActions": "More actions for {name}",
+      "editDetails": "Edit details",
+      "uploadPhoto": "Upload photo",
+      "viewAsCustomer": "View as customer",
+      "removeFromShop": "Remove from shop",
+      "listAgain": "List again",
+      "removeTitle": "Remove {name}?",
+      "removeBody": "It disappears from search. Past orders and reviews keep their history.",
+      "remove": "Remove"
+    },
+    "catalog": {
+      "welcomeTitle": "Your shop is live.",
+      "welcomeBody": "Tick what you have on the shelf, check the price and count, and add them all at once. It takes a couple of minutes.",
+      "title": "Add from catalogue",
+      "description": "Ready-made listings with specs and search words. Prices start at the local typical price; change them to yours.",
+      "searchPlaceholder": "Search the catalogue",
+      "myCategories": "My categories",
+      "select": "Select {name}",
+      "alreadyListed": "Already in your shop",
+      "typicalHere": "Typical here {price}",
+      "typical": "Typical {price}",
+      "mrp": "MRP {price}",
+      "rupee": "Rs",
+      "yourPrice": "Your price",
+      "qty": "Qty",
+      "quantity": "Quantity",
+      "noMatch": "Nothing in the catalogue matches. Use “New product” in Inventory to add your own.",
+      "selected": "{count} selected",
+      "clear": "Clear",
+      "add": {
+        "one": "Add {count} to my shop",
+        "other": "Add {count} to my shop"
+      },
+      "added": {
+        "one": "{count} product added. Customers nearby can find it now.",
+        "other": "{count} products added. Customers nearby can find them now."
+      }
+    },
+    "import": {
+      "actions": {
+        "update": "Update my listing",
+        "add_catalog": "Add (catalogue match)",
+        "add_new": "Add as new product",
+        "skip": "Skip"
+      },
+      "noItems": "No items found in that file",
+      "doneToast": "{added}, {updated}",
+      "doneToastAdded": {
+        "one": "{count} added",
+        "other": "{count} added"
+      },
+      "doneTitle": "Stock imported",
+      "doneBody": "{added}, {updated}. Customers nearby can find them now.",
+      "doneBodySkipped": "{added}, {updated}, {skipped}. Customers nearby can find them now.",
+      "doneAdded": {
+        "one": "{count} new item listed",
+        "other": "{count} new items listed"
+      },
+      "doneUpdated": {
+        "one": "{count} updated",
+        "other": "{count} updated"
+      },
+      "doneSkipped": {
+        "one": "{count} skipped",
+        "other": "{count} skipped"
+      },
+      "openInventory": "Open inventory",
+      "importAnother": "Import another file",
+      "title": "Import stock from Excel",
+      "description": "The fastest way to put your whole shelf online. Export your item list from your billing app and upload it here.",
+      "dropTitle": "Drop your .xlsx or .csv file here",
+      "dropHint": "Needs at least an item name column. Quantity and price are picked up automatically.",
+      "chooseFile": "Choose file",
+      "steps": {
+        "export": {
+          "title": "1. Export",
+          "body": "Most billing apps (Vyapar, Tally, Marg, Busy and others) can export an item or stock report to Excel. Any sheet with an item name column works."
+        },
+        "check": {
+          "title": "2. Check the matches",
+          "body": "We match every row to your listings and the NearShop catalogue. You review before anything changes."
+        },
+        "import": {
+          "title": "3. Import",
+          "body": "Upload again every evening to keep counts fresh. Fresh shops rank higher in search."
+        }
+      },
+      "template": "No billing app? {link} and fill it in Excel or Google Sheets.",
+      "templateLink": "Download the template",
+      "chooseDifferent": "Choose a different file",
+      "checkTitle": "Check before importing",
+      "checkDescription": {
+        "one": "Found {count} item. Columns detected: {columns}.",
+        "other": "Found {count} items. Columns detected: {columns}."
+      },
+      "columnPair": "{field} = “{header}”",
+      "fields": {
+        "name": "Item name",
+        "quantity": "Quantity",
+        "price": "Selling price",
+        "mrp": "MRP",
+        "brand": "Brand",
+        "category": "Category",
+        "sku": "Item code"
+      },
+      "badges": {
+        "update": {
+          "one": "{count} updates existing",
+          "other": "{count} update existing"
+        },
+        "add": {
+          "one": "{count} new listing",
+          "other": "{count} new listings"
+        },
+        "skipped": {
+          "one": "{count} skipped",
+          "other": "{count} skipped"
+        },
+        "needPrice": {
+          "one": "{count} needs a price",
+          "other": "{count} need a price"
+        }
+      },
+      "table": {
+        "row": "Row",
+        "item": "Item in your file",
+        "whatHappens": "What happens",
+        "qty": "Qty",
+        "price": "Price (Rs)"
+      },
+      "matched": "Matched: {name}",
+      "issues": {
+        "checkMatch": "Check the catalogue match",
+        "typicalPrice": "No price in file; using the typical local price",
+        "usingMrp": "No selling price in file; using MRP",
+        "noQuantityUpdate": "No quantity; stock will not be changed",
+        "noQuantityAdd": "No quantity; will be added as 0",
+        "priceMissing": "Price missing: enter one before importing"
+      },
+      "whatToDo": "What to do with {name}",
+      "category": "Category",
+      "categoryFor": "Category for {name}",
+      "quantityFor": "Quantity for {name}",
+      "pricePlaceholder": "Price",
+      "priceFor": "Price for {name}",
+      "needPrice": {
+        "one": "{count} row needs a price, or set it to Skip",
+        "other": "{count} rows need a price, or set them to Skip"
+      },
+      "nothingChanges": "Nothing changes until you import.",
+      "importCount": {
+        "one": "Import {count} item",
+        "other": "Import {count} items"
+      },
+      "tabs": {
+        "label": "What to import",
+        "stock": "Stock list",
+        "sales": "Sales report"
+      },
+      "sales": {
+        "status": {
+          "matched": "Matched",
+          "check": "Check match",
+          "unmatched": "Not listed",
+          "invalid": "Can't import"
+        },
+        "fields": {
+          "date": "Date",
+          "item": "Item",
+          "quantity": "Quantity",
+          "bill": "Bill number",
+          "rate": "Rate",
+          "amount": "Amount"
+        },
+        "issues": {
+          "futureDate": "The date is in the future",
+          "noQuantity": "No quantity",
+          "return": "A return or credit note: not imported",
+          "lessThanOne": "Quantity is less than 1",
+          "listedPrice": "No rate or amount in file; using your listed price",
+          "notListed": "Not in your listings: add it (stock import) and upload again",
+          "checkMatch": "Check the match",
+          "rounded": "Quantity {quantity} rounded to {whole}",
+          "badDate": "Couldn't read the date '{value}'"
+        },
+        "counts": {
+          "lines": {
+            "one": "{count} sales line",
+            "other": "{count} sales lines"
+          },
+          "matched": {
+            "one": "{count} matched",
+            "other": "{count} matched"
+          },
+          "check": {
+            "one": "{count} to check",
+            "other": "{count} to check"
+          },
+          "unmatched": {
+            "one": "{count} not in your listings",
+            "other": "{count} not in your listings"
+          },
+          "invalid": {
+            "one": "{count} can't be imported",
+            "other": "{count} can't be imported"
+          },
+          "importLines": {
+            "one": "Import {count} sales line",
+            "other": "Import {count} sales lines"
+          }
+        },
+        "doneToast": "{lines} imported",
+        "doneTitle": "Sales imported",
+        "doneBody": "{lines} from {start} to {end} saved. Demand forecasts and bundle suggestions learn from them.",
+        "doneBodyReplaced": "{lines} from {start} to {end} saved, replacing {replaced} rows from an earlier upload. Demand forecasts and bundle suggestions learn from them.",
+        "importAnother": "Import another report",
+        "title": "Import sales from your billing app",
+        "description": "Upload the sales report your billing app exports, so demand forecasts and bundle suggestions learn from everything you sell, not only NearShop orders.",
+        "dropTitle": "Drop your sales report (.xlsx or .csv) here",
+        "dropHint": "Needs a date, an item and a quantity column. Bill number and rate or amount are picked up too. Up to 90 days per upload.",
+        "steps": {
+          "export": {
+            "title": "1. Export",
+            "body": "In Tally, Vyapar or your billing app, export the item-wise sales report (sales register) for up to 90 days."
+          },
+          "check": {
+            "title": "2. Check the matches",
+            "body": "Every line is matched to your listings. Items you don't list yet are left out: add them with the stock import first."
+          },
+          "import": {
+            "title": "3. Import",
+            "body": "Uploading the same dates again replaces them, so nothing is counted twice."
+          }
+        },
+        "checkDescription": "{lines} from {start} to {end}. Columns detected: {columns}.",
+        "replaces": "You already imported {count} sales rows for these dates. Importing replaces them.",
+        "table": {
+          "import": "Import",
+          "date": "Date",
+          "item": "Item in your report",
+          "match": "Match",
+          "bill": "Bill",
+          "rate": "Rate (Rs)"
+        },
+        "includeRow": "Import {name}",
+        "yourListing": "Your listing: {name} {score}",
+        "nothingSaved": "Nothing is saved until you import."
+      }
+    },
+    "insights": {
+      "title": "AI insights",
+      "description": "What to restock, what people nearby are looking for, and which prices customers may question.",
+      "modelNote": "{algorithm} · trained {ago}",
+      "demoData": "Demo data",
+      "restock": {
+        "title": "Restock before you run out",
+        "error": "average error {mae} units per week ({pct}% better than “same as last week”)",
+        "product": "Product",
+        "inStock": "In stock",
+        "next7": "Next 7 days",
+        "runsOut": "Runs out in",
+        "suggested": "Suggested order",
+        "trend": "Trend",
+        "outNow": "Out now",
+        "days": {
+          "one": "{count} day",
+          "other": "{count} days"
+        },
+        "trends": {
+          "rising": "rising",
+          "steady": "steady",
+          "falling": "falling"
+        },
+        "confidence": {
+          "low": "low confidence",
+          "medium": "medium confidence",
+          "high": "high confidence"
+        },
+        "trendLine": "{trend} · {confidence}",
+        "empty": "Nothing is at risk of running out in the next two weeks."
+      },
+      "area": {
+        "title": "What people near you search for",
+        "hint": "Last {days} days of searches near your shop. A search is shown only when {people} or more people made it.",
+        "searches": {
+          "one": "{count} search",
+          "other": "{count} searches"
+        },
+        "youStock": "You stock it",
+        "opportunity": "Opportunity",
+        "empty": "No searches nearby yet."
+      },
+      "missed": {
+        "title": "Searched nearby, found nowhere",
+        "hint": "Demand no shop in the area is meeting. Worth stocking?",
+        "empty": "Nothing unmet right now."
+      },
+      "bundles": {
+        "title": "Bought together, but you don’t stock it",
+        "note": "market-basket rules from nearby purchases",
+        "alsoBuy": "{pct}% of people buying {item} also buy this",
+        "empty": "Your range already covers the common bundles.",
+        "addFromCatalogue": "Add from catalogue"
+      },
+      "prices": {
+        "title": "Prices customers may question",
+        "note": "compared with other shops selling the same item",
+        "line": {
+          "one": "Yours {price} · typical {reference} across {count} shop",
+          "other": "Yours {price} · typical {reference} across {count} shops"
+        },
+        "empty": "Your prices are in line with shops nearby.",
+        "footnote": "Flags are for your review only. NearShop never hides or penalises a listing automatically."
+      },
+      "gate": {
+        "haveOfNeed": "{have} of {need}",
+        "progress": {
+          "days": "days",
+          "saleDays": "days with a sale",
+          "unitsSold": "units sold",
+          "betterThanLastWeek": "% better than same as last week",
+          "multiItemPurchases": "multi-item purchases",
+          "verifiedShops": "verified shops",
+          "flagsReviewed": "flags reviewed",
+          "upheld": "% upheld",
+          "people": "people"
+        }
+      }
+    },
+    "settings": {
+      "title": "Shop settings",
+      "description": "What customers see on your shop page and in search.",
+      "shopPhoto": "Shop photo",
+      "photoHint": "A clear photo of your shopfront helps customers find you.",
+      "about": "About your shop",
+      "pickupLabel": "Accept pickup reservations",
+      "pickupHint": "Customers reserve and pay at your counter.",
+      "activeLabel": "Shop visible on NearShop",
+      "activeHint": "Turn off to pause while you are away. Nothing is deleted.",
+      "save": "Save changes",
+      "toast": {
+        "savedReview": "Saved. Your shop is hidden until an admin approves the new details.",
+        "saved": "Shop settings saved",
+        "photoUpdated": "Shop photo updated",
+        "sentForVerification": "Sent for verification. An admin usually checks it within 2 working days."
+      },
+      "confirm": {
+        "title": "Hide your shop until it is checked again?",
+        "body": "You changed your shop’s address or phone. Customers will not see your shop until an admin approves the new details, usually within 2 working days.",
+        "phoneRecheck": "A new phone number is checked again with a call-back.",
+        "keepEditing": "Keep editing",
+        "saveAndSend": "Save and send for review"
+      },
+      "verify": {
+        "title": "Verify your shop",
+        "titleRenew": "Renew your verification",
+        "intro": "Customers only see shops whose registration an admin has checked. Verification lasts 12 months.",
+        "submit": "Submit for verification",
+        "submitRenewal": "Submit renewal",
+        "kycTypes": {
+          "gstin": "GSTIN",
+          "udyam": "Udyam registration",
+          "trade_licence": "Trade licence"
+        },
+        "number": "Number",
+        "evidence": "{type}: {number}",
+        "reason": "Reason:",
+        "callBack": "We will call your shop phone to confirm it before approving.",
+        "summary": {
+          "renewalPending": "Your renewal is waiting for an admin. Your shop stays visible meanwhile.",
+          "expired": "Your verification ended on {date}. Renew it to be visible again.",
+          "verifiedUntil": "Verified until {date}.",
+          "renewFrom": "You can renew from {date}.",
+          "switchedOff": "Your shop is switched off in settings, so customers cannot see it.",
+          "submitted": "Waiting for an admin, usually within 2 working days. Your shop is hidden until it is approved.",
+          "rejected": "Not approved. Correct the evidence and submit again.",
+          "suspended": "Suspended. Submit fresh evidence to be verified again.",
+          "draft": "Not submitted yet. Your shop is hidden from customers until it is verified."
+        }
+      },
+      "upi": {
+        "title": "Get paid by UPI",
+        "intro": "Customers can pay your own UPI ID straight from their order or reservation, with a link and a QR code. The money goes to you directly: NearShop never holds it. Leave it empty to take cash only.",
+        "idLabel": "Your UPI ID",
+        "idPlaceholder": "yourshop@okhdfcbank",
+        "idHint": "As your UPI app shows it, for example 98xxxxxx10@ybl.",
+        "payeeLabel": "Payee name (optional)",
+        "payeePlaceholder": "The name on your UPI account",
+        "payeeHint": "Customers see it before paying. Empty uses your shop's name.",
+        "idError": "A UPI ID looks like yourshop@okhdfcbank: a name or number, an @ and your bank or app, {min} to {max} characters with no spaces",
+        "payeeError": "The payee name has {min} to {max} characters, as your UPI app shows it"
+      }
+    },
+    "reviews": {
+      "title": "Reviews",
+      "description": "Only customers who completed a pickup or delivery can review, once per purchase. Reply once to each review, in public.",
+      "emptyTitle": "No reviews yet",
+      "emptyBody": "After a pickup or delivery is completed, the customer is invited to rate it.",
+      "fromLatest": {
+        "one": "from the latest {count} review",
+        "other": "from the latest {count} reviews"
+      },
+      "ratingNote": "Your public rating counts one review per customer every 30 days, and shows once 5 customers have reviewed you.",
+      "toast": {
+        "updated": "Reply updated.",
+        "posted": "Reply posted. Customers see it under the review."
+      },
+      "yourReply": "Your reply",
+      "edited": "edited",
+      "reported": "Reported, waiting for an admin",
+      "hiddenByAdmin": "Hidden by an admin",
+      "removedByAdmin": "Removed by an admin",
+      "edit": "Edit",
+      "editUntil": "(until {time})",
+      "lockedReported": "A reported reply cannot be edited while an admin reviews it.",
+      "editWindow": {
+        "one": "Replies can be edited for {count} hour after they are posted.",
+        "other": "Replies can be edited for {count} hours after they are posted."
+      },
+      "replyPublicly": "Reply publicly",
+      "editLabel": "Edit your reply",
+      "newLabel": "Your public reply",
+      "placeholder": "Thank the customer, or explain what you have fixed.",
+      "hint": {
+        "one": "Shown under the review on your shop page. One reply per review, editable for {count} hour.",
+        "other": "Shown under the review on your shop page. One reply per review, editable for {count} hours."
+      },
+      "save": "Save reply",
+      "post": "Post reply",
+      "cancel": "Cancel"
+    },
+    "productForm": {
+      "toast": {
+        "updated": "Listing updated",
+        "added": "Product added and now searchable nearby"
+      },
+      "editTitle": "Edit listing",
+      "addTitle": "Add a product",
+      "addDescription": "For items not in the catalogue. Add search words so customers find it.",
+      "saveChanges": "Save changes",
+      "addProduct": "Add product",
+      "name": "Product name",
+      "namePlaceholder": "e.g. Anchor Roma 6A Switch",
+      "brand": "Brand",
+      "category": "Category",
+      "choose": "Choose",
+      "price": "Your price (Rs)",
+      "mrp": "MRP (Rs, optional)",
+      "quantity": "Quantity in stock",
+      "lowStock": "Warn me below",
+      "unit": "Pack size / unit",
+      "unitPlaceholder": "1 pc, 1 L, pair",
+      "sku": "SKU (optional)",
+      "tags": "Search words",
+      "tagsReplaces": "(replaces existing)",
+      "tagsPlaceholder": "switch, light switch, modular, 6 amp",
+      "description": "Description"
+    }
+  },
+  "support": {
+    "eyebrow": "Help",
+    "title": "Grievances",
+    "intro": "If something went wrong with an order, a shop, your account or your personal data, tell us here. Every grievance gets a ticket number and is acknowledged as soon as you file it, and the grievance officer resolves it within 30 days.",
+    "categories": {
+      "order": "An order or reservation",
+      "shop_conduct": "A shop's conduct",
+      "privacy": "Privacy or my data",
+      "account": "My account",
+      "other": "Something else"
+    },
+    "statuses": {
+      "open": "Open",
+      "acknowledged": "Acknowledged",
+      "in_progress": "In progress",
+      "resolved": "Resolved"
+    },
+    "officer": {
+      "title": "Grievance officer",
+      "loadError": "Could not load the grievance officer's details. You can still file a grievance below.",
+      "placeholder": "Placeholder details: the grievance officer has not been published yet. Grievances filed here are still recorded and answered.",
+      "name": "Name",
+      "email": "Email",
+      "phone": "Phone",
+      "address": "Postal address"
+    },
+    "acknowledgement": {
+      "title": "Grievance received and acknowledged",
+      "ticket": "Your ticket number",
+      "copy": "Copy",
+      "copied": "Ticket number copied",
+      "copyFailed": "Could not copy. Write the ticket number down instead.",
+      "dates": "Received {received}. Resolution due by {due}.",
+      "another": "File another grievance"
+    },
+    "file": {
+      "title": "File a grievance",
+      "signedIn": "It is linked to your account, and you will see the acknowledgement in the app too.",
+      "signedOut": "You do not need an account. Give a phone number or email so we can reach you and you can track the grievance.",
+      "category": "What is it about?",
+      "categoryPlaceholder": "Choose a category",
+      "contact": "Phone or email",
+      "contactPlaceholder": "98765 43210 or you@example.com",
+      "contactHint": "You need it with the ticket number to check the status.",
+      "code": "Order or reservation code",
+      "optional": "(optional)",
+      "description": "What happened?",
+      "descriptionPlaceholder": "Tell us what went wrong, when, and what you would like us to do.",
+      "submit": "Submit grievance"
+    },
+    "status": {
+      "received": "Received and acknowledged",
+      "inProgress": "In progress",
+      "resolved": "Resolved",
+      "due": "Resolution due by {date}.",
+      "answer": "The grievance officer's answer"
+    },
+    "lookup": {
+      "title": "Check a grievance",
+      "intro": "Enter the ticket number and the phone or email you gave when you filed it.",
+      "ticket": "Ticket number",
+      "contact": "Phone or email",
+      "submit": "Check status"
+    },
+    "mine": "Your grievances"
+  },
+  "aiLab": {
+    "badge": "AI Lab",
+    "title": "The machine learning behind NearShop",
+    "intro": "Five models, all trained on this deployment's own data, all with their numbers on show. Where a model learned from seeded demo data, it says so.",
+    "compare": {
+      "title": "Search: four methods, one query",
+      "intro": "Keyword search only finds exact words. Watch what meaning-based search adds.",
+      "query": "Query to compare",
+      "submit": "Compare",
+      "noResults": "No results"
+    },
+    "pipeline": {
+      "understand": {
+        "title": "Understand",
+        "body": "Normalise the query, fix spelling, add local synonyms (chappal, nali, adaptor)."
+      },
+      "match": {
+        "title": "Match",
+        "body": "Sentence embeddings for meaning plus a MongoDB text index for exact words."
+      },
+      "locate": {
+        "title": "Locate",
+        "body": "MongoDB geo index finds shops in range, then exact Haversine distance to each."
+      },
+      "filter": {
+        "title": "Filter",
+        "body": "Stock, price range, pickup or delivery eligibility."
+      },
+      "rank": {
+        "title": "Rank and group",
+        "body": "75% relevance, 15% proximity, 10% availability. Same item across shops is grouped."
+      },
+      "step": "{number}. {title}"
+    },
+    "models": {
+      "title": "Model cards",
+      "intro": "Live from the last training run.",
+      "training": "Training...",
+      "queued": "Queued...",
+      "retrain": "Retrain all models",
+      "retrainQueued": "Retrain queued. The model cards update when it finishes.",
+      "demoData": "Demo data",
+      "notTrained": "not trained",
+      "drivers": "What drives the forecast",
+      "trained": "Trained {ago} in {seconds} s",
+      "notTrainedYet": "Not trained yet"
+    },
+    "metrics": {
+      "listingsIndexed": "Listings indexed",
+      "vectorSize": "Vector size",
+      "trainingSentences": "Training sentences",
+      "vocabulary": "Vocabulary",
+      "mae": "Error per week (MAE)",
+      "naiveMae": "Naive baseline MAE",
+      "betterThanBaseline": "Better than baseline",
+      "r2": "R squared",
+      "units": "{value} units",
+      "percent": "{value}%",
+      "baskets": "Baskets analysed",
+      "rules": "Rules found",
+      "avgConfidence": "Avg confidence",
+      "avgLift": "Avg lift",
+      "listingsCompared": "Listings compared",
+      "itemGroups": "Item groups",
+      "isolated": "Isolated by forest",
+      "flagged": "Flagged for review"
+    },
+    "languages": {
+      "all": "All languages",
+      "other": "Other scripts",
+      "en": "English",
+      "kn": "Kannada",
+      "knLatn": "Kannada (Latin)",
+      "te": "Telugu",
+      "teLatn": "Telugu (Latin)",
+      "hi": "Hindi",
+      "hiLatn": "Hindi (Latin)",
+      "misspelt": "Misspelt"
+    },
+    "quality": {
+      "title": "Search quality, measured",
+      "intro": "Labelled queries run through the live search on a fixed copy of the demo city. Queries counts those with a relevant item in range out of all; no results is the share of those that found nothing.",
+      "dev": "Dev split",
+      "test": "Test split (held out)",
+      "examples": "Example queries",
+      "runLine": "{count} queries, commit {commit}",
+      "unknownCommit": "unknown",
+      "syntheticNote": "Synthetic example rows only: not a quality measurement until the labelled set arrives.",
+      "loadFailed": "Could not load the evaluation results.",
+      "notMeasured": "Not measured yet. Figures appear here once this split of the labelled queries has been run.",
+      "captionDev": "Search quality on the dev split, by language",
+      "captionTest": "Search quality on the test split, by language",
+      "language": "Language",
+      "queries": "Queries",
+      "noResults": "No results",
+      "p95": "p95 time",
+      "ms": "{value} ms",
+      "ndcg": "nDCG@10",
+      "recall": "Recall@20",
+      "mrr": "MRR"
+    },
+    "live": {
+      "title": "Live search, measured",
+      "intro": "No results over all searches comes from the search log. The other figures count only signed-in customers who allow search measurement, and hold nothing that identifies them.",
+      "saveSnapshot": "Save snapshot",
+      "snapshotSaved": "Snapshot saved with the live ranking config version.",
+      "lastDays": "Last {days} days",
+      "ranking": "Ranking config {ranking}",
+      "lastSnapshot": "Last snapshot {ago}, ranking config {ranking}.",
+      "loadFailed": "Could not load the live figures.",
+      "caption": "Live search figures over the last {days} days, by language",
+      "noResultsAll": "No results, all searches",
+      "measured": "Measured searches",
+      "success": "Success",
+      "reformulated": "Reformulated",
+      "firstClick": "First click: mean, median, top 3",
+      "converted": "Reserved or ordered",
+      "n": "n {n}",
+      "notEnoughHistory": "Not enough data (n {n})",
+      "notEnough": "Not enough data: under {count} measured searches"
+    },
+    "shadow": {
+      "title": "Shadow ranking",
+      "on": "Candidate {candidate} on {share} of measured searches. Customers always see the production ranking.",
+      "off": "Off: no candidate is set.",
+      "empty": "No shadowed searches yet.",
+      "caption": "Shadow ranking candidates against production",
+      "candidate": "Candidate",
+      "searchesDays": "Searches, days",
+      "overlap": "Top-10 overlap",
+      "moreNoResults": "More with no results",
+      "clickInTop10": "Click in its top 10",
+      "rankChange": "Rank change",
+      "p95": "p95, candidate / production",
+      "guardrails": "Guardrails",
+      "difference": "{difference} ({pp} pp)",
+      "times": "{candidate} / {production} ms",
+      "pass": "Pass",
+      "fail": "Fail",
+      "notApplicable": "n/a"
+    },
+    "gate": {
+      "badge": "Gated",
+      "shown": "Shown to shop owners",
+      "hidden": "Gated: hidden from shop owners"
+    }
+  },
+  "shopForm": {
+    "shopName": "Shop name",
+    "shopNamePlaceholder": "e.g. Sri Lakshmi Hardware",
+    "tagline": "Tagline",
+    "optional": "(optional)",
+    "taglinePlaceholder": "Tools, locks and fittings since 1994",
+    "whatYouSell": "What do you sell?",
+    "upTo3": "Up to 3",
+    "shopPhone": "Shop phone",
+    "phonePlaceholder": "10-digit mobile",
+    "gpsMoved": "Pin moved to your current location",
+    "gpsFailed": "Couldn't get your location. Tap the map instead.",
+    "street": "Street address",
+    "streetPlaceholder": "Shop no., street, landmark",
+    "area": "Area",
+    "chooseArea": "Choose area",
+    "pincode": "Pincode",
+    "exactLocation": "Exact shop location",
+    "useGps": "Use GPS",
+    "yourShop": "Your shop",
+    "shopLocation": "Shop location",
+    "mapHint": "Tap the map to place the pin on your shop's door. Customers use this for directions and distance.",
+    "opens": "Opens",
+    "closes": "Closes",
+    "weeklyHoliday": "Weekly holiday",
+    "days": {
+      "none": "None",
+      "monday": "Monday",
+      "tuesday": "Tuesday",
+      "wednesday": "Wednesday",
+      "thursday": "Thursday",
+      "friday": "Friday",
+      "saturday": "Saturday",
+      "sunday": "Sunday"
+    },
+    "holdFor": "Hold reservations for",
+    "minutes": "{count} minutes",
+    "deliverMyself": "I deliver myself",
+    "deliverHint": "You or your staff deliver; customers pay cash on delivery.",
+    "radius": "Delivery radius",
+    "radiusValue": "{km} km",
+    "fee": "Delivery fee (Rs)",
+    "freeAbove": "Free above (Rs)",
+    "freePlaceholder": "Optional",
+    "evidenceType": "Evidence type",
+    "kycTypes": {
+      "gstin": {
+        "label": "GSTIN",
+        "hint": "Your 15-character GST number."
+      },
+      "udyam": {
+        "label": "Udyam registration",
+        "hint": "From your Udyam (MSME) certificate."
+      },
+      "trade_licence": {
+        "label": "Trade licence",
+        "hint": "Trade licence or Shop and Establishment registration number."
+      }
+    },
+    "numberLabel": "{type} number",
+    "noAadhaar": "Never enter an Aadhaar number: NearShop does not collect it.",
+    "documentLicence": "Photo of the licence or registration",
+    "documentCertificate": "Photo of the certificate",
+    "documentMissing": "Add a photo of your trade licence or Shop and Establishment registration",
+    "storefront": "Storefront photo showing your signboard",
+    "storefrontMissing": "Add a photo of your shopfront with the signboard",
+    "kycErrors": {
+      "empty": "Enter the number",
+      "aadhaar": "That looks like an Aadhaar number. NearShop never collects Aadhaar: enter your GSTIN, Udyam number or trade licence number",
+      "gstinFormat": "A GSTIN has 15 characters, like 27AAPFU0939F1ZV",
+      "gstinCheck": "That GSTIN's last character does not match: check it for a typing mistake",
+      "udyamFormat": "A Udyam number looks like UDYAM-KR-03-0012345",
+      "tradeLicenceFormat": "A trade licence number has 4 to 40 letters, digits, spaces, slashes, dots or hyphens"
+    }
+  },
+  "pages": {
+    "site": {
+      "title": "NearShop: find it nearby",
+      "description": "See which shops near you have what you need in stock right now. Compare prices, reserve for pickup, or get it delivered by the shop."
+    },
+    "titles": {
+      "home": "NearShop: find it nearby",
+      "search": "Search nearby",
+      "searchQuery": "{query} near you",
+      "shops": "Shops near you",
+      "product": "Product",
+      "shop": "Shop",
+      "account": "Your activity",
+      "aiLab": "AI Lab",
+      "grievance": "Grievances",
+      "privacy": "Privacy notice",
+      "terms": "Terms of use",
+      "signIn": "Sign in",
+      "register": "Create account",
+      "registerShop": "List your shop",
+      "verifyPhone": "Verify your phone",
+      "shopDashboard": "Shop dashboard",
+      "catalog": "Add from catalogue",
+      "inventory": "Inventory"
+    },
+    "descriptions": {
+      "aiLab": "How NearShop uses machine learning, with live metrics.",
+      "grievance": "File a grievance with NearShop's grievance officer and track it by ticket number. Every grievance is acknowledged on receipt and resolved within 30 days.",
+      "privacy": "How NearShop collects, uses and protects your personal data.",
+      "terms": "The terms for using NearShop to find, reserve and order from local shops."
+    },
+    "legal": {
+      "draftTitle": "Draft: the reviewed text is not yet published",
+      "draftBodyPrivacy": "The lawyer-reviewed privacy notice in English and Kannada will appear here, with its version and effective date, before NearShop opens sign-ups. Until then this page has no binding text.",
+      "draftBodyTerms": "The lawyer-reviewed terms of use in English and Kannada will appear here, with its version and effective date, before NearShop opens sign-ups. Until then this page has no binding text.",
+      "language": "Language",
+      "version": "Version {version} · Effective {date}",
+      "dateNotStated": "date not stated"
+    },
+    "meta": {
+      "productTitle": "{product} at {shop}, {city}",
+      "productDescription": "{price} at {shop}, {address}, {city}. {stock}. Reserve for pickup on NearShop and pay at the shop.",
+      "shopTitle": "{shop}, {place}",
+      "shopAddress": "{address}, {city}.",
+      "shopOpen": "Open {hours}.",
+      "shopOpenClosed": "Open {hours}, closed {day}s.",
+      "shopRating": {
+        "one": "Rated {rating} from {count} review.",
+        "other": "Rated {rating} from {count} reviews."
+      },
+      "shopCta": "See what is in stock now and reserve for pickup on NearShop."
+    }
+  }
+}

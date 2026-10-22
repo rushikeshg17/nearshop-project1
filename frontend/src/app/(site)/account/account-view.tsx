@@ -11,21 +11,25 @@ import { ProductThumb } from "@/components/common/product-thumb";
 import { EmptyState, ErrorState, ListSkeleton } from "@/components/common/states";
 import { ActivityCard } from "@/components/fulfillment/activity-card";
 import { ReviewDialog } from "@/components/fulfillment/review-dialog";
+import { useI18n } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useNow } from "@/hooks/use-debounce";
 import { useMe } from "@/hooks/use-session";
 import { api, errorMessage } from "@/lib/api";
-import { formatDateTime, formatDistance, formatPrice, timeAgo } from "@/lib/format";
+import { formatDateTime, formatDistance, formatNumber, formatPrice, timeAgo } from "@/lib/format";
+import { type MessageKey, plural } from "@/lib/i18n";
 import { useLocation } from "@/lib/location";
 import type { CustomerDashboard, Order, Reservation, User } from "@/lib/types";
 
 const href = (i: Reservation | Order) => (i.kind === "reservation" ? `/account/reservations/${i.id}` : `/account/orders/${i.id}`);
 
 export function AccountView() {
+  const { t, language } = useI18n();
   const { data: me } = useMe();
   const [tab, setTab] = useState("all");
   const [reviewing, setReviewing] = useState<Reservation | Order | null>(null);
@@ -39,8 +43,8 @@ export function AccountView() {
   if (me && me.role !== "customer") {
     return (
       <div className="mx-auto max-w-2xl px-4 py-16">
-        <EmptyState icon={History} title="Your activity is on your dashboard" description="Shop owners manage reservations from the shop dashboard. Your account and privacy settings are below."
-          action={<Button asChild><Link href={me.role === "owner" ? "/shop" : "/admin"}>Go to dashboard</Link></Button>} />
+        <EmptyState icon={History} title={t("transactions.account.ownerTitle")} description={t("transactions.account.ownerBody")}
+          action={<Button asChild><Link href={me.role === "owner" ? "/shop" : "/admin"}>{t("transactions.account.goToDashboard")}</Link></Button>} />
         <AccountSettings me={me} />
       </div>
     );
@@ -54,19 +58,23 @@ export function AccountView() {
     <div className="mx-auto max-w-5xl px-4 pt-8 md:px-6 md:pt-12">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-sm text-muted-foreground">Your activity</p>
-          <h1 className="text-3xl font-semibold">Hi {me?.name.split(" ")[0] ?? "there"}</h1>
+          <p className="text-sm text-muted-foreground">{t("transactions.account.yourActivity")}</p>
+          <h1 className="text-3xl font-semibold">
+            {me ? t("transactions.account.hi", { name: me.name.split(" ")[0] }) : t("transactions.account.hiThere")}
+          </h1>
         </div>
         {d && (
           <dl className="flex gap-6 text-sm">
-            {[
-              [d.stats.completed_pickups, "pickups"],
-              [d.stats.delivered_orders, "deliveries"],
-              [d.stats.shops_visited, "shops"],
-            ].map(([n, l]) => (
-              <div key={l as string}>
-                <dt className="font-heading text-2xl font-semibold tabular">{n}</dt>
-                <dd className="text-muted-foreground">{l}</dd>
+            {(
+              [
+                [d.stats.completed_pickups, "pickups"],
+                [d.stats.delivered_orders, "deliveries"],
+                [d.stats.shops_visited, "shops"],
+              ] as const
+            ).map(([n, l]) => (
+              <div key={l}>
+                <dt className="font-heading text-2xl font-semibold tabular">{formatNumber(n)}</dt>
+                <dd className="text-muted-foreground">{t(`transactions.account.stats.${l}.${plural(language, n)}`)}</dd>
               </div>
             ))}
           </dl>
@@ -81,25 +89,28 @@ export function AccountView() {
         <div className="mt-8 grid gap-10 lg:grid-cols-[1fr_320px]">
           <div className="min-w-0 space-y-10">
             <section>
-              <h2 className="mb-3 text-lg font-semibold">In progress</h2>
+              <h2 className="mb-3 text-lg font-semibold">{t("transactions.account.inProgress")}</h2>
               {active.length ? (
                 <div className="space-y-3">{active.map((i) => <ActivityCard key={`${i.kind}-${i.id}`} item={i} href={href(i)} />)}</div>
               ) : (
-                <EmptyState icon={Search} title="Nothing on hold right now" description="Find something nearby and reserve it. The shop sets it aside for you."
-                  action={<Button asChild><Link href="/search">Search nearby</Link></Button>} />
+                <EmptyState icon={Search} title={t("transactions.account.nothingHeld")} description={t("transactions.account.nothingHeldBody")}
+                  action={<Button asChild><Link href="/search">{t("transactions.account.searchNearby")}</Link></Button>} />
               )}
             </section>
 
             {d.to_review.length > 0 && (
               <section className="rounded-2xl border bg-brand-soft/40 p-4">
-                <h2 className="flex items-center gap-2 font-semibold"><Star className="size-4 text-brand" /> Rate your recent visits</h2>
+                <h2 className="flex items-center gap-2 font-semibold"><Star className="size-4 text-brand" /> {t("transactions.account.rateRecent")}</h2>
                 <ul className="mt-3 space-y-2">
                   {d.to_review.map((i) => (
                     <li key={`${i.kind}-${i.id}`} className="flex items-center justify-between gap-3 rounded-xl bg-card p-3">
                       <span className="min-w-0 truncate text-sm">
-                        <span className="font-medium">{i.shop.name}</span> · {i.kind === "reservation" ? i.product.name : `${i.items.length} items`}
+                        <span className="font-medium">{i.shop.name}</span> ·{" "}
+                        {i.kind === "reservation"
+                          ? i.product.name
+                          : t(`transactions.account.items.${plural(language, i.items.length)}`, { count: formatNumber(i.items.length) })}
                       </span>
-                      <Button size="sm" onClick={() => setReviewing(i)}>Rate</Button>
+                      <Button size="sm" onClick={() => setReviewing(i)}>{t("transactions.account.rate")}</Button>
                     </li>
                   ))}
                 </ul>
@@ -108,19 +119,23 @@ export function AccountView() {
 
             <section>
               <div className="mb-3 flex items-center justify-between gap-3">
-                <h2 className="text-lg font-semibold">History</h2>
+                <h2 className="text-lg font-semibold">{t("transactions.account.history")}</h2>
                 <Tabs value={tab} onValueChange={setTab}>
                   <TabsList>
-                    <TabsTrigger value="all">All</TabsTrigger>
-                    <TabsTrigger value="reservation">Pickups</TabsTrigger>
-                    <TabsTrigger value="order">Deliveries</TabsTrigger>
+                    <TabsTrigger value="all">{t("transactions.account.tabs.all")}</TabsTrigger>
+                    <TabsTrigger value="reservation">{t("transactions.account.tabs.pickups")}</TabsTrigger>
+                    <TabsTrigger value="order">{t("transactions.account.tabs.deliveries")}</TabsTrigger>
                   </TabsList>
                 </Tabs>
               </div>
               {history.length ? (
                 <div className="space-y-3">{history.map((i) => <ActivityCard key={`${i.kind}-${i.id}`} item={i} href={href(i)} />)}</div>
               ) : (
-                <p className="rounded-2xl border border-dashed p-6 text-center text-sm text-muted-foreground">No past {tab === "order" ? "deliveries" : tab === "reservation" ? "pickups" : "activity"} yet.</p>
+                <p className="rounded-2xl border border-dashed p-6 text-center text-sm text-muted-foreground">{tab === "order"
+                    ? t("transactions.account.noPast.deliveries")
+                    : tab === "reservation"
+                      ? t("transactions.account.noPast.pickups")
+                      : t("transactions.account.noPast.activity")}</p>
               )}
             </section>
           </div>
@@ -128,8 +143,8 @@ export function AccountView() {
           <aside className="space-y-8">
             {d.recommendations.length > 0 && (
               <section>
-                <h2 className="flex items-center gap-2 font-semibold"><Sparkles className="size-4 text-brand" /> You might need next</h2>
-                <p className="mt-1 text-xs text-muted-foreground">Based on what people buy along with your recent purchases.</p>
+                <h2 className="flex items-center gap-2 font-semibold"><Sparkles className="size-4 text-brand" /> {t("transactions.account.nextTitle")}</h2>
+                <p className="mt-1 text-xs text-muted-foreground">{t("transactions.account.nextBody")}</p>
                 <ul className="mt-3 space-y-2">
                   {d.recommendations.map((r) => (
                     <li key={r.offer.id}>
@@ -148,7 +163,7 @@ export function AccountView() {
             )}
             {d.recent_searches.length > 0 && (
               <section>
-                <h2 className="font-semibold">Recent searches</h2>
+                <h2 className="font-semibold">{t("transactions.account.recentSearches")}</h2>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {d.recent_searches.map((q) => (
                     <Link key={q} href={`/search?q=${encodeURIComponent(q)}`} className="rounded-full border bg-card px-3 py-1.5 text-sm hover:bg-accent">{q}</Link>
@@ -212,22 +227,32 @@ interface Device {
   current: boolean;
 }
 
-const PURPOSES: Record<Purpose, { title: string; description: string }> = {
-  whatsapp: { title: "WhatsApp messages", description: "Updates about your reservations and orders on WhatsApp." },
-  personalised_suggestions: {
-    title: "Personalised suggestions",
-    description: "Use your search history for suggestions. Off means new searches are not linked to you, and past ones are unlinked.",
-  },
-  search_measurement: { title: "Help improve search", description: "Count which results you open, without linking them to your account." },
+// The message keys of each optional purpose's title and description (transactions.account.purposes).
+const PURPOSES: Record<Purpose, "whatsapp" | "personalised" | "measurement"> = {
+  whatsapp: "whatsapp",
+  personalised_suggestions: "personalised",
+  search_measurement: "measurement",
 };
 
+// Open and in-flight reservation and order states the deletion plan can list (transactions.account.itemStatus).
+const ITEM_STATUSES = [
+  "REQUESTED", "CONFIRMED", "READY_FOR_PICKUP", "PENDING", "SHOP_CONFIRMED", "PREPARING", "OUT_FOR_DELIVERY",
+] as const;
+
+function itemStatusKey(status: string): MessageKey | null {
+  return (ITEM_STATUSES as readonly string[]).includes(status)
+    ? (`transactions.account.itemStatus.${status as (typeof ITEM_STATUSES)[number]}` as const)
+    : null;
+}
+
 function AccountSettings({ me }: { me: User }) {
+  const { t } = useI18n();
   const privacy = useQuery({ queryKey: ["privacy"], queryFn: () => api.get<PrivacySettings>("/auth/privacy") });
   return (
     <section aria-labelledby="account-settings" className="mt-14 border-t pt-8 pb-12">
-      <h2 id="account-settings" className="text-2xl font-semibold">Account and privacy</h2>
+      <h2 id="account-settings" className="text-2xl font-semibold">{t("transactions.account.settingsTitle")}</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        Correct your details, choose what we may use, and download or delete your data. <Link href="/privacy" className="underline">Privacy notice</Link>
+        {t("transactions.account.settingsBody")} <Link href="/privacy" className="underline">{t("transactions.account.privacyNotice")}</Link>
       </p>
       {privacy.isError ? (
         <ErrorState className="mt-6" error={privacy.error} onRetry={() => privacy.refetch()} />
@@ -257,6 +282,7 @@ function Card({ title, icon: Icon, children }: { title: string; icon: typeof Use
 }
 
 function DetailsCard({ me }: { me: User }) {
+  const { t } = useI18n();
   const qc = useQueryClient();
   const { location } = useLocation();
   const [name, setName] = useState(me.name);
@@ -270,38 +296,42 @@ function DetailsCard({ me }: { me: User }) {
     }),
     onSuccess: (user) => {
       qc.setQueryData(["me"], user);
-      toast.success("Your details are saved");
+      toast.success(t("transactions.account.details.saved"));
     },
     onError: (e) => toast.error(errorMessage(e)),
   });
   return (
-    <Card title="Your details" icon={UserRound}>
+    <Card title={t("transactions.account.details.title")} icon={UserRound}>
       <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
         <div className="space-y-1.5">
-          <Label htmlFor="acct-name">Name</Label>
+          <Label htmlFor="acct-name">{t("transactions.account.details.name")}</Label>
           <Input id="acct-name" value={name} onChange={(e) => setName(e.target.value)} minLength={2} maxLength={120} required autoComplete="name" />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="acct-home">Home location name</Label>
-          <Input id="acct-home" value={homeLabel} onChange={(e) => setHomeLabel(e.target.value)} maxLength={160} placeholder="For example, Agrahara" />
+          <Label htmlFor="acct-home">{t("transactions.account.details.home")}</Label>
+          <Input id="acct-home" value={homeLabel} onChange={(e) => setHomeLabel(e.target.value)} maxLength={160}
+            placeholder={t("transactions.account.details.homePlaceholder")} />
           <p className="text-xs text-muted-foreground">
-            {home ? `Saved point: ${home.lat.toFixed(3)}, ${home.lng.toFixed(3)}` : "No home point saved."}
+            {home
+              ? t("transactions.account.details.savedPoint", { lat: home.lat.toFixed(3), lng: home.lng.toFixed(3) })
+              : t("transactions.account.details.noPoint")}
           </p>
           <div className="flex flex-wrap gap-2">
             <Button type="button" size="sm" variant="outline" disabled={!location}
               onClick={() => { if (location) { setHome({ lat: location.lat, lng: location.lng }); if (!homeLabel) setHomeLabel(location.label); } }}>
-              Use my current location
+              {t("transactions.account.details.useLocation")}
             </Button>
-            {home && <Button type="button" size="sm" variant="ghost" onClick={() => { setHome(null); setHomeLabel(""); }}>Clear home</Button>}
+            {home && <Button type="button" size="sm" variant="ghost" onClick={() => { setHome(null); setHomeLabel(""); }}>{t("transactions.account.details.clearHome")}</Button>}
           </div>
         </div>
-        <Button type="submit" size="sm" disabled={save.isPending || name.trim().length < 2}>Save details</Button>
+        <Button type="submit" size="sm" disabled={save.isPending || name.trim().length < 2}>{t("transactions.account.details.save")}</Button>
       </form>
     </Card>
   );
 }
 
 function ConsentCard({ settings }: { settings: PrivacySettings }) {
+  const { t } = useI18n();
   const qc = useQueryClient();
   const toggle = useMutation({
     mutationFn: ({ purpose, on }: { purpose: Purpose; on: boolean }) =>
@@ -311,25 +341,28 @@ function ConsentCard({ settings }: { settings: PrivacySettings }) {
     onError: (e) => toast.error(errorMessage(e)),
   });
   return (
-    <Card title="Your choices" icon={ShieldCheck}>
+    <Card title={t("transactions.account.choices.title")} icon={ShieldCheck}>
       <ul className="space-y-4">
         {settings.optional_purposes.map((purpose) => (
           <li key={purpose} className="flex items-start justify-between gap-4">
             <Label htmlFor={`consent-${purpose}`} className="flex flex-col items-start gap-0.5">
-              <span>{PURPOSES[purpose]?.title ?? purpose}</span>
-              <span className="text-xs font-normal text-muted-foreground">{PURPOSES[purpose]?.description}</span>
+              <span>{PURPOSES[purpose] ? t(`transactions.account.purposes.${PURPOSES[purpose]}.title`) : purpose}</span>
+              <span className="text-xs font-normal text-muted-foreground">
+                {PURPOSES[purpose] ? t(`transactions.account.purposes.${PURPOSES[purpose]}.description`) : null}
+              </span>
             </Label>
             <Switch id={`consent-${purpose}`} checked={!!settings.consents[purpose]} disabled={toggle.isPending}
               onCheckedChange={(on) => toggle.mutate({ purpose, on })} />
           </li>
         ))}
       </ul>
-      <p className="mt-4 text-xs text-muted-foreground">Account and order messages are needed to run your account. To stop them, delete the account.</p>
+      <p className="mt-4 text-xs text-muted-foreground">{t("transactions.account.choices.required")}</p>
     </Card>
   );
 }
 
 function NomineeCard({ nominee }: { nominee: Nominee | null }) {
+  const { t } = useI18n();
   const qc = useQueryClient();
   const [name, setName] = useState(nominee?.name ?? "");
   const [phone, setPhone] = useState(nominee?.phone ?? "");
@@ -339,40 +372,39 @@ function NomineeCard({ nominee }: { nominee: Nominee | null }) {
     mutationFn: () => api.put<{ nominee: Nominee }>("/auth/nominee", {
       name: name.trim(), phone: phone.trim() || null, email: email.trim() || null,
     }),
-    onSuccess: ({ nominee: n }) => { refresh(n); toast.success("Nominee saved"); },
+    onSuccess: ({ nominee: n }) => { refresh(n); toast.success(t("transactions.account.nominee.saved")); },
     onError: (e) => toast.error(errorMessage(e)),
   });
   const remove = useMutation({
     mutationFn: () => api.delete("/auth/nominee"),
-    onSuccess: () => { refresh(null); setName(""); setPhone(""); setEmail(""); toast.success("Nominee removed"); },
+    onSuccess: () => { refresh(null); setName(""); setPhone(""); setEmail(""); toast.success(t("transactions.account.nominee.removed")); },
     onError: (e) => toast.error(errorMessage(e)),
   });
   return (
-    <Card title="Nominee" icon={UserRound}>
-      <p className="text-sm text-muted-foreground">
-        One person who may use your data rights if you die or cannot act yourself. Support acts on it only with documentary proof.
-      </p>
+    <Card title={t("transactions.account.nominee.title")} icon={UserRound}>
+      <p className="text-sm text-muted-foreground">{t("transactions.account.nominee.body")}</p>
       <form className="mt-3 space-y-3" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
         <div className="space-y-1.5">
-          <Label htmlFor="nominee-name">Nominee&apos;s name</Label>
+          <Label htmlFor="nominee-name">{t("transactions.account.nominee.name")}</Label>
           <Input id="nominee-name" value={name} onChange={(e) => setName(e.target.value)} minLength={2} maxLength={120} required />
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label htmlFor="nominee-phone">Phone</Label>
-            <Input id="nominee-phone" value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="numeric" pattern="[6-9][0-9]{9}" placeholder="10-digit mobile" />
+            <Label htmlFor="nominee-phone">{t("transactions.account.nominee.phone")}</Label>
+            <Input id="nominee-phone" value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="numeric" pattern="[6-9][0-9]{9}"
+              placeholder={t("transactions.account.nominee.phonePlaceholder")} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="nominee-email">Email</Label>
+            <Label htmlFor="nominee-email">{t("transactions.account.nominee.email")}</Label>
             <Input id="nominee-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>
         </div>
-        <p className="text-xs text-muted-foreground">Give a phone number, an email address or both.</p>
+        <p className="text-xs text-muted-foreground">{t("transactions.account.nominee.contactHint")}</p>
         <div className="flex flex-wrap gap-2">
           <Button type="submit" size="sm" disabled={save.isPending || name.trim().length < 2 || (!phone.trim() && !email.trim())}>
-            {nominee ? "Replace nominee" : "Save nominee"}
+            {nominee ? t("transactions.account.nominee.replace") : t("transactions.account.nominee.save")}
           </Button>
-          {nominee && <Button type="button" size="sm" variant="ghost" disabled={remove.isPending} onClick={() => remove.mutate()}>Remove</Button>}
+          {nominee && <Button type="button" size="sm" variant="ghost" disabled={remove.isPending} onClick={() => remove.mutate()}>{t("transactions.account.nominee.remove")}</Button>}
         </div>
       </form>
     </Card>
@@ -380,6 +412,8 @@ function NomineeCard({ nominee }: { nominee: Nominee | null }) {
 }
 
 function DevicesCard() {
+  const { t, language } = useI18n();
+  const now = useNow(60_000);
   const qc = useQueryClient();
   const router = useRouter();
   const devices = useQuery({ queryKey: ["sessions"], queryFn: () => api.get<Device[]>("/auth/sessions") });
@@ -394,14 +428,14 @@ function DevicesCard() {
     onSuccess: (d) => {
       if (d.current) return signedOut();
       qc.setQueryData<Device[]>(["sessions"], (old) => old?.filter((x) => x.id !== d.id));
-      toast.success(`${d.device} is signed out`);
+      toast.success(t("transactions.account.devices.signedOut", { device: d.device }));
     },
     onError: (e) => toast.error(errorMessage(e)),
   });
   const everywhere = useMutation({ mutationFn: () => api.post("/auth/logout-everywhere"), onSuccess: signedOut,
     onError: (e) => toast.error(errorMessage(e)) });
   return (
-    <Card title="Signed-in devices" icon={MonitorSmartphone}>
+    <Card title={t("transactions.account.devices.title")} icon={MonitorSmartphone}>
       {devices.isError ? (
         <ErrorState error={devices.error} onRetry={() => devices.refetch()} />
       ) : !devices.data ? (
@@ -411,23 +445,32 @@ function DevicesCard() {
           {devices.data.map((d) => (
             <li key={d.id} className="flex items-center justify-between gap-3 py-2.5">
               <span className="min-w-0">
-                <span className="block truncate text-sm font-medium">{d.device}{d.current && " (this device)"}</span>
-                <span className="block text-xs text-muted-foreground">Last used {timeAgo(d.last_seen_at)}</span>
+                <span className="block truncate text-sm font-medium">
+                  {d.current ? t("transactions.account.devices.thisDevice", { device: d.device }) : d.device}
+                </span>
+                <span className="block text-xs text-muted-foreground">
+                  {t("transactions.account.devices.lastUsed", { time: timeAgo(d.last_seen_at, now, language) })}
+                </span>
               </span>
               <Button size="sm" variant="outline" disabled={revoke.isPending} onClick={() => revoke.mutate(d)}
-                aria-label={`Revoke ${d.device}${d.current ? " (this device)" : ""}`}>Revoke</Button>
+                aria-label={t("transactions.account.devices.revokeLabel", {
+                  device: d.current ? t("transactions.account.devices.thisDevice", { device: d.device }) : d.device,
+                })}>
+                {t("transactions.account.devices.revoke")}
+              </Button>
             </li>
           ))}
         </ul>
       )}
       <Button className="mt-3" size="sm" variant="ghost" disabled={everywhere.isPending} onClick={() => everywhere.mutate()}>
-        Sign out everywhere
+        {t("transactions.account.devices.everywhere")}
       </Button>
     </Card>
   );
 }
 
 function ExportCard() {
+  const { t } = useI18n();
   const download = useMutation({
     mutationFn: () => api.get<unknown>("/me/export"),
     onSuccess: (data) => {
@@ -441,31 +484,36 @@ function ExportCard() {
     onError: (e) => toast.error(errorMessage(e)),
   });
   return (
-    <Card title="Your data" icon={Download}>
-      <p className="text-sm text-muted-foreground">
-        Download your profile, choices, nominee, reservations, orders, reviews, notifications and search history as a JSON file. Up to 3 times a day.
-      </p>
+    <Card title={t("transactions.account.export.title")} icon={Download}>
+      <p className="text-sm text-muted-foreground">{t("transactions.account.export.body")}</p>
       <Button className="mt-3" size="sm" variant="outline" disabled={download.isPending} onClick={() => download.mutate()}>
-        <Download className="size-4" aria-hidden /> {download.isPending ? "Preparing..." : "Download my data"}
+        <Download className="size-4" aria-hidden /> {download.isPending ? t("transactions.account.export.preparing") : t("transactions.account.export.download")}
       </Button>
     </Card>
   );
 }
 
 function ItemList({ items }: { items: OpenItem[] }) {
+  const { t } = useI18n();
   return (
     <ul className="mt-2 space-y-1 text-sm">
-      {items.map((i) => (
-        <li key={`${i.kind}-${i.id}`} className="rounded-lg bg-muted/60 px-3 py-1.5">
-          {i.kind === "reservation" ? "Pickup" : "Delivery"} {i.code} · {i.shop ?? "Shop"} · {i.status.replaceAll("_", " ").toLowerCase()}
-          {i.summary && <span className="text-muted-foreground"> · {i.summary}</span>}
-        </li>
-      ))}
+      {items.map((i) => {
+        const status = itemStatusKey(i.status);
+        return (
+          <li key={`${i.kind}-${i.id}`} className="rounded-lg bg-muted/60 px-3 py-1.5">
+            {t(i.kind === "reservation" ? "transactions.account.deletion.pickup" : "transactions.account.deletion.delivery", { code: i.code })}
+            {" · "}{i.shop ?? t("transactions.account.deletion.shop")}
+            {" · "}{status ? t(status) : i.status.replaceAll("_", " ").toLowerCase()}
+            {i.summary && <span className="text-muted-foreground"> · {i.summary}</span>}
+          </li>
+        );
+      })}
     </ul>
   );
 }
 
 function DeleteCard({ plan }: { plan: DeletionPlan }) {
+  const { t, language } = useI18n();
   const qc = useQueryClient();
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -479,11 +527,11 @@ function DeleteCard({ plan }: { plan: DeletionPlan }) {
       if (res.status === "deleted") {
         qc.clear();
         qc.setQueryData(["me"], null);
-        toast.success("Your account has been deleted");
+        toast.success(t("transactions.account.deletion.deleted"));
         router.push("/");
         router.refresh();
       } else {
-        toast.success(`Your account will be deleted by ${formatDateTime(res.scheduled_for)}`);
+        toast.success(t("transactions.account.deletion.willDelete", { date: formatDateTime(res.scheduled_for, language) }));
         qc.invalidateQueries({ queryKey: ["privacy"] });
       }
     },
@@ -492,45 +540,46 @@ function DeleteCard({ plan }: { plan: DeletionPlan }) {
       qc.invalidateQueries({ queryKey: ["privacy"] });
     },
   });
+  const date = formatDateTime(plan.scheduled_for, language);
   const outcome =
     plan.outcome === "refused" ? plan.message
     : plan.outcome === "scheduled" && plan.open.length === 0 && plan.in_flight.length === 0 && plan.scheduled_for
-      ? `Deletion is scheduled for ${formatDateTime(plan.scheduled_for)}.`
-    : plan.outcome === "scheduled" ? `Some orders are on their way. Your account will be deleted when they close, at the latest by ${formatDateTime(plan.scheduled_for)}.`
-    : cancelFirst ? `These will be cancelled first, and the items released back to the shop. ${plan.then === "scheduled"
-        ? `Orders already on their way then keep your account until they close, at the latest ${formatDateTime(plan.scheduled_for)}.`
-        : "Then your account is deleted at once."}`
-    : "Your account is deleted at once.";
+      ? t("transactions.account.deletion.scheduled", { date })
+    : plan.outcome === "scheduled" ? t("transactions.account.deletion.scheduledInFlight", { date })
+    : cancelFirst
+      ? `${t("transactions.account.deletion.cancelFirst")} ${plan.then === "scheduled"
+        ? t("transactions.account.deletion.thenScheduled", { date })
+        : t("transactions.account.deletion.thenImmediate")}`
+    : t("transactions.account.deletion.immediate");
   return (
-    <Card title="Delete account" icon={Trash2}>
+    <Card title={t("transactions.account.deletion.title")} icon={Trash2}>
       <p className="text-sm text-muted-foreground">
-        Your name, email, phone, password, home, nominee and choices are removed, and your notifications and searches deleted.
-        Shops keep the reservations and orders they handled, without your phone or address. Reviews keep their rating and show as &ldquo;Former customer&rdquo;.
-        {plan.shops.length > 0 && ` Your shop (${plan.shops.join(", ")}) is hidden and its listings switched off.`}
+        {t("transactions.account.deletion.body")}
+        {plan.shops.length > 0 && ` ${t("transactions.account.deletion.shopHidden", { shops: plan.shops.join(", ") })}`}
       </p>
       <p className="mt-3 text-sm font-medium" role="status">{outcome}</p>
       {plan.open.length > 0 && <ItemList items={plan.open} />}
-      {plan.in_flight.length > 0 && <><p className="mt-3 text-sm">On their way:</p><ItemList items={plan.in_flight} /></>}
+      {plan.in_flight.length > 0 && <><p className="mt-3 text-sm">{t("transactions.account.deletion.onTheirWay")}</p><ItemList items={plan.in_flight} /></>}
       {plan.outcome !== "refused" && (
         <Button className="mt-4" size="sm" variant="destructive" onClick={() => setOpen(true)}>
-          {cancelFirst ? "Cancel all and delete" : "Delete my account"}
+          {cancelFirst ? t("transactions.account.deletion.cancelAndDelete") : t("transactions.account.deletion.delete")}
         </Button>
       )}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete your NearShop account?</DialogTitle>
-            <DialogDescription>{outcome} This cannot be undone.</DialogDescription>
+            <DialogTitle>{t("transactions.account.deletion.confirmTitle")}</DialogTitle>
+            <DialogDescription>{outcome} {t("transactions.account.deletion.cannotUndo")}</DialogDescription>
           </DialogHeader>
           <form id="delete-account" className="space-y-1.5" onSubmit={(e) => { e.preventDefault(); remove.mutate(); }}>
-            <Label htmlFor="delete-password">Your password</Label>
+            <Label htmlFor="delete-password">{t("transactions.account.deletion.password")}</Label>
             <Input id="delete-password" type="password" autoComplete="current-password" value={password}
               onChange={(e) => setPassword(e.target.value)} required />
           </form>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>Keep my account</Button>
+            <Button variant="outline" onClick={() => setOpen(false)}>{t("transactions.account.deletion.keep")}</Button>
             <Button type="submit" form="delete-account" variant="destructive" disabled={!password || remove.isPending}>
-              {cancelFirst ? "Cancel all and delete" : "Delete my account"}
+              {cancelFirst ? t("transactions.account.deletion.cancelAndDelete") : t("transactions.account.deletion.delete")}
             </Button>
           </DialogFooter>
         </DialogContent>

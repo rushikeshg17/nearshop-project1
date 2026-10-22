@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
 
+import type { MessageKey } from "@/lib/i18n";
+
 /**
  * Paying the shop directly by UPI (P6.2, plan section 8.8): NearShop never holds the customer's money. The customer
  * pays the shop's own UPI ID from a upi://pay link or a QR code made in the browser, and the owner records how the
  * customer paid when completing or delivering (P6.1).
  *
  * The format rules mirror backend/app/models/core.py (validate_upi_id, validate_upi_payee_name), so the settings
- * form shows the same error inline before the API would refuse it.
+ * form shows the same error inline before the API would refuse it. The errors are message keys (owner.settings.upi),
+ * shown with UPI_LIMITS as their {min} and {max}.
  */
 
 /** The cancellation and refund section of the terms (P3.1; its text comes from B9), linked wherever the policy is
@@ -22,6 +25,12 @@ const UPI_ID_MAX = 50;
 const PAYEE_MIN = 2;
 const PAYEE_MAX = 60;
 
+/** The lengths the error messages name. */
+export const UPI_LIMITS = {
+  upi_id: { min: UPI_ID_MIN, max: UPI_ID_MAX },
+  upi_payee_name: { min: PAYEE_MIN, max: PAYEE_MAX },
+} as const;
+
 /** The UPI ID as the backend stores it: outer spaces removed, lower case. */
 export function normalizeUpiId(value: string) {
   return value.trim().toLowerCase();
@@ -32,22 +41,23 @@ export function normalizePayeeName(value: string) {
   return value.split(/\s+/).filter(Boolean).join(" ");
 }
 
-/** Why a UPI ID is refused, or null when it is valid or empty (empty removes it). */
-export function upiIdError(value: string): string | null {
+/** Why a UPI ID is refused (a message key), or null when it is valid or empty (empty removes it). */
+export function upiIdError(value: string): MessageKey | null {
   const upi = normalizeUpiId(value);
   if (!upi) return null;
   if (upi.length < UPI_ID_MIN || upi.length > UPI_ID_MAX || !UPI_ID_PATTERN.test(upi)) {
-    return `A UPI ID looks like yourshop@okhdfcbank: a name or number, an @ and your bank or app, ${UPI_ID_MIN} to ${UPI_ID_MAX} characters with no spaces`;
+    return "owner.settings.upi.idError";
   }
   return null;
 }
 
-/** Why a payee name is refused, or null when it is valid or empty (empty means the shop's name is used). */
-export function payeeNameError(value: string): string | null {
+/** Why a payee name is refused (a message key), or null when it is valid or empty (empty means the shop's name is
+ * used). */
+export function payeeNameError(value: string): MessageKey | null {
   const name = normalizePayeeName(value);
   if (!name) return null;
   if (name.length < PAYEE_MIN || name.length > PAYEE_MAX) {
-    return `The payee name has ${PAYEE_MIN} to ${PAYEE_MAX} characters, as your UPI app shows it`;
+    return "owner.settings.upi.payeeError";
   }
   return null;
 }

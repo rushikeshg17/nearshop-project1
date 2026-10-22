@@ -2,41 +2,71 @@
 
 import { Check, Clock3, PackageCheck, RefreshCw, Star, Truck } from "lucide-react";
 
+import { useI18n } from "@/components/providers";
 import { useNow } from "@/hooks/use-debounce";
-import { timeAgo } from "@/lib/format";
+import { formatNumber, timeAgo } from "@/lib/format";
+import { plural } from "@/lib/i18n";
 import type { Reliability } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** Factual trust signals. Every number is something the customer can understand, no opaque score. */
 export function ShopTrust({ r, className }: { r: Reliability; className?: string }) {
+  const { t, language } = useI18n();
   const now = useNow(60_000);
+  const purchases = r.rating_count
+    ? t(
+        r.accuracy_avg
+          ? `discovery.trust.purchasesAccuracy.${plural(language, r.rating_count)}`
+          : `discovery.trust.purchases.${plural(language, r.rating_count)}`,
+        { count: formatNumber(r.rating_count), accuracy: r.accuracy_avg ? r.accuracy_avg.toFixed(1) : "" },
+      )
+    : t("discovery.trust.reviewsCompletedOnly");
   const facts = [
     {
+      key: "inventory",
       icon: RefreshCw,
-      label: "Inventory updated",
-      value: r.inventory_updated_at ? timeAgo(r.inventory_updated_at, now) : "Not yet",
-      sub: r.inventory_update_days_7d ? `on ${r.inventory_update_days_7d} of the last 7 days` : "No updates this week",
+      label: t("discovery.trust.inventoryUpdated"),
+      value: r.inventory_updated_at ? timeAgo(r.inventory_updated_at, now, language) : t("discovery.trust.notYet"),
+      sub: r.inventory_update_days_7d
+        ? t(`discovery.trust.updateDays.${plural(language, r.inventory_update_days_7d)}`, { count: r.inventory_update_days_7d })
+        : t("discovery.trust.noUpdatesWeek"),
       good: r.frequently_updated,
     },
     {
+      key: "confirmed",
       icon: PackageCheck,
-      label: "Reservations confirmed",
-      value: r.reservation_requests_90d ? `${r.reservations_confirmed_90d} of ${r.reservation_requests_90d}` : "New shop",
-      sub: r.acceptance_rate !== null ? `${Math.round(r.acceptance_rate * 100)}% in the last 90 days` : "No requests yet",
+      label: t("discovery.trust.reservationsConfirmed"),
+      value: r.reservation_requests_90d
+        ? t("discovery.trust.confirmedOf", {
+            confirmed: formatNumber(r.reservations_confirmed_90d),
+            requests: formatNumber(r.reservation_requests_90d),
+          })
+        : t("discovery.trust.newShop"),
+      sub:
+        r.acceptance_rate !== null
+          ? t("discovery.trust.acceptance", { percent: Math.round(r.acceptance_rate * 100) })
+          : t("discovery.trust.noRequests"),
       good: (r.acceptance_rate ?? 0) >= 0.9,
     },
     {
+      key: "response",
       icon: Clock3,
-      label: "Typical confirmation",
-      value: r.median_response_minutes !== null ? `${Math.max(1, r.median_response_minutes)} min` : "No data",
-      sub: "from request to 'held for you'",
+      label: t("discovery.trust.typicalConfirmation"),
+      value:
+        r.median_response_minutes !== null
+          ? t(`discovery.trust.minutes.${plural(language, Math.max(1, r.median_response_minutes))}`, {
+              count: Math.max(1, r.median_response_minutes),
+            })
+          : t("discovery.trust.noData"),
+      sub: t("discovery.trust.confirmationSub"),
       good: (r.median_response_minutes ?? 99) <= 10,
     },
     {
+      key: "rating",
       icon: Star,
-      label: "Customer rating",
-      value: r.rating_avg ? `${r.rating_avg.toFixed(1)} / 5` : "New shop",
-      sub: !r.rating_avg ? "A rating shows once 5 customers have reviewed it" : r.rating_count ? `${r.rating_count} verified purchases${r.accuracy_avg ? `, accuracy ${r.accuracy_avg.toFixed(1)}` : ""}` : "Reviews come from completed purchases only",
+      label: t("discovery.trust.rating"),
+      value: r.rating_avg ? t("discovery.trust.ratingValue", { rating: r.rating_avg.toFixed(1) }) : t("discovery.trust.newShop"),
+      sub: !r.rating_avg ? t("discovery.trust.ratingPending") : purchases,
       good: (r.rating_avg ?? 0) >= 4.3,
     },
   ];
@@ -53,7 +83,7 @@ export function ShopTrust({ r, className }: { r: Reliability; className?: string
       )}
       <dl className="grid grid-cols-2 gap-3">
         {facts.map((f) => (
-          <div key={f.label} className="rounded-xl border bg-card p-3">
+          <div key={f.key} className="rounded-xl border bg-card p-3">
             <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <f.icon className={cn("size-3.5", f.good && "text-success")} /> {f.label}
             </dt>
@@ -65,7 +95,14 @@ export function ShopTrust({ r, className }: { r: Reliability; className?: string
       {(r.orders_delivered_90d > 0 || r.shop_cancellations_90d > 0) && (
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Truck className="size-3.5" />
-          {r.orders_delivered_90d} deliveries completed and {r.shop_cancellations_90d} cancelled by the shop in the last 90 days.
+          {t("discovery.trust.fulfilment", {
+            delivered: t(`discovery.trust.fulfilmentDelivered.${plural(language, r.orders_delivered_90d)}`, {
+              count: formatNumber(r.orders_delivered_90d),
+            }),
+            cancelled: t(`discovery.trust.fulfilmentCancelled.${plural(language, r.shop_cancellations_90d)}`, {
+              count: formatNumber(r.shop_cancellations_90d),
+            }),
+          })}
         </p>
       )}
     </div>

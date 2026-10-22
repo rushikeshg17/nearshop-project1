@@ -12,17 +12,15 @@ from zoneinfo import ZoneInfo
 from pymongo.database import Database as MongoDatabase
 from pymongo.errors import DuplicateKeyError, OperationFailure
 
-from app.ai.semantic_index import index
 from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.models import AnomalyStatus, OrderStatus, ReservationStatus, Role, Shop
 from app.schemas.serializers import FRESH_HOURS, STALE_DAYS, iso, listing
+from app.services import demand_report
 from app.services.inventory import OWNER_REASON_VALUES
 from app.services.loaders import categories, with_category
 from app.services.meta import city_config
-from app.services.search import keyword_scores
 from app.utils.geo import within_km
-from app.utils.text import normalize_query
 
 IST = ZoneInfo("Asia/Kolkata")
 REVENUE = {"$sum": {"$multiply": ["$quantity", "$unit_price"]}}
@@ -299,30 +297,24 @@ def owner_overview(db: Database, shop: Shop) -> dict:
 
 
 def _nearby_searches(db: Database, shop: Shop) -> list[dict]:
-    """Queries searched within the shop's radius in the search-insights window: searches, distinct signed-in
-    users, and the searches and distinct users that found nothing (2dsphere index)."""
+    """Queries searched within the shop's radius in the search-insights window: searches and distinct signed-in
+    users (2dsphere index). Missed demand comes from the weekly demand report (P9.7), not from here."""
     radius = shop.delivery_radius_km if shop.offers_delivery and shop.delivery_radius_km > 0 \
         else settings.search_insights_radius_km
     since = utcnow() - timedelta(days=settings.search_insights_window_days)
-    zero = {"$eq": ["$results_count", 0]}
-
-    def distinct(field: str) -> dict:
-        return {"$size": {"$filter": {"input": field, "cond": {"$ne": ["$$this", None]}}}}
-
     return db.search_history.aggregate([
         {"$match": {"created_at": {"$gte": since}, "location": within_km(shop.lat, shop.lng, radius)}},
-        {"$group": {"_id": "$normalized_query", "searches": {"$sum": 1},
-                    "users": {"$addToSet": "$user_id"},
-                    "zero": {"$sum": {"$cond": [zero, 1, 0]}},
-                    "zero_users": {"$addToSet": {"$cond": [zero, "$user_id", None]}}}},
-        {"$project": {"searches": 1, "zero": 1, "users": distinct("$users"), "zero_users": distinct("$zero_users")}},
+        {"$group": {"_id": "$normalized_query", "searches": {"$sum": 1}, "users": {"$addToSet": "$user_id"}}},
+        {"$project": {"searches": 1,
+                      "users": {"$size": {"$filter": {"input": "$users", "cond": {"$ne": ["$$this", None]}}}}}},
     ])
 
 
 def owner_insights(db: Database, shop: Shop) -> dict:
     """The owner's insights: each module's output when its model gate is open, and otherwise the gate's
-    reason and progress (gates[module]); a gated module's output is always empty."""
-    forecasts, flags, searches, my_products, rules, runs, review_counts = db.gather(
+    reason and progress (gates[module]); a gated module's output is always empty. Missed demand is the latest
+    weekly demand report (P9.7, app/services/demand_report.py owner_module): never raw zero-result counts."""
+    forecasts, flags, searches, my_products, rules, runs, review_counts, missed = db.gather(
         lambda: db.demand_forecasts.find({"shop_id": shop.id}),
         lambda: db.price_anomalies.find({"shop_id": shop.id, "status": AnomalyStatus.OPEN}, sort=[("score", -1)]),
         lambda: _nearby_searches(db, shop),
@@ -331,6 +323,7 @@ def owner_insights(db: Database, shop: Shop) -> dict:
         lambda: db.model_runs.find({"name": {"$in": ["demand", "recommendations", "anomalies"]}},
                                    sort=[("created_at", 1)]),
         lambda: price_flag_review_counts(db),
+        lambda: demand_report.owner_module(db, shop),
     )
     latest = {r.name: r for r in runs}  # sorted oldest first, so the newest run of each model wins
 
@@ -386,17 +379,10 @@ def owner_insights(db: Database, shop: Shop) -> dict:
     # 3. What people nearby are searching for: only queries enough distinct people searched
     shown = [s for s in searches if search_query_shown(s["users"])]
     top_queries = sorted(shown, key=lambda s: (-s["searches"], s["_id"]))[:10]
-    missed = sorted((s for s in searches if s["zero"] and search_query_shown(s["zero_users"])),
-                    key=lambda s: (-s["zero"], s["_id"]))[:6]
     search_insights_gate = search_gate(max((s["users"] for s in searches), default=0), bool(shown))
     in_stock_ids = {p["_id"] for p in my_products if p["quantity"] > 0}
-
-    def stocked(q: str) -> bool:
-        kw = keyword_scores(db, normalize_query(q).split())
-        sem = index.query(db, q)
-        return any(pid in kw or sem.get(pid, 0) > 0.5 for pid in in_stock_ids)
-
-    stocked_flags = db.gather(*[lambda q=s["_id"]: stocked(q) for s in top_queries]) if top_queries else []
+    stocked_flags = db.gather(*[lambda q=s["_id"]: demand_report.stocks_match(db, in_stock_ids, q)
+                                for s in top_queries]) if top_queries else []
     area_demand = [{"query": s["_id"], "searches": s["searches"], "you_stock_it": st}
                    for s, st in zip(top_queries, stocked_flags)]
 
@@ -426,7 +412,10 @@ def owner_insights(db: Database, shop: Shop) -> dict:
         "rising": rising[:6],
         "price_flags": price_flags,
         "area_demand": area_demand,
-        "missed_demand": [{"query": s["_id"], "searches": s["zero"]} for s in missed],
+        # P9.7: {query, item, category, band} from the latest weekly report; missed_demand_report says which week,
+        # whether the plan shows every item (full) or the top few (teaser), and how many items the teaser hides.
+        "missed_demand": missed["items"],
+        "missed_demand_report": {"week": missed["week"], "plan": missed["plan"], "hidden": missed["hidden"]},
         "bundle_gaps": bundle_gaps,
         "models": {
             name: {"algorithm": r.algorithm, "trained_at": iso(r.created_at), "uses_demo_data": r.uses_demo_data,
@@ -437,7 +426,7 @@ def owner_insights(db: Database, shop: Shop) -> dict:
                         "min_users": settings.search_insights_min_users},
         "gates": {"demand": demand_gate, "bundles": bundle_gate, "price_flags": flag_gate,
                   "area_demand": search_insights_gate,
-                  "missed_demand": search_gate(max((s["zero_users"] for s in searches), default=0), bool(missed))},
+                  "missed_demand": missed["gate"]},
     }
 
 

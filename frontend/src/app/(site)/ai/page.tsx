@@ -2,9 +2,15 @@ import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
 import { notFound } from "next/navigation";
 
+import { I18nAreas } from "@/components/providers";
+import { pickAreas, requestI18n } from "@/lib/i18n";
+
 import { AiLabView } from "./ai-lab-view";
 
-export const metadata: Metadata = { title: "AI Lab", description: "How NearShop uses machine learning, with live metrics." };
+export async function generateMetadata(): Promise<Metadata> {
+  const { t } = await requestI18n({ cookies, headers });
+  return { title: t("pages.titles.aiLab"), description: t("pages.descriptions.aiLab") };
+}
 
 // Who may see the AI Lab (P7.1) is the API's decision: everyone in the demo deployment and in development, where
 // the data is synthetic; only admins in staging and production (NEARSHOP_AI_LAB_PUBLIC, backend/app/api/routes/ai.py).
@@ -43,5 +49,11 @@ async function labAllowed(): Promise<boolean> {
 
 export default async function AiLabPage() {
   if (!(await labAllowed())) notFound();
-  return <AiLabView />;
+  // The AI Lab's strings (P7.10) reach the browser on this page only.
+  const { messages } = await requestI18n({ cookies, headers });
+  return (
+    <I18nAreas messages={pickAreas(messages, ["aiLab"])}>
+      <AiLabView />
+    </I18nAreas>
+  );
 }

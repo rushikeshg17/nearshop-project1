@@ -50,6 +50,8 @@ operations per search are unchanged by Boost.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import re
 import time
@@ -545,8 +547,12 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
             return {**corrected, "query": p.q, "corrected_from": p.q, "did_you_mean": None}
 
     if log and norm:
-        # Logged after the response is on its way: analytics must not make search slower.
-        db.background(lambda: log_search(Database(db.mongo.name), user_id, p, norm, total))
+        # Logged after the response is on its way: analytics must not make search slower. in_stock_results (P9.7):
+        # the matching listings inside the radius that are in stock as the in-stock filter means it (P7.4).
+        fresh_since = now - timedelta(days=STALE_DAYS)
+        in_stock = sum(1 for r in rows if r["quantity"] > 0 and r.get("stock_updated_at")
+                       and r["stock_updated_at"] >= fresh_since)
+        db.background(lambda: log_search(Database(db.mongo.name), user_id, p, norm, total, in_stock))
 
     keyword_label, semantic_label = engine_labels(engines)
     return {
@@ -613,16 +619,38 @@ def _sponsored(db: Database, p: SearchParams, norm: str, fetched: Fetched, rows:
         return None
 
 
-def log_search(db: Database, user_id: int | None, p: SearchParams, norm: str, total: int) -> None:
+def demand_key_of(user_id: int | None) -> str | None:
+    """A user's demand key (P9.7; plan section 8.19): HMAC-SHA256 of the user id with NEARSHOP_DEMAND_KEY_SECRET, as
+    64 hex characters. None without a user or while the secret is unset. Never shown, exported or joined back."""
+    secret = settings.demand_key_secret.get_secret_value()
+    if user_id is None or not secret:
+        return None
+    return hmac.new(secret.encode(), f"user:{user_id}".encode(), hashlib.sha256).hexdigest()
+
+
+def demand_key(db: Database, user_id: int | None) -> str | None:
+    """The demand key stored on a search: demand_key_of the signed-in user, and, while demand_key_needs_consent is
+    on, only when the user's latest consent for demand_key_consent_purpose is granted. Signed-out searches: None."""
+    if user_id is None or not settings.demand_key_secret.get_secret_value():
+        return None
+    if settings.demand_key_needs_consent and not consent_granted(db, user_id, settings.demand_key_consent_purpose):
+        return None
+    return demand_key_of(user_id)
+
+
+def log_search(db: Database, user_id: int | None, p: SearchParams, norm: str, total: int,
+               in_stock_results: int = 0) -> None:
     """Write one search_history row (retention: plan section 8.4, docs/legal/retention.md). The location is
     rounded to 2 decimals (about 1.1 km), and user_id is kept only while the user's personalised-suggestions
-    consent is in force; the nightly retention job removes it after 30 days, and the TTL index deletes the
-    row after 180."""
+    consent is in force; the nightly retention job removes it and the demand key (P9.7) after 30 days, and the TTL
+    index deletes the row after 180."""
+    key = demand_key(db, user_id)
     if user_id is not None and not consent_granted(db, user_id, "personalised_suggestions"):
         user_id = None
     db.search_history.insert(SearchEvent(
         user_id=user_id, query=p.q[:200], normalized_query=norm[:200], category_slug=p.category,
-        results_count=total, lat=round(p.lat, LOCATION_DECIMALS), lng=round(p.lng, LOCATION_DECIMALS)))
+        results_count=total, in_stock_results=max(in_stock_results, 0), demand_key=key,
+        lat=round(p.lat, LOCATION_DECIMALS), lng=round(p.lng, LOCATION_DECIMALS)))
 
 
 # ---------------------------------------------------------------- "did you mean"
@@ -785,17 +813,24 @@ def _blocklist(configured: str) -> tuple[re.Pattern[str], tuple[str, ...]]:
     return re.compile(rf"(?<![a-z0-9])(?:(?:{words}){_ENDINGS}|{exact})(?![a-z0-9])", re.IGNORECASE), script
 
 
+def blocklisted(query: str) -> bool:
+    """Whether a query's text holds a phone number, an email address, a link or an abusive word (the P5.5
+    blocklist, with NEARSHOP_SUGGESTION_BLOCKLIST's words). The demand report (P9.7) drops such queries too."""
+    text = (query or "").strip()
+    if _PHONE.search(text) or _EMAIL.search(text) or _LINK.search(text):
+        return True
+    latin, script = _blocklist(settings.suggestion_blocklist)
+    folded = _SAFE_PHRASES.sub(" ", text.lower())
+    return bool(latin.search(folded)) or any(w in folded for w in script)
+
+
 def suggestion_allowed(query: str) -> bool:
     """Whether a query's text may appear in public suggestions: at most suggestion_max_chars characters, and no
     phone number, email address, link or abusive word."""
     text = (query or "").strip()
     if not text or len(text) > settings.suggestion_max_chars:
         return False
-    if _PHONE.search(text) or _EMAIL.search(text) or _LINK.search(text):
-        return False
-    latin, script = _blocklist(settings.suggestion_blocklist)
-    folded = _SAFE_PHRASES.sub(" ", text.lower())
-    return not latin.search(folded) and not any(w in folded for w in script)
+    return not blocklisted(text)
 
 
 def _top_queries(db: Database, match: dict, limit: int) -> list[str]:

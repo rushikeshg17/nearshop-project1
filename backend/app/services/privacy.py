@@ -18,8 +18,8 @@
         cancelled at the payment gateway (P9.6; the deletion waits while the gateway cannot be reached), the
         shop is hidden, its listings deactivated and the owner anonymised;
       - admins: refused; an admin is removed with the operator CLI.
-  * Retention: run_retention (the nightly retention job, app/jobs.py) removes user_id from searches older
-    than 30 days and clears the contact phone and address of orders closed more than 180 days ago, unless
+  * Retention: run_retention (the nightly retention job, app/jobs.py) removes user_id and the demand key (P9.7)
+    from searches older than 30 days and clears the contact phone and address of orders closed more than 180 days ago, unless
     an open grievance refers to the order. TTL indexes (database/schema.py, migration 4) delete
     search_history after 180 days and notifications after 90.
 """
@@ -50,6 +50,7 @@ CLOSED_ORDERS = (OS.DELIVERED, OS.CANCELLED, OS.RETURNED_TO_SHOP)
 
 DELETION_GRACE = timedelta(days=7)
 SEARCH_USER_ID_KEEP = timedelta(days=30)
+DEMAND_KEY_KEEP = timedelta(days=30)  # P9.7, plan section 8.19
 ORDER_CONTACT_KEEP = timedelta(days=180)
 DELETED_NAME = "Deleted user"
 FORMER_CUSTOMER = "Former customer"
@@ -100,9 +101,22 @@ def set_consent(db: Database, user_id: int, purpose: str, granted: bool) -> dict
                                          session=db.session)
         if purpose == "personalised_suggestions" and not granted:
             db.search_history.update_many({"user_id": user_id}, {"$set": {"user_id": None}})
+        if (purpose == settings.demand_key_consent_purpose and not granted and settings.demand_key_needs_consent):
+            forget_demand_key(db, user_id)  # P9.7: the demand key needed this consent
 
     db.transaction(write)
     return consent_state(db, user_id)
+
+
+def forget_demand_key(db: Database, user_id: int) -> int:
+    """Remove the user's demand key (P9.7) from every search that holds it: the key is recomputed from the user id,
+    as nothing stores which user a key belongs to. Nothing to do while NEARSHOP_DEMAND_KEY_SECRET is unset."""
+    from app.services.search import demand_key_of  # search imports this module
+
+    key = demand_key_of(user_id)
+    if key is None:
+        return 0
+    return db.search_history.update_many({"demand_key": key}, {"$set": {"demand_key": None}})
 
 
 # ---------------------------------------------------------------- nomination
@@ -365,6 +379,7 @@ def anonymise(db: Database, user_id: int, now: datetime | None = None) -> None:
         # Their WhatsApp outbox rows (P4.3): a queued one still holds the message text.
         db.mongo["notification_outbox"].delete_many({"user_id": user_id}, session=db.session)
         db.search_history.delete_many({"user_id": user_id})
+        forget_demand_key(db, user_id)  # P9.7: searches kept without the user id lose the demand key too
         db.reviews.update_many({"customer_id": user_id}, {"$set": {"comment": None}})
         # Reports the user filed (P3.6) stay, so a review's distinct-reporter count holds, without their note.
         db.mongo["review_reports"].update_many({"reporter_id": user_id}, {"$set": {"note": None}},
@@ -437,7 +452,7 @@ def _grievance_holds(db: Database) -> tuple[list[int], list[str]]:
 def run_retention(db: Database, now: datetime | None = None) -> dict[str, int]:
     """The nightly retention rules (plan section 8.4) as of `now`:
 
-      * search_history rows older than 30 days lose their user_id;
+      * search_history rows older than 30 days lose their user_id and their demand key (P9.7);
       * orders closed (delivered, cancelled or returned) more than 180 days ago lose their contact phone,
         address and note, unless an open grievance refers to them.
 
@@ -445,6 +460,8 @@ def run_retention(db: Database, now: datetime | None = None) -> dict[str, int]:
     now = now or utcnow()
     unlinked = db.search_history.update_many(
         {"user_id": {"$type": "number"}, "created_at": {"$lt": now - SEARCH_USER_ID_KEEP}}, {"$set": {"user_id": None}})
+    keys_removed = db.search_history.update_many(
+        {"demand_key": {"$type": "string"}, "created_at": {"$lt": now - DEMAND_KEY_KEEP}}, {"$set": {"demand_key": None}})
     cutoff = now - ORDER_CONTACT_KEEP
     held_ids, held_codes = _grievance_holds(db)
     flt = {"status": {"$in": list(CLOSED_ORDERS)}, "contact_cleared_at": {"$exists": False},
@@ -454,6 +471,8 @@ def run_retention(db: Database, now: datetime | None = None) -> dict[str, int]:
     held = db.orders.count({"status": {"$in": list(CLOSED_ORDERS)}, "contact_cleared_at": {"$exists": False},
                             "$or": [{"_id": {"$in": held_ids}}, {"code": {"$in": held_codes}}]}) \
         if held_ids or held_codes else 0
-    if unlinked or cleared:
-        log.info("retention: %d searches unlinked, %d orders' contact details cleared", unlinked, cleared)
-    return {"searches_unlinked": unlinked, "orders_cleared": cleared, "orders_held_by_grievance": held}
+    if unlinked or cleared or keys_removed:
+        log.info("retention: %d searches unlinked, %d demand keys removed, %d orders' contact details cleared",
+                 unlinked, keys_removed, cleared)
+    return {"searches_unlinked": unlinked, "demand_keys_removed": keys_removed, "orders_cleared": cleared,
+            "orders_held_by_grievance": held}

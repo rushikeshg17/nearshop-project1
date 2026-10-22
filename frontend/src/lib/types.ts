@@ -21,6 +21,8 @@ export interface User {
    * "required" sends every page to /verify-phone, null asks nothing (a verified phone, an admin, or phone sign-in
    * unavailable here). */
   phone_migration: PhoneMigration;
+  /** P7.11: the language notifications and WhatsApp messages come in (PATCH /api/auth/me sets it). */
+  language?: "en" | "kn";
 }
 
 export type PhoneMigration = "warn" | "required" | null;

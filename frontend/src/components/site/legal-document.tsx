@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { cookies, headers } from "next/headers";
 import type { ReactNode } from "react";
+
+import { createTranslator, isLanguage, loadMessages, requestI18n, type Translate } from "@/lib/i18n";
 
 /**
  * The privacy notice and terms pages (P3.1) render the lawyer-reviewed text from docs/legal at build time.
@@ -110,25 +113,35 @@ function Markdown({ text }: { text: string }) {
   return <>{blocks}</>;
 }
 
-/** The page body for /privacy or /terms: the reviewed text, or the draft notice until it is published. */
-export function LegalDocument({ doc, title, legal }: { doc: LegalDoc; title: string; legal: LegalText }) {
+/** The page body for /privacy or /terms: the reviewed text, or the draft notice until it is published. The text in
+ * the visitor's interface language is selected first when that language's version exists (P7.7: the consent text
+ * links here, so a Kannada visitor lands on the Kannada notice); English otherwise. */
+export async function LegalDocument({ doc, title, legal }: { doc: LegalDoc; title: string; legal: LegalText }) {
   const id = `legal-${doc}`;
+  // While English is the only interface language offered, this does not read the request and the page stays static.
+  const { language, t } = await requestI18n({ cookies, headers });
   if (!legal) {
     return (
       <article className="mx-auto max-w-3xl px-4 py-12 md:px-6">
         <h1 className="text-3xl font-semibold">{title}</h1>
         <div role="note" className="mt-6 rounded-xl border border-warning/40 bg-warning-soft p-5 text-warning-ink">
-          <p className="font-semibold">Draft: the reviewed text is not yet published</p>
-          <p className="mt-2 text-sm">
-            The lawyer-reviewed {doc === "privacy" ? "privacy notice" : "terms of use"} in English and Kannada will
-            appear here, with its version and effective date, before NearShop opens sign-ups. Until then this page
-            has no binding text.
-          </p>
+          <p className="font-semibold">{t("pages.legal.draftTitle")}</p>
+          <p className="mt-2 text-sm">{t(doc === "privacy" ? "pages.legal.draftBodyPrivacy" : "pages.legal.draftBodyTerms")}</p>
         </div>
       </article>
     );
   }
   const multi = legal.languages.length > 1;
+  // Each version's own line (its version and date) is in that version's language, like the text under it.
+  const sectionT = new Map<string, Translate>(
+    await Promise.all(
+      legal.languages.map(async ({ lang }): Promise<[string, Translate]> => [
+        lang,
+        lang === language || !isLanguage(lang) ? t : createTranslator(await loadMessages(lang)),
+      ]),
+    ),
+  );
+  const selected = legal.languages.some((l) => l.lang === language) ? language : legal.languages[0].lang;
   const css = multi
     ? `@supports selector(:has(*)){#${id} [data-legal-lang]{display:none}` +
       legal.languages.map(({ lang }) => `#${id}:has(#${id}-${lang}:checked) [data-legal-lang="${lang}"]{display:block}`).join("") +
@@ -139,10 +152,10 @@ export function LegalDocument({ doc, title, legal }: { doc: LegalDoc; title: str
       {multi && <style>{css}</style>}
       <h1 className="text-3xl font-semibold">{title}</h1>
       {multi && (
-        <div role="radiogroup" aria-label="Language" className="mt-5 flex flex-wrap gap-2">
-          {legal.languages.map(({ lang }, i) => (
+        <div role="radiogroup" aria-label={t("pages.legal.language")} className="mt-5 flex flex-wrap gap-2">
+          {legal.languages.map(({ lang }) => (
             <label key={lang} className="cursor-pointer rounded-full border px-3 py-1.5 text-sm has-checked:border-primary has-checked:bg-primary has-checked:text-primary-foreground has-focus-visible:ring-3 has-focus-visible:ring-ring/50">
-              <input type="radio" name={`${id}-lang`} id={`${id}-${lang}`} defaultChecked={i === 0} className="sr-only" />
+              <input type="radio" name={`${id}-lang`} id={`${id}-${lang}`} defaultChecked={lang === selected} className="sr-only" />
               {LANGUAGE_NAMES[lang] ?? lang}
             </label>
           ))}
@@ -152,7 +165,10 @@ export function LegalDocument({ doc, title, legal }: { doc: LegalDoc; title: str
         <section key={lang} lang={lang === "en" ? "en-IN" : lang} data-legal-lang={lang} className="mt-6">
           {multi && <h2 className="sr-only">{LANGUAGE_NAMES[lang] ?? lang}</h2>}
           <p className="text-sm text-muted-foreground">
-            Version {legal.version} · Effective {effective ?? "date not stated"}
+            {(sectionT.get(lang) ?? t)("pages.legal.version", {
+              version: legal.version,
+              date: effective ?? (sectionT.get(lang) ?? t)("pages.legal.dateNotStated"),
+            })}
           </p>
           <div className="text-[15px] leading-relaxed">
             <Markdown text={text} />

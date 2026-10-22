@@ -741,6 +741,68 @@ class Settings(BaseSettings):
     search_insights_window_days: int = 30
     search_insights_radius_km: float = 3.0
 
+    # "Asked for near you" demand report (P9.7, app/services/demand_report.py; plan section 8.19). Search logging stores
+    # a demand key on a signed-in user's search: a keyed hash (HMAC-SHA256) of the user id with demand_key_secret, so
+    # distinct people can be counted without storing who they are. The retention job removes it after 30 days. While
+    # the secret is empty no demand key is stored, and no report can count anyone: set NEARSHOP_DEMAND_KEY_SECRET (32
+    # or more random characters, a sync: false secret) in production only once B24 confirms the privacy notice covers
+    # aggregate demand reports. demand_key_needs_consent (on until B24 says otherwise) stores the key only for users
+    # whose latest consent for demand_key_consent_purpose is granted.
+    demand_key_secret: SecretStr = SecretStr("")
+    demand_key_needs_consent: bool = True
+    demand_key_consent_purpose: str = "search_measurement"
+    # The weekly report (Monday 03:00 IST): per verified live shop, the last demand_report_window_days days of searches
+    # within demand_report_radius_km, a query kept when demand_report_min_users or more distinct demand keys searched
+    # it and found nothing in stock. Shown to owners only while demand_report_enabled (off until checks 8.2 and 8.3
+    # pass) and the last demand_report_audit_weeks weekly audits of demand_report_audit_size items average
+    # demand_report_min_precision_pct percent genuine or more. Free shops see the top demand_report_teaser_items.
+    demand_report_enabled: bool = False
+    demand_report_radius_km: float = 3.0
+    demand_report_window_days: int = 30
+    demand_report_min_users: int = 5
+    demand_report_audit_size: int = 20
+    demand_report_audit_weeks: int = 4
+    demand_report_min_precision_pct: float = 80.0
+    demand_report_teaser_items: int = 3
+
+    @field_validator("demand_key_secret", mode="after")
+    @classmethod
+    def _check_demand_key_secret(cls, value: SecretStr) -> SecretStr:
+        secret = value.get_secret_value().strip()
+        if secret and len(secret) < 32:
+            raise ValueError("NEARSHOP_DEMAND_KEY_SECRET must be 32 or more characters")
+        return SecretStr(secret)
+
+    @field_validator("demand_report_min_users", mode="after")
+    @classmethod
+    def _check_demand_min_users(cls, value: int) -> int:
+        if value < 5:  # plan section 8.19: never fewer than 5 distinct people
+            raise ValueError("NEARSHOP_DEMAND_REPORT_MIN_USERS must be 5 or more")
+        return value
+
+    @field_validator("demand_report_window_days", "demand_report_audit_size", "demand_report_audit_weeks",
+                     "demand_report_teaser_items", mode="after")
+    @classmethod
+    def _check_demand_counts(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_DEMAND_REPORT_WINDOW_DAYS, _AUDIT_SIZE, _AUDIT_WEEKS and _TEASER_ITEMS must be 1 "
+                             "or more")
+        return value
+
+    @field_validator("demand_report_radius_km", mode="after")
+    @classmethod
+    def _check_demand_radius(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("NEARSHOP_DEMAND_REPORT_RADIUS_KM must be more than 0")
+        return value
+
+    @field_validator("demand_report_min_precision_pct", mode="after")
+    @classmethod
+    def _check_demand_precision(cls, value: float) -> float:
+        if not 0 <= value <= 100:
+            raise ValueError("NEARSHOP_DEMAND_REPORT_MIN_PRECISION_PCT must be between 0 and 100")
+        return value
+
     @field_validator("demand_min_history_days", "demand_min_sale_days", "demand_min_units", "demand_backtest_days",
                      "bundles_min_baskets", "bundles_window_days", "price_flags_min_peers",
                      "price_flags_min_verified_shops", "price_flags_min_reviewed", "search_insights_window_days",
