@@ -234,6 +234,10 @@ class Shop(Document, Timestamps):
     delivery_fee: float = 0
     free_delivery_above: float | None = None
     hold_minutes: int = 30
+    # Public stock bands (P10.1, plan section 8.20): false by default, so customers see a listing's quantity capped at
+    # settings.public_stock_cap and no exact count in any error, and may ask for at most that many units at once. The
+    # owner turns it on in shop settings to show exact counts. Owners, staff and admins always see exact counts.
+    show_exact_stock: bool = False
 
     is_active: bool = True
     # Kept in step with verification_status (true only while it is verified) for older readers.

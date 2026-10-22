@@ -19,7 +19,7 @@ from app.ai.semantic_index import index
 from app.core.database import Database
 from app.models import Product, SearchEvent, Shop
 from app.models.core import live_shop_filter
-from app.schemas.serializers import listing, shop_brief
+from app.schemas.serializers import public_listing, shop_brief
 from app.services.loaders import categories, category_by_slug, with_categories, with_category
 from app.services.privacy import consent_granted
 from app.utils.geo import haversine_km, within_km
@@ -160,7 +160,8 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         offers = sorted(items, key=lambda x: (x.quantity <= 0, shops[x.shop_id][1]))
         head = best
         category_counts[head.category.slug] += 1
-        pictured = next((listing(x) for x in items if x.image_path), None)  # the group's photo, any offer's
+        # The group's photo, any offer's.
+        pictured = next((public_listing(x, seller=shops[x.shop_id][0]) for x in items if x.image_path), None)
         group_rows.append(
             {
                 "key": key,
@@ -180,8 +181,8 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
                 "in_stock_count": len(in_stock),
                 "relevance": round(rel, 3),
                 "score": round(score, 4),
-                "best_offer": listing(best, shop_json(best.shop_id)),
-                "offers": [listing(x, shop_json(x.shop_id)) for x in offers[:6]],
+                "best_offer": public_listing(best, shop_json(best.shop_id), seller=shops[best.shop_id][0]),
+                "offers": [public_listing(x, shop_json(x.shop_id), seller=shops[x.shop_id][0]) for x in offers[:6]],
             }
         )
 

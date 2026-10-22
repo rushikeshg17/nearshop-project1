@@ -141,6 +141,7 @@ class ShopUpdateIn(_Strict):
     delivery_fee: float | None = Field(default=None, ge=0, le=500)
     free_delivery_above: float | None = Field(default=None, ge=0)
     hold_minutes: int | None = Field(default=None, ge=10, le=240)
+    show_exact_stock: bool | None = None  # P10.1: show customers exact stock counts
     is_active: bool | None = None
 
 

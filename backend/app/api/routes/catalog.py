@@ -15,7 +15,7 @@ from app.core.deps import DB, ClientIP, OptionalUser
 from app.core.errors import NotFound
 from app.models import Product, Role, Shop
 from app.models.core import live_shop_filter
-from app.schemas.serializers import iso, listing, review_out, shop_brief, shop_detail
+from app.schemas.serializers import iso, public_listing, review_out, shop_brief, shop_detail
 from app.services import leads
 from app.services import reservations as reservation_service
 from app.services.loaders import (
@@ -112,7 +112,7 @@ def product_detail(product_id: int, db: DB, user: OptionalUser, lat: float | Non
         raise NotFound("This product is no longer listed")
     distance = _dist(lat, lng, shop)
 
-    others = [listing(r, shop_brief(r.shop, _dist(lat, lng, r.shop))) for r in peers if r.id != p.id]
+    others = [public_listing(r, shop_brief(r.shop, _dist(lat, lng, r.shop))) for r in peers if r.id != p.id]
     others.sort(key=lambda o: (o["quantity"] <= 0, o["shop"]["distance_km"] if o["shop"]["distance_km"]
                                is not None else o["price"]))
 
@@ -129,7 +129,7 @@ def product_detail(product_id: int, db: DB, user: OptionalUser, lat: float | Non
     )
 
     return {
-        **listing(p, None),
+        **public_listing(p, None, seller=shop),
         "description": p.description,
         "specs": p.specs or {},
         "sku": p.sku,
@@ -195,7 +195,7 @@ def product_recommendations(product_id: int, db: DB, lat: float | None = None, l
         items.append({
             **{k: t[k] for k in ("confidence", "lift", "support")},
             "same_shop": same is not None,
-            "offer": listing(best, shop_brief(best.shop, haversine_km(lat, lng, best.shop.lat, best.shop.lng))),
+            "offer": public_listing(best, shop_brief(best.shop, haversine_km(lat, lng, best.shop.lat, best.shop.lng))),
         })
     return {"source": source, "items": items[:4]}
 

@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, get_args
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -150,6 +150,11 @@ class Settings(BaseSettings):
     # Fulfillment defaults
     reservation_hold_minutes: int = 30
     request_response_minutes: int = 20  # shop must respond to a reservation request within this window
+    # Public stock bands (P10.1, plan section 8.20). For a shop that has not opted in to showing its exact stock
+    # (Shop.show_exact_stock), public responses show at most this many units of a listing, and one reservation or
+    # order line may ask for at most this many (more needs a call to the shop). Owners, staff and admins always see
+    # exact counts. NEARSHOP_PUBLIC_STOCK_CAP.
+    public_stock_cap: int = Field(10, ge=1)
     # Reviews (P3.5, plan section 8.2): only from a verified phone (User.phone_verified_at). On since P4.1
     # wherever a customer can verify a phone: where phone sign-in is live (otp_live), and in development, where
     # the console provider verifies phones. A decision that departs from the prompt's "turn it on": it stays off
