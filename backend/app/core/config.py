@@ -198,6 +198,28 @@ class Settings(BaseSettings):
     # each of the last 12 months, counting the current day and month. Every other set is deleted.
     backup_keep_daily: int = 30
     backup_keep_monthly: int = 12
+    # Sales history archiving (P8.3, database/archive.py; docs/runbooks/restore.md). A monthly cron job moves the
+    # sales_history months that end on or before the first of the current month less archive_keep_months months
+    # (18 or more: the models use at most the last 18) to the backup store above, under
+    # <backup_prefix>/archive/sales_history/, and deletes their rows once each upload is read back and verified.
+    # It refuses to run while backup_backend is off, and unless a backup of the same database succeeded in the
+    # last archive_backup_max_age_hours hours.
+    archive_keep_months: int = 18
+    archive_backup_max_age_hours: int = 26
+
+    @field_validator("archive_keep_months", mode="after")
+    @classmethod
+    def _check_archive_keep(cls, value: int) -> int:
+        if value < 18:
+            raise ValueError("NEARSHOP_ARCHIVE_KEEP_MONTHS must be 18 or more: the models use the last 18 months")
+        return value
+
+    @field_validator("archive_backup_max_age_hours", mode="after")
+    @classmethod
+    def _check_archive_backup_age(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_ARCHIVE_BACKUP_MAX_AGE_HOURS must be 1 or more")
+        return value
 
     # Seed / location defaults
     seed_city: str = "ballari"

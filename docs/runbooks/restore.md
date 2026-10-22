@@ -17,6 +17,7 @@ Production data can be restored from a copy no older than 24 hours, within 2 hou
 |---|---|---|---|---|
 | Atlas snapshot (production, Flex) | Atlas, with the cluster | Daily, taken by Atlas | The last 8 (Atlas docs); no point-in-time restore | One instant, whole cluster |
 | Off-site set (production and staging) | The private Cloudflare R2 backup bucket, under production/ or staging/ | Nightly, the nearshop-backup-production and nearshop-backup-staging cron jobs (render.yaml) | The newest set of each of the last 30 days and the first set of each of the last 12 months | Collection by collection over the few minutes of the run |
+| Archived sales history (production and staging) | The same backup bucket, under production/archive/sales_history/ or staging/archive/sales_history/ | Monthly, the nearshop-archive-production and nearshop-archive-staging cron jobs (render.yaml) | Indefinitely: nothing deletes an archived month | One calendar month per part, as it was on the run's day |
 
 Staging runs on M0, which has no Atlas backups (MongoDB's pricing FAQ), so the off-site set is its only copy.
 
@@ -179,6 +180,80 @@ NEARSHOP_MONGODB_URI, and the same on nearshop-backup-production (it reads the A
 carries over). Then follow steps 6 and 7 above. The Atlas docs on Flex cluster backups describe the current
 screens.
 
+## Archived sales history (P8.3)
+
+sales_history grows without limit (imports from 50 shops could add about 0.5 GB a year), while the Atlas Flex
+limit is 5 GB and the models use at most the last 18 months. So once a month backend/database/archive.py
+moves the older months out of Atlas, into the backup bucket, where they can be brought back.
+
+**What runs.** The nearshop-archive-production and nearshop-archive-staging cron jobs (render.yaml), at
+23:00 UTC on the 1st of each month, 90 minutes after that night's backup. A month (UTC, as sold_at is
+stored) is eligible once it ends on or before the first of the current month less 18 months
+(NEARSHOP_ARCHIVE_KEEP_MONTHS, never below 18): a run on 1 Nov 2026 archives April 2025 and every earlier
+month still in the database. Months go one at a time, oldest first:
+1. the month's rows, sorted by _id, are written byte for byte to a gzipped BSON file (the backup format);
+2. the file is uploaded to `<prefix>/archive/sales_history/<YYYY-MM>/<part id>.bson.gz`, downloaded again,
+   and must match its size and SHA-256 and hold exactly the rows read, by _id;
+3. `<part id>.manifest.json` is uploaded and read back: month, date range, documents, size, SHA-256, a
+   SHA-256 of the _ids, first and last _id, database, environment, git commit and migration number;
+4. only then are those rows (by _id) deleted from sales_history.
+
+The part id is the run's UTC start time (2026-11-01T230000Z). A failure at any step stops the run and leaves
+that month's rows in the database (exit 1, "Archive failed"); months finished before it stay archived. A run
+is refused, with nothing written or deleted (exit 2), while NEARSHOP_BACKUP_BACKEND is off, and when the
+newest succeeded row in backup_runs is more than 26 hours old (NEARSHOP_ARCHIVE_BACKUP_MAX_AGE_HOURS), so
+every archived row is also in a recent backup set (and in the monthly sets for the next 12 months).
+
+Archived files sit outside every backup set (`<prefix>/<set id>/`), so backup retention never deletes them,
+and no tool deletes them (out of scope for P8.3). A part without its manifest is incomplete (a run that
+failed before step 3); it is never restored, and its rows are still in the database and go in a new part.
+Rows that reach an archived month later, such as an old sales report imported after the run, go in a new
+part of that month in the next run. A re-import of an archived period does not replace the archived rows.
+Archived rows hold shop, product, catalog item, category and customer ids, quantities and prices, never a
+name, phone, email or address.
+
+**Each run** writes a row to `archive_runs` in the database it archives: `_id` (the part id), `started_at`,
+`finished_at`, `outcome` (running, succeeded or failed), `cutoff`, `months` (per month: `documents`,
+`deleted`, `bytes`, `sha256`, `data_key`, `manifest_key`), and on failure `error`. The log ends with a JSON
+line: the months archived, documents, deleted and bytes. On the 2nd of each month, check the job's last run
+(Dashboard > the archive cron job > Events) and its archive_runs row; a failed run needs the steps under
+Troubleshooting.
+
+**Set-up.** Sync the Blueprint. For each archive cron job, enter the same NEARSHOP_BACKUP_BACKEND=s3,
+NEARSHOP_BACKUP_S3_ENDPOINT, NEARSHOP_BACKUP_S3_BUCKET, NEARSHOP_BACKUP_S3_ACCESS_KEY_ID and
+NEARSHOP_BACKUP_S3_SECRET_ACCESS_KEY as on the backup cron job of that environment (or a second R2 token on
+the same backup bucket). Then, before the first run: `run_job 'uv run --no-dev python -m database.archive --plan'`
+on the archive cron job, read-only, lists the eligible months and their rows.
+
+**Look before and after.** `--plan` (read-only) lists the months the next run would archive;
+`run_job 'uv run --no-dev python -m database.archive --list'` lists the archived parts in the bucket. After a
+run, the admin storage card (P2.2) shows the drop in sales_history.
+
+**Bring a month back.** Into a scratch database on the same cluster, never the database the API serves (the
+tool refuses it, and the production name): every complete part of the month is downloaded and checked
+against its manifest before anything is written, then inserted into that database's sales_history, skipping
+_ids already there (a month archived in two parts may hold a row twice). Run it as a one-off job on the
+archive cron job of the environment (`run_job`, with `$SERVICE_ID` that job's `crn-...` id):
+
+```
+run_job 'uv run --no-dev python -m database.archive --restore 2025-03 --target-db nearshop_sales_2025_03'
+```
+
+Run it again with another month and the same target to put several months side by side. The JSON summary
+gives `parts`, `documents`, `inserted`, `skipped_duplicates` and `rows_in_target_month`; `inserted` plus
+`skipped_duplicates` equals `documents`. A production archive restores only with NEARSHOP_ENVIRONMENT=production.
+Exit 2 means refused, nothing written. If rows are needed back in the live sales_history (for example a tax
+question about one shop), copy just those rows across by hand from the scratch database, keeping their _ids;
+the next monthly run archives them again as a new part if they are still older than the cutoff. Drop the
+scratch database when done (Atlas > Browse Collections > the database > Drop): it holds production data.
+
+**Without the tool.** Each part is the mongodump format:
+`mongorestore --uri <target uri> --gzip --db <scratch db> --collection sales_history <part id>.bson.gz`, after
+checking the file's SHA-256 against its manifest (`shasum -a 256`).
+
+**On a laptop:** `make backup`, then `make archive` (and `make archive ARCHIVE_ARGS=--plan`, `--list`, or
+`'--restore 2025-03 --target-db nearshop_sales_2025_03'`), with the local database and BACKUP_DIR.
+
 ## Restore drill (quarterly, check 3.4)
 
 First drill: plan step 1-B, by 22 Nov 2026 (R2 and R3). Then once a quarter, and after any change to the
@@ -204,7 +279,12 @@ backup or restore tools.
 - **Exit 1, "Backup failed"**: the log has the error, and backup_runs has a failed row with it. A bucket
   error leaves an incomplete set, deleted a day later. Fix it and Trigger Run.
 - **A run takes longer than usual or the set grows fast**: check the sizes in the manifest; the largest
-  collections are usually sales_history and text_embeddings (P8.3 archives old sales).
+  collections are usually sales_history and text_embeddings. sales_history months older than 18 months are
+  archived monthly (Archived sales history above); check archive_runs if it keeps growing.
+- **"Archive refused ... no backup ... has succeeded" or "more than 26 hours ago"** (exit 2): the nightly
+  backup is failing; fix it first (above), then Trigger Run on the archive cron job.
+- **Exit 1, "Archive failed"**: archive_runs has a failed row with the error; the month it names still has
+  all its rows. Fix the cause (usually the bucket) and Trigger Run; finished months are not redone.
 - **"is not empty"**: restore into a new database name (one that does not exist yet, so no collection in
   it, not even an empty one), or drop the target first if it is a failed attempt.
 - **"is at migration N but this code knows migrations up to M"**: the set comes from newer code. Run the

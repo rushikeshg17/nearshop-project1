@@ -1,5 +1,5 @@
-.PHONY: setup db-up db-down schema migrate seed backup restore api web test eval retrain lint lint-backend lint-frontend \
-	build audit audit-waived-ghsas secret-scan ci smoke loadtest loadtest-steps
+.PHONY: setup db-up db-down schema migrate seed backup restore archive api web test eval retrain lint lint-backend \
+	lint-frontend build audit audit-waived-ghsas secret-scan ci smoke loadtest loadtest-steps
 
 # The local MongoDB from docker-compose.yml: a single-node replica set on localhost:27017.
 LOCAL_MONGODB_URI ?= mongodb://localhost:27017/?replicaSet=rs0
@@ -72,6 +72,20 @@ backup: db-up
 restore: db-up
 	cd backend && $(LOCAL_BACKUP_ENV) uv run python -m database.restore --target-db '$(TARGET_DB)' \
 		--set '$(BACKUP_SET)' $(RESTORE_ARGS)
+
+# Sales history archiving (P8.3, backend/database/archive.py; docs/runbooks/restore.md, Archived sales history):
+# the local database's sales_history months older than 18 months go to BACKUP_DIR, under
+# <environment>/archive/sales_history/, and their rows are deleted once each file is read back and verified.
+# It needs a backup of the local database from the last 26 hours (run make backup first). Staging and
+# production archive in their monthly Render cron jobs and bring months back in one-off jobs there.
+#   make archive                                              # archive every eligible month
+#   make archive ARCHIVE_ARGS=--plan                          # read-only: eligible months and rows
+#   make archive ARCHIVE_ARGS=--list                          # read-only: archived months in BACKUP_DIR
+#   make archive ARCHIVE_ARGS='--restore 2025-03 --target-db nearshop_sales_2025_03'
+ARCHIVE_ARGS ?=
+
+archive: db-up
+	cd backend && $(LOCAL_BACKUP_ENV) uv run python -m database.archive $(ARCHIVE_ARGS)
 
 api:
 	cd backend && uv run uvicorn app.main:app --reload --reload-dir app --port 8000
