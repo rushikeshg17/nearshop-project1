@@ -16,6 +16,42 @@ import { formatPrice, timeAgo } from "@/lib/format";
 import type { ModelSummary, OwnerInsights } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+// Each module's model gate (P7.3, plan section 8.9): when shown is false, the module has no output and the
+// owner sees the reason and the progress towards the threshold instead of an empty chart.
+type GateProgress = { label: string; have: number; need: number };
+type Gate = { shown: boolean; code: string | null; reason: string | null; progress: GateProgress[] };
+type GateName = "demand" | "bundles" | "price_flags" | "area_demand" | "missed_demand";
+type GatedInsights = OwnerInsights & {
+  gates?: Partial<Record<GateName, Gate>>;
+  search_rule?: { window_days: number; min_users: number };
+};
+
+function GateNotice({ gate, className }: { gate: Gate; className?: string }) {
+  return (
+    <div className={cn("rounded-xl bg-muted/60 p-4 text-sm", className)} role="status">
+      <p className="flex gap-2 text-muted-foreground"><Info className="mt-0.5 size-4 shrink-0" /> <span>{gate.reason}</span></p>
+      {gate.progress.length > 0 && (
+        <ul className="mt-3 space-y-2">
+          {gate.progress.map((p) => {
+            const pct = p.need > 0 ? Math.min(100, Math.round((p.have / p.need) * 100)) : 0;
+            return (
+              <li key={p.label} className="text-xs">
+                <span className="flex justify-between gap-3 text-muted-foreground">
+                  <span>{p.label}</span>
+                  <span className="tabular">{p.have.toLocaleString("en-IN")} of {p.need.toLocaleString("en-IN")}</span>
+                </span>
+                <span className="mt-1 block h-1.5 overflow-hidden rounded-full bg-background" aria-hidden="true">
+                  <span className={cn("block h-full rounded-full", pct >= 100 ? "bg-success" : "bg-brand")} style={{ width: `${pct}%` }} />
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function ModelNote({ m, children }: { m?: ModelSummary; children: React.ReactNode }) {
   if (!m) return null;
   return (
@@ -27,11 +63,17 @@ function ModelNote({ m, children }: { m?: ModelSummary; children: React.ReactNod
 }
 
 export default function InsightsPage() {
-  const q = useQuery({ queryKey: ["owner", "insights"], queryFn: () => api.get<OwnerInsights>("/owner/insights") });
+  const q = useQuery({ queryKey: ["owner", "insights"], queryFn: () => api.get<GatedInsights>("/owner/insights") });
   if (q.isError) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
   const d = q.data;
   if (!d) return <ListSkeleton rows={5} />;
   const demand = d.models.demand;
+  const gates = d.gates ?? {};
+  const closed = (name: GateName): Gate | null => {
+    const g = gates[name];
+    return g && !g.shown ? g : null;
+  };
+  const [demandGate, areaGate, missedGate, bundleGate, flagGate] = (["demand", "area_demand", "missed_demand", "bundles", "price_flags"] as const).map(closed);
   const dm = demand?.metrics as { mae_7d?: number; naive_mae_7d?: number; improvement_pct?: number } | undefined;
 
   return (
@@ -45,7 +87,9 @@ export default function InsightsPage() {
             {dm?.mae_7d !== undefined && <>average error {dm.mae_7d} units per week ({dm.improvement_pct}% better than &ldquo;same as last week&rdquo;)</>}
           </ModelNote>
         </div>
-        {d.restock.length ? (
+        {demandGate ? (
+          <GateNotice gate={demandGate} className="m-5" />
+        ) : d.restock.length ? (
           <Table>
             <TableHeader>
               <TableRow>
@@ -89,8 +133,9 @@ export default function InsightsPage() {
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <section className="rounded-2xl border bg-card p-5">
-          <h2 className="flex items-center gap-2 font-semibold"><Users className="size-4 text-brand" /> What people within 3 km search for</h2>
-          <p className="mt-1 text-xs text-muted-foreground">Last 14 days of searches near your shop.</p>
+          <h2 className="flex items-center gap-2 font-semibold"><Users className="size-4 text-brand" /> What people near you search for</h2>
+          <p className="mt-1 text-xs text-muted-foreground">Last {d.search_rule?.window_days ?? 30} days of searches near your shop. A search is shown only when {d.search_rule?.min_users ?? 5} or more people made it.</p>
+          {areaGate ? <GateNotice gate={areaGate} className="mt-4" /> : (
           <ul className="mt-4 space-y-2">
             {d.area_demand.map((a) => (
               <li key={a.query} className="flex items-center justify-between gap-3 text-sm">
@@ -103,22 +148,26 @@ export default function InsightsPage() {
             ))}
             {!d.area_demand.length && <li className="text-sm text-muted-foreground">No searches nearby yet.</li>}
           </ul>
+          )}
         </section>
 
         <section className="rounded-2xl border bg-card p-5">
           <h2 className="flex items-center gap-2 font-semibold"><SearchX className="size-4 text-brand" /> Searched nearby, found nowhere</h2>
           <p className="mt-1 text-xs text-muted-foreground">Demand no shop in the area is meeting. Worth stocking?</p>
+          {missedGate ? <GateNotice gate={missedGate} className="mt-4" /> : (
           <ul className="mt-4 flex flex-wrap gap-2">
             {d.missed_demand.map((m) => (
               <li key={m.query} className="rounded-full border px-3 py-1 text-sm capitalize">{m.query} <span className="text-muted-foreground tabular">· {m.searches}</span></li>
             ))}
             {!d.missed_demand.length && <li className="text-sm text-muted-foreground">Nothing unmet right now.</li>}
           </ul>
+          )}
         </section>
 
         <section className="rounded-2xl border bg-card p-5">
           <h2 className="flex items-center gap-2 font-semibold"><PackagePlus className="size-4 text-brand" /> Bought together, but you don&apos;t stock it</h2>
           <ModelNote m={d.models.recommendations}>market-basket rules from nearby purchases</ModelNote>
+          {bundleGate ? <GateNotice gate={bundleGate} className="mt-4" /> : (
           <ul className="mt-4 divide-y">
             {d.bundle_gaps.map((g) => (
               <li key={g.item.id} className="flex items-center gap-3 py-2.5 first:pt-0">
@@ -134,6 +183,7 @@ export default function InsightsPage() {
             ))}
             {!d.bundle_gaps.length && <li className="text-sm text-muted-foreground">Your range already covers the common bundles.</li>}
           </ul>
+          )}
           {d.bundle_gaps.length > 0 && (
             <Button asChild variant="outline" size="sm" className="mt-3"><Link href="/shop/catalog">Add from catalogue <ArrowRight /></Link></Button>
           )}
@@ -142,6 +192,7 @@ export default function InsightsPage() {
         <section className="rounded-2xl border bg-card p-5">
           <h2 className="flex items-center gap-2 font-semibold"><Scale className="size-4 text-brand" /> Prices customers may question</h2>
           <ModelNote m={d.models.anomalies}>compared with other shops selling the same item</ModelNote>
+          {flagGate ? <GateNotice gate={flagGate} className="mt-4" /> : (
           <ul className="mt-4 divide-y">
             {d.price_flags.map((f) => (
               <li key={f.id} className="flex items-center gap-3 py-2.5 first:pt-0">
@@ -158,6 +209,7 @@ export default function InsightsPage() {
             ))}
             {!d.price_flags.length && <li className="text-sm text-muted-foreground">Your prices are in line with shops nearby.</li>}
           </ul>
+          )}
           <p className="mt-3 flex gap-1.5 text-xs text-muted-foreground"><Info className="mt-0.5 size-3.5 shrink-0" /> Flags are for your review only. NearShop never hides or penalises a listing automatically.</p>
         </section>
       </div>

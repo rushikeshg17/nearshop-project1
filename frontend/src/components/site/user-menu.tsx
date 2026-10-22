@@ -19,13 +19,17 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useSignOut } from "@/hooks/use-session";
+import { useMeta, useSignOut } from "@/hooks/use-session";
 import { initials } from "@/lib/format";
 import type { User } from "@/lib/types";
 
 export function UserMenu({ user }: { user: User }) {
   const signOut = useSignOut();
   const { theme, setTheme } = useTheme();
+  const { data: meta } = useMeta();
+  // The AI Lab item shows only where the lab answers (P7.1): open to everyone (ai_lab_public) or to an admin.
+  const labPublic = (meta as { ai_lab_public?: boolean } | undefined)?.ai_lab_public === true;
+  const showLab = labPublic || user.role === "admin";
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -71,11 +75,13 @@ export function UserMenu({ user }: { user: User }) {
             </Link>
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem asChild>
-          <Link href="/ai">
-            <Sparkles /> AI Lab
-          </Link>
-        </DropdownMenuItem>
+        {showLab && (
+          <DropdownMenuItem asChild>
+            <Link href="/ai">
+              <Sparkles /> AI Lab
+            </Link>
+          </DropdownMenuItem>
+        )}
         {user.role === "admin" && (
           <DropdownMenuItem asChild>
             <Link href="/admin/anomalies">

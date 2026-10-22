@@ -7,6 +7,16 @@ pricing looks like across all items and isolates listings that are unusually hig
 
 Flags are review items for an admin, never automatic penalties. A small-deviation guard
 stops trivial differences (e.g. Rs 5 on a Rs 400 item) from being flagged.
+
+Gating (P7.3, plan section 8.9): an item is compared only across price_flags_min_peers or more distinct shops
+(several listings of one shop count once), and nothing is flagged until the city has
+price_flags_min_verified_shops or more verified live shops; the run's metrics["gate"] says why. Owners see the
+flags only once admin review has shown them precise enough (analytics.price_flags_precision_gate); until then
+they stay in the admin queue.
+
+A run records uses_demo_data truthfully (P7.1): true only when a listing it compared, or a verified live shop it
+counted, belongs to a seeded shop, whose owner has an account on the demo domain (database/seed/seed.py). A
+private AI Lab (production) shows admins only the cards of runs on real data.
 """
 from __future__ import annotations
 
@@ -16,16 +26,42 @@ from collections import defaultdict
 import numpy as np
 from sklearn.ensemble import IsolationForest
 
+from app.core.config import settings
 from app.core.database import Database
 from app.models import AnomalyStatus, ModelRun, PriceAnomaly, Product
+from app.services.analytics import price_flags_shops_gate
 from app.services.loaders import with_catalog_items
 
-MIN_PEERS = 4
 MIN_DEVIATION = 0.18  # at least 18% from the local median to be worth a human look
+# Seeded accounts: x@nearshop.demo and <shop>@shops.nearshop.demo (as admin_tasks.DEMO_EMAIL_PATTERN).
+DEMO_EMAIL_PATTERN = r"@([^@]+\.)?nearshop\.demo$"
+
+
+def demo_shop_ids(db: Database) -> set[int]:
+    """The shops the seed made: those owned by an account on the demo domain."""
+    owners = db.users.distinct("_id", {"email": {"$regex": DEMO_EMAIL_PATTERN, "$options": "i"}})
+    return set(db.shops.distinct("_id", {"owner_id": {"$in": owners}})) if owners else set()
 
 
 def detect(db: Database) -> ModelRun:
     started = time.time()
+    min_peers = settings.price_flags_min_peers
+    verified_live = db.shops.count({"is_active": True, "is_verified": True})
+    gate = price_flags_shops_gate(verified_live)
+    demo_shops = demo_shop_ids(db)
+    if not gate["shown"]:
+        counted = db.shops.distinct("_id", {"is_active": True, "is_verified": True}) if demo_shops else []
+        run = ModelRun(name="anomalies", algorithm="IsolationForest",
+                       uses_demo_data=any(s in demo_shops for s in counted),
+                       metrics={"verified_live_shops": verified_live, "flagged": 0, "gate": gate},
+                       data_note="Not enough verified shops in the city to compare prices yet.")
+
+        def publish_none() -> None:  # open flags from an older run are withdrawn; reviewed ones stay
+            db.price_anomalies.delete_many({"status": AnomalyStatus.OPEN})
+            db.model_runs.insert(run)
+
+        db.transaction(publish_none)
+        return run
     listings = with_catalog_items(db, db.products.find({"is_active": True, "catalog_item_id": {"$ne": None}},
                                                        projection={"description": 0, "specs": 0}))
     groups: dict[int, list[Product]] = defaultdict(list)
@@ -33,8 +69,11 @@ def detect(db: Database) -> ModelRun:
         groups[p.catalog_item_id].append(p)
 
     feats, meta = [], []
+    def peer_shops(ps: list[Product]) -> int:
+        return len({p.shop_id for p in ps})
+
     for ps in groups.values():
-        if len(ps) < MIN_PEERS:
+        if peer_shops(ps) < min_peers:
             continue
         prices = np.array([p.price for p in ps])
         median = float(np.median(prices))
@@ -42,14 +81,21 @@ def detect(db: Database) -> ModelRun:
         for p in ps:
             mrp = p.mrp or (p.catalog_item.mrp if p.catalog_item else None) or median
             feats.append([np.log(p.price / median), (p.price - median) / (1.4826 * mad), p.price / mrp])
-            meta.append((p, median, len(ps)))
+            meta.append((p, median, peer_shops(ps)))
 
-    run = ModelRun(name="anomalies", algorithm="IsolationForest", uses_demo_data=True)
+    run = ModelRun(name="anomalies", algorithm="IsolationForest",
+                   uses_demo_data=any(p.shop_id in demo_shops for p, _, _ in meta))
     if len(feats) < 30:
         run.n_samples = len(feats)
-        run.metrics = {"listings_checked": len(feats), "flagged": 0}
+        run.metrics = {"listings_checked": len(feats), "flagged": 0, "verified_live_shops": verified_live,
+                       "gate": gate}
         run.data_note = "Not enough shops selling the same items to compare prices yet."
-        db.model_runs.insert(run)
+
+        def publish_too_few() -> None:  # as above: no current flags, so older open ones are withdrawn
+            db.price_anomalies.delete_many({"status": AnomalyStatus.OPEN})
+            db.model_runs.insert(run)
+
+        db.transaction(publish_too_few)
         return run
 
     X = np.array(feats)
@@ -86,12 +132,15 @@ def detect(db: Database) -> ModelRun:
     run.n_samples = len(X)
     run.metrics = {
         "listings_checked": len(X),
-        "item_groups": sum(1 for ps in groups.values() if len(ps) >= MIN_PEERS),
+        "item_groups": sum(1 for ps in groups.values() if peer_shops(ps) >= min_peers),
         "isolated_by_forest": int((preds == -1).sum()),
         "flagged_for_review": flagged,
         "min_deviation_pct": MIN_DEVIATION * 100,
+        "verified_live_shops": verified_live,
+        "gate": gate,
     }
-    run.data_note = "Compares each listing with other shops selling the same item (seeded demo prices)."
+    run.data_note = ("Compares each listing with other shops selling the same item"
+                     + (" (seeded demo prices)." if run.uses_demo_data else "."))
     run.duration_ms = int((time.time() - started) * 1000)
 
     def publish() -> None:

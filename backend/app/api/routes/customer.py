@@ -1,7 +1,7 @@
 """Customer: reservations, delivery orders, reviews, dashboard, notifications."""
 from typing import Literal
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
 
@@ -15,6 +15,7 @@ from app.schemas.serializers import listing, notification_out, order_out, reserv
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
 from app.services import reviews as review_service
+from app.services import search_events
 from app.services.loaders import hydrate_orders, hydrate_reservations, timelines, with_shops
 from app.services.search import recent_searches
 from app.utils.geo import haversine_km
@@ -71,8 +72,10 @@ def _scope(field_active: list, scope: str) -> dict:
 # ------------------------------------------------------------------ reservations
 
 @router.post("/reservations")
-def create_reservation(body: ReservationIn, user: CustomerUser, db: DB):
+def create_reservation(body: ReservationIn, request: Request, user: CustomerUser, db: DB):
     r = reservation_service.create_reservation(db, user, body.product_id, body.quantity, body.note)
+    # Search attribution (P5.6): off the request path, only with the search-measurement consent; never fails this.
+    search_events.attribute(db, request, user, "reservation", [r.product_id])
     return _res_json(db, [r], set(), with_events=True)[0]
 
 
@@ -122,9 +125,10 @@ def quote(body: OrderQuoteIn, db: DB):
 
 
 @router.post("/orders")
-def create_order(body: OrderIn, user: CustomerUser, db: DB):
+def create_order(body: OrderIn, request: Request, user: CustomerUser, db: DB):
     o = order_service.create_order(db, user, [(i.product_id, i.quantity) for i in body.items], body.address,
                                    body.lat, body.lng, body.phone, body.note)
+    search_events.attribute(db, request, user, "order", [i.product_id for i in body.items])  # as reservations
     return _order_json(db, [o], set(), with_events=True)[0]
 
 

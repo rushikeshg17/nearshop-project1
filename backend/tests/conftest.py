@@ -110,6 +110,15 @@ ADMIN_TOTP_SECRET = new_totp_secret()
 ADMIN_RECOVERY_CODES = [f"test{n:02d}-recov" for n in range(10)]
 
 
+def verified_shop_fields(n: int = 0) -> dict:
+    """The fields of a shop an admin verified just now (P3.3), so customers' searches see it. n makes the KYC
+    number unique."""
+    decided = utcnow()
+    return {"verification_status": VerificationStatus.VERIFIED, "is_verified": True, "kyc_type": "udyam",
+            "kyc_number": f"UDYAM-KR-23-{9000000 + n:07d}", "phone_verified_at": decided, "submitted_at": decided,
+            "decided_at": decided, "verified_until": months_after(decided)}
+
+
 def admin_code(step_offset: int = 0) -> str:
     """The seeded admin's authenticator code for now (or a step either side)."""
     return totp_at(ADMIN_TOTP_SECRET, current_step() + step_offset)

@@ -1,13 +1,13 @@
 """Shop owner: shop settings, inventory, catalog, reservation and delivery queues, insights."""
 import re
-from datetime import timedelta
-from typing import Literal
+from datetime import date, timedelta
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, File, Form, Query, UploadFile
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Discriminator, Field, Tag
 
-from app.ai.semantic_index import index
+from app.core import cache_version
 from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.core.deps import DB, OwnerShop, OwnerUser
@@ -56,7 +56,6 @@ from app.services.loaders import (
 )
 from app.services.media import delete_image, delete_private, save_image, save_private_image
 from app.services.reliability import shop_reliability
-from app.services.search import reset_vocabulary
 from app.utils.text import normalize_query
 
 router = APIRouter(prefix="/owner", tags=["shop owner"])
@@ -65,10 +64,10 @@ RES_ACTIVE = list(reservation_service.ACTIVE)
 ORDER_OPEN = [*order_service.ACTIVE, "DELIVERY_FAILED"]
 
 
-def _listings_changed() -> None:
-    """Search caches (semantic index, spelling vocabulary) are rebuilt on the next query."""
-    index.mark_dirty()
-    reset_vocabulary()
+def _listings_changed(db: Database) -> None:
+    """After a committed change to listings: every API process's search caches (the semantic index, refreshed
+    incrementally, and the spelling vocabulary) follow within 5 seconds, this process's on its next search."""
+    cache_version.bump(db.mongo, cache_version.LISTINGS)
 
 
 # ------------------------------------------------------------------ verification (P3.3, plan section 8.1)
@@ -336,7 +335,7 @@ def create_product(body: ProductIn, shop: OwnerShop, user: OwnerUser, db: DB):
             change_stock(db, p, body.quantity, InventoryReason.INITIAL, user.id)
 
     db.transaction(create)
-    _listings_changed()
+    _listings_changed(db)
     return listing(p)
 
 
@@ -353,7 +352,7 @@ def update_product(product_id: int, body: ProductUpdateIn, shop: OwnerShop, db: 
         data["keywords"] = _keywords([t.lower() for t in data.pop("tags")], p.category)
     if data:
         db.products.set(p, **data)
-    _listings_changed()
+    _listings_changed(db)
     return listing(p)
 
 
@@ -372,7 +371,7 @@ def delete_product(product_id: int, shop: OwnerShop, db: DB):
     if active_holds:
         raise Conflict(f"This item has {active_holds} active reservation(s). Complete or cancel them first.")
     db.products.set(p, is_active=False)
-    _listings_changed()
+    _listings_changed(db)
     return {"ok": True}
 
 
@@ -441,7 +440,7 @@ def add_from_catalog(body: CatalogAddIn, shop: OwnerShop, user: OwnerUser, db: D
                                 keywords=_keywords(c.tags or [], cats[c.category_id], c.subcategory), icon=c.icon,
                                 price=item.price, mrp=c.mrp, quantity=0), item.quantity))
     apply_bulk(db, shop, user.id, creates, updates)
-    _listings_changed()
+    _listings_changed(db)
     return {"added": len(creates), "reactivated": len(updates)}
 
 
@@ -559,6 +558,36 @@ class ImportCommitIn(BaseModel):
     rows: list[ImportRow] = Field(min_length=1, max_length=importer.MAX_ROWS)
 
 
+# A sales report (P7.2): the lines the owner kept from the preview, with the report's first and last dates. Every
+# imported row the shop already has from start to end is replaced. is_demo and source are never taken from here.
+class SalesImportRow(BaseModel):
+    model_config = {"extra": "ignore"}
+    row: int | None = None
+    product_id: int
+    date: date
+    quantity: int = Field(ge=1, le=100_000)
+    unit_price: float = Field(ge=0, le=10_000_000)
+    bill: str | None = Field(default=None, max_length=importer.BILL_MAX_LENGTH)
+
+
+class SalesImportCommitIn(BaseModel):
+    kind: Literal["sales"]
+    start: date
+    end: date
+    rows: list[SalesImportRow] = Field(min_length=1, max_length=importer.MAX_ROWS)
+
+
+def _commit_kind(body: Any) -> str:
+    kind = body.get("kind") if isinstance(body, dict) else getattr(body, "kind", None)
+    return "sales" if kind == "sales" else "stock"
+
+
+# The stock and sales imports share the preview and commit routes (and so their rate limits): the preview takes
+# ?kind=sales, and a sales commit body has kind "sales".
+CommitBody = Annotated[Annotated[ImportCommitIn, Tag("stock")] | Annotated[SalesImportCommitIn, Tag("sales")],
+                       Discriminator(_commit_kind)]
+
+
 @router.get("/import/template", response_class=PlainTextResponse)
 def import_template(_: OwnerShop):
     return PlainTextResponse(importer.TEMPLATE_CSV, media_type="text/csv",
@@ -566,13 +595,16 @@ def import_template(_: OwnerShop):
 
 
 @router.post("/import/preview")
-def import_preview(shop: OwnerShop, db: DB, file: UploadFile = File(...)):
+def import_preview(shop: OwnerShop, db: DB, file: UploadFile = File(...),
+                   kind: Literal["stock", "sales"] = Query("stock")):
     data = file.file.read(settings.import_max_mb * 1024 * 1024 + 1)
+    if kind == "sales":
+        return importer.sales_preview(db, shop, data, file.filename or "upload.csv")
     return importer.preview(db, shop, data, file.filename or "upload.csv")
 
 
 @router.post("/import/commit")
-def import_commit(body: ImportCommitIn, shop: OwnerShop, user: OwnerUser, db: DB):
-    result = importer.commit(db, shop, [r.model_dump() for r in body.rows], user.id)
-    _listings_changed()
-    return result
+def import_commit(body: CommitBody, shop: OwnerShop, user: OwnerUser, db: DB):
+    if isinstance(body, SalesImportCommitIn):
+        return importer.sales_commit(db, shop, body.start, body.end, [r.model_dump() for r in body.rows])
+    return importer.commit(db, shop, [r.model_dump() for r in body.rows], user.id)  # bumps the listings version

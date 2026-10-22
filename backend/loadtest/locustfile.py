@@ -38,6 +38,16 @@ never queue (a single query, a transaction, a page with nothing to gather) do no
 request's total over its gathered tasks, not one task's wait. The target is judged on search and on the
 worst endpoint.
 
+City scale (P8.2; plan section 8.11, "At city scale"): python loadtest/locustfile.py generate-city --confirm-db
+<database> shapes the database NEARSHOP_MONGODB_URI and NEARSHOP_MONGODB_DB name into 500 active shops and 50,000
+active listings (--shops and --listings change the targets). It builds on the evaluation harness's --scale option
+(app/ai/search_eval.py, P5.7): synthetic shops copy a seeded shop's details and stand within about 2 km of it, placed
+by the same fixed random seed, and each gets its share of the listings: the copied shop's own first, then catalogue
+items it does not list yet. Run it once, on a freshly seeded database. Like the seed it is allowed only where the P1.1
+guard allows a seed (database/schema.py, check_reset_allowed): development and test against a local MongoDB, and
+demo; never staging or production, and the confirmation must repeat the database name. It only adds shops and
+listings. NEARSHOP_LOADTEST_RADIUS_KM (default 5, at most 25, the search cap) sets the radius the searches use.
+
 Safety: the run refuses to start against the production site (nearshop-umber.vercel.app and every host in
 NEARSHOP_PRODUCTION_URL, comma-separated), against a Render URL (go through Vercel, as users do), and
 against any other host unless NEARSHOP_LOADTEST_CONFIRM_HOST names exactly that host. Local servers
@@ -72,7 +82,7 @@ HERE = Path(__file__).resolve().parent
 PRODUCTION_HOSTS = frozenset({"nearshop-umber.vercel.app"})
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 CLIENT_HEADER = {"X-NearShop-Client": "web"}  # the API refuses a state-changing request without it
-RADIUS_KM = 5
+MAX_RADIUS_KM = 25.0  # app/services/search.py, MAX_RADIUS_KM (P8.2)
 RESERVE_NOTE = "Load test; cancelled straight away."
 
 # Targets (plan section 8.11).
@@ -154,10 +164,20 @@ def _pair(value: str | None, default: tuple[float, float]) -> tuple[float, float
         return default
 
 
+def radius_km(value: str | None) -> float:
+    """The search radius of the run: NEARSHOP_LOADTEST_RADIUS_KM, 5 km by default, at most the search cap."""
+    try:
+        km = float(value) if value else 5.0
+    except ValueError:
+        km = 5.0
+    return min(km, MAX_RADIUS_KM) if km > 0 else 5.0
+
+
 QUERIES = load_queries()
 ACCOUNTS = load_accounts(os.environ.get("NEARSHOP_LOADTEST_ACCOUNTS"))
 THINK = _pair(os.environ.get("NEARSHOP_LOADTEST_THINK"), (5.0, 15.0))
 RESERVE_PACE = float(os.environ.get("NEARSHOP_LOADTEST_RESERVE_PACE") or 360)
+RADIUS_KM = radius_km(os.environ.get("NEARSHOP_LOADTEST_RADIUS_KM"))
 _owner_accounts = itertools.cycle(ACCOUNTS["owner"] or [("", "")])
 _customer_accounts = itertools.cycle(ACCOUNTS["customer"] or [("", "")])
 
@@ -500,9 +520,151 @@ if os.environ.get("NEARSHOP_LOADTEST_SHAPE") == "steps":
             return self.levels[step] + self.fixed, 5.0
 
 
-if __name__ == "__main__":  # python loadtest/locustfile.py count-accounts: the users make loadtest adds to -u
+# ------------------------------------------------------------------ city-scale data (P8.2)
+
+CITY_SHOPS = 500
+CITY_LISTINGS = 50_000
+
+
+def _app_path() -> None:
+    """Make the backend package importable when this file runs as a script (python loadtest/locustfile.py)."""
     import sys
 
+    backend = str(HERE.parent)
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+
+
+def city_problem(db_name: str, confirm: str | None, client: Any = None) -> str | None:
+    """Why generate_city must not write to db_name, or None: the P1.1 guard for a seed (development and test on a
+    local MongoDB, or demo; never staging or production), with the operator's confirmation of the name."""
+    _app_path()
+    from database import schema
+
+    return schema.reset_problem(db_name, confirm, client=client)
+
+
+def _quotas(total: int, parts: int) -> list[int]:
+    return [total // parts + (1 if n < total % parts else 0) for n in range(parts)]
+
+
+def generate_city(db: Any, *, confirm: str | None, shops: int = CITY_SHOPS, listings: int = CITY_LISTINGS) -> dict[str, int]:
+    """Add synthetic shops and listings until db holds `shops` active shops and `listings` active listings (module
+    docstring). Returns what was added. ValueError, before anything is written, where the guard refuses, on a
+    database that is not seeded or already holds as many shops, or when the catalogue cannot fill a shop."""
+    _app_path()
+    from app.ai.search_eval import SCALE_JITTER_DEG, SCALE_SEED
+    from app.core import cache_version
+    from app.core.database import utcnow
+
+    if problem := city_problem(db.mongo.name, confirm, db.mongo.client):
+        raise ValueError(f"Refused; nothing was written. {problem}")
+    active = db.shops.find_raw({"is_active": True}, sort=[("_id", 1)])
+    by_shop: dict[int, list[dict]] = defaultdict(list)
+    for row in db.products.find_raw({"is_active": True}, sort=[("_id", 1)]):
+        by_shop[row["shop_id"]].append(row)
+    have_listings = sum(len(rows) for rows in by_shop.values())
+    if have_listings >= listings and len(active) >= shops:
+        return {"shops_added": 0, "listings_added": 0, "shops": len(active), "listings": have_listings}
+    templates = [s for s in active if by_shop.get(s["_id"])]
+    if not templates:
+        raise ValueError("No shop with active listings to copy: seed the database first.")
+    add_shops, add_listings = shops - len(active), listings - have_listings
+    if add_shops <= 0 or add_listings < add_shops:
+        raise ValueError(f"The database already holds {len(active)} active shops and {have_listings} active listings; "
+                         f"start from a freshly seeded database to reach {shops} and {listings}.")
+    # Catalogue items to add to a shop that does not list them yet (one listing to copy per item), and the shops'
+    # own items (no catalogue item), which any shop may list.
+    catalog: dict[int, dict] = {}
+    own: list[dict] = []
+    for rows in by_shop.values():
+        for row in rows:
+            if row.get("catalog_item_id") is None:
+                own.append(row)
+            else:
+                catalog.setdefault(row["catalog_item_id"], row)
+    catalog_rows = [catalog[k] for k in sorted(catalog)]
+    plan: list[tuple[dict, list[dict]]] = []
+    for n, quota in enumerate(_quotas(add_listings, add_shops)):
+        template = templates[n % len(templates)]
+        chosen = by_shop[template["_id"]][:quota]
+        items = {r["catalog_item_id"] for r in chosen if r.get("catalog_item_id") is not None}
+        taken = {r["_id"] for r in chosen}
+        for pool in (catalog_rows, own):
+            start = (n * 37) % len(pool) if pool else 0  # each shop starts its extra items elsewhere in the list
+            for row in pool[start:] + pool[:start]:
+                if len(chosen) >= quota:
+                    break
+                item = row.get("catalog_item_id")
+                if row["_id"] in taken or (item is not None and item in items):
+                    continue
+                chosen.append(row)
+                taken.add(row["_id"])
+                if item is not None:
+                    items.add(item)
+        if len(chosen) < quota:
+            raise ValueError(f"The catalogue fills only {len(chosen)} listings per shop; {quota} are needed. "
+                             "Ask for fewer listings or more shops.")
+        plan.append((template, chosen))
+
+    rng = random.Random(SCALE_SEED)
+    now = utcnow()
+    added = 0
+    for template, chosen in plan:
+        shop_id = db.next_id("shops")
+        lng, lat = template["location"]["coordinates"]
+        category_ids = sorted({*(template.get("category_ids") or []), *(r["category_id"] for r in chosen)})
+        db.shops.raw.insert_one({
+            **template, "_id": shop_id, "slug": f"{template['slug']}-city-{shop_id}",
+            "name": f"{template['name']} (synthetic {shop_id})", "category_ids": category_ids,
+            "location": {"type": "Point", "coordinates": [lng + rng.uniform(-SCALE_JITTER_DEG, SCALE_JITTER_DEG),
+                                                          lat + rng.uniform(-SCALE_JITTER_DEG, SCALE_JITTER_DEG)]},
+            "created_at": now, "updated_at": now})
+        ids = db.next_ids("products", len(chosen))
+        db.products.raw.insert_many([{**row, "_id": pid, "shop_id": shop_id, "created_at": now, "updated_at": now}
+                                     for pid, row in zip(ids, chosen, strict=True)], ordered=False)
+        added += len(chosen)
+    cache_version.bump(db.mongo, cache_version.LISTINGS)
+    return {"shops_added": len(plan), "listings_added": added, "shops": len(active) + len(plan),
+            "listings": have_listings + added}
+
+
+def _generate_city_main(argv: list[str]) -> int:
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(prog="python loadtest/locustfile.py generate-city",
+                                     description="Shape a seeded database into city-scale load-test data (P8.2).")
+    parser.add_argument("--confirm-db", required=True, help="repeat the database name (NEARSHOP_MONGODB_DB)")
+    parser.add_argument("--shops", type=int, default=CITY_SHOPS)
+    parser.add_argument("--listings", type=int, default=CITY_LISTINGS)
+    args = parser.parse_args(argv)
+    _app_path()
+    from app.core.config import settings
+
+    # Checked before any connection is made, then again with the client's own hosts inside generate_city.
+    if problem := city_problem(settings.mongodb_db, args.confirm_db):
+        print(f"Refused; nothing was written. {problem}", file=sys.stderr)
+        return 2
+    from app.core.database import Database
+
+    try:
+        result = generate_city(Database(), confirm=args.confirm_db, shops=args.shops, listings=args.listings)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    print(f"{settings.mongodb_db}: {result['shops']} active shops and {result['listings']} active listings "
+          f"({result['shops_added']} shops and {result['listings_added']} listings added).")
+    return 0
+
+
+if __name__ == "__main__":
+    # python loadtest/locustfile.py count-accounts: the users make loadtest adds to -u.
+    # python loadtest/locustfile.py generate-city --confirm-db <database>: city-scale data (above).
+    import sys
+
+    if sys.argv[1:2] == ["generate-city"]:
+        raise SystemExit(_generate_city_main(sys.argv[2:]))
     if sys.argv[1:] != ["count-accounts"]:
-        raise SystemExit("usage: python loadtest/locustfile.py count-accounts")
+        raise SystemExit("usage: python loadtest/locustfile.py count-accounts | generate-city --confirm-db <database>")
     print(len(ACCOUNTS["owner"]) + len(ACCOUNTS["customer"]))

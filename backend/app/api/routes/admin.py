@@ -6,6 +6,7 @@ from fastapi import APIRouter, Query, Response
 from pydantic import BaseModel, Field
 
 from app.api.routes import grievances as grievance_routes
+from app.core import cache_version
 from app.core.database import Database, utcnow
 from app.core.deps import DB, AdminUser
 from app.core.errors import AppError, Conflict, Forbidden, NotFound
@@ -15,6 +16,7 @@ from app.schemas.requests import AdminShopUpdateIn, AnomalyReviewIn
 from app.schemas.serializers import iso, listing, shop_brief
 from app.services import analytics
 from app.services import reviews as review_service
+from app.services import synonyms as synonym_service
 from app.services.loaders import with_categories, with_category
 from app.services.media import (
     PrivateStorageUnavailable,
@@ -44,6 +46,32 @@ class RevealEmailIn(BaseModel):
     reason: str = Field(min_length=10, max_length=500)
 
 
+class SynonymIn(BaseModel):
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    term: str = Field(min_length=1, max_length=80)
+    expansions: list[str] = Field(min_length=1, max_length=synonym_service.MAX_EXPANSIONS)
+    languages: list[str] = Field(default_factory=list, max_length=synonym_service.MAX_LANGUAGES)
+
+
+class SynonymUpdateIn(BaseModel):
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    term: str | None = Field(None, min_length=1, max_length=80)
+    expansions: list[str] | None = Field(None, min_length=1, max_length=synonym_service.MAX_EXPANSIONS)
+    languages: list[str] | None = Field(None, max_length=synonym_service.MAX_LANGUAGES)
+    active: bool | None = None
+
+
+class SynonymPreviewIn(BaseModel):
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    term: str = Field(min_length=1, max_length=80)
+    expansions: list[str] = Field(min_length=1, max_length=synonym_service.MAX_EXPANSIONS)
+    query: str | None = Field(None, max_length=80)
+    entry_id: int | None = None
+
+
 @router.get("/overview")
 def overview(_: AdminUser, db: DB):
     return analytics.admin_overview(db)
@@ -54,6 +82,13 @@ def storage(_: AdminUser, db: DB):
     """The storage budget: the latest daily snapshot against NEARSHOP_STORAGE_LIMIT_MB, the 30-day growth
     per day, the projected date of reaching 85%, and the five largest collections."""
     return analytics.storage_report(db.mongo)
+
+
+@router.get("/freshness")
+def freshness(_: AdminUser, db: DB):
+    """Stock freshness per live shop (median listing age, share confirmed within 48 hours), the shops beyond 7 days
+    and the median listing age across verified live shops in the launch city: check 10.3's metric (P7.4)."""
+    return analytics.freshness_report(db)
 
 
 @router.get("/anomalies")
@@ -374,6 +409,9 @@ def _decided(db: Database, shop_id: int, decide) -> Shop:
         return s, decide(s) or []
 
     shop, stale = db.transaction(run)
+    # Verification and suspension change what search may show: every API process's search caches follow
+    # within 5 seconds (P8.1).
+    cache_version.bump(db.mongo, cache_version.LISTINGS)
     for key in stale:
         delete_private(key)
     return shop
@@ -487,3 +525,29 @@ def reveal_email(user_id: int, body: RevealEmailIn, admin: AdminUser, db: DB):
         {"_id": db.next_id("admin_audit"), "admin_id": admin.id, "action": "reveal_email",
          "target_user_id": user.id, "reason": body.reason, "created_at": utcnow()}, session=db.session)
     return {"id": user.id, "email": user.email}
+
+
+# ---------------------------------------------------------------- synonyms (P5.4)
+
+
+@router.get("/synonyms")
+def synonyms(_: AdminUser, db: DB, q: str | None = Query(None, max_length=80)):
+    """Every synonym entry (active first), the counts and the limit."""
+    return synonym_service.list_entries(db, q)
+
+
+@router.post("/synonyms", status_code=201)
+def create_synonym(body: SynonymIn, admin: AdminUser, db: DB):
+    return synonym_service.create_entry(db, admin.id, body.term, body.expansions, body.languages)
+
+
+@router.patch("/synonyms/{entry_id}")
+def update_synonym(entry_id: int, body: SynonymUpdateIn, admin: AdminUser, db: DB):
+    """Edit an entry, or deactivate (active false) or reactivate it."""
+    return synonym_service.update_entry(db, admin.id, entry_id, body.model_dump(exclude_unset=True))
+
+
+@router.post("/synonyms/preview")
+def preview_synonym(body: SynonymPreviewIn, _: AdminUser, db: DB):
+    """The top 10 results at the city centre without the entry and with it, before saving."""
+    return synonym_service.preview(db, body.term, body.expansions, body.query, body.entry_id)

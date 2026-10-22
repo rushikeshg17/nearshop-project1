@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.routing import compile_path
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.ai.semantic_index import index
+from app.ai.semantic_index import vector_stage_ready, warm_up
 from app.api.router import api_router
 from app.api.routes import webhooks
 from app.core import observability, ratelimit, security_headers
@@ -91,7 +91,7 @@ async def lifespan(_: FastAPI):
 
         scheduler = start_scheduler()
 
-    # Check the schema version and build the semantic index in the background so startup stays instant.
+    # Check the schema version and warm the vector stage in the background so startup stays instant.
     def startup_checks():
         try:
             check_schema(Database().mongo)
@@ -100,9 +100,7 @@ async def lifespan(_: FastAPI):
         if not settings.warm_on_startup:
             return
         try:
-            db = Database()
-            index.ensure(db)
-            log.info("semantic index ready: %d listings via %s", len(index.product_ids), index.provider_name)
+            log.info(warm_up(Database()))  # the matrix, listing_vectors or both, as the engines need (P5.7)
         except Exception as exc:  # the app still serves keyword search
             log.warning("warm-up failed: %s", exc)
 
@@ -268,11 +266,12 @@ def ping_database(mongo) -> None:
 def readiness(mongo) -> dict[str, bool]:
     """The readiness checks, as booleans only: the database answers a ping, its schema migrations are
     current (a database ahead of the code, after a rollback, is compatible: expand-then-contract), this
-    process's semantic search index is built, and the expiry sweep ran in the last 90 s."""
+    process's vector stage is ready (the semantic index built, or listing_vectors synced, as the engines
+    need), and the expiry sweep ran in the last 90 s."""
     from app.jobs import LEASES
     from database.migrate import check_version
 
-    checks = {"database": False, "migrations": False, "search_index": index.built_at > 0, "sweep": False}
+    checks = {"database": False, "migrations": False, "search_index": vector_stage_ready(), "sweep": False}
     try:
         ping_database(mongo)
         checks["database"] = True

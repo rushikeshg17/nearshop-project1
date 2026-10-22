@@ -1,4 +1,5 @@
 """Application settings, loaded from environment variables / .env."""
+from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -19,6 +20,134 @@ WEEKDAYS: tuple[str, ...] = get_args(Weekday)
 EDGE_SECRET_MIN_LENGTH = 32
 # The deployed environments, served over https: the API refuses to start in them with cookie_secure false.
 SECURE_COOKIE_ENVIRONMENTS: tuple[str, ...] = ("staging", "production", "demo")
+# Where the AI Lab is open to everyone by default (Settings.ai_lab_public): the environments whose data is synthetic.
+AI_LAB_PUBLIC_ENVIRONMENTS: tuple[str, ...] = ("development", "test", "demo")
+
+
+@dataclass(frozen=True)
+class EmbeddingModelSpec:
+    """How one embedding model is run and calibrated (P5.3; trial results in docs/perf/embedding-models.md).
+
+    query_prefix and passage_prefix are prepended to search queries and to listing texts, for models trained
+    with them (multilingual E5: "query: " and "passage: "); empty for models that need none. sem_floor and
+    sem_ceil are the cosine range that search maps to 0..1 for this model. They are not tuned here (P5.5):
+    every candidate starts on the calibration of the current model.
+    """
+
+    query_prefix: str = ""
+    passage_prefix: str = ""
+    sem_floor: float = 0.22
+    sem_ceil: float = 0.62
+    dim: int = 384  # the vector length, which the Atlas Vector Search index declares (P5.7)
+
+
+# The cosine scale search ranks on: the calibration of all-MiniLM-L6-v2 (the sem_floor and sem_ceil of the r1
+# ranking config below). The semantic index maps another model's similarities onto this scale with that model's
+# own floor and ceiling below, so search.py stays unchanged when the model changes.
+SEARCH_SIMILARITY_SCALE = EmbeddingModelSpec()
+
+# The embedding models NEARSHOP_EMBEDDING_MODEL may name: those the installed fastembed (0.8.1) supports
+# that were considered in P5.3. A model is listed here before it can be selected, so its prefixes are
+# never missed.
+EMBEDDING_MODELS: dict[str, EmbeddingModelSpec] = {
+    # The current model (English only, 384 dimensions, 90 MB).
+    "sentence-transformers/all-MiniLM-L6-v2": EmbeddingModelSpec(),
+    # P5.3 candidates (multilingual); calibration not tuned.
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": EmbeddingModelSpec(),
+    "minishlab/potion-multilingual-128M": EmbeddingModelSpec(dim=256),
+    # Considered but not trialled (too large for the 2 GB instance; see docs/perf/embedding-models.md).
+    "sentence-transformers/paraphrase-multilingual-mpnet-base-v2": EmbeddingModelSpec(dim=768),
+    "intfloat/multilingual-e5-large": EmbeddingModelSpec(query_prefix="query: ", passage_prefix="passage: ",
+                                                         dim=1024),
+}
+# The TF-IDF fallback (app/ai/embeddings.py) has no model name of its own in the setting.
+TFIDF_MODEL_NAME = "tfidf-char-svd"
+
+
+def embedding_spec(model_name: str) -> EmbeddingModelSpec:
+    """The spec of a listed model; the TF-IDF fallback and anything unlisted get no prefixes and the default
+    calibration."""
+    return EMBEDDING_MODELS.get(model_name, EmbeddingModelSpec())
+
+
+
+@dataclass(frozen=True)
+class RankingConfig:
+    """Every constant search ranks with (P5.5; app/services/search.py, run_search). Versioned: a config is never
+    edited once it has served traffic. A tuned config is added under a new version, with its tuning report in
+    docs/search/tuning-report.md, and switched on with NEARSHOP_SEARCH_RANKING_VERSION.
+
+    Relevance of a listing: w_semantic times its similarity mapped from sem_floor..sem_ceil onto 0..1, plus
+    w_keyword times its keyword score over the best keyword score (local-term matches add w_local_term each,
+    P5.2). A listing with no keyword hit needs a similarity of sem_min_match or more, and listings below
+    relative_cutoff times the best relevance are dropped. A group of listings of one item scores
+    w_relevance x relevance + w_proximity x proximity + w_in_stock when some offer is in stock, times
+    out_of_stock_factor when none is.
+    """
+
+    version: str
+    sem_floor: float = 0.22
+    sem_ceil: float = 0.62
+    sem_min_match: float = 0.34
+    w_semantic: float = 0.6
+    w_keyword: float = 0.4
+    relative_cutoff: float = 0.42
+    w_local_term: float = 6.0
+    w_relevance: float = 0.75
+    w_proximity: float = 0.15
+    w_in_stock: float = 0.10
+    out_of_stock_factor: float = 0.6
+
+    def tunables(self) -> dict[str, float]:
+        """The numeric fields, without the version."""
+        return {k: v for k, v in self.__dict__.items() if k != "version"}
+
+
+# r1: the hand-set values search used before P5.5, never measured. Add a tuned config as r2, r3 and so on,
+# only after it passes the adoption rule on the test split (plan section 8.6; docs/search/tuning-report.md).
+RANKING_CONFIGS: dict[str, RankingConfig] = {
+    "r1": RankingConfig(version="r1"),
+}
+DEFAULT_RANKING_VERSION = "r1"
+
+# Search engines (P5.7; app/ai/atlas_search.py, docs/search/engine-decision.md). The keyword stage runs on the
+# products text index (text) or Atlas Search (atlas_search); the vector stage on the in-process NumPy index
+# (in_process) or Atlas Vector Search (atlas_vector). Fusion, grouping, filters and the ranking config stay
+# NearShop's own whichever engines run.
+KeywordEngine = Literal["text", "atlas_search"]
+VectorEngine = Literal["in_process", "atlas_vector"]
+KEYWORD_ENGINES: tuple[str, ...] = get_args(KeywordEngine)
+VECTOR_ENGINES: tuple[str, ...] = get_args(VectorEngine)
+# Where customers' results come from. Until engine-decision.md recommends a switch and a later release step
+# serves it, staging and production keep these defaults: a candidate runs there only in shadow mode (P5.6).
+DEFAULT_ENGINES_ENVIRONMENTS: tuple[str, ...] = ("staging", "production")
+
+
+@dataclass(frozen=True)
+class EnginePair:
+    """The keyword and vector engines one search runs on."""
+
+    keyword: str = "text"
+    vector: str = "in_process"
+
+    @classmethod
+    def parse(cls, value: str) -> "EnginePair":
+        """A pair written as NEARSHOP_SEARCH_SHADOW_ENGINES holds it: keyword engine, comma, vector engine."""
+        parts = [p.strip() for p in value.split(",")]
+        if len(parts) != 2 or parts[0] not in KEYWORD_ENGINES or parts[1] not in VECTOR_ENGINES:
+            raise ValueError(f"an engine pair is a keyword engine ({' or '.join(KEYWORD_ENGINES)}) and a vector "
+                             f"engine ({' or '.join(VECTOR_ENGINES)}), comma-separated; got {value!r}")
+        return cls(parts[0], parts[1])
+
+    def __str__(self) -> str:
+        return f"{self.keyword},{self.vector}"
+
+    @property
+    def uses_atlas(self) -> bool:
+        return self.keyword == "atlas_search" or self.vector == "atlas_vector"
+
+
+DEFAULT_ENGINES = EnginePair()
 # The email sign-in sunset (P4.2, NEARSHOP_EMAIL_LOGIN_SUNSET): at least 8 weeks after phone sign-in starts.
 DEFAULT_EMAIL_LOGIN_SUNSET = date(2027, 4, 10)
 # Development's default instead: there the console provider makes phone sign-in available while the seeded accounts
@@ -64,6 +193,11 @@ class Settings(BaseSettings):
     # The site runs on generated data: every site page shows a banner asking visitors not to enter
     # real personal details.
     demo_mode: bool = False
+    # The AI Lab (P7.1): whether its model cards, search evaluation and search comparison are open to everyone.
+    # Defaults to true in development, test and demo, where the data is synthetic, and false in staging and
+    # production, where /api/ai answers not found to anyone but an admin and admins see only the model cards
+    # trained on real data. NEARSHOP_AI_LAB_PUBLIC overrides the default either way.
+    ai_lab_public: bool | None = None
     # The privacy notice version that registrations consent to (P3.1): the version id of the newest
     # docs/legal/privacy-<version>.md, which the /privacy page shows. Change it when a new version is published.
     notice_version: str = "v1"
@@ -142,6 +276,28 @@ class Settings(BaseSettings):
     # each of the last 12 months, counting the current day and month. Every other set is deleted.
     backup_keep_daily: int = 30
     backup_keep_monthly: int = 12
+    # Sales history archiving (P8.3, database/archive.py; docs/runbooks/restore.md). A monthly cron job moves the
+    # sales_history months that end on or before the first of the current month less archive_keep_months months
+    # (18 or more: the models use at most the last 18) to the backup store above, under
+    # <backup_prefix>/archive/sales_history/, and deletes their rows once each upload is read back and verified.
+    # It refuses to run while backup_backend is off, and unless a backup of the same database succeeded in the
+    # last archive_backup_max_age_hours hours.
+    archive_keep_months: int = 18
+    archive_backup_max_age_hours: int = 26
+
+    @field_validator("archive_keep_months", mode="after")
+    @classmethod
+    def _check_archive_keep(cls, value: int) -> int:
+        if value < 18:
+            raise ValueError("NEARSHOP_ARCHIVE_KEEP_MONTHS must be 18 or more: the models use the last 18 months")
+        return value
+
+    @field_validator("archive_backup_max_age_hours", mode="after")
+    @classmethod
+    def _check_archive_backup_age(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_ARCHIVE_BACKUP_MAX_AGE_HOURS must be 1 or more")
+        return value
 
     # Seed / location defaults
     seed_city: str = "ballari"
@@ -293,10 +449,39 @@ class Settings(BaseSettings):
 
     # AI
     embedding_provider: str = "fastembed"  # fastembed | tfidf
+    # One of EMBEDDING_MODELS, by name (P5.3). Changing it re-embeds every listing once, into
+    # text_embeddings under the new name; the old model's vectors stay until deleted.
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     model_dir: Path = BACKEND_DIR / "ml_artifacts"
     enable_scheduler: bool = True
     warm_on_startup: bool = True  # build the semantic index when the API starts (the schema version check always runs)
+
+    # Search ranking (P5.5): the version in RANKING_CONFIGS that run_search ranks with.
+    search_ranking_version: str = DEFAULT_RANKING_VERSION
+    # Suggestion hygiene (P5.5): a query is shown in search suggestions and popular searches only when at least
+    # suggestion_min_users distinct signed-in users (counted by user_id, never by session; 5 or more) searched
+    # it in the last suggestion_window_days days and got results, it is at most suggestion_max_chars characters
+    # long, and it passes the blocklist (phone numbers, email addresses, links and abusive words, plus the
+    # comma-separated suggestion_blocklist words added here; app/services/search.py).
+    suggestion_min_users: int = 5
+    suggestion_window_days: int = 30
+    suggestion_max_chars: int = 60
+    suggestion_blocklist: str = ""
+    # Shadow ranking (P5.6, app/services/search_events.py; plan section 8.6): a sampled search_shadow_share (0 to
+    # 1) of the consented page-1 searches with a query is re-ranked after the response is sent, on the same fetched
+    # listings and scores, with the ranking config search_shadow_ranking_version, and both rankings are stored on
+    # the search event. Empty (the default) or a share of 0 turns it off. Customers always get the production
+    # ranking (search_ranking_version). A config passes the plan section 8.6 shadow guardrails before it serves.
+    search_shadow_ranking_version: str = ""
+    search_shadow_share: float = 0.0
+    # Search engines (P5.7, EnginePair above). The serving engines must keep their defaults (text, in_process) in
+    # staging and production. search_shadow_engines is an engine pair for shadow mode, "keyword,vector" such as
+    # atlas_search,in_process: the sampled share (search_shadow_share) is also fetched with those engines after the
+    # response, ranked with the shadow ranking config (or the production one when that is empty), and its top 20
+    # is stored on the event. Empty (the default) turns it off.
+    search_keyword_engine: KeywordEngine = "text"
+    search_vector_engine: VectorEngine = "in_process"
+    search_shadow_engines: str = ""
 
     # Observability (app/core/observability.py). Error tracking is on only when sentry_dsn is set, from the
     # environment (Render: NEARSHOP_SENTRY_DSN, a sync: false secret), never from code. release is the git
@@ -327,6 +512,164 @@ class Settings(BaseSettings):
     # uncompressed documents plus indexes. M0 (staging, demo) 512; Flex (production after plan step 1-A) 5120.
     # The admin storage card and the daily snapshot's 70% and 85% warnings are measured against it.
     storage_limit_mb: int = 512
+
+    # Model gating (P7.3, plan section 8.9): owners see a model's output only when the data meets these
+    # thresholds, and otherwise the reason and the progress towards them (app/services/analytics.py, model
+    # gates). models_real_data_only: training and the thresholds leave out is_demo sales; defaults to true in
+    # production and false elsewhere (the demo site and development run on seeded sales, which then count).
+    models_real_data_only: bool | None = None
+    # Demand forecast: a listing is eligible with demand_min_history_days or more days since its first sale,
+    # sales on demand_min_sale_days or more distinct days and demand_min_units or more units. Forecasts are
+    # shown only when, on the last demand_backtest_days days, the eligible listings' MAE is at least
+    # demand_min_improvement_pct percent below the naive same-as-last-week forecast's.
+    demand_min_history_days: int = 56
+    demand_min_sale_days: int = 20
+    demand_min_units: int = 30
+    demand_backtest_days: int = 14
+    demand_min_improvement_pct: float = 10.0
+    # Bundles: bundles_min_baskets or more multi-item baskets city-wide in the last bundles_window_days days.
+    bundles_min_baskets: int = 1000
+    bundles_window_days: int = 90
+    # Price flags: an item is compared across price_flags_min_peers or more shops, and only once the city has
+    # price_flags_min_verified_shops or more verified live shops. Owners see flags only once admins have
+    # reviewed price_flags_min_reviewed or more and price_flags_min_precision_pct percent of those were upheld
+    # (reviewed, not dismissed); until then they stay in the admin queue.
+    price_flags_min_peers: int = 4
+    price_flags_min_verified_shops: int = 25
+    price_flags_min_reviewed: int = 50
+    price_flags_min_precision_pct: float = 70.0
+    # Owner search insights: a query is shown only when search_insights_min_users or more distinct signed-in
+    # users (5 or more) searched it within the shop's radius in the last search_insights_window_days days. The
+    # radius is the shop's delivery radius when it delivers, else search_insights_radius_km.
+    search_insights_min_users: int = 5
+    search_insights_window_days: int = 30
+    search_insights_radius_km: float = 3.0
+
+    @field_validator("demand_min_history_days", "demand_min_sale_days", "demand_min_units", "demand_backtest_days",
+                     "bundles_min_baskets", "bundles_window_days", "price_flags_min_peers",
+                     "price_flags_min_verified_shops", "price_flags_min_reviewed", "search_insights_window_days",
+                     mode="after")
+    @classmethod
+    def _check_gate_count(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_DEMAND_MIN_*, NEARSHOP_BUNDLES_*, NEARSHOP_PRICE_FLAGS_MIN_* and "
+                             "NEARSHOP_SEARCH_INSIGHTS_WINDOW_DAYS must be 1 or more")
+        return value
+
+    @field_validator("demand_min_improvement_pct", "price_flags_min_precision_pct", mode="after")
+    @classmethod
+    def _check_gate_pct(cls, value: float) -> float:
+        if not 0 <= value <= 100:
+            raise ValueError("NEARSHOP_DEMAND_MIN_IMPROVEMENT_PCT and NEARSHOP_PRICE_FLAGS_MIN_PRECISION_PCT must be "
+                             "between 0 and 100")
+        return value
+
+    @field_validator("search_insights_min_users", mode="after")
+    @classmethod
+    def _check_search_insights_min_users(cls, value: int) -> int:
+        if value < 5:  # plan section 8.9: a few people's searches must never reach a shop owner
+            raise ValueError("NEARSHOP_SEARCH_INSIGHTS_MIN_USERS must be 5 or more")
+        return value
+
+    @field_validator("search_insights_radius_km", mode="after")
+    @classmethod
+    def _check_search_insights_radius(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("NEARSHOP_SEARCH_INSIGHTS_RADIUS_KM must be more than 0")
+        return value
+
+    @field_validator("embedding_model", mode="after")
+    @classmethod
+    def _check_embedding_model(cls, value: str) -> str:
+        if value not in EMBEDDING_MODELS:
+            raise ValueError(f"NEARSHOP_EMBEDDING_MODEL must be one of {', '.join(EMBEDDING_MODELS)}; got {value!r}"
+                             " (add a new model to EMBEDDING_MODELS in app/core/config.py, with its prefixes)")
+        return value
+
+    @field_validator("search_ranking_version", mode="after")
+    @classmethod
+    def _check_ranking_version(cls, value: str) -> str:
+        if value not in RANKING_CONFIGS:
+            raise ValueError(f"NEARSHOP_SEARCH_RANKING_VERSION must be one of {', '.join(RANKING_CONFIGS)}; "
+                             f"got {value!r}")
+        return value
+
+    @field_validator("search_shadow_ranking_version", mode="after")
+    @classmethod
+    def _check_shadow_ranking_version(cls, value: str) -> str:
+        value = value.strip()
+        if value and value not in RANKING_CONFIGS:
+            raise ValueError(f"NEARSHOP_SEARCH_SHADOW_RANKING_VERSION must be empty (off) or one of "
+                             f"{', '.join(RANKING_CONFIGS)}; got {value!r}")
+        return value
+
+    @field_validator("search_shadow_share", mode="after")
+    @classmethod
+    def _check_shadow_share(cls, value: float) -> float:
+        if not 0 <= value <= 1:
+            raise ValueError("NEARSHOP_SEARCH_SHADOW_SHARE must be between 0 and 1")
+        return value
+
+    @field_validator("search_shadow_engines", mode="after")
+    @classmethod
+    def _check_shadow_engines(cls, value: str) -> str:
+        value = value.strip()
+        if value:
+            try:
+                EnginePair.parse(value)
+            except ValueError as exc:
+                raise ValueError(f"NEARSHOP_SEARCH_SHADOW_ENGINES must be empty (off) or {exc}") from None
+        return value
+
+    @model_validator(mode="after")
+    def _check_serving_engines(self) -> "Settings":
+        if self.environment in DEFAULT_ENGINES_ENVIRONMENTS and self.search_engines != DEFAULT_ENGINES:
+            raise ValueError(f"NEARSHOP_SEARCH_KEYWORD_ENGINE and NEARSHOP_SEARCH_VECTOR_ENGINE keep their defaults "
+                             f"(text, in_process) in {self.environment}: an Atlas engine runs there only in shadow "
+                             f"mode (NEARSHOP_SEARCH_SHADOW_ENGINES), until a release step serves it "
+                             f"(docs/search/engine-decision.md)")
+        return self
+
+    @property
+    def search_engines(self) -> EnginePair:
+        """The engines customers' searches run on."""
+        return EnginePair(self.search_keyword_engine, self.search_vector_engine)
+
+    @property
+    def shadow_engines(self) -> EnginePair | None:
+        """The shadow engine pair, or None when it is not set or shadow mode is off (a share of 0)."""
+        if not self.search_shadow_engines or self.search_shadow_share <= 0:
+            return None
+        return EnginePair.parse(self.search_shadow_engines)
+
+    @property
+    def shadow_ranking(self) -> RankingConfig | None:
+        """The shadow candidate ranking config, or None when shadow mode is off. With only a shadow engine pair set,
+        the candidate ranks with the production config."""
+        if self.search_shadow_share <= 0:
+            return None
+        if not self.search_shadow_ranking_version:
+            return self.ranking if self.shadow_engines is not None else None
+        return RANKING_CONFIGS.get(self.search_shadow_ranking_version)
+
+    @field_validator("suggestion_min_users", mode="after")
+    @classmethod
+    def _check_suggestion_min_users(cls, value: int) -> int:
+        if value < 5:  # plan section 8.6: a few people must not reach everyone's suggestions
+            raise ValueError("NEARSHOP_SUGGESTION_MIN_USERS must be 5 or more")
+        return value
+
+    @field_validator("suggestion_window_days", "suggestion_max_chars", mode="after")
+    @classmethod
+    def _check_suggestion_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_SUGGESTION_WINDOW_DAYS and NEARSHOP_SUGGESTION_MAX_CHARS must be 1 or more")
+        return value
+
+    @property
+    def ranking(self) -> RankingConfig:
+        """The ranking config search uses."""
+        return RANKING_CONFIGS[self.search_ranking_version]
 
     @field_validator("storage_limit_mb", mode="after")
     @classmethod
@@ -432,6 +775,10 @@ class Settings(BaseSettings):
     def _default_signups_open(self) -> "Settings":
         if self.signups_open is None:
             self.signups_open = self.environment != "production"
+        if self.models_real_data_only is None:
+            self.models_real_data_only = self.environment == "production"
+        if self.ai_lab_public is None:
+            self.ai_lab_public = self.environment in AI_LAB_PUBLIC_ENVIRONMENTS
         return self
 
     @field_validator("rate_limit_mode", mode="before")

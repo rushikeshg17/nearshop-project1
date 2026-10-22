@@ -16,9 +16,10 @@ from app.ai.semantic_index import index
 from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.models import AnomalyStatus, OrderStatus, ReservationStatus, Role, Shop
-from app.schemas.serializers import iso, listing
+from app.schemas.serializers import FRESH_HOURS, STALE_DAYS, iso, listing
 from app.services.inventory import OWNER_REASON_VALUES
 from app.services.loaders import categories, with_category
+from app.services.meta import city_config
 from app.services.search import keyword_scores
 from app.utils.geo import within_km
 from app.utils.text import normalize_query
@@ -56,6 +57,154 @@ def _sales_by_ist_day(db: Database, match: dict | None = None, days: int = 30) -
 def _count_by(db_collection, field: str, match: dict | None = None) -> dict:
     return {r["_id"]: r["n"] for r in db_collection.aggregate([
         {"$match": match or {}}, {"$group": {"_id": f"${field}", "n": {"$sum": 1}}}])}
+
+
+# ------------------------------------------------------------------ model gates (P7.3)
+#
+# Plan section 8.9: owners see a model's output only when the data meets its threshold (settings in
+# app/core/config.py), and otherwise a reason with the progress towards it. Every gate is a dict:
+#   shown     whether the output is shown
+#   code      why not (None when shown): not_trained, listing_history, backtest, baskets, verified_shops,
+#             precision or few_users
+#   reason    the sentence the owner sees, for example "Not enough sales data yet: 23 of 56 days"
+#   progress  [{label, have, need}], what the threshold counts so far
+# The training jobs (app/ai/demand.py, recommend.py, anomaly.py) store the model-wide gate in their run's
+# metrics["gate"]; owner_insights adds the per-shop and live parts. Nothing here imports a training library.
+
+DEMAND_HISTORY_DAYS = 150  # the days of sales the demand model trains on (app/ai/demand.py)
+
+
+def real_sales_filter() -> dict:
+    """The sales_history filter the models train and count on: is_demo rows are left out when
+    NEARSHOP_MODELS_REAL_DATA_ONLY is on (the default in production)."""
+    return {"is_demo": False} if settings.models_real_data_only else {}
+
+
+def gate(shown: bool, code: str | None = None, reason: str | None = None,
+         progress: list[dict] | None = None) -> dict:
+    return {"shown": shown, "code": None if shown else code, "reason": None if shown else reason,
+            "progress": progress or []}
+
+
+def progress_item(label: str, have: float, need: float) -> dict:
+    return {"label": label, "have": have, "need": need}
+
+
+def _fmt(n: float) -> str:
+    return f"{n:g}" if isinstance(n, float) else f"{n:,}"
+
+
+def demand_listing_progress(history_days: int, sale_days: int, units: int) -> list[dict]:
+    """One listing's progress towards demand-forecast eligibility."""
+    return [progress_item("days", history_days, settings.demand_min_history_days),
+            progress_item("days with a sale", sale_days, settings.demand_min_sale_days),
+            progress_item("units sold", units, settings.demand_min_units)]
+
+
+def demand_listing_eligible(history_days: int, sale_days: int, units: int) -> bool:
+    return all(p["have"] >= p["need"] for p in demand_listing_progress(history_days, sale_days, units))
+
+
+def demand_history_gate(progress: list[dict] | None) -> dict:
+    """Not shown for want of listing history: progress is the closest listing's, or None for no sales at all."""
+    progress = progress or demand_listing_progress(0, 0, 0)
+    short = next((p for p in progress if p["have"] < p["need"]), None)
+    if short is None:  # the history is there, but no forecast was made for an active listing (yet)
+        return gate(False, "listing_history",
+                    "No forecasts for your listings yet: they appear after the next model run, for active "
+                    "listings with enough sales", progress)
+    return gate(False, "listing_history",
+                f"Not enough sales data yet: {_fmt(short['have'])} of {_fmt(short['need'])} {short['label']}",
+                progress)
+
+
+def demand_model_gate(mae: float | None, naive_mae: float | None, eligible_listings: int) -> dict:
+    """Model-wide: shown only when, on the backtest of the eligible listings, the forecast's MAE is at least
+    demand_min_improvement_pct percent below the naive same-as-last-week forecast's."""
+    need = settings.demand_min_improvement_pct
+    if eligible_listings == 0 or mae is None or naive_mae is None:
+        return demand_history_gate(None)
+    improvement = (naive_mae - mae) / naive_mae * 100 if naive_mae else 0.0
+    shown = naive_mae > 0 and mae <= naive_mae * (1 - need / 100)
+    return gate(shown, "backtest",
+                f"Forecasts are paused: over the last {settings.demand_backtest_days} days they were "
+                f"{math.floor(improvement * 10) / 10:g}% better than \"same as last week\", and need to be {need:g}% better",
+                [progress_item("% better than same as last week", math.floor(improvement * 10) / 10, need)])
+
+
+def bundles_gate(multi_item_baskets: int) -> dict:
+    need = settings.bundles_min_baskets
+    return gate(multi_item_baskets >= need, "baskets",
+                f"Not enough shared baskets yet: {multi_item_baskets:,} of {need:,} multi-item purchases in the "
+                f"last {settings.bundles_window_days} days",
+                [progress_item("multi-item purchases", multi_item_baskets, need)])
+
+
+def price_flags_shops_gate(verified_live_shops: int) -> dict:
+    need = settings.price_flags_min_verified_shops
+    return gate(verified_live_shops >= need, "verified_shops",
+                f"Not enough shops to compare prices yet: {verified_live_shops} of {need} verified shops",
+                [progress_item("verified shops", verified_live_shops, need)])
+
+
+def price_flags_precision_gate(upheld: int, dismissed: int) -> dict:
+    """Owners see flags only once admins have reviewed enough of them and upheld enough of those."""
+    reviewed = upheld + dismissed
+    precision = round(100 * upheld / reviewed, 1) if reviewed else 0.0
+    need_n, need_pct = settings.price_flags_min_reviewed, settings.price_flags_min_precision_pct
+    shown = reviewed >= need_n and upheld * 100 >= need_pct * reviewed
+    reason = (f"Price checks are still being reviewed by NearShop: {reviewed} of {need_n} flags reviewed"
+              if reviewed < need_n else
+              f"Price checks are still being tuned: {precision:g}% of reviewed flags were right, and {need_pct:g}% "
+              f"is needed")
+    return gate(shown, "precision", reason, [progress_item("flags reviewed", reviewed, need_n),
+                                              progress_item("% upheld", precision, need_pct)])
+
+
+def search_query_shown(distinct_users: int) -> bool:
+    return distinct_users >= settings.search_insights_min_users
+
+
+def search_gate(best_users: int, any_shown: bool) -> dict:
+    need = settings.search_insights_min_users
+    return gate(any_shown, "few_users",
+                f"Not enough searches near you yet: {best_users} of {need} people searched for the same thing in "
+                f"the last {settings.search_insights_window_days} days",
+                [progress_item("people", best_users, need)])
+
+
+def _run_gate(run, not_trained: str) -> dict:
+    if run is None:
+        return gate(False, "not_trained", not_trained)
+    stored = (run.metrics or {}).get("gate")
+    return stored if stored else gate(False, "not_trained", not_trained)
+
+
+def price_flag_review_counts(db: Database) -> tuple[int, int]:
+    """(upheld, dismissed) admin decisions: an admin marking a flag "reviewed" counts as upholding it."""
+    counts = _count_by(db.price_anomalies, "status",
+                       {"status": {"$in": [AnomalyStatus.REVIEWED.value, AnomalyStatus.DISMISSED.value]}})
+    return counts.get(AnomalyStatus.REVIEWED.value, 0), counts.get(AnomalyStatus.DISMISSED.value, 0)
+
+
+def _shop_demand_progress(db: Database, shop_id: int) -> list[dict] | None:
+    """The progress of this shop's listing closest to demand-forecast eligibility, or None without sales."""
+    today = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    rows = db.sales_history.aggregate([
+        {"$match": {"shop_id": shop_id, "sold_at": {"$gte": today - timedelta(days=DEMAND_HISTORY_DAYS - 1)},
+                    **real_sales_filter()}},
+        {"$group": {"_id": "$product_id", "first": {"$min": "$sold_at"}, "units": {"$sum": "$quantity"},
+                    "days": {"$addToSet": {"$dateTrunc": {"date": "$sold_at", "unit": "day"}}}}},
+        {"$project": {"first": 1, "units": 1, "sale_days": {"$size": "$days"}}},
+    ])
+    best, best_score = None, -1.0
+    for r in rows:
+        first = r["first"].replace(hour=0, minute=0, second=0, microsecond=0)
+        progress = demand_listing_progress((today - first).days + 1, int(r["sale_days"]), int(r["units"]))
+        score = min(min(p["have"] / p["need"], 1.0) for p in progress)
+        if score > best_score:
+            best, best_score = progress, score
+    return best
 
 
 # ------------------------------------------------------------------ shop owner
@@ -149,20 +298,57 @@ def owner_overview(db: Database, shop: Shop) -> dict:
     }
 
 
+def _nearby_searches(db: Database, shop: Shop) -> list[dict]:
+    """Queries searched within the shop's radius in the search-insights window: searches, distinct signed-in
+    users, and the searches and distinct users that found nothing (2dsphere index)."""
+    radius = shop.delivery_radius_km if shop.offers_delivery and shop.delivery_radius_km > 0 \
+        else settings.search_insights_radius_km
+    since = utcnow() - timedelta(days=settings.search_insights_window_days)
+    zero = {"$eq": ["$results_count", 0]}
+
+    def distinct(field: str) -> dict:
+        return {"$size": {"$filter": {"input": field, "cond": {"$ne": ["$$this", None]}}}}
+
+    return db.search_history.aggregate([
+        {"$match": {"created_at": {"$gte": since}, "location": within_km(shop.lat, shop.lng, radius)}},
+        {"$group": {"_id": "$normalized_query", "searches": {"$sum": 1},
+                    "users": {"$addToSet": "$user_id"},
+                    "zero": {"$sum": {"$cond": [zero, 1, 0]}},
+                    "zero_users": {"$addToSet": {"$cond": [zero, "$user_id", None]}}}},
+        {"$project": {"searches": 1, "zero": 1, "users": distinct("$users"), "zero_users": distinct("$zero_users")}},
+    ])
+
+
 def owner_insights(db: Database, shop: Shop) -> dict:
-    since = utcnow() - timedelta(days=14)
-    forecasts, flags, searches, my_products, rules, runs = db.gather(
+    """The owner's insights: each module's output when its model gate is open, and otherwise the gate's
+    reason and progress (gates[module]); a gated module's output is always empty."""
+    forecasts, flags, searches, my_products, rules, runs, review_counts = db.gather(
         lambda: db.demand_forecasts.find({"shop_id": shop.id}),
         lambda: db.price_anomalies.find({"shop_id": shop.id, "status": AnomalyStatus.OPEN}, sort=[("score", -1)]),
-        # What people within 3 km searched for in the last 14 days (2dsphere index).
-        lambda: db.search_history.find_raw(
-            {"created_at": {"$gte": since}, "location": within_km(shop.lat, shop.lng, 3)},
-            {"normalized_query": 1, "results_count": 1}),
+        lambda: _nearby_searches(db, shop),
         lambda: db.products.find_raw({"shop_id": shop.id, "is_active": True}, {"catalog_item_id": 1, "quantity": 1}),
         lambda: db.recommendations.find(sort=[("lift", -1)], limit=3000),
         lambda: db.model_runs.find({"name": {"$in": ["demand", "recommendations", "anomalies"]}},
                                    sort=[("created_at", 1)]),
+        lambda: price_flag_review_counts(db),
     )
+    latest = {r.name: r for r in runs}  # sorted oldest first, so the newest run of each model wins
+
+    # The gates: the model-wide part stored by the last training run, then this shop's own part.
+    demand_gate = _run_gate(latest.get("demand"), "Forecasts have not been trained yet")
+    if (demand_gate["shown"] and not forecasts) or demand_gate["code"] == "listing_history":
+        demand_gate = demand_history_gate(_shop_demand_progress(db, shop.id))
+    bundle_gate = _run_gate(latest.get("recommendations"), "Bundles have not been learned yet")
+    flag_gate = _run_gate(latest.get("anomalies"), "Prices have not been compared yet")
+    if flag_gate["shown"]:
+        flag_gate = price_flags_precision_gate(*review_counts)
+    if not demand_gate["shown"]:
+        forecasts = []
+    if not bundle_gate["shown"]:
+        rules = []
+    if not flag_gate["shown"]:
+        flags = []
+
     products = {p.id: p for p in with_category(
         db, db.products.by_ids([f.product_id for f in forecasts] + [a.product_id for a in flags]).values())}
 
@@ -197,15 +383,12 @@ def owner_insights(db: Database, shop: Shop) -> dict:
         for a in flags if a.product_id in products
     ]
 
-    # 3. What people nearby are searching for
-    counts: dict[str, int] = {}
-    zero: dict[str, int] = {}
-    for s in searches:
-        q = s["normalized_query"]
-        counts[q] = counts.get(q, 0) + 1
-        if s["results_count"] == 0:
-            zero[q] = zero.get(q, 0) + 1
-    top_queries = sorted(counts.items(), key=lambda kv: -kv[1])[:10]
+    # 3. What people nearby are searching for: only queries enough distinct people searched
+    shown = [s for s in searches if search_query_shown(s["users"])]
+    top_queries = sorted(shown, key=lambda s: (-s["searches"], s["_id"]))[:10]
+    missed = sorted((s for s in searches if s["zero"] and search_query_shown(s["zero_users"])),
+                    key=lambda s: (-s["zero"], s["_id"]))[:6]
+    search_insights_gate = search_gate(max((s["users"] for s in searches), default=0), bool(shown))
     in_stock_ids = {p["_id"] for p in my_products if p["quantity"] > 0}
 
     def stocked(q: str) -> bool:
@@ -213,8 +396,9 @@ def owner_insights(db: Database, shop: Shop) -> dict:
         sem = index.query(db, q)
         return any(pid in kw or sem.get(pid, 0) > 0.5 for pid in in_stock_ids)
 
-    stocked_flags = db.gather(*[lambda q=q: stocked(q) for q, _ in top_queries])
-    area_demand = [{"query": q, "searches": n, "you_stock_it": s} for (q, n), s in zip(top_queries, stocked_flags)]
+    stocked_flags = db.gather(*[lambda q=s["_id"]: stocked(q) for s in top_queries]) if top_queries else []
+    area_demand = [{"query": s["_id"], "searches": s["searches"], "you_stock_it": st}
+                   for s, st in zip(top_queries, stocked_flags)]
 
     # 4. Bundle gaps (Apriori): things often bought with what you sell, that you do not stock
     my_items = {p["catalog_item_id"] for p in my_products if p.get("catalog_item_id")}
@@ -237,19 +421,23 @@ def owner_insights(db: Database, shop: Shop) -> dict:
         for g in top_gaps if g["catalog_item_id"] in names and g["because_of"] in names
     ]
 
-    latest = {r.name: r for r in runs}  # sorted oldest first, so the newest run of each model wins
     return {
         "restock": restock[:12],
         "rising": rising[:6],
         "price_flags": price_flags,
         "area_demand": area_demand,
-        "missed_demand": [{"query": q, "searches": n} for q, n in sorted(zero.items(), key=lambda kv: -kv[1])[:6]],
+        "missed_demand": [{"query": s["_id"], "searches": s["zero"]} for s in missed],
         "bundle_gaps": bundle_gaps,
         "models": {
             name: {"algorithm": r.algorithm, "trained_at": iso(r.created_at), "uses_demo_data": r.uses_demo_data,
                    "metrics": r.metrics, "note": r.data_note}
             for name, r in latest.items()
         },
+        "search_rule": {"window_days": settings.search_insights_window_days,
+                        "min_users": settings.search_insights_min_users},
+        "gates": {"demand": demand_gate, "bundles": bundle_gate, "price_flags": flag_gate,
+                  "area_demand": search_insights_gate,
+                  "missed_demand": search_gate(max((s["zero_users"] for s in searches), default=0), bool(missed))},
     }
 
 
@@ -359,6 +547,76 @@ def admin_overview(db: Database) -> dict:
                              for r in popular],
         "zero_result_searches": [{"query": r["_id"], "count": r["n"]} for r in zero],
         "activity": activity,
+    }
+
+
+# ------------------------------------------------------------------ stock freshness (P7.4)
+
+CHECK_10_3_SHOPS = 50  # check 10.3: at least 50 verified live shops in the launch city
+
+
+def median(values: list[float]) -> float | None:
+    """The median (the mean of the middle two for an even count); None for no values."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def freshness_report(db: Database, now: datetime | None = None) -> dict:
+    """Stock freshness across live (active) shops, from each active listing's stock_updated_at. Per shop: the median
+    listing age in hours and the share of listings confirmed within FRESH_HOURS. The shops beyond STALE_DAYS are
+    those whose median listing age is more than STALE_DAYS. Check 10.3 is "at least CHECK_10_3_SHOPS verified live
+    shops in the launch city, median stock age FRESH_HOURS or less", so the city median, the city fresh share and
+    verified_live_shops count only verified live shops in the launch city (settings.seed_city, matched by name
+    ignoring case); the per-shop rows still cover every live shop."""
+    now = now or utcnow()
+    city_name = city_config()["name"]
+    shops = {s["_id"]: s for s in db.shops.find_raw(
+        {"is_active": True},
+        {"name": 1, "slug": 1, "locality": 1, "city": 1, "is_verified": 1, "inventory_updated_at": 1})}
+
+    def counts(s: dict) -> bool:  # in check 10.3's population
+        return bool(s.get("is_verified")) and str(s.get("city") or "").strip().casefold() == city_name.casefold()
+
+    ages: dict[int, list[float]] = {sid: [] for sid in shops}
+    for r in db.products.find_raw({"is_active": True, "shop_id": {"$in": list(shops)}},
+                                  {"shop_id": 1, "stock_updated_at": 1}):
+        at = r.get("stock_updated_at")
+        if at is not None:
+            ages[r["shop_id"]].append(max((now - at).total_seconds() / 3600, 0.0))
+
+    def row(sid: int) -> dict:
+        s, a = shops[sid], ages[sid]
+        med = median(a)
+        return {"id": sid, "name": s["name"], "slug": s["slug"], "locality": s.get("locality"),
+                "city": s.get("city"), "is_verified": bool(s.get("is_verified")), "in_city_metric": counts(s),
+                "listings": len(a),
+                "median_age_hours": round(med, 1) if med is not None else None,
+                "fresh_share": round(sum(h <= FRESH_HOURS for h in a) / len(a), 3) if a else None,
+                "inventory_updated_at": iso(s.get("inventory_updated_at"))}
+
+    rows = sorted((row(sid) for sid in shops),
+                  key=lambda r: (r["median_age_hours"] is None, -(r["median_age_hours"] or 0), r["name"]))
+    every = [h for sid, a in ages.items() if counts(shops[sid]) for h in a]
+    city = median(every)
+    verified = sum(counts(s) for s in shops.values())
+    stale_hours = STALE_DAYS * 24
+    return {
+        "as_of": iso(now),
+        "fresh_hours": FRESH_HOURS,
+        "stale_days": STALE_DAYS,
+        "city": city_name,
+        "target_shops": CHECK_10_3_SHOPS,
+        "live_shops": len(shops),
+        "verified_live_shops": verified,
+        "listings": len(every),
+        "city_median_age_hours": round(city, 1) if city is not None else None,
+        "city_fresh_share": round(sum(h <= FRESH_HOURS for h in every) / len(every), 3) if every else None,
+        "meets_check_10_3": verified >= CHECK_10_3_SHOPS and city is not None and city <= FRESH_HOURS,
+        "shops": rows,
+        "stale_shops": [r for r in rows if r["median_age_hours"] is not None and r["median_age_hours"] > stale_hours],
     }
 
 

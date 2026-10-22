@@ -4,6 +4,10 @@ Most local shops keep stock in a billing app (Vyapar, Tally, Marg, Khatabook...)
 an item list. The owner uploads that file; we detect the columns, match every row to their existing
 listings or to the NearShop catalogue with fuzzy matching, and show a preview. Nothing changes
 until the owner confirms (commit).
+
+The same apps export a sales report (bill-wise or item-wise sales register). sales_preview and sales_commit
+import it into sales_history with source import (P7.2), so the demand and bundle models see a shop's real sales
+rather than only the few that pass through NearShop reservations and orders.
 """
 from __future__ import annotations
 
@@ -11,15 +15,19 @@ import csv
 import io
 import re
 import zipfile
+from collections import defaultdict
 from collections.abc import Iterator, Mapping
+from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from rapidfuzz import fuzz, process
 
+from app.core import cache_version
 from app.core.config import settings
 from app.core.database import Database
 from app.core.errors import AppError
-from app.models import Product, Shop
+from app.models import CatalogItem, Product, SaleSource, SalesRecord, Shop
 from app.services.inventory import apply_bulk
 from app.services.loaders import categories as load_categories
 from app.services.loaders import with_category
@@ -53,6 +61,31 @@ TEMPLATE_CSV = (
 )
 
 
+# Sales reports (P7.2): the columns a billing app's sales register uses. date, item and quantity are required;
+# bill and either rate or amount are optional. Fields are detected in this order, each taking a column once.
+SALES_COLUMN_ALIASES: dict[str, list[str]] = {
+    "date": ["date", "voucher date", "bill date", "invoice date", "sale date", "txn date", "vch date"],
+    "item": ["particulars", "item name", "item", "product name", "product", "stock item", "item description",
+             "description"],
+    "quantity": ["qty", "quantity", "sold qty", "sale qty", "sales qty", "billed qty", "qty sold", "units"],
+    "bill": ["bill no", "bill number", "bill no.", "invoice no", "invoice number", "inv no", "voucher no",
+             "vch no", "voucher number", "receipt no", "bill #", "invoice #", "invoice"],
+    "rate": ["rate", "price unit", "price per unit", "unit price", "sale price", "selling price", "price"],
+    "amount": ["amount", "value", "net amount", "total amount", "line total", "total", "gross amount"],
+}
+SALES_REQUIRED = ("date", "item", "quantity")
+SALES_MAX_DAYS = 90  # one upload covers at most this many days, first to last date inclusive
+HEADER_SCAN_ROWS = 10  # a report's title lines (shop name, period) above the header row are skipped
+IST = ZoneInfo("Asia/Kolkata")
+BILL_MAX_LENGTH = 60
+# Day-first, as Indian billing apps write dates; ISO dates (and the date cells of a .xlsx) are read first.
+DATE_FORMATS = ("%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y", "%d-%m-%y", "%d/%m/%y", "%d.%m.%y", "%d-%b-%Y", "%d-%b-%y",
+                "%d %b %Y", "%d %b %y", "%d/%b/%Y", "%d-%B-%Y", "%d %B %Y", "%b %d, %Y", "%d %b, %Y")
+_ISO_DATE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T].*)?$")
+_TRAILING_TIME = re.compile(r"\s+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]\.?m\.?)?$", re.IGNORECASE)
+_EXCEL_EPOCH = date(1899, 12, 30)
+
+
 def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9. ]+", " ", str(s).lower()).strip()
 
@@ -78,18 +111,36 @@ def best_matches[K](query: str, choices: Mapping[K, str], limit: int = 1) -> lis
     return [(key, score) for _, score, key in found]
 
 
-def _detect_columns(columns: list[str]) -> dict[str, str]:
+# A header naming a tax or discount (GST Rate, Tax Amount, Taxable Value, Disc %) is never a price, amount,
+# quantity or item column, however its other words read: billing reports, Indian ones especially, carry them.
+_TAX_WORDS = ("gst", "cgst", "sgst", "igst", "utgst", "tax", "vat", "cess", "disc")
+
+
+def _is_tax_column(normed: str) -> bool:
+    return any(word.startswith(_TAX_WORDS) for word in normed.split())
+
+
+def _detect_columns(columns: list[str], aliases_by_field: dict[str, list[str]] = COLUMN_ALIASES) -> dict[str, str]:
+    """Map each field to a column. Exact header names are matched first, for every field, and only then
+    headers that merely contain an alias: so an exact "Price/Unit" or "Amount" is never lost to a "GST Rate"
+    or "Taxable Value" that happens to contain "rate" or "value". Tax and discount columns never match by
+    containment. Within each pass, a field's aliases are tried in order of preference."""
     found: dict[str, str] = {}
     normed = {c: _norm(c) for c in columns}
-    for field, aliases in COLUMN_ALIASES.items():
+
+    def claim(field: str, aliases: list[str], exact: bool) -> None:
         for alias in aliases:  # aliases are ordered by preference
-            hit = next((c for c, n in normed.items() if n == alias and c not in found.values()), None)
-            if hit is None:
-                hit = next((c for c, n in normed.items() if alias in n and c not in found.values()), None)
+            hit = next((c for c, n in normed.items() if c not in found.values() and (
+                n == alias if exact else alias in n and not _is_tax_column(n))), None)
             if hit is not None:
                 found[field] = hit
-                break
-    return found
+                return
+
+    for exact in (True, False):
+        for field, aliases in aliases_by_field.items():
+            if field not in found:
+                claim(field, aliases, exact)
+    return {field: found[field] for field in aliases_by_field if field in found}
 
 
 def _number(v) -> float | None:
@@ -137,14 +188,16 @@ def _csv_rows(data: bytes) -> Iterator[list]:
     yield from csv.reader(io.StringIO(text, newline=""))
 
 
-def _bounded_table(rows: Iterator[list]) -> tuple[list[str], list[list]]:
+def _bounded_table(rows: Iterator[list]) -> tuple[list[str], list[list], list[int]]:
     """The header and data rows, read one row at a time and stopped at the first row past a limit: more
     than settings.import_max_rows non-blank data rows, or a row with a value beyond column
-    settings.import_max_columns. Blank rows are skipped, and the first non-blank row is the header."""
+    settings.import_max_columns. Blank rows are skipped, and the first non-blank row is the header. The third
+    value is each data row's line number in the file (1 is the first line), for the messages that name a row."""
     max_rows, max_cols = settings.import_max_rows, settings.import_max_columns
     header: list | None = None
     body: list[list] = []
-    for raw in rows:
+    lines: list[int] = []
+    for line, raw in enumerate(rows, start=1):
         width = len(raw)
         while width and (raw[width - 1] is None or str(raw[width - 1]).strip() == ""):
             width -= 1
@@ -160,9 +213,14 @@ def _bounded_table(rows: Iterator[list]) -> tuple[list[str], list[list]]:
             raise AppError(f"That file has more than {max_rows} rows; the limit is {max_rows} per upload.",
                            code="too_many_rows")
         body.append(raw[:width])
+        lines.append(line)
     if header is None:
         raise AppError("Couldn't read that file. Check it opens in Excel and has a header row.", code="bad_file")
     width = max([len(header), *(len(r) for r in body)])
+    return _column_names(header, width), [r + [None] * (width - len(r)) for r in body], lines
+
+
+def _column_names(header: list, width: int) -> list[str]:
     names: list[str] = []
     for i in range(width):
         name = str(header[i]).strip() if i < len(header) and header[i] is not None else ""
@@ -172,7 +230,7 @@ def _bounded_table(rows: Iterator[list]) -> tuple[list[str], list[list]]:
             n += 1
             name = f"{base}.{n}"
         names.append(name)
-    return names, [r + [None] * (width - len(r)) for r in body]
+    return names
 
 
 def read_table(data: bytes, filename: str) -> pd.DataFrame:
@@ -193,7 +251,7 @@ def read_table(data: bytes, filename: str) -> pd.DataFrame:
     else:
         raise AppError("Upload a .xlsx or .csv file. Old .xls files: open and 'Save as' .xlsx first.", code="bad_file")
     try:
-        columns, body = _bounded_table(rows)
+        columns, body, lines = _bounded_table(rows)
     except AppError:
         raise
     except Exception:
@@ -202,7 +260,9 @@ def read_table(data: bytes, filename: str) -> pd.DataFrame:
         close = getattr(rows, "close", None)
         if close:
             close()  # stops the generator early, closing the workbook
-    return pd.DataFrame(body, columns=columns, dtype=object)
+    df = pd.DataFrame(body, columns=columns, dtype=object)
+    df.attrs["lines"] = lines
+    return df
 
 
 def preview(db: Database, shop: Shop, data: bytes, filename: str) -> dict:
@@ -211,12 +271,8 @@ def preview(db: Database, shop: Shop, data: bytes, filename: str) -> dict:
     if "name" not in cols:
         raise AppError("Couldn't find an item name column. Name it 'Item name' (see the template).", code="no_name_column")
 
-    catalog, mine = db.gather(lambda: with_category(db, db.catalog_items.find()),
-                              lambda: db.products.find({"shop_id": shop.id}))
-    catalog_keys = {c.id: _norm(f"{c.brand or ''} {c.name}") for c in catalog}
-    catalog_by_id = {c.id: c for c in catalog}
-    mine_by_name = {_norm(p.name): p for p in mine}
-    mine_by_catalog = {p.catalog_item_id: p for p in mine if p.catalog_item_id}
+    matcher = _Matcher(db, shop)
+    mine_by_name, mine_by_catalog = matcher.mine_by_name, matcher.mine_by_catalog
     categories = list(load_categories(db).values())
     cat_names = {c.slug: _norm(c.name) for c in categories}
     default_cat = shop.categories[0].slug if shop.categories else categories[0].slug
@@ -241,11 +297,10 @@ def preview(db: Database, shop: Shop, data: bytes, filename: str) -> dict:
                "category_slug": default_cat, "issues": []}
 
         existing = mine_by_name.get(_norm(name))
-        match = best_matches(f"{brand} {name}", catalog_keys)
+        match = matcher.catalog_match(name, brand)
         if match:
-            [(cid, score)] = match
-            score = capped_score(name, score)  # at least two meaningful words to auto-match
-            item = catalog_by_id[cid]
+            item, score = match
+            cid = item.id
             row["category_slug"] = item.category.slug if score >= SUGGEST_MATCH - 10 else row["category_slug"]
             if score >= SUGGEST_MATCH:
                 row.update(catalog_item_id=cid, match_name=item.name, score=round(score))
@@ -282,8 +337,49 @@ def preview(db: Database, shop: Shop, data: bytes, filename: str) -> dict:
     return {"columns": cols, "rows": rows, "summary": summary, "total": len(rows)}
 
 
+class _Matcher:
+    """Fuzzy matching of a row's item name to the shop's own listings and to the NearShop catalogue, shared by the
+    stock and sales imports."""
+
+    def __init__(self, db: Database, shop: Shop) -> None:
+        catalog, mine = db.gather(lambda: with_category(db, db.catalog_items.find()),
+                                  lambda: db.products.find({"shop_id": shop.id}))
+        self.catalog_keys = {c.id: _norm(f"{c.brand or ''} {c.name}") for c in catalog}
+        self.catalog_by_id = {c.id: c for c in catalog}
+        self.mine_by_id = {p.id: p for p in mine}
+        self.mine_by_name = {_norm(p.name): p for p in mine}
+        self.mine_by_catalog = {p.catalog_item_id: p for p in mine if p.catalog_item_id}
+        self.mine_keys = {p.id: _norm(f"{p.brand or ''} {p.name}") for p in mine}
+
+    def catalog_match(self, name: str, brand: str = "") -> tuple[CatalogItem, float] | None:
+        """The closest catalogue item and its score (0 to 100), or None for an empty catalogue."""
+        match = best_matches(f"{brand} {name}", self.catalog_keys)
+        if not match:
+            return None
+        [(cid, score)] = match
+        return self.catalog_by_id[cid], capped_score(name, score)  # at least two meaningful words to auto-match
+
+    def listing_match(self, name: str) -> tuple[Product, float] | None:
+        """The shop's listing a sales line is for, and the match score: an exact name scores 100; otherwise the
+        better of a fuzzy match on the shop's own listing names and a catalogue match the shop lists. None when
+        nothing reaches SUGGEST_MATCH."""
+        exact = self.mine_by_name.get(_norm(name))
+        if exact is not None:
+            return exact, 100
+        best: tuple[Product, float] | None = None
+        own = best_matches(name, self.mine_keys)
+        if own:
+            [(pid, score)] = own
+            best = (self.mine_by_id[pid], capped_score(name, score))
+        cat = self.catalog_match(name)
+        if cat and cat[0].id in self.mine_by_catalog and (best is None or cat[1] > best[1]):
+            best = (self.mine_by_catalog[cat[0].id], cat[1])
+        return best if best and best[1] >= SUGGEST_MATCH else None
+
+
 def commit(db: Database, shop: Shop, rows: list[dict], actor_id: int) -> dict:
-    """Apply confirmed rows in a single transaction: all rows succeed or none do.
+    """Apply confirmed rows in a single transaction: all rows succeed or none do. Then bump the shared listings
+    version, so every API process's search sees the changes.
 
     Everything is validated and prepared in memory first, then written in a few bulk operations,
     so a 2,000-row sheet is as safe (and nearly as fast) as a 2-row one."""
@@ -361,4 +457,230 @@ def commit(db: Database, shop: Shop, rows: list[dict], actor_id: int) -> dict:
                 creates = [(cp, qty if cp is p else cq) for cp, cq in creates]
             del updates[key]
     apply_bulk(db, shop, actor_id, creates, list(updates.values()))
+    # Committed: every API process's search caches follow within 5 seconds (P8.1).
+    cache_version.bump(db.mongo, cache_version.LISTINGS)
     return counts
+
+
+# ---------------------------------------------------------------- sales reports (P7.2)
+
+
+def _parse_date(v) -> date | None:
+    """A sale date from a report cell: ISO (and .xlsx date cells), day-first Indian formats, or an Excel day
+    serial number. None when it is not a date."""
+    if v is None:
+        return None
+    s = _TRAILING_TIME.sub("", str(v).strip())
+    if not s or s.lower() == "nan":
+        return None
+    try:
+        if m := _ISO_DATE.match(s):
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        if re.fullmatch(r"\d{5}(?:\.0+)?", s):  # a date cell exported as its serial number
+            return _EXCEL_EPOCH + timedelta(days=int(float(s)))
+    except ValueError:
+        return None
+    for fmt in DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _today() -> date:
+    return datetime.now(IST).date()
+
+
+def _sold_at(d: date) -> datetime:
+    """The sold_at stored for a report date: 00:00 UTC that day (05:30 in India), which falls on the same calendar
+    date whether a reader groups by UTC or by India time. Naive UTC, as every stored date."""
+    return datetime.combine(d, time())
+
+
+def _basket_id(shop_id: int, d: date, bill: str | None, product_id: int) -> str:
+    """Lines of one bill share a basket, which gives Apriori real baskets. A line without a bill number is a basket
+    of its own."""
+    return f"import:{shop_id}:{d.isoformat()}:" + (f"bill:{bill}" if bill else f"item:{product_id}")
+
+
+def _clean_bill(v) -> str | None:
+    if v is None:
+        return None
+    s = str(v).strip()
+    if re.fullmatch(r"\d+\.0+", s):  # a bill number read from a numeric cell
+        s = s.split(".", 1)[0]
+    if s.lower() == "nan":
+        return None
+    return s[:BILL_MAX_LENGTH] or None
+
+
+def _check_period(start: date, end: date) -> None:
+    days = (end - start).days + 1
+    if days > SALES_MAX_DAYS:
+        raise AppError(f"That report covers {days} days ({start:%d %b %Y} to {end:%d %b %Y}). Upload at most "
+                       f"{SALES_MAX_DAYS} days at a time: export the report month by month.", code="range_too_long")
+
+
+def _sales_columns(df: pd.DataFrame) -> tuple[dict[str, str], pd.DataFrame, list[int]]:
+    """The detected columns, the data rows and each data row's line number in the file. A report whose first
+    lines are a title (the shop's name, the period) has its header further down: the first HEADER_SCAN_ROWS rows
+    are searched for it."""
+    import pandas as pd
+
+    lines: list[int] = df.attrs.get("lines") or list(range(2, len(df) + 2))
+    cols = _detect_columns([str(c) for c in df.columns], SALES_COLUMN_ALIASES)
+    if all(f in cols for f in SALES_REQUIRED):
+        return cols, df, lines
+    for i, raw in enumerate(df.head(HEADER_SCAN_ROWS).itertuples(index=False, name=None)):
+        names = _column_names(list(raw), len(raw))
+        found = _detect_columns(names, SALES_COLUMN_ALIASES)
+        if all(f in found for f in SALES_REQUIRED):
+            return found, pd.DataFrame(df.iloc[i + 1:].values.tolist(), columns=names, dtype=object), lines[i + 1:]
+    missing = [f for f in SALES_REQUIRED if f not in cols]
+    raise AppError(f"Couldn't find the {' and '.join(missing)} column{'s' if len(missing) > 1 else ''} in that "
+                   "report. A sales report needs a date (Date, Voucher Date or Bill Date), an item (Particulars or "
+                   "Item Name) and a quantity (Qty, Quantity or Sold Qty).", code="no_sales_columns")
+
+
+_TOTAL_LINE = re.compile(r"grand total.*|(sub ?|net |bill |voucher |day )?totals?")
+
+
+def _blank(v) -> bool:
+    return v is None or (isinstance(v, float) and v != v) or str(v).strip().lower() in ("", "nan")
+
+
+def _imported_between(shop: Shop, start: date, end: date) -> dict:
+    return {"shop_id": shop.id, "source": SaleSource.IMPORT.value,
+            "sold_at": {"$gte": _sold_at(start), "$lt": _sold_at(end + timedelta(days=1))}}
+
+
+def sales_preview(db: Database, shop: Shop, data: bytes, filename: str) -> dict:
+    """Read a sales report and match each line to the shop's listings. Nothing is written.
+
+    Each row has a status: matched (confidently one of the shop's listings), check (a likely listing the owner
+    should confirm), unmatched (no listing: the item must be listed first) or invalid (no usable date or
+    quantity, a return, or a future date). Matched and check rows are included by default.
+
+    Tally's item-wise registers write the date and voucher number only on a bill's first line: a line whose date
+    cell is blank takes the date of the line above, and its bill number too when that cell is also blank, so the
+    bill's other lines stay in its basket. Total lines ("Grand Total", "Sub Total") are skipped."""
+    df = read_table(data, filename)
+    cols, df, line_numbers = _sales_columns(df)
+    matcher = _Matcher(db, shop)
+    today = _today()
+    rows: list[dict] = []
+    last_date: date | None = None
+    last_bill: str | None = None
+    for i, rec in zip(line_numbers, df.to_dict("records"), strict=True):
+        name = str(rec.get(cols["item"]) or "").strip()
+        if not name or name.lower() == "nan" or _TOTAL_LINE.fullmatch(_norm(name)):
+            continue
+        raw_date = rec.get(cols["date"])
+        qty = _number(rec.get(cols["quantity"]))
+        rate = _number(rec.get(cols["rate"])) if "rate" in cols else None
+        amount = _number(rec.get(cols["amount"])) if "amount" in cols else None
+        bill = _clean_bill(rec.get(cols["bill"])) if "bill" in cols else None
+        carried = _blank(raw_date) and last_date is not None
+        if carried:
+            d = last_date  # a later line of the bill above
+            bill = bill if bill is not None else last_bill
+        else:
+            d = _parse_date(raw_date)
+            last_date, last_bill = d, bill
+        if d is None and qty is None:
+            continue  # a subtotal or footer line
+        row = {"row": i, "date": d.isoformat() if d else None, "name": name[:200], "bill": bill,
+               "quantity": None, "unit_price": None, "status": "invalid", "include": False,
+               "product_id": None, "match_name": None, "score": 0, "issues": []}
+        issues = row["issues"]
+        problems = []  # any of these makes the row invalid
+        if d is None:
+            problems.append(f"Couldn't read the date '{str(raw_date or '').strip()[:30]}'")
+        elif d > today:
+            problems.append("The date is in the future")
+        if qty is None:
+            problems.append("No quantity")
+        elif qty < 0:
+            problems.append("A return or credit note: not imported")
+        else:
+            whole = round(qty)
+            if whole < 1:
+                problems.append("Quantity is less than 1")
+            else:
+                if whole != qty:
+                    issues.append(f"Quantity {qty:g} rounded to {whole}")
+                row["quantity"] = whole
+        if rate is not None and rate >= 0:
+            row["unit_price"] = round(rate, 2)
+        elif amount is not None and amount >= 0 and qty:
+            row["unit_price"] = round(amount / qty, 2)
+
+        match = matcher.listing_match(name)
+        if match:
+            product, score = match
+            row.update(product_id=product.id, match_name=product.name, score=round(score))
+            if row["unit_price"] is None:
+                row["unit_price"] = product.price
+                issues.append("No rate or amount in file; using your listed price")
+        issues[:0] = problems
+        if not problems:
+            if match is None:
+                row["status"] = "unmatched"
+                issues.append("Not in your listings: add it (stock import) and upload again")
+            else:
+                row["status"] = "matched" if match[1] >= AUTO_MATCH else "check"
+                row["include"] = True
+                if row["status"] == "check":
+                    issues.append("Check the match")
+        rows.append(row)
+
+    dates = [date.fromisoformat(r["date"]) for r in rows if r["date"] and r["status"] != "invalid"]
+    if not dates:
+        raise AppError("No sales with a date and quantity found in that report.", code="no_sales_rows")
+    start, end = min(dates), max(dates)
+    _check_period(start, end)
+    summary = {s: sum(1 for r in rows if r["status"] == s) for s in ("matched", "check", "unmatched", "invalid")}
+    replaces = db.sales_history.count(_imported_between(shop, start, end))
+    return {"kind": "sales", "columns": cols, "rows": rows, "summary": summary, "total": len(rows),
+            "start": start.isoformat(), "end": end.isoformat(), "replaces": replaces}
+
+
+def sales_commit(db: Database, shop: Shop, start: date, end: date, rows: list[dict]) -> dict:
+    """Write the confirmed sales lines to sales_history with source import, replacing the shop's imported rows for
+    every date from start to end (a re-upload of an overlapping period replaces, never duplicates). One
+    transaction: all rows or none. Lines for the same listing, date and bill are added together."""
+    if start > end:
+        raise AppError("The report's first date is after its last date.", code="bad_range")
+    _check_period(start, end)
+    if end > _today():
+        raise AppError("The report includes a future date.", code="future_date")
+    products = db.products.by_ids(r["product_id"] for r in rows)
+    lines: dict[tuple[int, date, str], list[float]] = defaultdict(lambda: [0, 0.0])
+    for r in rows:
+        p = products.get(r["product_id"])
+        if p is None or p.shop_id != shop.id:
+            raise AppError(f"Row {r.get('row')}: that product is not in your shop", code="not_your_product")
+        d: date = r["date"]
+        if not start <= d <= end:
+            raise AppError(f"Row {r.get('row')}: {d:%d %b %Y} is outside the report's dates", code="bad_range")
+        line = lines[(p.id, d, _basket_id(shop.id, d, _clean_bill(r.get("bill")), p.id))]
+        line[0] += int(r["quantity"])
+        line[1] += int(r["quantity"]) * float(r["unit_price"])
+    records = [
+        SalesRecord(shop_id=shop.id, product_id=pid, catalog_item_id=products[pid].catalog_item_id,
+                    category_id=products[pid].category_id, customer_id=None, basket_id=basket,
+                    quantity=qty, unit_price=round(total / qty, 2), source=SaleSource.IMPORT, is_demo=False,
+                    sold_at=_sold_at(d))
+        for (pid, d, basket), (qty, total) in lines.items()
+    ]
+
+    def write() -> int:
+        replaced = db.sales_history.delete_many(_imported_between(shop, start, end))
+        if records:
+            db.sales_history.insert_many([r.model_copy() for r in records])
+        return replaced
+
+    replaced = db.transaction(write)
+    return {"imported": len(records), "lines": len(rows), "replaced": replaced,
+            "start": start.isoformat(), "end": end.isoformat()}

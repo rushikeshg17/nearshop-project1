@@ -1,13 +1,51 @@
 "use client";
 
-import { Bike, ChevronRight, Footprints, Store } from "lucide-react";
+import { Bike, ChevronRight, Clock3, Footprints, Store } from "lucide-react";
 import Link from "next/link";
+import type { MouseEvent } from "react";
 
 import { Distance, Freshness, Rating, StockPill } from "@/components/common/indicators";
 import { ProductThumb } from "@/components/common/product-thumb";
 import { formatDistance, formatPrice, travelHint } from "@/lib/format";
 import type { ResultGroup } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+/** A listing's stock freshness from the API (P7.4): fresh within 48 hours (no label), aging up to 7 days
+ * ("updated N days ago", ranked lower) and stale beyond ("stock not confirmed recently", ranked lower still). */
+type StockFreshness = { band: "fresh" | "aging" | "stale"; label: string | null };
+
+function FreshnessLabel({ freshness }: { freshness: StockFreshness }) {
+  if (!freshness.label) return null;
+  const stale = freshness.band === "stale";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs whitespace-nowrap",
+        stale ? "bg-warning-soft text-warning-ink" : "bg-muted text-muted-foreground",
+      )}
+    >
+      <Clock3 className="size-3" aria-hidden />
+      {freshness.label.charAt(0).toUpperCase() + freshness.label.slice(1)}
+    </span>
+  );
+}
+
+/** Report that a customer opened a search result or one of its offers (P5.6). The API records it only for a
+ * signed-in customer with the search-measurement consent, and answers 204 either way. keepalive lets it finish
+ * after the page navigates away; nothing waits for it, and a failure is ignored. */
+function reportClick(listingId: number, group: string, position: number) {
+  try {
+    void fetch("/api/search/click", {
+      method: "POST",
+      keepalive: true,
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-NearShop-Client": "web" },
+      body: JSON.stringify({ listing_id: listingId, group, position }),
+    }).catch(() => undefined);
+  } catch {
+    // Never let measurement get in the way of opening the result.
+  }
+}
 
 export function ResultCard({
   group,
@@ -21,8 +59,16 @@ export function ResultCard({
   onHover?: (shopIds: number[] | null) => void;
 }) {
   const best = group.best_offer;
+  const freshness = (best as typeof best & { freshness?: StockFreshness }).freshness;
   const others = group.offers.filter((o) => o.id !== best.id).slice(0, 3);
   const outOfStock = group.in_stock_count === 0;
+  // index is the card's 0-based place in the loaded list; positions are 1-based. Middle clicks open a tab too.
+  const opened = (listingId: number) => ({
+    onClick: () => reportClick(listingId, group.key, index + 1),
+    onAuxClick: (e: MouseEvent) => {
+      if (e.button === 1) reportClick(listingId, group.key, index + 1);
+    },
+  });
 
   return (
     // CSS entrance (tw-animate-css), staggered for the first rows; no animation library on first load (P2.9).
@@ -37,7 +83,7 @@ export function ResultCard({
         outOfStock && "opacity-80",
       )}
     >
-      <Link href={`/product/${best.id}`} className="flex gap-4 rounded-2xl p-4" aria-label={`${group.name}, from ${formatPrice(group.min_price)}`}>
+      <Link href={`/product/${best.id}`} {...opened(best.id)} className="flex gap-4 rounded-2xl p-4" aria-label={`${group.name}, from ${formatPrice(group.min_price)}`}>
         <ProductThumb icon={group.icon} imageUrl={group.image_url} thumbnailUrl={group.thumbnail_url} category={group.category} alt="" size="lg" className="max-sm:size-20" />
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
@@ -55,7 +101,7 @@ export function ResultCard({
 
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
             <StockPill status={best.stock_status} quantity={best.quantity} />
-            <Freshness at={best.stock_updated_at} />
+            {freshness?.label ? <FreshnessLabel freshness={freshness} /> : <Freshness at={best.stock_updated_at} />}
           </div>
 
           <div className="mt-3 flex items-center gap-2 text-sm">
@@ -92,6 +138,7 @@ export function ResultCard({
               <li key={o.id}>
                 <Link
                   href={`/product/${o.id}`}
+                  {...opened(o.id)}
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors hover:bg-accent",
                     o.quantity <= 0 && "text-muted-foreground line-through decoration-muted-foreground/40",
@@ -105,7 +152,7 @@ export function ResultCard({
             ))}
             {group.shop_count > 4 && (
               <li>
-                <Link href={`/product/${best.id}#compare`} className="inline-flex items-center gap-0.5 rounded-full px-2 py-1 text-xs font-medium hover:bg-accent">
+                <Link href={`/product/${best.id}#compare`} {...opened(best.id)} className="inline-flex items-center gap-0.5 rounded-full px-2 py-1 text-xs font-medium hover:bg-accent">
                   Compare all <ChevronRight className="size-3" />
                 </Link>
               </li>

@@ -92,6 +92,63 @@ RATING = {"bsonType": INT, "minimum": 1, "maximum": 5}
 RATING_N = {"oneOf": [{"bsonType": "null"}, RATING]}
 POSITIVE_INT = {"bsonType": INT, "minimum": 1}
 NON_NEGATIVE = {"bsonType": NUM, "minimum": 0}
+# Kannada, Telugu and Hindi names of a catalog item plus Latin transliterations, normalised (P5.2,
+# database/seed/data/local_terms.json). Matched token for token by search's keyword stage.
+LOCAL_TERMS = {"bsonType": "array", "maxItems": 100, "items": {"bsonType": STR, "minLength": 1, "maxLength": 100}}
+
+
+def _closed(required: list[str], **properties: dict) -> dict:
+    """A sub-document that may hold only the named properties."""
+    return {"bsonType": "object", "required": required, "additionalProperties": False, "properties": properties}
+
+
+GROUP_KEY = {"bsonType": STR, "pattern": "^[cp][0-9]{1,18}$"}  # a result group: c<catalog item id> or p<listing id>
+SEARCH_ID = {"bsonType": STR, "pattern": "^[0-9a-f]{24}$"}
+EVENT_POSITION = {"bsonType": INT, "minimum": 1, "maximum": 1000}
+EVENT_TOP = {"bsonType": "array", "maxItems": 20, "items": GROUP_KEY}
+# Search events (P5.6): see the comment on "search_events" in VALIDATORS.
+SEARCH_EVENT_VALIDATOR = {"$jsonSchema": {
+    "bsonType": "object",
+    "required": ["_id", "created_at", "query", "redacted", "language", "sort", "filters", "radius_km", "lat", "lng",
+                 "results_count", "corrected", "ranking", "impressions", "clicks", "conversions"],
+    "additionalProperties": False,
+    "properties": {
+        "_id": SEARCH_ID,
+        "created_at": {"bsonType": DATE},
+        "query": {"bsonType": STR, "maxLength": 60},
+        "redacted": {"bsonType": BOOL},
+        "language": {"bsonType": STR, "minLength": 2, "maxLength": 8},
+        "category": {"bsonType": STR_N, "maxLength": 80},
+        "sort": {"enum": ["relevance", "distance", "price_asc", "price_desc"]},
+        "filters": _closed(["min_price", "max_price", "in_stock_only", "fulfillment"],
+                           min_price={"bsonType": NUM_N}, max_price={"bsonType": NUM_N},
+                           in_stock_only={"bsonType": BOOL}, fulfillment={"enum": ["pickup", "delivery", None]}),
+        "radius_km": NON_NEGATIVE,
+        "lat": {"bsonType": NUM, "minimum": -90, "maximum": 90},
+        "lng": {"bsonType": NUM, "minimum": -180, "maximum": 180},
+        "results_count": {"bsonType": INT, "minimum": 0},
+        "corrected": {"bsonType": BOOL},
+        "ranking": {"bsonType": STR, "minLength": 1, "maxLength": 40},
+        "impressions": {"bsonType": "array", "maxItems": 60, "items": _closed(
+            ["group", "listing", "position"], group=GROUP_KEY, listing={"bsonType": INT},
+            position={"bsonType": INT, "minimum": 1, "maximum": 60})},
+        "clicks": {"bsonType": "array", "maxItems": 50, "items": _closed(
+            ["group", "listing", "position", "at"], group=GROUP_KEY, listing={"bsonType": INT},
+            position=EVENT_POSITION, at={"bsonType": DATE})},
+        "conversions": {"bsonType": "array", "maxItems": 50, "items": _closed(
+            ["kind", "group", "position", "at"], kind={"enum": ["reservation", "order"]}, group=GROUP_KEY,
+            position=EVENT_POSITION, at={"bsonType": DATE})},
+        "previous_search_id": {"oneOf": [{"bsonType": "null"}, SEARCH_ID]},
+        "shadow": {"oneOf": [{"bsonType": "null"}, _closed(
+            ["label", "ranking", "keyword", "vector", "production_label", "top", "production_top", "results_count",
+             "production_results_count", "ms", "production_ms"],
+            label={"bsonType": STR, "maxLength": 200}, ranking={"bsonType": STR, "maxLength": 40},
+            keyword={"bsonType": STR, "maxLength": 80}, vector={"bsonType": STR, "maxLength": 120},
+            production_label={"bsonType": STR, "maxLength": 200}, top=EVENT_TOP, production_top=EVENT_TOP,
+            results_count={"bsonType": INT, "minimum": 0}, production_results_count={"bsonType": INT, "minimum": 0},
+            ms=NON_NEGATIVE, production_ms=NON_NEGATIVE)]},
+    },
+}}
 
 # The shop verification actions admins take (P3.3, app/api/routes/admin.py), each one row in admin_audit.
 SHOP_AUDIT_ACTIONS = ("shop_phone_verified", "shop_verification_approve", "shop_verification_reject",
@@ -133,6 +190,7 @@ VALIDATORS: dict[str, dict] = {
         ["slug", "name", "category_id", "specs", "tags"],
         slug=STR, name=STR, brand=STR_N, category_id=INT, subcategory=STR_N, mrp=NUM_N, typical_price=NUM_N,
         specs="object", tags={"bsonType": "array", "items": {"bsonType": STR}},
+        local_terms=LOCAL_TERMS,
     ),
     "shops": schema(
         ["owner_id", "name", "slug", "address_line", "city", "location", "offers_pickup", "offers_delivery",
@@ -162,6 +220,7 @@ VALIDATORS: dict[str, dict] = {
         quantity={"bsonType": INT, "minimum": 0},  # stock can never go negative, whatever the code does
         low_stock_threshold={"bsonType": INT, "minimum": 0}, is_active=BOOL, stock_updated_at=DATE,
         created_at=DATE, updated_at=DATE,
+        local_terms=LOCAL_TERMS,  # copied from the catalog item (migration 8); optional
     ),
     "inventory_events": schema(
         ["product_id", "shop_id", "delta", "quantity_after", "reason", "created_at"],
@@ -327,6 +386,56 @@ VALIDATORS: dict[str, dict] = {
         notice_version={"bsonType": STR, "minLength": 1, "maxLength": 40}, granted=BOOL, at=DATE,
         source={"enum": ["web"]},
     ),
+    # Search synonyms managed by admins (P5.4, app/services/synonyms.py; migration 9 imported the 42 that were
+    # in code). term is normalised and unique; expansions are OR'd into the keyword search. Every write bumps
+    # the shared synonyms version in cache_versions (checked every 5 seconds) and the counters document
+    # synonyms_version (checked every 30 seconds).
+    "synonyms": schema(
+        ["term", "expansions", "active", "created_at", "updated_at"],
+        term={"bsonType": STR, "minLength": 1, "maxLength": 40},
+        expansions={"bsonType": "array", "minItems": 1, "maxItems": 20,
+                    "items": {"bsonType": STR, "minLength": 1, "maxLength": 40}},
+        languages={"bsonType": "array", "maxItems": 5, "items": {"bsonType": STR, "maxLength": 8}},
+        active=BOOL, created_by=INT_N, updated_by=INT_N, created_at=DATE, updated_at=DATE,
+    ),
+    # Shared cache versions (P8.1, app/core/cache_version.py): one document per in-memory cache that every API
+    # process keeps, _id its name (listings, synonyms), version (bumped after each committed change to what it
+    # holds) and updated_at. Each process reads them all, in one query, at most once every 5 seconds.
+    "cache_versions": {"$jsonSchema": {"bsonType": "object", "required": ["_id", "version", "updated_at"],
+                                       "properties": {
+        "_id": {"enum": ["listings", "synonyms"]}, "version": POSITIVE_INT, "updated_at": {"bsonType": DATE},
+    }}},
+    # Search interaction events (P5.6, app/services/search_events.py; plan sections 8.4 and 8.6): one document per
+    # search by a signed-in customer with the search-measurement consent. _id is a random search id. Nothing in it
+    # identifies a person: additionalProperties is false, so a user id, session id, IP address, user agent, phone,
+    # email, or reservation or order id can never be written. query is the normalised query only when it is 60
+    # characters or fewer and passes the P5.5 blocklist (otherwise "" with redacted true); lat and lng are rounded
+    # to 2 decimals. The TTL index on created_at deletes an event after 90 days.
+    "search_events": SEARCH_EVENT_VALIDATOR,
+    # Atlas Search's synonym source (P5.7, app/ai/atlas_search.py): one explicit mapping per active synonyms entry
+    # (P5.4), _id the entry's id, generated by app/services/synonyms.py on every save while an Atlas keyword engine
+    # is configured or the collection holds mappings. input is the entry's term; synonyms are the term and its
+    # expansions. Atlas reads at most 10,000 documents from a synonym source; P5.4 allows 500 entries.
+    "search_synonyms": schema(
+        ["mappingType", "input", "synonyms"],
+        mappingType={"enum": ["explicit"]},
+        input={"bsonType": "array", "minItems": 1, "maxItems": 1,
+               "items": {"bsonType": STR, "minLength": 1, "maxLength": 40}},
+        synonyms={"bsonType": "array", "minItems": 2, "maxItems": 21,
+                  "items": {"bsonType": STR, "minLength": 1, "maxLength": 40}},
+    ),
+    # Listing vectors for Atlas Vector Search (P5.7, app/ai/atlas_search.py): one document per active listing, _id
+    # the listing's id, with its shop, the model and its text_embeddings key, and the vector as a BSON float32
+    # vector. app/ai/semantic_index.py (ListingVectorSync) keeps it in step before each atlas_vector query, with the
+    # in-process index's version check, watermark and nightly full pass, reusing the text_embeddings vectors, so it
+    # is written only while the vector engine or the shadow engine pair is atlas_vector.
+    "listing_vectors": schema(
+        ["product_id", "shop_id", "is_active", "model", "key", "vector", "updated_at"],
+        product_id=INT, shop_id=INT, is_active=BOOL, model={"bsonType": STR, "minLength": 1, "maxLength": 120},
+        key=STR, vector={"bsonType": "binData"}, updated_at=DATE,
+    ),
+    # No validators: `counters` ({_id: collection name, seq}; also synonyms_version) and `text_embeddings`
+    # (binary vector cache).
     # Grievances (P3.8, app/api/routes/grievances.py): acknowledged on receipt, resolution due 30 days later
     # (due_at). contact is the complainant's email (lower-cased) or 10-digit mobile number; order_code is the order
     # or reservation code they named, with order_id or reservation_id when it matched one.
@@ -455,13 +564,13 @@ VALIDATORS: dict[str, dict] = {
             "expires_at": {"bsonType": DATE}, "outcome": {"enum": ["sent", "fresh", "unreachable", None]},
         },
     }},
-    # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
     "counters": {},
     "text_embeddings": {},
 }
 
 A, D = ASCENDING, DESCENDING
 ADMIN_AUDIT_KEEP_SECONDS = 365 * 24 * 60 * 60  # admin_audit rows are kept for one year
+SEARCH_EVENTS_KEEP_SECONDS = 90 * 24 * 60 * 60  # search_events are deleted 90 days after creation (P5.6)
 # Retention (P3.2; plan section 8.4; docs/legal/retention.md). Built on existing databases by migration 4.
 SEARCH_HISTORY_KEEP_SECONDS = 180 * 24 * 60 * 60  # search_history rows are deleted after 180 days
 NOTIFICATIONS_KEEP_SECONDS = 90 * 24 * 60 * 60  # notifications are deleted after 90 days
@@ -499,6 +608,7 @@ INDEXES: dict[str, list[IndexModel]] = {
     "catalog_items": [
         IndexModel([("slug", A)], unique=True, name="uq_slug"),
         IndexModel([("category_id", A), ("name", A)], name="category_name"),
+        IndexModel([("local_terms", A)], name="local_terms"),  # multikey; search's local-term match (P5.2)
     ],
     "shops": [
         IndexModel([("slug", A)], unique=True, name="uq_slug"),
@@ -513,6 +623,9 @@ INDEXES: dict[str, list[IndexModel]] = {
                    partialFilterExpression={"catalog_item_id": IS_INT}),
         IndexModel([("catalog_item_id", A), ("is_active", A)], name="catalog_item_active"),
         IndexModel([("category_id", A), ("is_active", A)], name="category_active"),
+        IndexModel([("local_terms", A)], name="local_terms"),  # multikey; search's local-term match (P5.2)
+        # The semantic index's incremental refresh: the listings changed since its watermark (P8.1).
+        IndexModel([("updated_at", A)], name="updated"),
         # Keyword half of hybrid search (replaces SQLite FTS5): weighted, stemmed text index.
         IndexModel([("name", TEXT), ("brand", TEXT), ("keywords", TEXT), ("description", TEXT)],
                    weights={"name": 10, "brand": 6, "keywords": 4, "description": 1},
@@ -581,6 +694,10 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("customer_id", A), ("sold_at", D)], name="customer_sold",
                    partialFilterExpression={"customer_id": IS_INT}),
         IndexModel([("catalog_item_id", A)], name="catalog_item"),
+        # P7.2: one imported row per shop, product, date and bill (basket_id carries the date and bill number), so
+        # a sales report can never be imported twice. Only imported rows: reservations and orders are left alone.
+        IndexModel([("shop_id", A), ("product_id", A), ("sold_at", A), ("basket_id", A)], name="uq_import_sale",
+                   unique=True, partialFilterExpression={"source": SaleSource.IMPORT.value}),
     ],
     "model_runs": [IndexModel([("name", A), ("created_at", D)], name="name_created")],
     "recommendations": [IndexModel([("antecedent_key", A)], name="antecedent_key")],
@@ -605,6 +722,14 @@ INDEXES: dict[str, list[IndexModel]] = {
     # MongoDB's TTL monitor deletes a counter about a minute after its window ends; the limiter never relies on
     # that, because a new window has a new _id and a cooldown is checked against expires_at.
     "rate_limits": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
+    "synonyms": [IndexModel([("term", A)], unique=True, name="uq_term")],
+    "search_events": [
+        # Expiry, and the online metrics' window reads (created_at at or after a date).
+        IndexModel([("created_at", A)], expireAfterSeconds=SEARCH_EVENTS_KEEP_SECONDS, name="created_ttl_90d"),
+        # The shadow comparison: only shadowed searches.
+        IndexModel([("shadow.label", A), ("created_at", A)], name="shadow_label_created",
+                   partialFilterExpression={"shadow.label": {"$type": "string"}}),
+    ],
     "consents": [
         IndexModel([("user_id", A), ("purpose", A), ("at", D)], name="user_purpose_at"),  # the row in force
         IndexModel([("purpose", A), ("at", D)], name="purpose_at"),
