@@ -178,6 +178,125 @@ the Atlas cluster is in the same region as the API.
 | Atlas region, production / staging | not confirmed / not confirmed |
 | Decision | Not decided: waiting for the measurements |
 
+## City scale (P8.2)
+
+Plan section 8.11, "At city scale": the same targets at 50,000 listings and 500 shops. Scorecard check 4.4 at
+that size. Prompt P8.2; the engine decision it follows is docs/search/engine-decision.md (P5.7: keep the text
+index and the in-process vector index).
+
+**Status (22 Oct 2026): the search changes and the data generator are in; the staging run at city scale has not
+happened.** The five numbers below stay "not measured" until it has.
+
+### What changed in search (backend/app/services/search.py)
+
+- **Radius cap.** Search covers at most 25 km (MAX_RADIUS_KM). GET /api/search still accepts up to 50 km, so
+  older links keep working, but searches 25. The site's radius slider stops at 15 km.
+- **Only the shops in radius.** The text-index query and the local-term match filter by the ids of the shops in
+  radius. The in-process semantic index scores only the listings fetched in radius, with the same similarities
+  as before. P5.7 kept both engines, so both stages needed this. The Atlas candidates already filter by shop.
+- **Narrow reads.** Every listing in radius that passes the filters is read with seven fields: shop,
+  catalogue item, category, price, quantity, stock confirmation time and photo key (RANK_FIELDS). Ranking,
+  grouping, the counts and the map pins all work from these. Name, brand, unit, icon, MRP, low-stock
+  threshold and the active flag (DISPLAY_FIELDS) are read only for the offers the page shows. Description,
+  specs, keywords and local terms are never read.
+- **Candidate cap.** One search reads at most 2,000 listings in full (MAX_CANDIDATES), best ranked first. A page
+  of 50 groups needs at most 350.
+- **Same ranking.** Groups, scores, totals, pins and category counts are exactly what the uncapped version
+  gives. backend/tests/test_search_scale.py checks this on a test database with 2,198 active listings in radius,
+  more than the cap: the top 20 match field for field in 20 cases, covering queries, filters, sorts, browsing and
+  a second page.
+
+Why the cap is applied after grouping and not before: in the 50,000-listing database, 5 of the 50 load-test
+queries pass the relevance cutoff with more than 2,000 listings. For example, "sports shoes" has 3,219 listings
+in 19 groups, because many shops list the same catalogue item. Cutting at 2,000 listings before grouping would
+drop whole groups from the top 20, or shrink their shop counts and price ranges. So every candidate goes into
+grouping, using only its RANK_FIELDS, and the cap limits the full reads.
+
+### The data generator
+
+backend/loadtest/locustfile.py generate-city builds on the P5.7 --scale option. It takes a freshly seeded
+database to 500 active shops and 50,000 active listings. Synthetic shops copy a seeded shop and stand within about
+2 km of it, using the scale option's fixed random seed. Each one gets 100 or so listings: the copied shop's own,
+then catalogue items it does not list yet. It runs only where a seed may run (the P1.1 guard): development and
+test against a local MongoDB, or demo. It never runs in staging or production, and --confirm-db must repeat the
+database name. Run it twice and nothing more is added.
+
+    cd backend && NEARSHOP_ENVIRONMENT=<development|demo> NEARSHOP_MONGODB_URI=<uri> NEARSHOP_MONGODB_DB=<db> \
+      uv run python loadtest/locustfile.py generate-city --confirm-db <db>
+
+Locally, seed the database with make eval EVAL_DB=nearshop_eval_city, then run the generator against it. The
+generator writes only shops and listings, so the snapshot's fingerprint still matches, and later make eval runs
+with EVAL_DB=nearshop_eval_city measure at city scale.
+
+### Local measurements (not the staging targets)
+
+Measured on 22 Oct 2026 on a development laptop (Apple silicon), with a local MongoDB 8.2.2 single-node replica
+set, all-MiniLM-L6-v2 embeddings, ranking r1 and the text plus in-process engines. Each figure is from a second
+run, so seeding is not included. These are tooling figures: the dev split is still the 6 synthetic rows.
+
+| Data | Code | Dev nDCG@10 | Zero-result | Search p95 | Ops per search | RSS after load / peak |
+|---|---|---:|---:|---:|---:|---:|
+| 1,351 listings, 49 shops (seed) | before | 0.8588 | 0.000 | 13.9 ms | 6.3 | not comparable |
+| 1,351 listings, 49 shops (seed) | after | 0.8588 | 0.000 | 9.3 ms | 7.3 | 286 / 285 MB |
+| 50,000 listings, 1,814 shops (--scale 50000) | before | 0.8703 | 0.000 | 408.9 ms | 9.3 | 549 / 621 MB |
+| 50,000 listings, 1,814 shops (--scale 50000) | after | 0.8703 | 0.000 | 122.8 ms | 9.3 | 497 / 514 MB |
+| 50,000 listings, 500 shops (generate-city) | after | 0.8650 | 0.000 | 101.8 ms | 9.3 | 487 / 506 MB |
+
+Notes on the table:
+
+- Before and after, every dev query returns the same ranked items and the same totals at both sizes.
+- On the seed data, operations per search rise by one: the extra read of the shown offers. At 50,000 listings
+  the count stays at 9.3, because the narrow read needs fewer getMore batches.
+- "Before" memory at 1,351 listings is left out because that figure came from the seeding run.
+
+**Test split, run once on the final version.** 1,351 listings: nDCG@10 0.8106, Recall@20 0.900, zero-result rate
+0.000. P5.5 recorded r1 on the same rows at 0.8106 (docs/search/tuning-report.md). The drop is 0.000, inside
+P8.2's 0.005 bound, and the zero-result rate did not rise.
+
+**run_search time.** The 50 load-test queries plus one browse, each searched once from the city centre, on the
+500-shop, 50,000-listing database:
+
+| Radius | Code | p50 | p95 | Browse (no query) |
+|---|---|---:|---:|---:|
+| 5 km | before | 371 ms | 447 ms | 493 ms |
+| 5 km | after | 128 ms | 159 ms | 225 ms |
+| 25 km | before | 397 ms | 522 ms | 685 ms |
+| 25 km | after | 116 ms | 230 ms | 151 ms |
+
+Other test runs shared the laptop, so treat these figures as accurate to about ±50 ms. Before the change,
+building a model for every listing in radius cost about 400 ms at this size. After it, the largest part is the
+narrow read of every listing in radius, about 60 ms for 50,000 rows. A covering index for that read saved only
+7 ms in a trial, so none was added (database/schema.py is unchanged).
+
+**Memory.** The in-process semantic index still holds a vector for every active listing in the city, about
+77 MB at 50,000, because it now scores only the rows in radius but keeps the whole matrix. Each API process holds
+one. Atlas Vector Search, a P5.7 candidate, would remove it.
+
+### Before the staging run at city scale
+
+Staging cannot be filled by the generator, because the P1.1 guard refuses staging. Use a temporary database
+instead:
+
+1. Create a temporary Flex cluster for the run. It must not be listed in NEARSHOP_PROTECTED_HOSTS.
+2. Seed it with the seed module under NEARSHOP_ENVIRONMENT=demo and --confirm-db (README).
+3. Run generate-city against it, also under NEARSHOP_ENVIRONMENT=demo.
+4. For the run only, point staging's NEARSHOP_MONGODB_URI and NEARSHOP_MONGODB_DB at the cluster, and resize
+   staging to Standard (Before a run, step 1).
+5. Use seeded accounts as the test accounts (Before a run, step 4).
+6. Run make loadtest as above, first with the default 5 km and then with NEARSHOP_LOADTEST_RADIUS_KM=25, the
+   worst case.
+7. Afterwards, restore staging's URI and plan, and delete the cluster. Record both dates in the release log.
+
+### Targets at 50,000 listings and 500 shops (plan section 8.11)
+
+| Target | Measured | Result |
+|---|---|---|
+| Search server p95 of 600 ms or less | not measured | Fail: not measured yet |
+| End-to-end search p95 from India of 1,200 ms or less | not measured | Fail: not measured yet |
+| Error rate below 0.5% | not measured | Fail: not measured yet |
+| Peak memory of 75% of instance RAM or less (1,536 MB of 2 GB) | not measured | Fail: not measured yet |
+| Pool queue wait p95 of 50 ms or less | not measured | Fail: not measured yet |
+
 ## Tooling check (not a measurement)
 
 This only checks that the scripts work. It is not a capacity figure. On 20 Oct 2026 the script ran for

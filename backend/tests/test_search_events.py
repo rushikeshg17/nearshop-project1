@@ -152,7 +152,9 @@ def test_the_database_refuses_an_event_with_an_identifying_field(consented):
 
 
 def test_an_auto_corrected_search_is_one_event_with_the_corrected_flag(consented, monkeypatch):
-    monkeypatch.setattr(search_module.index, "query", lambda db, text: {})  # keyword matches only: none for tefloon
+    # Keyword matches only: none for tefloon. Search scores only the listings in radius (P8.2), through
+    # nearby_similarities rather than index.query.
+    monkeypatch.setattr(search_module, "nearby_similarities", lambda db, text: lambda ids: {})
     body = consented.get("/api/search", params={**SEARCH, "q": "tefloon"}).json()
     assert body["corrected_from"] == "tefloon"
     [event] = events()

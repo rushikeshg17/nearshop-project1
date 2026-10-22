@@ -20,6 +20,8 @@ def search(
     q: str = Query("", max_length=120),
     lat: float | None = Query(None, ge=-90, le=90),
     lng: float | None = Query(None, ge=-180, le=180),
+    # Up to 50 km is still accepted (links and clients from before P8.2); run_search searches at most
+    # MAX_RADIUS_KM, 25 km. The requested radius stays in the search's filters (P5.6 interaction logging).
     radius_km: float = Query(5, gt=0, le=50),
     category: str | None = None,
     min_price: float | None = Query(None, ge=0),

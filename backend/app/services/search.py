@@ -10,25 +10,42 @@ fusion, grouping, filters and the ranking config are NearShop's own with every e
 
 Results are grouped by catalog item so a customer sees "Samsung 25W charger: 4 shops nearby
 from Rs 1,249" and can compare shops, instead of four near-identical cards.
+
+Cost at city scale (P8.2; docs/perf/baseline.md)
+------------------------------------------------
+A search reads the city in proportion to its radius, never more:
+
+  - the radius is capped at MAX_RADIUS_KM (25 km); a wider one is searched at 25 km;
+  - the keyword query (the text index, and the local-term match) asks only about the listings of the shops in
+    radius, and the in-process semantic index scores only the listings in radius. The Atlas stages (P5.7) already
+    filter by those shops;
+  - every listing in radius that passes the filters is read with RANK_FIELDS only: what relevance, grouping,
+    the group scores, the counts and the map pins need. Ranking, grouping and counting run on those rows, so every
+    group, its rank and the totals are exactly what they would be with whole documents;
+  - only the listings a page shows (each group's best offer and up to six offers) are then read in full, with
+    DISPLAY_FIELDS, at most MAX_CANDIDATES (2,000) of them, the best ranked first. A candidate listing is never
+    built into a model or serialised unless it is shown.
 """
 from __future__ import annotations
 
 import re
 import time
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from functools import lru_cache
 
+import numpy as np
 from rapidfuzz import fuzz, process
 
-from app.ai import atlas_search
+from app.ai import atlas_search, semantic_index
 from app.ai.semantic_index import OVERLAP, index, listing_sync, nightly_slot
 from app.core import cache_version
 from app.core.config import SEARCH_SIMILARITY_SCALE, EnginePair, RankingConfig, settings
 from app.core.database import Database, utcnow
 from app.models import Product, SearchEvent, Shop
-from app.schemas.serializers import STALE_DAYS, freshness, listing, shop_brief
+from app.schemas.serializers import STALE_DAYS, freshness, listing, media_url, shop_brief, thumbnail_url
 from app.services.loaders import categories, category_by_slug, with_categories, with_category
 from app.utils.geo import haversine_km, within_km
 from app.utils.text import expand_synonyms, is_word, normalize_query, search_tokens, word_parts
@@ -43,8 +60,17 @@ W_LOCAL_TERM = settings.ranking.w_local_term
 # The similarity scale the semantic index returns (config.SEARCH_SIMILARITY_SCALE, the all-MiniLM-L6-v2
 # calibration); r1's sem_floor and sem_ceil equal it, and a tuned config maps from this scale with its own.
 SEM_FLOOR, SEM_CEIL = SEARCH_SIMILARITY_SCALE.sem_floor, SEARCH_SIMILARITY_SCALE.sem_ceil
-# Search results never show these, so they are not fetched.
-LISTING_FIELDS = {"description": 0, "specs": 0}
+# City scale (P8.2; module docstring). A wider radius is searched at MAX_RADIUS_KM.
+MAX_RADIUS_KM = 25.0
+# The most listings one search reads in full (DISPLAY_FIELDS), best ranked first.
+MAX_CANDIDATES = 2000
+# Read for every listing in radius that passes the filters: relevance, grouping, group scores (stock, distance,
+# freshness), prices, category counts, map pins and the group's photo.
+RANK_FIELDS = {"shop_id": 1, "catalog_item_id": 1, "category_id": 1, "price": 1, "quantity": 1,
+               "stock_updated_at": 1, "image_path": 1}
+# Read, on top of RANK_FIELDS, only for the listings a page shows. Search results never show the description,
+# specs, keywords or local terms, so those are never fetched.
+DISPLAY_FIELDS = {"name": 1, "brand": 1, "unit": 1, "icon": 1, "mrp": 1, "low_stock_threshold": 1, "is_active": 1}
 # What run_search reports as engine.keyword, per keyword engine (P5.7); the P5.6 shadow labels use the same names.
 KEYWORD_ENGINE_LABELS = {"text": "mongodb-text-index", "atlas_search": "atlas-search"}
 ATLAS_VECTOR_LABEL = "atlas-vector-search"
@@ -111,14 +137,17 @@ def _completions(db: Database, tokens: list[str]) -> list[str]:
     return sorted(w for w in _vocabulary(db) if w.startswith(last) and w != last)[:8]
 
 
-def keyword_scores(db: Database, terms: list[str]) -> dict[int, float]:
-    """Text-index relevance over name/brand/keywords/description (weights 10/6/4/1). Higher = better."""
+def keyword_scores(db: Database, terms: list[str], shop_ids: list[int] | None = None) -> dict[int, float]:
+    """Text-index relevance over name/brand/keywords/description (weights 10/6/4/1). Higher = better. With
+    shop_ids, only the listings of those shops (search: the shops in radius, P8.2); without, every listing."""
     tokens = search_tokens(terms)
-    if not tokens:
+    if not tokens or shop_ids == []:
         return {}
     tokens += _completions(db, tokens)
-    rows = db.products.find_raw({"$text": {"$search": " ".join(dict.fromkeys(tokens))}},
-                                {"score": {"$meta": "textScore"}})
+    query: dict = {"$text": {"$search": " ".join(dict.fromkeys(tokens))}}
+    if shop_ids is not None:
+        query["shop_id"] = {"$in": shop_ids}
+    rows = db.products.find_raw(query, {"score": {"$meta": "textScore"}})
     return {r["_id"]: r["score"] for r in rows}
 
 
@@ -143,12 +172,14 @@ def _local_term_candidates(norm: str) -> list[str]:
     return list(dict.fromkeys(w for w in out if w))
 
 
-def local_term_scores(db: Database, norm: str, w_local_term: float | None = None) -> dict[int, float]:
+def local_term_scores(db: Database, norm: str, w_local_term: float | None = None,
+                      shop_ids: list[int] | None = None) -> dict[int, float]:
     """Listings whose local_terms contain a word, adjacent pair or the whole of the normalised query, scored
     w_local_term (the ranking config's, by default) per matched term. Listings created from the catalogue after
-    migration 4 copied the terms are matched through their catalog item's own local_terms."""
+    migration 4 copied the terms are matched through their catalog item's own local_terms. With shop_ids, only
+    the listings of those shops (P8.2); the catalogue match stays city-wide, as the catalogue is shared."""
     candidates = _local_term_candidates(norm)
-    if not norm or not candidates:
+    if not norm or not candidates or shop_ids == []:
         return {}
     weight = settings.ranking.w_local_term if w_local_term is None else w_local_term
     wanted = set(candidates)
@@ -157,8 +188,11 @@ def local_term_scores(db: Database, norm: str, w_local_term: float | None = None
     clauses: list[dict] = [{"local_terms": {"$in": candidates}}]
     if by_item:
         clauses.append({"catalog_item_id": {"$in": list(by_item)}})
+    query: dict = {"$or": clauses}
+    if shop_ids is not None:
+        query["shop_id"] = {"$in": shop_ids}
     out: dict[int, float] = {}
-    for r in db.products.find_raw({"$or": clauses}, {"local_terms": 1, "catalog_item_id": 1}):
+    for r in db.products.find_raw(query, {"local_terms": 1, "catalog_item_id": 1}):
         own = len(wanted.intersection(r.get("local_terms") or []))
         matched = max(own, by_item.get(r.get("catalog_item_id"), 0))
         if matched:
@@ -169,19 +203,54 @@ def local_term_scores(db: Database, norm: str, w_local_term: float | None = None
 def _keyword_stage(db: Database, norm: str, expanded: list[str], engine: str = "text",
                    shop_ids: list[int] | None = None) -> tuple[dict[int, float], dict[int, int]]:
     """Keyword scores from the chosen engine, and the number of local terms each listing matched (weighted later,
-    by the ranking config). Atlas Search is asked only about the listings of shop_ids."""
+    by the ranking config). Every engine is asked only about the listings of shop_ids (P8.2)."""
+    shop_ids = shop_ids or []
     if engine == "atlas_search":
-        kw = atlas_keyword_scores(db, norm, shop_ids or [])
+        kw = atlas_keyword_scores(db, norm, shop_ids)
     else:
-        kw = keyword_scores(db, norm.split() + expanded)
-    return kw, {pid: round(bonus) for pid, bonus in local_term_scores(db, norm, 1.0).items()}
+        kw = keyword_scores(db, norm.split() + expanded, shop_ids)
+    return kw, {pid: round(bonus) for pid, bonus in local_term_scores(db, norm, 1.0, shop_ids).items()}
 
 
-def _vector_stage(db: Database, norm: str, engine: str, shop_ids: list[int]) -> dict[int, float]:
+Scorer = Callable[[list[int]], dict[int, float]]
+
+
+def nearby_similarities(db: Database, norm: str) -> Scorer:
+    """The in-process index's query (semantic_index.SemanticIndex.query) split in two, so that only the listings in
+    radius are scored (P8.2): this brings the index up to date and embeds the query, side by side with the listing
+    fetch; the function it returns scores the given listing ids only, with the same similarities query gives them.
+    Ids the index does not hold (inactive, or added since its last refresh) get no score, as with query."""
+    index.ensure(db)
+    provider = semantic_index.get_provider()
+    if provider.name != index.snapshot.provider_name:  # the model setting changed since the build
+        index.mark_dirty()
+        index.ensure(db)
+        provider = semantic_index.get_provider()
+    snap = index.snapshot  # one consistent state, whatever another thread installs meanwhile
+    if len(snap.product_ids) == 0:
+        return lambda ids: {}
+    q = provider.embed([norm], "query")[0]
+
+    def score(ids: list[int]) -> dict[int, float]:
+        if not ids:
+            return {}
+        wanted = np.unique(np.asarray(ids, dtype=np.int64))
+        at = np.minimum(np.searchsorted(snap.product_ids, wanted), len(snap.product_ids) - 1)
+        rows = at[snap.product_ids[at] == wanted]
+        sims = semantic_index.to_search_scale(provider.name, snap.matrix[rows] @ q)
+        return dict(zip(snap.product_ids[rows].tolist(), sims.tolist(), strict=True))
+
+    return score
+
+
+def _vector_stage(db: Database, norm: str, engine: str, shop_ids: list[int]) -> Scorer:
+    """The vector stage, as a function of the listing ids to score. Atlas Vector Search is asked about the listings
+    of shop_ids only, so its scores need no further narrowing."""
     if engine == "atlas_vector":  # listing_vectors first catches up with the listings, as the matrix would
         listing_sync.ensure_quietly(db)
-        return atlas_search.vector_scores(db, norm, shop_ids)
-    return index.query(db, norm)
+        scores = atlas_search.vector_scores(db, norm, shop_ids)
+        return lambda ids: scores
+    return nearby_similarities(db, norm)
 
 
 def engine_labels(engines: EnginePair) -> tuple[str, str]:
@@ -198,11 +267,26 @@ def _norm_sem(sim: float, cfg: RankingConfig) -> float:
     return min(max((sim - cfg.sem_floor) / (cfg.sem_ceil - cfg.sem_floor), 0.0), 1.0)
 
 
+@dataclass
+class Fetched:
+    """What run_search fetches, none of it touched by the ranking config: the shops in radius, RANK_FIELDS of the
+    listings that pass the filters (in fetch order), keyword scores, local-term match counts and semantic
+    similarities. docs collects the DISPLAY_FIELDS of the listings shown so far, so that a re-ranking from a cache
+    reads only the listings it shows that no earlier ranking did; docs_ms is the time those reads took."""
+
+    shops: dict[int, tuple[Shop, float]]
+    rows: list[dict]
+    kw: dict[int, float]
+    local: dict[int, int]
+    sem: dict[int, float]
+    docs: dict[int, dict] = field(default_factory=dict)
+    docs_ms: float = 0.0
+
+
 def _candidates(db: Database, p: SearchParams, norm: str, expanded: list[str], now: datetime,
-                engines: EnginePair | None = None) -> tuple:
-    """Everything run_search fetches, none of it touched by the ranking config: the shops in radius, the
-    listings that pass the filters, keyword scores, local-term match counts and semantic similarities, the last
-    two from the chosen engines (settings.search_engines by default)."""
+                engines: EnginePair | None = None) -> Fetched:
+    """Everything run_search fetches before ranking (Fetched), the scores from the chosen engines
+    (settings.search_engines by default). Every stage is limited to the shops in radius (P8.2)."""
     engines = engines or settings.search_engines
     category = category_by_slug(db, p.category)
     shops = nearby_shops(db, p.lat, p.lng, p.radius_km, p.fulfillment, p.shop_id)
@@ -216,20 +300,43 @@ def _candidates(db: Database, p: SearchParams, norm: str, expanded: list[str], n
     if p.in_stock_only:  # in stock, and confirmed within STALE_DAYS (P7.4)
         query["quantity"] = {"$gt": 0}
         query["stock_updated_at"] = {"$gte": now - timedelta(days=STALE_DAYS)}
-    # Listings, keyword scores and semantic scores are independent: fetch them side by side.
+    # The listing rows, the keyword scores and the vector stage's query are independent: fetched side by side. The
+    # semantic similarities are then computed for the listings fetched, and only for them.
     shop_ids = list(shops)
-    products, (kw, local), sem = db.gather(
-        lambda: with_category(db, db.products.find(query, projection=LISTING_FIELDS)) if shops else [],
+    rows, (kw, local), scorer = db.gather(
+        lambda: db.products.find_raw(query, RANK_FIELDS) if shops else [],
         lambda: _keyword_stage(db, norm, expanded, engines.keyword, shop_ids) if norm else ({}, {}),
-        lambda: _vector_stage(db, norm, engines.vector, shop_ids) if norm else {},
+        lambda: _vector_stage(db, norm, engines.vector, shop_ids) if norm else None,
     )
-    return shops, products, kw, local, sem
+    sem = scorer([r["_id"] for r in rows]) if scorer is not None and rows else {}
+    return Fetched(shops, rows, kw, local, sem)
 
 
 def fetch_ms(cache: dict) -> float:
     """The milliseconds the fetches memoised in a run_search cache took. The P5.6 shadow ranking with an engine pair
     (app/services/search_events.py) times production with it instead of fetching production again."""
-    return sum(ms for _, ms in cache.values())
+    return sum(ms + fetched.docs_ms for fetched, ms in cache.values())
+
+
+def _freshness_multiplier(pool: list[dict], now: datetime) -> float:
+    """The freshness multiplier of the freshest offer in pool (P7.4): the multiplier only falls with age, so it is
+    the multiplier of the latest stock confirmation; an offer never confirmed counts as stale."""
+    latest = max((x["stock_updated_at"] for x in pool if x.get("stock_updated_at")), default=None)
+    return freshness(latest, now)["multiplier"]
+
+
+def _shown(db: Database, fetched: Fetched, rows: list[dict]) -> dict[int, Product]:
+    """The listings a page shows (candidate rows), as models: RANK_FIELDS from the rows, so they show what was
+    ranked, and DISPLAY_FIELDS read now for the listings no earlier ranking from the same fetch has shown. A listing
+    deleted meanwhile is left out."""
+    missing = [r["_id"] for r in rows if r["_id"] not in fetched.docs]
+    if missing:
+        started = time.perf_counter()
+        for doc in db.products.find_raw({"_id": {"$in": missing}}, DISPLAY_FIELDS):
+            fetched.docs[doc["_id"]] = doc
+        fetched.docs_ms += (time.perf_counter() - started) * 1000
+    out = [Product.model_validate({**fetched.docs[r["_id"]], **r}) for r in rows if r["_id"] in fetched.docs]
+    return {pr.id: pr for pr in with_category(db, out)}
 
 
 def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: bool = True,
@@ -241,22 +348,26 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
     shadows (P5.6, app/services/search_events.py), together with `now`, the time freshness is judged at
     (search_now() by default), so the shadow ranking re-ranks exactly the listings and scores the customer's
     search fetched. `engines` overrides the configured engines (P5.7: the evaluation harness and the shadow engine
-    pair); the cache keeps each engine pair's fetch apart, with the time it took (fetch_ms)."""
+    pair); the cache keeps each engine pair's fetch apart, with the time it took (fetch_ms). A radius above
+    MAX_RADIUS_KM is searched at MAX_RADIUS_KM (P8.2)."""
     cfg = ranking or settings.ranking
     engines = engines or settings.search_engines
+    if p.radius_km > MAX_RADIUS_KM:
+        p = replace(p, radius_km=MAX_RADIUS_KM)
     norm = normalize_query(p.q) if p.q else ""
     expanded = expand_synonyms(norm) if norm else []
     now = now or search_now()
     if cache is None:
-        shops, products, kw, local, sem = _candidates(db, p, norm, expanded, now, engines)
+        fetched = _candidates(db, p, norm, expanded, now, engines)
     else:
         key = (norm, p.lat, p.lng, p.radius_km, p.category, p.min_price, p.max_price, p.in_stock_only,
                p.fulfillment, p.shop_id, now if p.in_stock_only else None, engines)
         if key not in cache:
             started = time.perf_counter()
-            fetched = _candidates(db, p, norm, expanded, now, engines)
-            cache[key] = (fetched, (time.perf_counter() - started) * 1000)
-        (shops, products, kw, local, sem), _ = cache[key]
+            fresh = _candidates(db, p, norm, expanded, now, engines)
+            cache[key] = (fresh, (time.perf_counter() - started) * 1000)
+        fetched, _ = cache[key]
+    shops, rows, kw, local, sem = fetched.shops, fetched.rows, fetched.kw, fetched.local, fetched.sem
     if local:
         kw = dict(kw)
         for pid, matched in local.items():
@@ -264,19 +375,19 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
 
     relevance: dict[int, float] = {}
     if norm:
-        kw_max = max((kw.get(pr.id, 0.0) for pr in products), default=0.0) or 1.0
-        for pr in products:
-            k = kw.get(pr.id, 0.0) / kw_max
-            s = sem.get(pr.id, 0.0)
+        kw_max = max((kw.get(r["_id"], 0.0) for r in rows), default=0.0) or 1.0
+        for r in rows:
+            k = kw.get(r["_id"], 0.0) / kw_max
+            s = sem.get(r["_id"], 0.0)
             if k <= 0 and s < cfg.sem_min_match:
                 continue
-            relevance[pr.id] = cfg.w_semantic * _norm_sem(s, cfg) + cfg.w_keyword * k
+            relevance[r["_id"]] = cfg.w_semantic * _norm_sem(s, cfg) + cfg.w_keyword * k
         if relevance:
             best = max(relevance.values())
             relevance = {k: v for k, v in relevance.items() if v >= best * cfg.relative_cutoff}
-        products = [pr for pr in products if pr.id in relevance]
+        rows = [r for r in rows if r["_id"] in relevance]
     else:
-        relevance = {pr.id: 1.0 for pr in products}
+        relevance = {r["_id"]: 1.0 for r in rows}
 
     shop_cache: dict[int, dict] = {}
 
@@ -286,57 +397,40 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
             shop_cache[sid] = shop_brief(s, d)
         return shop_cache[sid]
 
-    # Group listings of the same catalog item.
-    groups: dict[str, list[Product]] = defaultdict(list)
-    for pr in products:
-        groups[f"c{pr.catalog_item_id}" if pr.catalog_item_id else f"p{pr.id}"].append(pr)
+    def km(x: dict) -> float:
+        return shops[x["shop_id"]][1]
 
+    # Group listings of the same catalog item, and rank the groups, on the candidate rows (RANK_FIELDS).
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        groups[f"c{r['catalog_item_id']}" if r.get("catalog_item_id") else f"p{r['_id']}"].append(r)
+
+    cats = categories(db)
     group_rows = []
     category_counts: dict[str, int] = defaultdict(int)
     for key, items in groups.items():
-        in_stock = [x for x in items if x.quantity > 0]
+        in_stock = [x for x in items if x["quantity"] > 0]
         pool = in_stock or items
-        nearest = min(shops[x.shop_id][1] for x in pool)
-        rel = max(relevance[x.id] for x in items)
+        nearest = min(km(x) for x in pool)
+        rel = max(relevance[x["_id"]] for x in items)
         proximity = max(0.0, 1 - nearest / max(p.radius_km, 0.5))
         score = cfg.w_relevance * rel + cfg.w_proximity * proximity + (cfg.w_in_stock if in_stock else 0.0)
         if not in_stock:
             score *= cfg.out_of_stock_factor
-        score *= max(freshness(x.stock_updated_at, now)["multiplier"] for x in pool)  # P7.4
-        prices = [x.price for x in pool]
+        score *= _freshness_multiplier(pool, now)  # P7.4
+        prices = [float(x["price"]) for x in pool]
         # Best offer: in stock, balancing price and distance.
         lo, hi = min(prices), max(prices)
-        best = min(
-            pool,
-            key=lambda x: ((x.price - lo) / (hi - lo) if hi > lo else 0) + shops[x.shop_id][1] / max(p.radius_km, 1),
-        )
-        offers = sorted(items, key=lambda x: (x.quantity <= 0, shops[x.shop_id][1]))
-        head = best
-        category_counts[head.category.slug] += 1
-        pictured = next((listing(x, now=now) for x in items if x.image_path), None)  # the group's photo, any offer's
-        group_rows.append(
-            {
-                "key": key,
-                "catalog_item_id": head.catalog_item_id,
-                "name": head.name,
-                "brand": head.brand,
-                "unit": head.unit,
-                "icon": head.icon,
-                "image_url": pictured["image_url"] if pictured else None,
-                "thumbnail_url": pictured["thumbnail_url"] if pictured else None,
-                "category": head.category.slug,
-                "min_price": min(x.price for x in pool),
-                "max_price": max(x.price for x in pool),
-                "mrp": head.mrp,
-                "nearest_km": round(nearest, 2),
-                "shop_count": len(items),
-                "in_stock_count": len(in_stock),
-                "relevance": round(rel, 3),
-                "score": round(score, 4),
-                "best_offer": listing(best, shop_json(best.shop_id), now),
-                "offers": [listing(x, shop_json(x.shop_id), now) for x in offers[:6]],
-            }
-        )
+        best = min(pool, key=lambda x: ((float(x["price"]) - lo) / (hi - lo) if hi > lo else 0)
+                   + km(x) / max(p.radius_km, 1))
+        offers = sorted(items, key=lambda x: (x["quantity"] <= 0, km(x)))[:6]
+        category_counts[cats[best["category_id"]].slug] += 1
+        group_rows.append({
+            "key": key, "relevance": round(rel, 3), "score": round(score, 4), "nearest_km": round(nearest, 2),
+            "shop_count": len(items), "in_stock_count": len(in_stock), "min_price": lo, "max_price": hi,
+            "best": best, "offers": offers,
+            "image_path": next((x["image_path"] for x in items if x.get("image_path")), None),  # any offer's photo
+        })
 
     sorters = {
         "relevance": lambda g: -g["score"],
@@ -354,15 +448,52 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
     start = (max(p.page, 1) - 1) * p.page_size
     page_rows = group_rows[start : start + p.page_size]
 
+    # Only the page's offers are read in full: at most MAX_CANDIDATES listings, in rank order.
+    to_show: dict[int, dict] = {}
+    for n, g in enumerate(page_rows):
+        offers = {x["_id"]: x for x in [g["best"], *g["offers"]] if x["_id"] not in to_show}
+        if len(to_show) + len(offers) > MAX_CANDIDATES:
+            page_rows = page_rows[:n]
+            break
+        to_show.update(offers)
+    shown = _shown(db, fetched, list(to_show.values()))
+    page_groups = []
+    for g in page_rows:
+        best_offer = shown.get(g["best"]["_id"])
+        if best_offer is None:  # deleted since the fetch
+            continue
+        page_groups.append({
+            "key": g["key"],
+            "catalog_item_id": best_offer.catalog_item_id,
+            "name": best_offer.name,
+            "brand": best_offer.brand,
+            "unit": best_offer.unit,
+            "icon": best_offer.icon,
+            "image_url": media_url(g["image_path"]),
+            "thumbnail_url": thumbnail_url(g["image_path"]),
+            "category": best_offer.category.slug,
+            "min_price": g["min_price"],
+            "max_price": g["max_price"],
+            "mrp": best_offer.mrp,
+            "nearest_km": g["nearest_km"],
+            "shop_count": g["shop_count"],
+            "in_stock_count": g["in_stock_count"],
+            "relevance": g["relevance"],
+            "score": g["score"],
+            "best_offer": listing(best_offer, shop_json(best_offer.shop_id), now),
+            "offers": [listing(x, shop_json(x.shop_id), now) for o in g["offers"] if (x := shown.get(o["_id"]))],
+        })
+
     # Map pins: every shop with at least one matching listing.
     pins: dict[int, dict] = {}
-    for pr in products:
-        pin = pins.setdefault(pr.shop_id, {**shop_json(pr.shop_id), "match_count": 0, "in_stock_count": 0,
-                                           "min_price": None})
+    for r in rows:
+        pin = pins.setdefault(r["shop_id"], {**shop_json(r["shop_id"]), "match_count": 0, "in_stock_count": 0,
+                                             "min_price": None})
         pin["match_count"] += 1
-        if pr.quantity > 0:
+        if r["quantity"] > 0:
+            price = float(r["price"])
             pin["in_stock_count"] += 1
-            pin["min_price"] = pr.price if pin["min_price"] is None else min(pin["min_price"], pr.price)
+            pin["min_price"] = price if pin["min_price"] is None else min(pin["min_price"], price)
 
     did_you_mean = suggest_correction(db, norm) if norm and total < 3 else None
 
@@ -391,7 +522,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         "page_size": p.page_size,
         "has_more": start + p.page_size < total,
         "shops_in_radius": len(shops),
-        "groups": page_rows,
+        "groups": page_groups,
         "shops": sorted(pins.values(), key=lambda s: s["distance_km"]),
         "category_counts": dict(category_counts),
         "engine": {"semantic": semantic_label, "keyword": keyword_label, "ranking": cfg.version},
