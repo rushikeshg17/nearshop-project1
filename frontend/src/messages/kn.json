@@ -1798,6 +1798,7 @@
         "noItems": "",
         "button": "",
         "gstNote": "",
+        "replacesPending": "",
         "done": ""
       },
       "pay": {
@@ -1818,6 +1819,8 @@
         "none": "",
         "period": "",
         "awaiting": "",
+        "replaced": "",
+        "refunded": "",
         "price": "",
         "impressions": "",
         "clicks": "",

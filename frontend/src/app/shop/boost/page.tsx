@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Gift, Loader2, Megaphone, PauseCircle, Search, Smartphone, X } from "lucide-react";
-import { useState } from "react";
+import { type KeyboardEvent, type Ref, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { ErrorState, ListSkeleton } from "@/components/common/states";
@@ -91,6 +91,8 @@ export default function BoostPage() {
   const known = new Set((packs.data?.packs ?? []).map((p) => p.id));
   // A request shows while its pack waits for the payment (or before the list has caught up with a purchase).
   const toPay = open.filter((r) => r.boost_pack_id !== null && (pendingIds.has(r.boost_pack_id) || (r.id === bought?.id && !known.has(r.boost_pack_id))));
+  // A new purchase ends the shop's unpaid pack and cancels its request (boost.buy), so the buyer is told first.
+  const unpaid = (packs.data?.packs ?? []).find((p) => p.status === "pending") ?? null;
 
   return (
     <div className="space-y-6">
@@ -106,7 +108,7 @@ export default function BoostPage() {
           {toPay.map((r) => (
             <PayNearShop key={r.id} req={r} />
           ))}
-          <BuyPack e={eligibility.data} onBought={setBought} />
+          <BuyPack e={eligibility.data} unpaid={unpaid} onBought={setBought} />
         </>
       )}
       <section aria-labelledby="boost-packs-title" className="space-y-3">
@@ -216,13 +218,14 @@ function HowItWorks({ e }: { e: BoostEligibility }) {
 }
 
 /** Choosing a pack and its item groups, then buying it: a pending pack and its payment request. */
-function BuyPack({ e, onBought }: { e: BoostEligibility; onBought: (r: BoostPaymentRequest) => void }) {
+function BuyPack({ e, unpaid, onBought }: { e: BoostEligibility; unpaid: BoostPack | null; onBought: (r: BoostPaymentRequest) => void }) {
   const { t } = useI18n();
   const qc = useQueryClient();
   const { data: meta } = useMeta();
   const [kind, setKind] = useState<BoostPackKind>("standard");
   const [groups, setGroups] = useState<Group[]>([]);
   const [q, setQ] = useState("");
+  const radios = useRef<(HTMLButtonElement | null)[]>([]);
   const quote = e.packs.find((p) => p.kind === kind) ?? e.packs[0];
   const max = quote?.max_groups ?? 0;
   const items = useQuery({
@@ -251,6 +254,19 @@ function BuyPack({ e, onBought }: { e: BoostEligibility; onBought: (r: BoostPaym
   const toggle = (g: Group) =>
     setGroups((list) => (chosen(g) ? list.filter((x) => !(x.type === g.type && x.id === g.id)) : list.length >= max ? list : [...list, g]));
   const full = groups.length >= max;
+  // The radio group's keys (WAI-ARIA radio pattern): the arrow keys move to and choose the next or previous pack,
+  // Home and End the first and last; only the chosen one is in the tab order.
+  const onRadioKey = (ev: KeyboardEvent<HTMLButtonElement>) => {
+    const n = e.packs.length;
+    if (n === 0) return;
+    const at = Math.max(0, e.packs.findIndex((p) => p.kind === kind));
+    const next = { ArrowRight: at + 1, ArrowDown: at + 1, ArrowLeft: at - 1, ArrowUp: at - 1, Home: 0, End: n - 1 }[ev.key];
+    if (next === undefined) return;
+    ev.preventDefault();
+    const i = (next + n) % n;
+    setKind(e.packs[i].kind);
+    radios.current[i]?.focus();
+  };
   const catalogue = (items.data?.items ?? []).filter((i) => i.catalog_item_id !== null);
   const seen = new Set<number>();
   const itemGroups: Group[] = [];
@@ -264,8 +280,17 @@ function BuyPack({ e, onBought }: { e: BoostEligibility; onBought: (r: BoostPaym
     <section aria-labelledby="boost-buy-title" className="rounded-3xl border bg-card p-5" data-testid="boost-buy">
       <h2 id="boost-buy-title" className="font-semibold">{t("owner.boost.buy.heading")}</h2>
       <div role="radiogroup" aria-label={t("owner.boost.buy.kindLabel")} className="mt-3 grid gap-3 sm:grid-cols-2">
-        {e.packs.map((p) => (
-          <QuoteOption key={p.kind} quote={p} selected={p.kind === kind} onSelect={() => setKind(p.kind)} />
+        {e.packs.map((p, i) => (
+          <QuoteOption
+            key={p.kind}
+            ref={(el) => {
+              radios.current[i] = el;
+            }}
+            quote={p}
+            selected={p.kind === kind}
+            onSelect={() => setKind(p.kind)}
+            onKeyDown={onRadioKey}
+          />
         ))}
       </div>
 
@@ -350,18 +375,32 @@ function BuyPack({ e, onBought }: { e: BoostEligibility; onBought: (r: BoostPaym
         </Button>
         <p className="text-xs text-muted-foreground">{t("owner.boost.buy.gstNote")}</p>
       </div>
+      {unpaid?.payment_request_number && (
+        <p className="mt-3 rounded-xl bg-warning-soft p-3 text-sm text-warning-ink" role="note" data-testid="boost-replaces">
+          {t("owner.boost.buy.replacesPending", { number: unpaid.payment_request_number })}
+        </p>
+      )}
     </section>
   );
 }
 
-function QuoteOption({ quote, selected, onSelect }: { quote: BoostQuote; selected: boolean; onSelect: () => void }) {
+function QuoteOption({ ref, quote, selected, onSelect, onKeyDown }: {
+  ref?: Ref<HTMLButtonElement>;
+  quote: BoostQuote;
+  selected: boolean;
+  onSelect: () => void;
+  onKeyDown: (ev: KeyboardEvent<HTMLButtonElement>) => void;
+}) {
   const { t } = useI18n();
   return (
     <button
+      ref={ref}
       type="button"
       role="radio"
       aria-checked={selected}
+      tabIndex={selected ? 0 : -1}
       onClick={onSelect}
+      onKeyDown={onKeyDown}
       data-testid={`boost-quote-${quote.kind}`}
       className={cn("rounded-2xl border p-4 text-left transition-colors", selected ? "border-primary ring-2 ring-primary/30" : "hover:bg-accent")}
     >
@@ -454,9 +493,13 @@ function PackCard({ pack }: { pack: BoostPack }) {
       <p className="mt-2 text-sm">
         {pack.period_start && pack.ends_at
           ? t("owner.boost.packs.period", { start: formatDay(pack.period_start, language), end: formatDay(pack.ends_at, language) })
-          : pack.payment_request_number
+          : pack.status === "pending" && pack.payment_request_number
             ? t("owner.boost.packs.awaiting", { number: pack.payment_request_number })
-            : null}
+            : pack.status === "ended" && pack.end_reason === "replaced"
+              ? t("owner.boost.packs.replaced", { number: pack.payment_request_number ?? "" })
+              : pack.status === "ended" && pack.end_reason === "refunded"
+                ? t("owner.boost.packs.refunded")
+                : null}
       </p>
       <p className="mt-0.5 text-xs text-muted-foreground">
         {t("owner.boost.packs.price", { price: rupees(pack.amount_paise), days: formatNumber(pack.days) })}

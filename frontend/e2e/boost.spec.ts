@@ -13,13 +13,18 @@ import { type APIRequestContext, expect, type Page, type Route, test as base } f
  * 2. A results page never shows more than one sponsored card, even when a later page's response carries one.
  * 3. The owner's Boost page shows a pack's impressions, clicks and requests and its make-good, passes axe (WCAG 2.2
  *    A and AA, no serious or critical violation) at 360 px, and the owner menu offers Boost in an eligible city.
- * 4. The owner menu hides Boost in an ineligible city.
+ * 4. The owner menu hides Boost in an ineligible city, and keeps it while the shop has a pack that has not ended (a
+ *    paused pack in a city that dropped below a threshold).
+ * 5. Buying a pack shows the pay block (a upi://pay link with the total and the request number as the note, and its
+ *    QR code), the pay block is still there after a reload, and a second purchase warns first that it replaces the
+ *    unpaid pack, whose card then says it was replaced instead of waiting for payment.
  *
  * Runs against the seeded throwaway database of the frontend-quality CI job, with NEARSHOP_DEMO_PASSWORD. The seed
  * has no eligible city (100 verified shops, 3,000 monthly customers for 4 weeks), Boost sales stay off until B31, and
  * a pack starts only once NearShop matches its payment, so no real search carries a sponsored card and no shop has a
  * pack with figures. The spec therefore adds the card to the real search response (built from that response's own
- * first result, as the API builds it) and serves the owner's Boost eligibility and packs from page.route;
+ * first result, as the API builds it) and serves the owner's Boost eligibility and packs from page.route (and, for
+ * the purchase, the purchase and the open payment requests, as boost.buy and billing.request_out answer them);
  * everything else on the pages is real.
  */
 
@@ -234,10 +239,10 @@ function packs() {
   };
 }
 
-async function serveBoost(page: Page, eligible: boolean) {
+async function serveBoost(page: Page, eligible: boolean, list: { packs: unknown[] } = packs()) {
   await page.route("**/api/owner/boost/eligibility", (route) => route.fulfill({ json: eligibility(eligible) }));
   await page.route("**/api/owner/boost/packs", (route) =>
-    route.request().method() === "GET" ? route.fulfill({ json: packs() }) : route.continue(),
+    route.request().method() === "GET" ? route.fulfill({ json: list }) : route.continue(),
   );
 }
 
@@ -279,11 +284,123 @@ test("the Boost page shows each pack's figures and make-good, and the menu offer
 
 test("the owner menu hides Boost in an ineligible city", async ({ page, language }) => {
   await signInOwner(page.request);
-  await serveBoost(page, false);
+  await serveBoost(page, false, { packs: [] });
   const answered = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/owner/boost/eligibility");
   await page.goto("/shop");
   await answered;
   const menu = await openMenu(page, language);
   await expect(menu.locator('a[href="/shop/boost"]')).toHaveCount(0);
   await expect(page.locator('a[href="/shop/boost"]')).toHaveCount(0);
+});
+
+test("the owner menu keeps Boost while a pack is paused in a city that dropped below a threshold", async ({ page, language }) => {
+  await signInOwner(page.request);
+  const paused = { ...packs().packs[0], status: "paused", paused_at: iso(Date.now() - DAY), pause_reason: "city_not_eligible" };
+  await serveBoost(page, false, { packs: [paused] });
+  await page.goto("/shop");
+  const menu = await openMenu(page, language);
+  await expect(menu.locator('a[href="/shop/boost"]')).toHaveText(message(language, "owner.shell.nav.boost"));
+  await menu.locator('a[href="/shop/boost"]').click();
+  const pack = page.locator('[data-testid="boost-pack"][data-pack="902"]');
+  await expect(pack).toHaveAttribute("data-status", "paused");
+  await expect(pack.getByTestId("boost-make-good")).toContainText(message(language, "owner.boost.packs.paused"));
+});
+
+// ------------------------------------------------------------------------------------------------ buying a pack
+
+const UPI_ID = "nearshop.e2e@okaxis";
+const PAYEE = "NearShop E2E";
+
+/** The purchase as the API answers it: POST /owner/boost/packs makes a pending pack and its payment request and ends
+ * the shop's earlier pending pack (end_reason "replaced"), whose request is cancelled; GET /owner/billing lists the
+ * open requests; GET /owner/boost/packs lists the packs, newest first. */
+async function serveShop(page: Page) {
+  const state = { packs: [] as Record<string, unknown>[], requests: [] as Record<string, unknown>[], bodies: [] as unknown[] };
+  await page.route("**/api/owner/boost/eligibility", (route) => route.fulfill({ json: eligibility(true) }));
+  await page.route("**/api/owner/boost/packs", async (route) => {
+    if (route.request().method() !== "POST") return route.fulfill({ json: { packs: [...state.packs].reverse() } });
+    const body = route.request().postDataJSON() as { kind: string; groups: { type: string; id: number }[] };
+    state.bodies.push(body);
+    const now = new Date().toISOString();
+    for (const p of state.packs) if (p.status === "pending") Object.assign(p, { status: "ended", ended_at: now, end_reason: "replaced" });
+    for (const r of state.requests) if (r.status === "open") r.status = "cancelled";
+    const n = state.packs.length + 1;
+    const number = `NSP${String(n).padStart(6, "0")}`;
+    const pack = {
+      id: 950 + n, kind: body.kind, status: "pending", groups: body.groups.map((g) => ({ ...g, name: `Group ${g.id}` })), days: 30,
+      list_price_paise: 49_900, discount_pct: 0, amount_paise: 49_900, payment_request_number: number, paid_at: null,
+      period_start: null, ends_at: null, make_good_used: false, paused_at: null, pause_reason: null, paused_days_added: 0,
+      ended_at: null, end_reason: null, period_requests: 0, totals: { impressions: 0, clicks: 0, requests: 0 }, by_day: [],
+    };
+    const request = {
+      id: 700 + n, number, purpose: "boost", amount_paise: 49_900, gst_paise: 0, total_paise: 49_900, status: "open",
+      boost_pack_id: pack.id, pay_to: { upi_id: UPI_ID, payee_name: PAYEE, amount: "499.00", note: number },
+    };
+    state.packs.push(pack);
+    state.requests.push(request);
+    await route.fulfill({ status: 201, json: { pack, payment_request: request } });
+  });
+  await page.route(
+    (url) => url.pathname === "/api/owner/billing",
+    (route) => route.fulfill({ json: { requests: state.requests.filter((r) => r.status === "open") } }),
+  );
+  return state;
+}
+
+async function choosePack(page: Page) {
+  const buy = page.getByTestId("boost-buy");
+  const category = buy.locator("button[aria-pressed]").first();
+  await expect(category, "the seed has categories").toBeVisible();
+  await category.click();
+  await expect(category).toHaveAttribute("aria-pressed", "true");
+  await page.getByTestId("boost-buy-button").click();
+}
+
+test("buying a pack shows the pay block and its QR code, after a reload too, and a second purchase replaces it", async ({ page, language }) => {
+  await signInOwner(page.request);
+  const state = await serveShop(page);
+  await page.goto("/shop/boost");
+  await expect(page.getByTestId("boost-buy")).toBeVisible();
+  await expect(page.getByTestId("boost-replaces")).toHaveCount(0);
+
+  // The pack picker is a radio group: the arrow keys choose the next pack and move the focus with it.
+  const standard = page.getByTestId("boost-quote-standard");
+  const festive = page.getByTestId("boost-quote-festive");
+  await standard.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(festive).toHaveAttribute("aria-checked", "true");
+  await expect(festive).toBeFocused();
+  await page.keyboard.press("ArrowLeft");
+  await expect(standard).toHaveAttribute("aria-checked", "true");
+
+  await choosePack(page);
+  expect(state.bodies[0]).toMatchObject({ kind: "standard", groups: [{ type: "category" }] });
+  const pay = page.getByTestId("pay-block");
+  await expect(pay).toHaveCount(1);
+  const link = `upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(PAYEE)}&am=499.00&cu=INR&tn=NSP000001`;
+  await expect(pay.getByTestId("pay-link")).toHaveAttribute("href", link);
+  await expect(pay.getByTestId("pay-note")).toHaveText("NSP000001");
+  await expect(pay.getByTestId("pay-qr")).toBeVisible();
+  const first = page.locator('[data-testid="boost-pack"][data-pack="951"]');
+  await expect(first).toContainText(message(language, "owner.boost.packs.awaiting", { number: "NSP000001" }));
+
+  // After a reload the pay block comes back from the open request.
+  await page.reload();
+  await expect(page.getByTestId("pay-block")).toHaveCount(1);
+  await expect(page.getByTestId("pay-note")).toHaveText("NSP000001");
+  await expect(page.getByTestId("pay-qr")).toBeVisible();
+
+  // A second purchase says first that it replaces the unpaid pack; afterwards only the new request is to be paid, and
+  // the replaced pack no longer says it is waiting for payment.
+  await expect(page.getByTestId("boost-replaces")).toHaveText(message(language, "owner.boost.buy.replacesPending", { number: "NSP000001" }));
+  await choosePack(page);
+  await expect(page.getByTestId("pay-block")).toHaveCount(1);
+  await expect(page.getByTestId("pay-note")).toHaveText("NSP000002");
+  await expect(first).toHaveAttribute("data-status", "ended");
+  await expect(first).toContainText(message(language, "owner.boost.packs.replaced", { number: "NSP000001" }));
+  await expect(first).not.toContainText(message(language, "owner.boost.packs.awaiting", { number: "NSP000001" }));
+  await expect(page.getByTestId("boost-replaces")).toHaveText(message(language, "owner.boost.buy.replacesPending", { number: "NSP000002" }));
+
+  const menu = await openMenu(page, language);
+  await expect(menu.locator('a[href="/shop/boost"]')).toHaveCount(1);
 });

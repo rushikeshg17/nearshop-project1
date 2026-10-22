@@ -1798,6 +1798,7 @@
         "noItems": "No catalogue items match.",
         "button": "Buy for {price}",
         "gstNote": "You pay by UPI to NearShop; the pack starts when the payment is matched.",
+        "replacesPending": "Buying now replaces your unpaid pack and cancels its payment request {number}. Pay only the new request.",
         "done": "Pack ordered. Pay with the note {number}."
       },
       "pay": {
@@ -1818,6 +1819,8 @@
         "none": "You have no Boost packs yet.",
         "period": "{start} to {end}",
         "awaiting": "Waiting for payment {number}",
+        "replaced": "Replaced by a newer pack before it was paid. Its payment request {number} is cancelled: do not pay it.",
+        "refunded": "Ended: its payment was refunded.",
         "price": "{price} for {days} days",
         "impressions": "Shown",
         "clicks": "Opened",

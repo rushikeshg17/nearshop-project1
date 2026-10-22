@@ -28,7 +28,7 @@ import { Button } from "@/components/ui/button";
 import { useMe } from "@/hooks/use-session";
 import { api } from "@/lib/api";
 import { DEFAULT_LANGUAGE, type LanguageCode, languageInfo } from "@/lib/i18n";
-import type { BoostEligibility, OwnerOverview, ShopVerification } from "@/lib/types";
+import type { BoostEligibility, BoostPack, OwnerOverview, ShopVerification } from "@/lib/types";
 
 export function OwnerShell({ children }: { children: React.ReactNode }) {
   const { t } = useI18n();
@@ -46,12 +46,21 @@ export function OwnerShell({ children }: { children: React.ReactNode }) {
     refetchInterval: 15_000,
   });
 
-  // Boost (P10.13): the menu item shows only while the shop's city is eligible (plan section 8.22) and sales are on
-  // (B31). The daily check moves slowly, so the answer is kept for 10 minutes; any error leaves the item hidden.
+  // Boost (P10.13): the menu item shows while the shop's city is eligible (plan section 8.22), and also while the shop
+  // has a pack that has not ended, so an owner whose city dropped below a threshold (the pack is paused) or whose
+  // paid pack outlives a sales switch-off still reaches the page with the pause, the days added back and the figures.
+  // The daily check moves slowly, so the answers are kept for 10 minutes; any error leaves the item hidden.
   const boost = useQuery({
     queryKey: ["owner", "boost", "eligibility"],
     queryFn: () => api.get<BoostEligibility>("/owner/boost/eligibility"),
     enabled: me?.role === "owner" && !!me.shop,
+    staleTime: 600_000,
+    retry: false,
+  });
+  const boostPacks = useQuery({
+    queryKey: ["owner", "boost", "packs"],
+    queryFn: () => api.get<{ packs: BoostPack[] }>("/owner/boost/packs"),
+    enabled: !!boost.data && !boost.data.city.eligible,
     staleTime: 600_000,
     retry: false,
   });
@@ -77,7 +86,7 @@ export function OwnerShell({ children }: { children: React.ReactNode }) {
     { href: "/shop/catalog", label: t("owner.shell.nav.catalog"), icon: Library },
     { href: "/shop/insights", label: t("owner.shell.nav.insights"), icon: BrainCircuit },
     { href: "/shop/reviews", label: t("owner.shell.nav.reviews"), icon: Star },
-    ...(boostShown(boost.data) ? [{ href: "/shop/boost", label: t("owner.shell.nav.boost"), icon: Megaphone }] : []),
+    ...(boostShown(boost.data, boostPacks.data?.packs) ? [{ href: "/shop/boost", label: t("owner.shell.nav.boost"), icon: Megaphone }] : []),
     { href: "/shop/settings", label: t("owner.shell.nav.settings"), icon: Settings },
   ];
   return (
@@ -88,9 +97,11 @@ export function OwnerShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Whether the owner menu offers Boost: only when the shop's city meets every threshold and sales are switched on. */
-export function boostShown(e: BoostEligibility | undefined) {
-  return !!e && e.sales_enabled && e.city.eligible;
+/** Whether the owner menu offers Boost: when the shop's city meets every threshold, or the shop has a pack that has
+ * not ended (pending, active, paused or in its make-good period). */
+export function boostShown(e: BoostEligibility | undefined, packs: BoostPack[] | undefined) {
+  if (!e) return false;
+  return e.city.eligible || (packs ?? []).some((p) => p.status !== "ended");
 }
 
 /** A date such as "21 Oct 2027", in India time, with the month named in the interface language (English when not
