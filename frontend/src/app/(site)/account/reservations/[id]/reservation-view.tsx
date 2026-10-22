@@ -7,11 +7,11 @@ import Link from "next/link";
 import { useState } from "react";
 import { toast } from "sonner";
 
-import { PayShopByUpi } from "@/app/(site)/account/orders/[id]/order-view";
 import { ProductThumb } from "@/components/common/product-thumb";
 import { ErrorState, ListSkeleton } from "@/components/common/states";
 import { Countdown, StatusBadge } from "@/components/common/status";
 import { ConfirmAction } from "@/components/fulfillment/confirm-action";
+import { PayShopByUpi } from "@/components/fulfillment/pay-shop-by-upi";
 import { EventTimeline, FulfillmentProgress } from "@/components/fulfillment/progress";
 import { ReviewDialog } from "@/components/fulfillment/review-dialog";
 import { ShopMap } from "@/components/map/shop-map";

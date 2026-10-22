@@ -61,10 +61,11 @@ function normalizeReservationCode(input: string) {
 }
 
 /** Whether the shop has a UPI ID (P6.1): UPI is offered as a payment method only then. The owner's own settings,
- * the same query as the settings page, so a UPI ID saved there reaches the queue straight away. */
-function useShopTakesUpi() {
+ * the same query as the settings page, so a UPI ID saved there reaches the queue straight away. Null while the
+ * settings are still loading, so the queue never claims cash only for a shop that takes UPI. */
+function useShopTakesUpi(): boolean | null {
   const shop = useQuery({ queryKey: ["owner", "shop"], queryFn: () => api.get<OwnerShopSettings>("/owner/shop") });
-  return !!shop.data?.upi_id;
+  return shop.isPending ? null : !!shop.data?.upi_id;
 }
 
 const PAYMENT_OPTIONS: { value: PaymentMethod; label: string; hint: string }[] = [
@@ -94,7 +95,7 @@ function CodeDialog({
   title: string;
   confirmLabel: string;
   pending: boolean;
-  takesUpi: boolean;
+  takesUpi: boolean | null;
   onSubmit: (code: string, method: PaymentMethod) => Promise<unknown>;
 }) {
   const id = useId();
@@ -102,7 +103,7 @@ function CodeDialog({
   const [chosen, setChosen] = useState<PaymentMethod | null>(null);
   const [error, setError] = useState<string | null>(null);
   const delivery = kind === "delivery";
-  const options = PAYMENT_OPTIONS.filter((o) => takesUpi || o.value !== "upi_direct");
+  const options = PAYMENT_OPTIONS.filter((o) => takesUpi === true || o.value !== "upi_direct");
   // A UPI choice no longer offered (the UPI ID was removed meanwhile) counts as no choice.
   const method = options.some((o) => o.value === chosen) ? chosen : null;
   const codeReady = delivery ? /^\d{4}$/.test(code) : normalizeReservationCode(code).length >= 8;
@@ -198,7 +199,12 @@ function CodeDialog({
               </div>
             ))}
           </RadioGroup>
-          {!takesUpi && (
+          {takesUpi === null && (
+            <p role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2 className="size-3 animate-spin" /> Checking whether your shop takes UPI
+            </p>
+          )}
+          {takesUpi === false && (
             <p className="text-xs text-muted-foreground">
               To take UPI payments, add your UPI ID in <Link href="/shop/settings" className="font-medium text-foreground underline underline-offset-4">Shop settings</Link>.
             </p>
@@ -301,7 +307,7 @@ export function OwnerOrderCard({ o }: { o: Order }) {
           <StatusBadge status={o.status} kind="order" />
           <span className="font-mono text-xs text-muted-foreground">{o.code}</span>
           <span className="text-xs text-muted-foreground" suppressHydrationWarning>{timeAgo(o.created_at)}</span>
-          <span className="ml-auto font-semibold tabular">{formatPrice(o.total)} <span className="text-xs font-normal text-muted-foreground">{o.payment_status === "paid" ? (o.payment_method === "upi_direct" ? "Paid by UPI" : "Paid in cash") : takesUpi ? "Cash or UPI" : "COD"}</span></span>
+          <span className="ml-auto font-semibold tabular">{formatPrice(o.total)} <span className="text-xs font-normal text-muted-foreground">{o.payment_status === "paid" ? (o.payment_method === "upi_direct" ? "Paid by UPI" : "Paid in cash") : takesUpi === null ? "Pay on delivery" : takesUpi ? "Cash or UPI" : "COD"}</span></span>
         </div>
         <ul className="mt-3 space-y-1 text-sm">
           {o.items.map((i) => (

@@ -305,7 +305,8 @@ test("the cancellation and refund policy shows in the reserve and delivery dialo
   dialog = page.getByRole("dialog");
   policy = dialog.getByRole("region", { name: "Cancellation and refunds" });
   await expect(policy).toBeVisible();
-  await expect(policy).toContainText("Free cancellation before dispatch");
+  await expect(policy).toContainText("Cancelling is free before dispatch");
+  await expect(policy).toContainText("until the shop starts packing");
   await expect(policy).toContainText("refunds you within 5 days");
   await expect(policy.getByRole("link", { name: "Read the cancellation and refund policy" })).toHaveAttribute(
     "href",

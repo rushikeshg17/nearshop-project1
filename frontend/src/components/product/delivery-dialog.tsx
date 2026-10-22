@@ -139,7 +139,8 @@ export function DeliveryDialog({ product, open, onOpenChange }: { product: Produ
           <div>
             <h3 id="delivery-policy-title" className="text-sm font-medium text-foreground">Cancellation and refunds</h3>
             <p className="mt-0.5">
-              Free cancellation before dispatch. If you paid the shop directly by UPI and the order is cancelled, the shop
+              Cancelling is free before dispatch: cancel it yourself until the shop starts packing, then ask the shop
+              to cancel it before it goes out. If you paid the shop directly by UPI and the order is cancelled, the shop
               refunds you within {UPI_REFUND_DAYS} days under its agreement with NearShop.{" "}
               <Link href={REFUND_POLICY_HREF} target="_blank" className="font-medium text-foreground underline underline-offset-4">
                 Read the cancellation and refund policy
