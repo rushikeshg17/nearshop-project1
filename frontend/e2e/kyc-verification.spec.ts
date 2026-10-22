@@ -160,8 +160,10 @@ async function openForSubmission(admin: APIRequestContext, owner: APIRequestCont
   return shop;
 }
 
-/** Fills in and sends the "Verify your shop" form, checking the inline GSTIN error on the way. */
-async function submitEvidence(page: Page) {
+/** Fills in and sends the "Verify your shop" form, checking the inline GSTIN error on the way. The type, number,
+ * photo and error labels come from components/shop/shop-form-fields.tsx, which is not in the message files yet, so
+ * they are English in every language; move them to message() when that file is translated. */
+async function submitEvidence(page: Page, language: string) {
   const section = page.locator("section#verify");
   await expect(section).toBeVisible();
   await section.getByRole("radio", { name: /^GSTIN/ }).click();
@@ -175,7 +177,7 @@ async function submitEvidence(page: Page) {
   await expect(section.getByText("That GSTIN's last character does not match")).toHaveCount(0);
   await section.getByLabel(/^Photo of the certificate/).setInputFiles({ name: "certificate.png", mimeType: "image/png", buffer: photo([230, 230, 220]) });
   await section.getByLabel("Storefront photo showing your signboard").setInputFiles({ name: "storefront.png", mimeType: "image/png", buffer: photo([200, 60, 40]) });
-  await section.getByRole("button", { name: "Submit for verification" }).click();
+  await section.getByRole("button", { name: message(language, "owner.settings.verify.submit") }).click();
 }
 
 async function adminContext(browser: Browser, baseURL: string | undefined) {
@@ -186,7 +188,7 @@ async function adminContext(browser: Browser, baseURL: string | undefined) {
   return context;
 }
 
-test("an owner submits KYC evidence, an admin rejects and then approves it, and the banner follows", async ({ page, browser }, testInfo) => {
+test("an owner submits KYC evidence, an admin rejects and then approves it, and the banner follows", async ({ page, browser, language }, testInfo) => {
   test.skip(
     !ADMIN_EMAIL || !ADMIN_PASSWORD || !ADMIN_TOTP,
     "Needs an admin with a second factor: set NEARSHOP_E2E_ADMIN_EMAIL, NEARSHOP_E2E_ADMIN_PASSWORD and NEARSHOP_E2E_ADMIN_TOTP (see the comment at the top).",
@@ -200,9 +202,9 @@ test("an owner submits KYC evidence, an admin rejects and then approves it, and 
   // 1. The owner submits; the banner says it is waiting, usually within 2 working days.
   await page.goto("/shop/settings");
   await expect(banner).toBeVisible();
-  await submitEvidence(page);
+  await submitEvidence(page, language);
   await expect(banner).toHaveAttribute("data-status", "submitted");
-  await expect(banner).toContainText("usually within 2 working days");
+  await expect(banner).toContainText(message(language, "owner.verification.submitted.body"));
   await expect(page.request.get(`/api/shops/${shop.slug}`).then((r) => r.status())).resolves.toBe(404);
 
   // 2. The admin finds it in the queue, opens the evidence links, and rejects it with a reason.
@@ -224,9 +226,9 @@ test("an owner submits KYC evidence, an admin rejects and then approves it, and 
   await page.goto("/shop");
   await expect(banner).toHaveAttribute("data-status", "rejected");
   await expect(banner).toContainText(reason);
-  await banner.getByRole("link", { name: "Resubmit" }).click();
+  await banner.getByRole("link", { name: message(language, "owner.verification.rejected.action") }).click();
   await expect(page).toHaveURL(/\/shop\/settings#verify$/);
-  await submitEvidence(page);
+  await submitEvidence(page, language);
   await expect(banner).toHaveAttribute("data-status", "submitted");
 
   // 4. The admin records the phone call-back if needed, and approves.
@@ -242,7 +244,9 @@ test("an owner submits KYC evidence, an admin rejects and then approves it, and 
 
   // 5. The owner's banner goes away (verified for 12 months, so no renewal yet), and customers see the shop again.
   await page.reload();
-  await expect(page.getByTestId("verification-summary")).toContainText("Verified until");
+  const approved = await getJson<Verification>(page.request, "/api/owner/verification");
+  const until = await formatDay(page, Date.parse(approved.verified_until!), language);
+  await expect(page.getByTestId("verification-summary")).toContainText(message(language, "owner.settings.verify.summary.verifiedUntil", { date: until }));
   await expect(banner).toHaveCount(0);
   await expect(page.request.get(`/api/shops/${shop.slug}`).then((r) => r.status())).resolves.toBe(200);
 });

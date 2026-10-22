@@ -1191,10 +1191,26 @@
         "skip": "Skip"
       },
       "noItems": "No items found in that file",
-      "doneToast": "{added} added, {updated} updated",
+      "doneToast": "{added}, {updated}",
+      "doneToastAdded": {
+        "one": "{count} added",
+        "other": "{count} added"
+      },
       "doneTitle": "Stock imported",
-      "doneBody": "{added} new items listed, {updated} updated. Customers nearby can find them now.",
-      "doneBodySkipped": "{added} new items listed, {updated} updated, {skipped} skipped. Customers nearby can find them now.",
+      "doneBody": "{added}, {updated}. Customers nearby can find them now.",
+      "doneBodySkipped": "{added}, {updated}, {skipped}. Customers nearby can find them now.",
+      "doneAdded": {
+        "one": "{count} new item listed",
+        "other": "{count} new items listed"
+      },
+      "doneUpdated": {
+        "one": "{count} updated",
+        "other": "{count} updated"
+      },
+      "doneSkipped": {
+        "one": "{count} skipped",
+        "other": "{count} skipped"
+      },
       "openInventory": "Open inventory",
       "importAnother": "Import another file",
       "title": "Import stock from Excel",
@@ -1220,7 +1236,10 @@
       "templateLink": "Download the template",
       "chooseDifferent": "Choose a different file",
       "checkTitle": "Check before importing",
-      "checkDescription": "Found {count} items. Columns detected: {columns}.",
+      "checkDescription": {
+        "one": "Found {count} item. Columns detected: {columns}.",
+        "other": "Found {count} items. Columns detected: {columns}."
+      },
       "columnPair": "{field} = “{header}”",
       "fields": {
         "name": "Item name",
@@ -1232,10 +1251,22 @@
         "sku": "Item code"
       },
       "badges": {
-        "update": "{count} update existing",
-        "add": "{count} new listings",
-        "skipped": "{count} skipped",
-        "needPrice": "{count} need a price"
+        "update": {
+          "one": "{count} updates existing",
+          "other": "{count} update existing"
+        },
+        "add": {
+          "one": "{count} new listing",
+          "other": "{count} new listings"
+        },
+        "skipped": {
+          "one": "{count} skipped",
+          "other": "{count} skipped"
+        },
+        "needPrice": {
+          "one": "{count} needs a price",
+          "other": "{count} need a price"
+        }
       },
       "table": {
         "row": "Row",

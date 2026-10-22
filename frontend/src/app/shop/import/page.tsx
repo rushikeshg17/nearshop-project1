@@ -81,7 +81,12 @@ export default function ImportPage() {
     onSuccess: (r) => {
       setDone(r);
       qc.invalidateQueries({ queryKey: ["owner"] });
-      toast.success(t("owner.import.doneToast", { added: formatNumber(r.added), updated: formatNumber(r.updated) }));
+      toast.success(
+        t("owner.import.doneToast", {
+          added: t(`owner.import.doneToastAdded.${plural(language, r.added)}`, { count: formatNumber(r.added) }),
+          updated: t(`owner.import.doneUpdated.${plural(language, r.updated)}`, { count: formatNumber(r.updated) }),
+        }),
+      );
     },
   });
 
@@ -111,9 +116,9 @@ export default function ImportPage() {
         <h1 className="mt-5 text-2xl font-semibold">{t("owner.import.doneTitle")}</h1>
         <p className="mt-2 text-muted-foreground">
           {t(done.skipped ? "owner.import.doneBodySkipped" : "owner.import.doneBody", {
-            added: formatNumber(done.added),
-            updated: formatNumber(done.updated),
-            skipped: formatNumber(done.skipped),
+            added: t(`owner.import.doneAdded.${plural(language, done.added)}`, { count: formatNumber(done.added) }),
+            updated: t(`owner.import.doneUpdated.${plural(language, done.updated)}`, { count: formatNumber(done.updated) }),
+            skipped: t(`owner.import.doneSkipped.${plural(language, done.skipped)}`, { count: formatNumber(done.skipped) }),
           })}
         </p>
         <div className="mt-6 flex justify-center gap-2">
@@ -170,7 +175,7 @@ export default function ImportPage() {
       </button>
       <PageTitle
         title={t("owner.import.checkTitle")}
-        description={t("owner.import.checkDescription", {
+        description={t(`owner.import.checkDescription.${plural(language, preview.total)}`, {
           count: formatNumber(preview.total),
           columns: Object.entries(preview.columns)
             .map(([k, v]) => t("owner.import.columnPair", { field: fieldName(k), header: v }))
@@ -178,10 +183,10 @@ export default function ImportPage() {
         })}
       />
       <div className="mb-4 flex flex-wrap gap-2 text-sm">
-        <Badge variant="secondary">{t("owner.import.badges.update", { count: formatNumber(counts.update) })}</Badge>
-        <Badge className="bg-success-soft text-success-ink">{t("owner.import.badges.add", { count: formatNumber(counts.add) })}</Badge>
-        {counts.skip > 0 && <Badge variant="outline">{t("owner.import.badges.skipped", { count: formatNumber(counts.skip) })}</Badge>}
-        {missingPrice > 0 && <Badge className="bg-warning-soft text-warning-ink">{t("owner.import.badges.needPrice", { count: formatNumber(missingPrice) })}</Badge>}
+        <Badge variant="secondary">{t(`owner.import.badges.update.${plural(language, counts.update)}`, { count: formatNumber(counts.update) })}</Badge>
+        <Badge className="bg-success-soft text-success-ink">{t(`owner.import.badges.add.${plural(language, counts.add)}`, { count: formatNumber(counts.add) })}</Badge>
+        {counts.skip > 0 && <Badge variant="outline">{t(`owner.import.badges.skipped.${plural(language, counts.skip)}`, { count: formatNumber(counts.skip) })}</Badge>}
+        {missingPrice > 0 && <Badge className="bg-warning-soft text-warning-ink">{t(`owner.import.badges.needPrice.${plural(language, missingPrice)}`, { count: formatNumber(missingPrice) })}</Badge>}
       </div>
       <div className="overflow-x-auto rounded-2xl border bg-card">
         <Table>

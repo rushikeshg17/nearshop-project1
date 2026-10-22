@@ -1192,9 +1192,25 @@
       },
       "noItems": "",
       "doneToast": "",
+      "doneToastAdded": {
+        "one": "",
+        "other": ""
+      },
       "doneTitle": "",
       "doneBody": "",
       "doneBodySkipped": "",
+      "doneAdded": {
+        "one": "",
+        "other": ""
+      },
+      "doneUpdated": {
+        "one": "",
+        "other": ""
+      },
+      "doneSkipped": {
+        "one": "",
+        "other": ""
+      },
       "openInventory": "",
       "importAnother": "",
       "title": "",
@@ -1220,7 +1236,10 @@
       "templateLink": "",
       "chooseDifferent": "",
       "checkTitle": "",
-      "checkDescription": "",
+      "checkDescription": {
+        "one": "",
+        "other": ""
+      },
       "columnPair": "",
       "fields": {
         "name": "",
@@ -1232,10 +1251,22 @@
         "sku": ""
       },
       "badges": {
-        "update": "",
-        "add": "",
-        "skipped": "",
-        "needPrice": ""
+        "update": {
+          "one": "",
+          "other": ""
+        },
+        "add": {
+          "one": "",
+          "other": ""
+        },
+        "skipped": {
+          "one": "",
+          "other": ""
+        },
+        "needPrice": {
+          "one": "",
+          "other": ""
+        }
       },
       "table": {
         "row": "",
