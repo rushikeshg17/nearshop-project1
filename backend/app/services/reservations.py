@@ -121,9 +121,9 @@ def _create_reservation(db: Database, customer: User, product_id: int, quantity:
     ))
     record_event(db, entity="reservation", entity_id=res.id, shop_id=shop.id, from_status=None,
                  to_status=RS.REQUESTED, actor_role="customer", actor_id=customer.id)
-    notify(db, shop.owner_id, "reservation_new", f"New reservation {res.code}",
-           f"{customer.name} wants {quantity} x {product.name}. Confirm within {settings.request_response_minutes} min.",
-           "/shop/reservations")
+    notify(db, shop.owner_id, "reservation_new", link="/shop/reservations", message="reservation_new",
+           params={"code": res.code, "customer": customer.name, "quantity": quantity, "product": product.name,
+                   "minutes": settings.request_response_minutes})
     return res
 
 
@@ -182,47 +182,48 @@ def _transition(db: Database, reservation_id: int, action: str, user: User | Non
     if action == "confirm":
         change_stock(db, product, -res.quantity, InventoryReason.RESERVATION_HOLD, actor_id)
         changes.update(stock_held=True, confirmed_at=now, expires_at=now + timedelta(minutes=res.hold_minutes))
-        notify(db, res.customer_id, "reservation_confirmed", f"{shop.name} confirmed your reservation",
-               f"{res.quantity} x {product.name} is held for you for {res.hold_minutes} minutes. Code {res.code}.",
-               f"/account/reservations/{res.id}")
+        notify(db, res.customer_id, "reservation_confirmed", link=f"/account/reservations/{res.id}",
+               message="reservation_confirmed", params={"shop": shop.name, "quantity": res.quantity,
+                                                        "product": product.name, "minutes": res.hold_minutes,
+                                                        "code": res.code})
     elif action == "ready":
         changes.update(ready_at=now, expires_at=max(res.expires_at, now + timedelta(minutes=res.hold_minutes)))
-        notify(db, res.customer_id, "reservation_ready", "Ready for pickup",
-               f"{product.name} is packed at {shop.name}. Show code {res.code} at the counter.",
-               f"/account/reservations/{res.id}")
+        notify(db, res.customer_id, "reservation_ready", link=f"/account/reservations/{res.id}",
+               message="reservation_ready", params={"product": product.name, "shop": shop.name, "code": res.code})
     elif action == "complete":
         # The held unit left the shop with the customer, who paid the shop in cash or to its own UPI ID.
         changes.update(completed_at=now, stock_held=False, payment_method=method, payment_status="paid")
         record_sales(db, [(product, res.quantity, res.unit_price)], source=SaleSource.RESERVATION,
                      basket_id=res.code, customer_id=res.customer_id)
-        notify(db, res.customer_id, "reservation_completed", "Pickup complete",
-               f"Thanks for shopping at {shop.name}. How was it? Leave a quick review.",
-               f"/account/reservations/{res.id}")
+        notify(db, res.customer_id, "reservation_completed", link=f"/account/reservations/{res.id}",
+               message="reservation_completed", params={"shop": shop.name})
     else:  # reject / cancel / expire
         if res.stock_held:
             change_stock(db, product, res.quantity, InventoryReason.RESERVATION_RELEASE, actor_id)
         close_reason = (reason or "").strip() or None
         changes.update(stock_held=False, closed_at=now, close_reason=close_reason)
         if action == "reject":
-            notify(db, res.customer_id, "reservation_rejected", f"{shop.name} could not hold your item",
-                   close_reason or "The shop was unable to confirm this reservation. Try another shop nearby.",
-                   f"/search?q={product.name}")
+            # The owner's reason, as typed, is the body when there is one.
+            notify(db, res.customer_id, "reservation_rejected", link=f"/search?q={product.name}",
+                   message="reservation_rejected_reason" if close_reason else "reservation_rejected",
+                   params={"shop": shop.name, "reason": close_reason})
         elif action == "cancel" and actor == "customer":
-            notify(db, shop.owner_id, "reservation_cancelled", f"Reservation {res.code} cancelled by customer",
-                   f"{res.quantity} x {product.name} is back in stock.", "/shop/reservations")
+            notify(db, shop.owner_id, "reservation_cancelled", link="/shop/reservations",
+                   message="reservation_cancelled_by_customer",
+                   params={"code": res.code, "quantity": res.quantity, "product": product.name})
         elif action == "cancel":
-            notify(db, res.customer_id, "reservation_cancelled", f"{shop.name} cancelled your reservation",
-                   close_reason or "The shop cancelled this reservation.", f"/account/reservations/{res.id}")
+            notify(db, res.customer_id, "reservation_cancelled", link=f"/account/reservations/{res.id}",
+                   message="reservation_cancelled_by_shop_reason" if close_reason else "reservation_cancelled_by_shop",
+                   params={"shop": shop.name, "reason": close_reason})
         elif action == "expire":
             was_request = from_status == RS.REQUESTED
-            notify(db, res.customer_id, "reservation_expired",
-                   "Reservation request timed out" if was_request else "Your reservation expired",
-                   f"{shop.name} did not respond in time." if was_request
-                   else f"The hold on {product.name} at {shop.name} has ended.",
-                   f"/account/reservations/{res.id}")
+            notify(db, res.customer_id, "reservation_expired", link=f"/account/reservations/{res.id}",
+                   message="reservation_request_expired" if was_request else "reservation_hold_expired",
+                   params={"shop": shop.name, "product": product.name})
             if not was_request:
-                notify(db, shop.owner_id, "reservation_expired", f"Reservation {res.code} expired",
-                       f"{res.quantity} x {product.name} has been returned to stock.", "/shop/reservations")
+                notify(db, shop.owner_id, "reservation_expired", link="/shop/reservations",
+                       message="reservation_expired_shop",
+                       params={"code": res.code, "quantity": res.quantity, "product": product.name})
 
     db.reservations.set(res, **changes)
     record_event(db, entity="reservation", entity_id=res.id, shop_id=res.shop_id, from_status=from_status,

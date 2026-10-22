@@ -42,7 +42,7 @@ from pymongo import ASCENDING, DESCENDING, GEOSPHERE, TEXT, IndexModel, MongoCli
 from pymongo.database import Database as MongoDatabase
 from pymongo.errors import OperationFailure
 
-from app.models.core import KycType, VerificationStatus
+from app.models.core import LANGUAGES, KycType, VerificationStatus
 from app.models.enums import (
     AnomalyStatus,
     InventoryReason,
@@ -111,6 +111,8 @@ VALIDATORS: dict[str, dict] = {
         name=STR, email={"bsonType": STR, "pattern": "^[^@\\s]+@[^@\\s]+$"}, phone=STR_N, phone_verified_at=DATE_N,
         password_hash=STR, role=enum(Role), is_active=BOOL, last_login_at=DATE_N, home_lat=NUM_N, home_lng=NUM_N,
         home_label=STR_N, created_at=DATE, updated_at=DATE,
+        # The notification language (P7.11): optional, as documents written before it have none (they read en).
+        language={"enum": list(LANGUAGES)},
         # Revocable sessions and the admin second factor (P2.4, app/core/security.py). All optional: documents
         # written before them read the model's defaults.
         token_version={"bsonType": INT, "minimum": 0},

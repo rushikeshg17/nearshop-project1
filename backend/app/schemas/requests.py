@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
-from app.models.core import validate_upi_id, validate_upi_payee_name
+from app.models.core import Language, validate_upi_id, validate_upi_payee_name
 
 PHONE_PATTERN = r"^[6-9]\d{9}$"  # Indian mobile numbers
 
@@ -79,6 +79,8 @@ class ProfileUpdateIn(_Strict):
     home_lat: float | None = Field(default=None, ge=-90, le=90)
     home_lng: float | None = Field(default=None, ge=-180, le=180)
     home_label: str | None = Field(default=None, max_length=160)
+    # The language notifications and WhatsApp messages come in (P7.11): en or kn. Not nullable: null is refused (422).
+    language: Language = "en"
 
 
 # Phone one-time codes (P4.1, app/services/otp.py). login: sign in to the account with this verified phone;

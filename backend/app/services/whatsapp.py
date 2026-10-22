@@ -15,7 +15,8 @@ which writes one notification_outbox row when all of these hold:
 
 The row holds the template, its language and its two variables (the notification's title and text, on one line
 each), never the phone number: the sender reads the number at send time. A rolled-back transaction leaves neither
-the notification nor its row.
+the notification nor its row. The text is in the recipient's language (P7.11, app/services/notification_text.py), and
+so is the template: en (the code in NEARSHOP_WHATSAPP_TEMPLATE_LANGUAGE) or kn (template_language).
 
 The sender
 ----------
@@ -63,7 +64,8 @@ to the shop's listings with the importer's matcher and shown back, and applied w
 whatsapp_update) when the owner replies Yes; an ambiguous line offers up to 3 candidates; any other number gets the
 support reply. Replies are free-form texts, sent only inside the sender's 24-hour service window. send_stock_checks,
 run by the stock_check job, sends each shop's daily stock check from its opening time. docs/whatsapp-templates.md
-describes the conversation.
+describes the conversation. The replies and the stock check are in the owner's language (P7.11: the catalogue in
+app/services/notification_text.py); a number that is not a shop's gets the English support reply.
 
 Message text is never logged: it can hold a customer's name or a delivery code. Phone numbers are logged masked.
 """
@@ -92,6 +94,7 @@ from app.core.errors import AppError
 from app.models import InventoryReason, Notification, Product, Reservation, Shop, User
 from app.models.enums import OrderStatus, Role
 from app.services import messaging
+from app.services import notification_text as words
 from app.services.messaging import Delivery, masked
 
 log = logging.getLogger("nearshop.whatsapp")
@@ -144,6 +147,19 @@ TEMPLATES: dict[str, Template] = {
         OrderStatus.SHOP_CONFIRMED, OrderStatus.PREPARING, OrderStatus.OUT_FOR_DELIVERY, OrderStatus.DELIVERED,
         OrderStatus.DELIVERY_FAILED, OrderStatus.CANCELLED)},
 }
+
+# The Meta language code of the notification templates for each language a user can choose (P7.11). Every template in
+# docs/whatsapp-templates.md is approved in both; English keeps the code in NEARSHOP_WHATSAPP_TEMPLATE_LANGUAGE.
+KANNADA_TEMPLATE_LANGUAGE = "kn"
+
+
+def template_language(language: str | None) -> str:
+    """The template language for a user's language: kn for Kannada, otherwise English (also for a language the
+    templates are not approved in yet)."""
+    if words.language_of(language) == "kn":
+        return KANNADA_TEMPLATE_LANGUAGE
+    return settings.whatsapp_template_language.strip() or "en"
+
 
 # A reservation or order code (app/utils/text.py short_code) in a notification's title.
 _CODE = re.compile(r"\b([RD])-([A-Z0-9]{4,12})\b")
@@ -256,10 +272,10 @@ def consented(db: Database, user_id: int) -> bool:
     return bool(row and row.get("granted"))
 
 
-def _recipient(db: Database, user_id: int, template: Template) -> tuple[str | None, str | None]:
-    """(phone, None) when the user can get this template now, else (None, the reason)."""
-    user = db.users.raw.find_one({"_id": user_id}, {"role": 1, "phone": 1, "phone_verified_at": 1, "is_active": 1},
-                                 session=db.session)
+def _reachable(db: Database, user_id: int, template: Template) -> tuple[dict[str, Any] | None, str | None]:
+    """(the user's document, None) when the user can get this template now, else (None, the reason)."""
+    user = db.users.raw.find_one({"_id": user_id}, {"role": 1, "phone": 1, "phone_verified_at": 1, "is_active": 1,
+                                                    "language": 1}, session=db.session)
     if user is None or not user.get("is_active", True):
         return None, "inactive"
     if user.get("role") != template.role.value:
@@ -268,7 +284,13 @@ def _recipient(db: Database, user_id: int, template: Template) -> tuple[str | No
         return None, "no_verified_phone"
     if not consented(db, user_id):
         return None, "opted_out"
-    return user["phone"], None
+    return user, None
+
+
+def _recipient(db: Database, user_id: int, template: Template) -> tuple[str | None, str | None]:
+    """(phone, None) when the user can get this template now, else (None, the reason)."""
+    user, reason = _reachable(db, user_id, template)
+    return (user["phone"], None) if user is not None else (None, reason)
 
 
 def enqueue(db: Database, note: Notification) -> int | None:
@@ -277,14 +299,15 @@ def enqueue(db: Database, note: Notification) -> int | None:
     template = TEMPLATES.get(note.kind)
     if template is None or get_client() is None:
         return None
-    phone, _ = _recipient(db, note.user_id, template)
-    if phone is None:
+    user, _ = _reachable(db, note.user_id, template)
+    if user is None:
         return None
     subject = subject_of(note)
     created = note.created_at
     row = {"_id": db.next_id(OUTBOX), "notification_id": note.id, "user_id": note.user_id, "channel": CHANNEL,
            "kind": note.kind, "template": template.name,
-           "language": settings.whatsapp_template_language.strip() or "en",
+           # The template in the language notify() rendered the text in: the recipient's, read in this transaction.
+           "language": template_language(user.get("language")),
            "params": [_one_line(note.title), _one_line(note.body)], "subject": subject,
            "buttons": [f"{subject or f'notification:{note.id}'}:{action}" for action in template.buttons],
            "status": "queued", "attempts": 0, "created_at": created, "next_attempt_at": created}
@@ -570,9 +593,11 @@ _UNIT = r"(?:\s*(?:pcs|pc|nos|no|units|unit|qty))?\.?"
 _LINE_QTY_LAST = re.compile(rf"^(?P<name>.+?)(?:\s*[:=,\-–]\s*|\s+[x×*]\s*|\s+)(?P<qty>\d{{1,6}}){_UNIT}$", re.I)
 _LINE_QTY_FIRST = re.compile(rf"^(?P<qty>\d{{1,6}}){_UNIT}(?:\s*[x×*]\s*|\s*[:=,\-–]\s*|\s+)(?P<name>.+)$", re.I)
 
-HELP_TEXT = ("To update your stock on NearShop, send one line per item with its name and count, for example:\n"
-             "Thread seal tape 20\nSamsung charger 5\n\nWe show you the matches first, and change nothing until you "
-             "reply Yes. Answer new reservations with the Confirm and Decline buttons.")
+HELP_TEXT = words.text("bot_help", "en")  # how to send a stock update; help_text gives it in the owner's language
+
+
+def help_text(language: str) -> str:
+    return words.text("bot_help", language)
 
 
 def local_phone(wa_id: Any) -> str | None:
@@ -686,6 +711,7 @@ def _respond(db: Database, message: dict[str, Any], at: datetime, now: datetime)
     if found is None:
         return "unknown_phone", support_reply(), at
     owner, shop = found
+    language = owner.language
     session = db.mongo[SESSIONS].find_one_and_update(
         {"_id": owner.id}, {"$max": {"last_inbound_at": at}, "$set": {"updated_at": now}},
         upsert=True, return_document=ReturnDocument.AFTER)
@@ -702,7 +728,7 @@ def _respond(db: Database, message: dict[str, Any], at: datetime, now: datetime)
         text = message.get("text") if isinstance(message.get("text"), dict) else {}
         outcome, reply = answer_text(db, owner, shop, str(text.get("body") or ""), now)
     else:
-        outcome, reply = "unsupported", HELP_TEXT
+        outcome, reply = "unsupported", help_text(language)
     return outcome, reply, last_inbound
 
 
@@ -728,14 +754,16 @@ def _reservation_for(db: Database, owner: User, payload: str) -> tuple[Reservati
 
 def answer_button(db: Database, owner: User, shop: Shop, payload: str) -> tuple[str, str]:
     """A Confirm or Decline button on the new-reservation template: the transition, as the owner, with the note
-    "via WhatsApp" on its status event, all in one transaction. Returns (outcome, reply)."""
+    "via WhatsApp" on its status event, all in one transaction. Returns (outcome, reply), the reply in the owner's
+    language."""
     from app.services.reservations import transition  # reservations -> notifications -> this module
 
+    language = owner.language
     res, action = _reservation_for(db, owner, payload)
     if action is None:
-        return "bad_button", "Sorry, we could not read that button. Please answer the request in NearShop."
+        return "bad_button", words.text("bot_bad_button", language)
     if res is None or db.shops.get(res.shop_id).owner_id != owner.id:
-        return "not_found", "We could not find that reservation in your shop. Please check it in NearShop."
+        return "not_found", words.text("bot_reservation_not_found", language)
     to = BUTTON_ACTIONS[action]
     if res.status in OPEN_RESERVATION and res.expires_at <= utcnow():
         # Its timer ran out before the sweep reached it (a button can be tapped hours later): expire it first, as
@@ -755,16 +783,15 @@ def answer_button(db: Database, owner: User, shop: Shop, payload: str) -> tuple[
     try:
         done = db.transaction(run)
     except AppError as exc:
-        verb = "confirmed" if to == "confirm" else "declined"
-        hint = (" Send the new count to update your stock, or decline the request."
-                if exc.code == "insufficient_stock" else "")
-        return f"{to}_refused", f"Reservation {res.code} was not {verb}: {exc.message.rstrip('.')}.{hint}"
+        hint = words.text("bot_hint_insufficient_stock", language) if exc.code == "insufficient_stock" else ""
+        return f"{to}_refused", words.text("bot_not_confirmed" if to == "confirm" else "bot_not_declined", language,
+                                     {"code": res.code, "error": exc.message.rstrip("."), "hint": hint})
     product = db.products.get(done.product_id)
-    name = product.name if product else "the item"
+    params = {"code": done.code, "quantity": done.quantity, "minutes": done.hold_minutes,
+              "product": product.name if product else words.Term("the_item")}
     if to == "confirm":
-        return "confirmed", (f"Confirmed reservation {done.code}: {done.quantity} x {name} is held for the customer "
-                             f"for {done.hold_minutes} minutes. We have told the customer.")
-    return "declined", f"Declined reservation {done.code} for {done.quantity} x {name}. We have told the customer."
+        return "confirmed", words.text("bot_confirmed", language, params)
+    return "declined", words.text("bot_declined", language, params)
 
 
 # ---------------------------------------------------------------- stock updates
@@ -831,54 +858,55 @@ def _save_pending(db: Database, owner: User, pending: dict[str, Any] | None, now
                                   session=db.session)
 
 
-def preview_text(pending: dict[str, Any]) -> str:
-    """The bot's reply for a stock update in progress: the next ambiguous line's choices, or the preview to confirm."""
+def preview_text(pending: dict[str, Any], language: str = "en") -> str:
+    """The bot's reply for a stock update in progress: the next ambiguous line's choices, or the preview to confirm,
+    in the owner's language."""
     parts = []
     if pending["items"]:
-        parts.append(("Matched so far:\n" if pending["queue"] else "Update your stock to:\n")
-                     + "\n".join(f"- {i['name']}: {i['quantity']} (now {i['before']})" for i in pending["items"]))
+        parts.append(words.text("preview_matched_so_far" if pending["queue"] else "preview_update_to", language) + "\n"
+                     + "\n".join(words.text("preview_item", language, i) for i in pending["items"]))
     if pending["skipped"]:
-        parts.append("Not matched, left out: " + "; ".join(pending["skipped"]))
+        parts.append(words.text("preview_skipped", language, {"lines": "; ".join(pending["skipped"])}))
     if pending["queue"]:
         line = pending["queue"][0]
         options = "\n".join(f"{n}. {c['name']}" for n, c in enumerate(line["candidates"], start=1))
-        parts.append(f'Which item is "{line["line"]}" ({line["quantity"]})?\n{options}\n'
-                     f"Reply with its number, or 0 to leave this line out.")
+        parts.append(words.text("preview_which", language,
+                          {"line": line["line"], "quantity": line["quantity"], "options": options}))
     elif pending["items"]:
-        parts.append("Reply Yes to save these counts, or No to cancel.")
+        parts.append(words.text("preview_confirm", language))
     else:
-        parts.append("Nothing matched your listings, so nothing will change. Check the names, or add the items in "
-                     "NearShop first.")
+        parts.append(words.text("preview_nothing", language))
     return "\n\n".join(parts)
 
 
-def answer_text(db: Database, owner: User, shop: Shop, text: str, now: datetime) -> tuple[str, str]:
+def answer_text(db: Database, owner: User, shop: Shop, message: str, now: datetime) -> tuple[str, str]:
     """A text from a shop: Yes or No to the stock preview, a number choosing among an ambiguous line's candidates, or
-    new stock lines (which replace any preview in progress). Returns (outcome, reply)."""
-    word = " ".join(text.lower().split()).strip(" .!")
+    new stock lines (which replace any preview in progress). Returns (outcome, reply), the reply in the owner's
+    language."""
+    language = owner.language
+    word = " ".join(message.lower().split()).strip(" .!")
     pending = _session_pending(db, owner, shop, now)
     if pending and pending["queue"] and word.isdecimal():  # not isdigit: int() refuses "²"
         return choose(db, owner, pending, int(word), now)
     if word in YES:
         if pending and pending["queue"]:
-            return "choices", "Please choose the item first.\n\n" + preview_text(pending)
+            return "choices", words.text("bot_choose_first", language) + "\n\n" + preview_text(pending, language)
         if pending and pending["items"]:
             return apply_stock(db, owner, shop, pending["token"], now)
-        return "nothing_to_confirm", "There is no stock update waiting for your Yes.\n\n" + HELP_TEXT
+        return "nothing_to_confirm", words.text("bot_nothing_to_confirm", language) + "\n\n" + help_text(language)
     if word in NO:
         if pending:
             _save_pending(db, owner, None, now)
-            return "cancelled", "Cancelled. Your stock was not changed."
-        return "help", HELP_TEXT
-    lines, unread = parse_stock_lines(text)
+            return "cancelled", words.text("bot_cancelled", language)
+        return "help", help_text(language)
+    lines, unread = parse_stock_lines(message)
     if not lines:
-        return "help", HELP_TEXT
+        return "help", help_text(language)
     if len(lines) > MAX_STOCK_LINES:
-        return "too_many_lines", (f"Please send at most {MAX_STOCK_LINES} items in one message. Nothing was "
-                                  f"changed.")
+        return "too_many_lines", words.text("bot_too_many_lines", language, {"max": MAX_STOCK_LINES})
     listings = db.products.find({"shop_id": shop.id, "is_active": True})  # never a removed listing
     pending = {"token": uuid.uuid4().hex, "shop_id": shop.id, "items": [], "queue": [],
-               "skipped": [f"{u} (no count)" for u in unread][:10]}
+               "skipped": [words.text("preview_no_count", language, {"line": u}) for u in unread][:10]}
     for name, quantity in lines:
         result, found = match_line(name, listings)
         if result == "match":
@@ -889,15 +917,16 @@ def answer_text(db: Database, owner: User, shop: Shop, text: str, now: datetime)
         else:
             pending["skipped"].append(name)
     _save_pending(db, owner, pending if pending["items"] or pending["queue"] else None, now)
-    return ("choices" if pending["queue"] else "preview"), preview_text(pending)
+    return ("choices" if pending["queue"] else "preview"), preview_text(pending, language)
 
 
 def choose(db: Database, owner: User, pending: dict[str, Any], number: int, now: datetime) -> tuple[str, str]:
     """The answer to an ambiguous line: 1 to 3 picks a candidate, 0 leaves the line out."""
+    language = owner.language
     line = pending["queue"][0]
     if not 0 <= number <= len(line["candidates"]):
-        return "choices", f"Please reply with a number from 1 to {len(line['candidates'])}, or 0.\n\n" + preview_text(
-            pending)
+        return "choices", (words.text("bot_choose_number", language, {"count": len(line["candidates"])}) + "\n\n"
+                           + preview_text(pending, language))
     pending["queue"].pop(0)
     if number == 0:
         pending["skipped"].append(line["line"])
@@ -908,7 +937,7 @@ def choose(db: Database, owner: User, pending: dict[str, Any], number: int, now:
         else:
             _add_item(pending, _item(product, line["quantity"]))
     _save_pending(db, owner, pending, now)
-    return ("choices" if pending["queue"] else "preview"), preview_text(pending)
+    return ("choices" if pending["queue"] else "preview"), preview_text(pending, language)
 
 
 def apply_stock(db: Database, owner: User, shop: Shop, token: str, now: datetime) -> tuple[str, str]:
@@ -933,11 +962,13 @@ def apply_stock(db: Database, owner: User, shop: Shop, token: str, now: datetime
         return saved
 
     saved = db.transaction(run)
+    language = owner.language
     if saved is None:
-        return "nothing_to_confirm", "There is no stock update waiting for your Yes.\n\n" + HELP_TEXT
+        return "nothing_to_confirm", words.text("bot_nothing_to_confirm", language) + "\n\n" + help_text(language)
     if not saved:
-        return "saved", "Those items are no longer in your shop, so nothing was changed."
-    return "saved", "Saved. Your stock is now:\n" + "\n".join(f"- {name}: {qty}" for name, qty in saved)
+        return "saved", words.text("bot_items_gone", language)
+    return "saved", words.text("bot_saved", language) + "\n" + "\n".join(
+        words.text("bot_saved_item", language, {"name": name, "quantity": qty}) for name, qty in saved)
 
 
 # ---------------------------------------------------------------- the daily stock check
@@ -966,32 +997,45 @@ def opening_time(hours: str | None) -> dtime:
     return DEFAULT_OPENING
 
 
-def _ago(then: datetime, now: datetime) -> str:
-    days = max(2, int((now - then).total_seconds() // 86400))
-    return f"{days} days ago"
+def _days_ago(then: datetime, now: datetime) -> int:
+    return max(2, int((now - then).total_seconds() // 86400))
 
 
 STOCK_CHECK_NAME = 60  # characters of a listing's name in the stock check, shortened further to fit PARAM_MAX
 STOCK_CHECK_NAME_MIN = 12
 
 
-def stock_check_text(shop: dict[str, Any], stale: list[dict[str, Any]], now: datetime) -> tuple[str, str]:
-    """The stock check's title and text ({{1}} and {{2}} of the template): the listings and their counts, oldest
-    count first. How to reply is the template body's own last line, so the text does not repeat it. Long names are
-    shortened until the text fits one template variable (PARAM_MAX), so no listing is cut off the end."""
+def stock_check_params(shop: dict[str, Any], stale: list[dict[str, Any]], now: datetime,
+                       language: str = "en") -> dict[str, Any]:
+    """The parameters of the stock_check message (app/services/notification_text.py) in the owner's language: the
+    shop's name and the listings with their counts, oldest count first. Long names are shortened until the rendered
+    text fits one template variable (PARAM_MAX), so no listing is cut off the end."""
+    shop_name = shop.get("name") or words.Term("your_shop")
 
-    def text(cap: int) -> str:
+    def items(cap: int) -> str:
         def name(p: dict[str, Any]) -> str:
             flat = " ".join(str(p.get("name") or "").split())
             return flat if len(flat) <= cap else flat[:cap - 1].rstrip() + "…"
 
-        return "Are these counts still right? " + "; ".join(
-            f"{name(p)}: {p['quantity']} (counted {_ago(p['stock_updated_at'], now)})" for p in stale)
+        return "; ".join(words.text("stock_check_item", language, {"name": name(p), "quantity": p["quantity"],
+                                                             "days": _days_ago(p["stock_updated_at"], now)})
+                         for p in stale)
+
+    def body(cap: int) -> str:
+        return words.render(STOCK_CHECK_KIND, language, {"shop": shop_name, "items": items(cap)})[1] or ""
 
     cap = STOCK_CHECK_NAME
-    while len(text(cap)) > PARAM_MAX and cap > STOCK_CHECK_NAME_MIN:
+    while len(body(cap)) > PARAM_MAX and cap > STOCK_CHECK_NAME_MIN:
         cap -= 1
-    return f"Stock check for {shop.get('name') or 'your shop'}", text(cap)
+    return {"shop": shop_name, "items": items(cap)}
+
+
+def stock_check_text(shop: dict[str, Any], stale: list[dict[str, Any]], now: datetime,
+                     language: str = "en") -> tuple[str, str]:
+    """The stock check's title and text ({{1}} and {{2}} of the template) in the language. How to reply is the
+    template body's own last line, so the text does not repeat it."""
+    title, body = words.render(STOCK_CHECK_KIND, language, stock_check_params(shop, stale, now, language))
+    return title, body or ""
 
 
 def send_stock_checks(db: Database, now: datetime | None = None, limit: int = BATCH) -> dict[str, Any]:
@@ -1036,9 +1080,10 @@ def send_stock_checks(db: Database, now: datetime | None = None, limit: int = BA
             elif _recipient(db, shop["owner_id"], template)[0] is None:
                 outcome = "unreachable"
             else:
-                title, body = stock_check_text(shop, stale, now)
-                db.transaction(lambda s=shop, t=title, b=body: notify(db, s["owner_id"], STOCK_CHECK_KIND, t, b,
-                                                                      "/shop/inventory"))
+                params = stock_check_params(shop, stale, now, words.recipient_language(db, shop["owner_id"]))
+                db.transaction(lambda s=shop, p=params: notify(db, s["owner_id"], STOCK_CHECK_KIND,
+                                                               link="/shop/inventory", message=STOCK_CHECK_KIND,
+                                                               params=p))
                 outcome = "sent"
         except Exception:
             # Release the day's claim, so the next tick (still inside the grace period) tries this shop again

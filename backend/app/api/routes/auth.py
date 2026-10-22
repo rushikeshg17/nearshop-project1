@@ -250,6 +250,7 @@ def user_out(user: User, db: Database) -> dict:
         "home_lat": user.home_lat,
         "home_lng": user.home_lng,
         "home_label": user.home_label,
+        "language": user.language,  # P7.11: the language notifications and messages come in
         "shop": shop,
     }
 
@@ -568,7 +569,8 @@ def me(user: OptionalUser, db: DB):
 
 @router.patch("/me")
 def update_me(body: ProfileUpdateIn, user: CurrentUser, db: DB):
-    """Name and home location. A phone is refused here (422): it changes only through a verify code (P4.1)."""
+    """Name, home location and the notification language (P7.11). A phone is refused here (422): it changes only
+    through a verify code (P4.1)."""
     changes = body.model_dump(exclude_unset=True)
     if changes:
         db.users.set(user, **changes)

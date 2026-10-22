@@ -4,13 +4,20 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal, get_args
 
 from pydantic import Field, model_validator
 
 from app.core.database import utcnow
 from app.models.base import Document, Embedded, GeoPoint, Timestamps
 from app.models.enums import InventoryReason, Role
+
+# The language a user reads notifications and WhatsApp messages in (P7.11, app/services/notification_text.py): a
+# language code, so Telugu and Hindi (P8.4) are one more value here and in the users validator
+# (database/schema.py), nothing else.
+Language = Literal["en", "kn"]
+LANGUAGES: tuple[str, ...] = get_args(Language)
+DEFAULT_LANGUAGE = "en"
 
 
 class UserSession(Embedded):
@@ -61,6 +68,8 @@ class User(Document, Timestamps):
     home_lat: float | None = None
     home_lng: float | None = None
     home_label: str | None = None
+    # The language notifications and WhatsApp messages reach the user in (P7.11). Documents written before it read en.
+    language: Language = DEFAULT_LANGUAGE
     # Revocable sessions (P2.4). Defaults cover documents written before them.
     token_version: int = 0
     sessions: list[UserSession] = Field(default_factory=list)

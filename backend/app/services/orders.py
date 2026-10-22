@@ -30,6 +30,7 @@ from app.models import (
 )
 from app.services.fulfillment_common import record_event, record_sales
 from app.services.inventory import change_stock
+from app.services.notification_text import Term
 from app.services.notifications import notify
 from app.services.reservations import SHOP_NOT_VERIFIED, check_payment_method
 from app.utils.geo import haversine_km
@@ -52,14 +53,18 @@ TRANSITIONS: dict[tuple[OS, str], tuple[OS, set[str]]] = {
     (OS.DELIVERY_FAILED, "return"): (OS.RETURNED_TO_SHOP, {"owner"}),
 }
 
+# The customer's notification for each status the shop (or the system) moves an order to: a message key of
+# app/services/notification_text.py, rendered in the customer's language (P7.11). A cancelled or failed order with a
+# reason uses the key's _reason variant; the hour-long timeout has its own words (NO_RESPONSE_REASON).
 CUSTOMER_MESSAGES = {
-    OS.SHOP_CONFIRMED: ("Order confirmed", "{shop} confirmed your order and set the items aside."),
-    OS.PREPARING: ("Packing your order", "{shop} is preparing your order."),
-    OS.OUT_FOR_DELIVERY: ("Out for delivery", "Your order from {shop} is on the way. Keep cash ready: Rs {total:.0f}."),
-    OS.DELIVERED: ("Delivered", "Your order from {shop} was delivered. How did it go? Leave a quick review."),
-    OS.DELIVERY_FAILED: ("Delivery attempt failed", "{shop} could not complete the delivery. They may contact you."),
-    OS.CANCELLED: ("Order cancelled", "Your order from {shop} was cancelled."),
+    OS.SHOP_CONFIRMED: "order_shop_confirmed",  # holds the delivery code: the customer's own notification
+    OS.PREPARING: "order_preparing",
+    OS.OUT_FOR_DELIVERY: "order_out_for_delivery",
+    OS.DELIVERED: "order_delivered",
+    OS.DELIVERY_FAILED: "order_delivery_failed",
+    OS.CANCELLED: "order_cancelled",
 }
+NO_RESPONSE_REASON = "The shop did not respond within an hour"  # cancel_stale_pending's close reason
 
 
 def allowed_actions(order: Order, actor: str) -> list[str]:
@@ -149,8 +154,9 @@ def create_order(
     record_event(db, entity="order", entity_id=order.id, shop_id=shop.id, from_status=None,
                  to_status=OS.PENDING, actor_role="customer", actor_id=customer.id)
     summary = ", ".join(f"{q} x {p.name}" for p, q in products)
-    notify(db, shop.owner_id, "order_new", f"New delivery order {order.code}",
-           f"{summary} to {address[:60]} ({quote['distance_km']} km). COD Rs {order.total:.0f}.", "/shop/orders")
+    notify(db, shop.owner_id, "order_new", link="/shop/orders", message="order_new",
+           params={"code": order.code, "summary": summary, "address": address[:60],
+                   "distance_km": quote["distance_km"], "total": order.total})
     return order
 
 
@@ -202,9 +208,9 @@ def ensure_delivery_code(db: Database, order_id: int) -> None:
         {"$set": {"delivery_code": new_delivery_code()}})
     if order is not None:
         shop = db.shops.get(order.shop_id)
-        notify(db, order.customer_id, "order_delivery_code", "Your delivery code",
-               f"Your delivery code for the order from {shop.name if shop else 'the shop'} is {order.delivery_code}: "
-               "give it to the shop only when the order arrives.", f"/account/orders/{order.id}")
+        notify(db, order.customer_id, "order_delivery_code", link=f"/account/orders/{order.id}",
+               message="order_delivery_code",
+               params={"shop": shop.name if shop else Term("the_shop"), "delivery_code": order.delivery_code})
 
 
 def _count_wrong_code(db: Database, order_id: int) -> None:
@@ -270,15 +276,17 @@ def _transition(db: Database, order_id: int, action: str, user: User | None, rea
     db.orders.set(order, **changes)
 
     if actor != "customer" and to_status in CUSTOMER_MESSAGES:
-        title, body = CUSTOMER_MESSAGES[to_status]
-        body = body.format(shop=shop.name, total=order.total)
-        if to_status == OS.SHOP_CONFIRMED:  # the customer's own notification: the code is theirs to give
-            body += f" Your delivery code is {order.delivery_code}: give it to the shop only when the order arrives."
+        message = CUSTOMER_MESSAGES[to_status]
         if order.close_reason and to_status in {OS.CANCELLED, OS.DELIVERY_FAILED}:
-            body += f" Reason: {order.close_reason}"
-        notify(db, order.customer_id, f"order_{to_status.lower()}", title, body, f"/account/orders/{order.id}")
+            no_response = (to_status == OS.CANCELLED and actor == "system"
+                           and order.close_reason == NO_RESPONSE_REASON)
+            message = "order_cancelled_no_response" if no_response else f"{message}_reason"
+        notify(db, order.customer_id, f"order_{to_status.lower()}", link=f"/account/orders/{order.id}",
+               message=message, params={"shop": shop.name, "total": order.total,
+                                        "delivery_code": order.delivery_code, "reason": order.close_reason})
     if actor == "customer" and to_status == OS.CANCELLED:
-        notify(db, shop.owner_id, "order_cancelled", f"Order {order.code} cancelled by customer", None, "/shop/orders")
+        notify(db, shop.owner_id, "order_cancelled", link="/shop/orders", message="order_cancelled_by_customer",
+               params={"code": order.code})
 
     record_event(db, entity="order", entity_id=order.id, shop_id=order.shop_id, from_status=from_status,
                  to_status=to_status, actor_role=actor, actor_id=actor_id, note=reason)
@@ -290,7 +298,7 @@ def cancel_stale_pending(db: Database) -> int:
     stale = db.orders.find_raw({"status": OS.PENDING, "created_at": {"$lte": cutoff}}, {"_id": 1})
     for doc in stale:
         try:
-            transition(db, doc["_id"], "cancel", None, "The shop did not respond within an hour")
+            transition(db, doc["_id"], "cancel", None, NO_RESPONSE_REASON)
         except Exception as exc:
             log.warning("could not auto-cancel order %s: %s", doc["_id"], exc)
     return len(stale)
