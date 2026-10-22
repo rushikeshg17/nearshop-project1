@@ -215,6 +215,7 @@ export function MapCanvas({
           rel="noreferrer"
           className="absolute right-1.5 bottom-1 rounded bg-background/70 px-1 text-[9px] text-muted-foreground"
         >
+          {/* i18n-allow: the map data's required attribution, a name, the same in every language */}
           © OpenStreetMap
         </a>
       )}

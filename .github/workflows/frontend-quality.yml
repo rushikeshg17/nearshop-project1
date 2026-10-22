@@ -13,8 +13,8 @@
 # chosen with the nearshop_lang cookie for the budgets and with the browser's language (Accept-Language) for the
 # Playwright specs. The build offers every language on the list, through NEXT_PUBLIC_NEARSHOP_PREVIEW_LANGUAGES, until
 # its text is reviewed (src/lib/i18n.ts), and each check confirms the page really is in that language (html lang).
-# Before any of it, scripts/check-i18n.mjs fails the job on literal English in the customer and owner screens or a
-# key missing from a language's message file (P7.10).
+# Before any of it, scripts/check-i18n.mjs fails the job on literal English in the customer and owner screens (their
+# pages, page titles and the shared components they render) or a key missing from a language's message file (P7.10).
 #
 # Then every Playwright spec in frontend/e2e runs (frontend/playwright.config.ts), once per interface language in
 # LAB_LANGUAGES; a spec added there later joins with no change here. P2.10 added two (docs/accessibility.md):
@@ -110,8 +110,8 @@ jobs:
           (cd backend && uv sync --locked)
           (cd frontend && npm ci)
 
-      # Literal English in the (site), (auth) and shop screens, and keys missing from a language's message file
-      # (P7.10). First, so the job fails fast and needs no site.
+      # Literal English in the (site), (auth) and shop screens, their page titles and src/components, and keys missing
+      # from a language's message file (P7.10). First, so the job fails fast and needs no site.
       - name: Interface strings (check-i18n)
         working-directory: frontend
         run: node scripts/check-i18n.mjs

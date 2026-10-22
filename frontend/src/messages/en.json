@@ -57,7 +57,10 @@
       "text": "From {date} you sign in with a code sent to your phone.",
       "link": "Verify your phone number",
       "dismiss": "Dismiss for today"
-    }
+    },
+    "homeLabel": "NearShop home",
+    "themeToggle": "Toggle dark mode",
+    "demoBanner": "Demo with generated data. Do not enter real personal details."
   },
   "common": {
     "states": {
@@ -180,7 +183,8 @@
     },
     "freshness": {
       "updated": "Updated {time}",
-      "notConfirmed": "Stock not confirmed yet"
+      "notConfirmed": "Stock not confirmed yet",
+      "stockUpdated": "Stock updated {time}"
     },
     "price": {
       "offMrp": "{percent}% off MRP"
@@ -232,6 +236,80 @@
       "duplicate_review": "You have already reviewed this purchase.",
       "review_not_allowed": "Shops cannot be reviewed from their own phone number.",
       "own_review": "You cannot report your own review."
+    },
+    "stockErrors": {
+      "outOfStock": "This item is out of stock.",
+      "onlyLeft": "Only {count} in stock.",
+      "outOfStockOf": "{product} is out of stock.",
+      "onlyLeftOf": "Only {count} of {product} in stock."
+    },
+    "shopCard": {
+      "open": "Open",
+      "closed": "Closed",
+      "delivers": "Delivers"
+    },
+    "dialog": {
+      "close": "Close"
+    },
+    "quantity": {
+      "label": "Quantity",
+      "decrease": "Decrease quantity",
+      "increase": "Increase quantity"
+    },
+    "map": {
+      "show": "Show map"
+    },
+    "reviews": {
+      "stars": "{value} out of 5 stars",
+      "newShopHint": "A rating shows once 5 different customers have reviewed this shop",
+      "empty": "No reviews yet.",
+      "verified": {
+        "pickup": "Verified pickup",
+        "delivery": "Verified delivery"
+      },
+      "itemAccuracy": "Item accuracy {value}/5",
+      "delivery": "Delivery {value}/5",
+      "replyFromShop": "Reply from the shop",
+      "edited": "edited",
+      "status": {
+        "hidden": "Hidden while an admin reviews it",
+        "removed": "Removed by an admin"
+      },
+      "report": "Report",
+      "reportReply": "Report reply",
+      "reportReviewLabel": "Report this review",
+      "reportReplyLabel": "Report the shop's reply",
+      "reported": "Reported",
+      "reportDescription": "Reports are private. When several people report the same review, it is hidden until an admin decides.",
+      "cancel": "Cancel",
+      "sendReport": "Send report",
+      "whatIsWrong": "What is wrong with it?",
+      "whatProblem": "What is the problem?",
+      "anythingElse": "Anything else? (optional)",
+      "alreadyReported": "You have already reported this.",
+      "thanks": "Thanks. An admin will look at it within 3 days.",
+      "reasons": {
+        "fake": {
+          "label": "Fake",
+          "hint": "Not from a real customer, or written by the shop"
+        },
+        "abusive": {
+          "label": "Abusive",
+          "hint": "Insults, threats or hate"
+        },
+        "personal_info": {
+          "label": "Personal information",
+          "hint": "A phone number, address or someone's private details"
+        },
+        "off_topic": {
+          "label": "Off-topic",
+          "hint": "Not about this shop or this purchase"
+        },
+        "other": {
+          "label": "Something else",
+          "hint": "Tell us below"
+        }
+      }
     }
   },
   "discovery": {
@@ -526,6 +604,21 @@
         "one": "{count} shop within {km} km",
         "other": "{count} shops within {km} km"
       }
+    },
+    "filterSheet": {
+      "inStock": "In stock only",
+      "inStockHint": "Hide items shops have run out of",
+      "how": "How you want it",
+      "any": "Any",
+      "pickup": "Pickup",
+      "delivery": "Delivery",
+      "priceRange": "Price range (Rs)",
+      "min": "Min",
+      "max": "Max",
+      "minLabel": "Minimum price",
+      "maxLabel": "Maximum price",
+      "to": "to",
+      "clearAll": "Clear all"
     }
   },
   "auth": {
@@ -973,6 +1066,12 @@
       },
       "whyRefused": "(this is why the review was not accepted)",
       "countsNote": "Only some reviews count toward a shop’s rating: one per customer per shop every 30 days."
+    },
+    "activity": {
+      "pickup": "Pickup",
+      "delivery": "Delivery",
+      "shopHas": "Shop has {time}",
+      "heldFor": "Held for {time}"
     }
   },
   "owner": {
@@ -1718,6 +1817,134 @@
       "itemGroups": "Item groups",
       "isolated": "Isolated by forest",
       "flagged": "Flagged for review"
+    }
+  },
+  "shopForm": {
+    "shopName": "Shop name",
+    "shopNamePlaceholder": "e.g. Sri Lakshmi Hardware",
+    "tagline": "Tagline",
+    "optional": "(optional)",
+    "taglinePlaceholder": "Tools, locks and fittings since 1994",
+    "whatYouSell": "What do you sell?",
+    "upTo3": "Up to 3",
+    "shopPhone": "Shop phone",
+    "phonePlaceholder": "10-digit mobile",
+    "gpsMoved": "Pin moved to your current location",
+    "gpsFailed": "Couldn't get your location. Tap the map instead.",
+    "street": "Street address",
+    "streetPlaceholder": "Shop no., street, landmark",
+    "area": "Area",
+    "chooseArea": "Choose area",
+    "pincode": "Pincode",
+    "exactLocation": "Exact shop location",
+    "useGps": "Use GPS",
+    "yourShop": "Your shop",
+    "shopLocation": "Shop location",
+    "mapHint": "Tap the map to place the pin on your shop's door. Customers use this for directions and distance.",
+    "opens": "Opens",
+    "closes": "Closes",
+    "weeklyHoliday": "Weekly holiday",
+    "days": {
+      "none": "None",
+      "monday": "Monday",
+      "tuesday": "Tuesday",
+      "wednesday": "Wednesday",
+      "thursday": "Thursday",
+      "friday": "Friday",
+      "saturday": "Saturday",
+      "sunday": "Sunday"
+    },
+    "holdFor": "Hold reservations for",
+    "minutes": "{count} minutes",
+    "deliverMyself": "I deliver myself",
+    "deliverHint": "You or your staff deliver; customers pay cash on delivery.",
+    "radius": "Delivery radius",
+    "radiusValue": "{km} km",
+    "fee": "Delivery fee (Rs)",
+    "freeAbove": "Free above (Rs)",
+    "freePlaceholder": "Optional",
+    "evidenceType": "Evidence type",
+    "kycTypes": {
+      "gstin": {
+        "label": "GSTIN",
+        "hint": "Your 15-character GST number."
+      },
+      "udyam": {
+        "label": "Udyam registration",
+        "hint": "From your Udyam (MSME) certificate."
+      },
+      "trade_licence": {
+        "label": "Trade licence",
+        "hint": "Trade licence or Shop and Establishment registration number."
+      }
+    },
+    "numberLabel": "{type} number",
+    "noAadhaar": "Never enter an Aadhaar number: NearShop does not collect it.",
+    "documentLicence": "Photo of the licence or registration",
+    "documentCertificate": "Photo of the certificate",
+    "documentMissing": "Add a photo of your trade licence or Shop and Establishment registration",
+    "storefront": "Storefront photo showing your signboard",
+    "storefrontMissing": "Add a photo of your shopfront with the signboard",
+    "kycErrors": {
+      "empty": "Enter the number",
+      "aadhaar": "That looks like an Aadhaar number. NearShop never collects Aadhaar: enter your GSTIN, Udyam number or trade licence number",
+      "gstinFormat": "A GSTIN has 15 characters, like 27AAPFU0939F1ZV",
+      "gstinCheck": "That GSTIN's last character does not match: check it for a typing mistake",
+      "udyamFormat": "A Udyam number looks like UDYAM-KR-03-0012345",
+      "tradeLicenceFormat": "A trade licence number has 4 to 40 letters, digits, spaces, slashes, dots or hyphens"
+    }
+  },
+  "pages": {
+    "site": {
+      "title": "NearShop: find it nearby",
+      "description": "See which shops near you have what you need in stock right now. Compare prices, reserve for pickup, or get it delivered by the shop."
+    },
+    "titles": {
+      "home": "NearShop: find it nearby",
+      "search": "Search nearby",
+      "searchQuery": "{query} near you",
+      "shops": "Shops near you",
+      "product": "Product",
+      "shop": "Shop",
+      "account": "Your activity",
+      "aiLab": "AI Lab",
+      "grievance": "Grievances",
+      "privacy": "Privacy notice",
+      "terms": "Terms of use",
+      "signIn": "Sign in",
+      "register": "Create account",
+      "registerShop": "List your shop",
+      "verifyPhone": "Verify your phone",
+      "shopDashboard": "Shop dashboard",
+      "catalog": "Add from catalogue",
+      "inventory": "Inventory"
+    },
+    "descriptions": {
+      "aiLab": "How NearShop uses machine learning, with live metrics.",
+      "grievance": "File a grievance with NearShop's grievance officer and track it by ticket number. Every grievance is acknowledged on receipt and resolved within 30 days.",
+      "privacy": "How NearShop collects, uses and protects your personal data.",
+      "terms": "The terms for using NearShop to find, reserve and order from local shops."
+    },
+    "legal": {
+      "draftTitle": "Draft: the reviewed text is not yet published",
+      "draftBodyPrivacy": "The lawyer-reviewed privacy notice in English and Kannada will appear here, with its version and effective date, before NearShop opens sign-ups. Until then this page has no binding text.",
+      "draftBodyTerms": "The lawyer-reviewed terms of use in English and Kannada will appear here, with its version and effective date, before NearShop opens sign-ups. Until then this page has no binding text.",
+      "language": "Language",
+      "version": "Version {version} · Effective {date}",
+      "dateNotStated": "date not stated"
+    },
+    "meta": {
+      "productTitle": "{product} at {shop}, {city}",
+      "productDescription": "{price} at {shop}, {address}, {city}. {stock}. Reserve for pickup on NearShop and pay at the shop.",
+      "shopTitle": "{shop}, {place}",
+      "shopAddress": "{address}, {city}.",
+      "shopOpen": "Open {hours}.",
+      "shopOpenClosed": "Open {hours}, closed {day}s.",
+      "shopRating": {
+        "one": "Rated {rating} from {count} review.",
+        "other": "Rated {rating} from {count} reviews."
+      },
+      "shopCta": "See what is in stock now and reserve for pickup on NearShop."
     }
   }
 }

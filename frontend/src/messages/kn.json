@@ -57,7 +57,10 @@
       "text": "",
       "link": "",
       "dismiss": ""
-    }
+    },
+    "homeLabel": "",
+    "themeToggle": "",
+    "demoBanner": ""
   },
   "common": {
     "states": {
@@ -180,7 +183,8 @@
     },
     "freshness": {
       "updated": "",
-      "notConfirmed": ""
+      "notConfirmed": "",
+      "stockUpdated": ""
     },
     "price": {
       "offMrp": ""
@@ -232,6 +236,80 @@
       "duplicate_review": "",
       "review_not_allowed": "",
       "own_review": ""
+    },
+    "stockErrors": {
+      "outOfStock": "",
+      "onlyLeft": "",
+      "outOfStockOf": "",
+      "onlyLeftOf": ""
+    },
+    "shopCard": {
+      "open": "",
+      "closed": "",
+      "delivers": ""
+    },
+    "dialog": {
+      "close": ""
+    },
+    "quantity": {
+      "label": "",
+      "decrease": "",
+      "increase": ""
+    },
+    "map": {
+      "show": ""
+    },
+    "reviews": {
+      "stars": "",
+      "newShopHint": "",
+      "empty": "",
+      "verified": {
+        "pickup": "",
+        "delivery": ""
+      },
+      "itemAccuracy": "",
+      "delivery": "",
+      "replyFromShop": "",
+      "edited": "",
+      "status": {
+        "hidden": "",
+        "removed": ""
+      },
+      "report": "",
+      "reportReply": "",
+      "reportReviewLabel": "",
+      "reportReplyLabel": "",
+      "reported": "",
+      "reportDescription": "",
+      "cancel": "",
+      "sendReport": "",
+      "whatIsWrong": "",
+      "whatProblem": "",
+      "anythingElse": "",
+      "alreadyReported": "",
+      "thanks": "",
+      "reasons": {
+        "fake": {
+          "label": "",
+          "hint": ""
+        },
+        "abusive": {
+          "label": "",
+          "hint": ""
+        },
+        "personal_info": {
+          "label": "",
+          "hint": ""
+        },
+        "off_topic": {
+          "label": "",
+          "hint": ""
+        },
+        "other": {
+          "label": "",
+          "hint": ""
+        }
+      }
     }
   },
   "discovery": {
@@ -526,6 +604,21 @@
         "one": "",
         "other": ""
       }
+    },
+    "filterSheet": {
+      "inStock": "",
+      "inStockHint": "",
+      "how": "",
+      "any": "",
+      "pickup": "",
+      "delivery": "",
+      "priceRange": "",
+      "min": "",
+      "max": "",
+      "minLabel": "",
+      "maxLabel": "",
+      "to": "",
+      "clearAll": ""
     }
   },
   "auth": {
@@ -973,6 +1066,12 @@
       },
       "whyRefused": "",
       "countsNote": ""
+    },
+    "activity": {
+      "pickup": "",
+      "delivery": "",
+      "shopHas": "",
+      "heldFor": ""
     }
   },
   "owner": {
@@ -1718,6 +1817,134 @@
       "itemGroups": "",
       "isolated": "",
       "flagged": ""
+    }
+  },
+  "shopForm": {
+    "shopName": "",
+    "shopNamePlaceholder": "",
+    "tagline": "",
+    "optional": "",
+    "taglinePlaceholder": "",
+    "whatYouSell": "",
+    "upTo3": "",
+    "shopPhone": "",
+    "phonePlaceholder": "",
+    "gpsMoved": "",
+    "gpsFailed": "",
+    "street": "",
+    "streetPlaceholder": "",
+    "area": "",
+    "chooseArea": "",
+    "pincode": "",
+    "exactLocation": "",
+    "useGps": "",
+    "yourShop": "",
+    "shopLocation": "",
+    "mapHint": "",
+    "opens": "",
+    "closes": "",
+    "weeklyHoliday": "",
+    "days": {
+      "none": "",
+      "monday": "",
+      "tuesday": "",
+      "wednesday": "",
+      "thursday": "",
+      "friday": "",
+      "saturday": "",
+      "sunday": ""
+    },
+    "holdFor": "",
+    "minutes": "",
+    "deliverMyself": "",
+    "deliverHint": "",
+    "radius": "",
+    "radiusValue": "",
+    "fee": "",
+    "freeAbove": "",
+    "freePlaceholder": "",
+    "evidenceType": "",
+    "kycTypes": {
+      "gstin": {
+        "label": "",
+        "hint": ""
+      },
+      "udyam": {
+        "label": "",
+        "hint": ""
+      },
+      "trade_licence": {
+        "label": "",
+        "hint": ""
+      }
+    },
+    "numberLabel": "",
+    "noAadhaar": "",
+    "documentLicence": "",
+    "documentCertificate": "",
+    "documentMissing": "",
+    "storefront": "",
+    "storefrontMissing": "",
+    "kycErrors": {
+      "empty": "",
+      "aadhaar": "",
+      "gstinFormat": "",
+      "gstinCheck": "",
+      "udyamFormat": "",
+      "tradeLicenceFormat": ""
+    }
+  },
+  "pages": {
+    "site": {
+      "title": "",
+      "description": ""
+    },
+    "titles": {
+      "home": "",
+      "search": "",
+      "searchQuery": "",
+      "shops": "",
+      "product": "",
+      "shop": "",
+      "account": "",
+      "aiLab": "",
+      "grievance": "",
+      "privacy": "",
+      "terms": "",
+      "signIn": "",
+      "register": "",
+      "registerShop": "",
+      "verifyPhone": "",
+      "shopDashboard": "",
+      "catalog": "",
+      "inventory": ""
+    },
+    "descriptions": {
+      "aiLab": "",
+      "grievance": "",
+      "privacy": "",
+      "terms": ""
+    },
+    "legal": {
+      "draftTitle": "",
+      "draftBodyPrivacy": "",
+      "draftBodyTerms": "",
+      "language": "",
+      "version": "",
+      "dateNotStated": ""
+    },
+    "meta": {
+      "productTitle": "",
+      "productDescription": "",
+      "shopTitle": "",
+      "shopAddress": "",
+      "shopOpen": "",
+      "shopOpenClosed": "",
+      "shopRating": {
+        "one": "",
+        "other": ""
+      },
+      "shopCta": ""
     }
   }
 }

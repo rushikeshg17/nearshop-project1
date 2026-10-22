@@ -121,6 +121,7 @@ export function HomeView() {
             <div className="relative rounded-3xl border bg-card/90 p-4 shadow-lift backdrop-blur">
               <div className="flex items-center gap-2 rounded-xl border bg-background px-3 py-2.5 text-sm">
                 <Search className="size-4 text-muted-foreground" />
+                {/* i18n-allow: the demo search's query as the customer would type it, and what the API is asked for */}
                 <span>{DEMO_QUERY}</span>
                 <span className="ml-auto text-xs text-muted-foreground">
                   {live.data

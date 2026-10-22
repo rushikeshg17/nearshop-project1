@@ -5,11 +5,14 @@ import Link from "next/link";
 
 import { ProductThumb } from "@/components/common/product-thumb";
 import { Countdown, StatusBadge } from "@/components/common/status";
+import { useI18n } from "@/components/providers";
 import { formatDateTime, formatPrice } from "@/lib/format";
+import { richText } from "@/lib/i18n";
 import type { Order, Reservation } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function ActivityCard({ item, href, className }: { item: Reservation | Order; href: string; className?: string }) {
+  const { t, language } = useI18n();
   const isRes = item.kind === "reservation";
   const title = isRes ? item.product.name : item.items.map((i) => `${i.quantity} x ${i.name}`).join(", ");
   const icon = isRes ? item.product.icon : item.items[0]?.icon ?? "Package";
@@ -25,18 +28,19 @@ export function ActivityCard({ item, href, className }: { item: Reservation | Or
           <StatusBadge status={item.status} kind={item.kind} />
           <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
             {isRes ? <Footprints className="size-3.5" /> : <Bike className="size-3.5" />}
-            {isRes ? "Pickup" : "Delivery"} · <span className="font-mono">{item.code}</span>
+            {isRes ? t("transactions.activity.pickup") : t("transactions.activity.delivery")} · <span className="font-mono">{item.code}</span>
           </span>
         </div>
         <p className="mt-1.5 truncate font-medium">{title}</p>
         <p className="truncate text-sm text-muted-foreground">
-          {item.shop.name} · {formatPrice(item.total)} · {formatDateTime(item.created_at)}
+          {item.shop.name} · {formatPrice(item.total)} · {formatDateTime(item.created_at, language)}
         </p>
         {live && (
           <p className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand-ink">
             <Timer className="size-3.5" />
-            {item.status === "REQUESTED" ? "Shop has " : "Held for "}
-            <Countdown to={(item as Reservation).expires_at} />
+            {richText(t(item.status === "REQUESTED" ? "transactions.activity.shopHas" : "transactions.activity.heldFor"), {
+              time: <Countdown to={(item as Reservation).expires_at} />,
+            })}
           </p>
         )}
       </div>

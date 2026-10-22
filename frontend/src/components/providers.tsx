@@ -6,7 +6,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ThemeProvider } from "next-themes";
-import { createContext, Suspense, use, useEffect, useOptimistic, useState, useTransition } from "react";
+import { createContext, Suspense, use, useEffect, useMemo, useOptimistic, useState, useTransition } from "react";
 
 import { useMe } from "@/hooks/use-session";
 import { ApiError, errorMessage, setErrorTranslator } from "@/lib/api";
@@ -57,34 +57,39 @@ function I18nProvider({
   messages: Partial<Messages>;
   children: React.ReactNode;
 }) {
-  const info = languageInfo(language);
   const router = useRouter();
   const [, startTransition] = useTransition();
   const [selected, setSelected] = useOptimistic(language);
-  const setLanguage = (code: LanguageCode) => {
-    if (code === selected) return;
-    writeLanguageCookie(code);
-    // The refresh re-renders the root layout and every server component in the chosen language (the html lang,
-    // the font and these messages included) and keeps client state: no full reload.
-    startTransition(() => {
-      setSelected(code);
-      router.refresh();
-    });
-  };
-  const value: I18n = {
-    language,
-    info,
-    selected,
-    languages: languages.map(languageInfo),
-    t: createTranslator(messages),
-    setLanguage,
-  };
+  // One translator per set of messages, so that t keeps its identity across renders: it is a dependency of memos,
+  // callbacks and effects (the location provider's, for one), which would otherwise re-run on every render. The
+  // context value is memoised for the same reason.
+  const t = useMemo(() => createTranslator(messages), [messages]);
+  const value = useMemo<I18n>(
+    () => ({
+      language,
+      info: languageInfo(language),
+      selected,
+      languages: languages.map(languageInfo),
+      t,
+      setLanguage: (code: LanguageCode) => {
+        if (code === selected) return;
+        writeLanguageCookie(code);
+        // The refresh re-renders the root layout and every server component in the chosen language (the html lang,
+        // the font and these messages included) and keeps client state: no full reload.
+        startTransition(() => {
+          setSelected(code);
+          router.refresh();
+        });
+      },
+    }),
+    [language, languages, selected, t, router, setSelected],
+  );
   // API errors with a known code are shown in this language (errorMessage in src/lib/api.ts, P7.10). Their text is in
   // the common area, which these messages always include.
   useEffect(() => {
-    setErrorTranslator(createTranslator(messages));
+    setErrorTranslator(t, language);
     return () => setErrorTranslator(null);
-  }, [messages]);
+  }, [t, language]);
   return (
     <I18nMessagesContext value={messages}>
       <I18nContext value={value}>{children}</I18nContext>
@@ -101,10 +106,13 @@ const I18nMessagesContext = createContext<Partial<Messages>>({});
  */
 export function I18nAreas({ messages, children }: { messages: Partial<Messages>; children: React.ReactNode }) {
   const parent = useI18n();
-  const merged = { ...use(I18nMessagesContext), ...messages };
+  const parentMessages = use(I18nMessagesContext);
+  // Memoised, like the provider's translator, so consumers of t and of the context see stable values across renders.
+  const merged = useMemo(() => ({ ...parentMessages, ...messages }), [parentMessages, messages]);
+  const value = useMemo(() => ({ ...parent, t: createTranslator(merged) }), [parent, merged]);
   return (
     <I18nMessagesContext value={merged}>
-      <I18nContext value={{ ...parent, t: createTranslator(merged) }}>{children}</I18nContext>
+      <I18nContext value={value}>{children}</I18nContext>
     </I18nMessagesContext>
   );
 }
@@ -203,6 +211,13 @@ function PhoneMigration() {
   );
 }
 
+/** The location provider with the shell's translator (the I18nProvider's, memoised per set of messages), so its
+ * location and context value keep their identity across renders of Providers. */
+function ShellLocationProvider({ children }: { children: React.ReactNode }) {
+  const { t } = useI18n();
+  return <LocationProvider t={t}>{children}</LocationProvider>;
+}
+
 export function Providers({
   language,
   languages,
@@ -249,7 +264,7 @@ export function Providers({
           <Suspense fallback={null}>
             <PhoneMigration />
           </Suspense>
-          <LocationProvider t={createTranslator(messages)}>{children}</LocationProvider>
+          <ShellLocationProvider>{children}</ShellLocationProvider>
           <IdleToaster />
         </QueryClientProvider>
       </I18nProvider>

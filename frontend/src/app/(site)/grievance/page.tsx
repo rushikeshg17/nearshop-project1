@@ -6,10 +6,10 @@ import { pickAreas, requestI18n } from "@/lib/i18n";
 
 import { GrievanceView } from "./grievance-view";
 
-export const metadata: Metadata = {
-  title: "Grievances",
-  description: "File a grievance with NearShop's grievance officer and track it by ticket number. Every grievance is acknowledged on receipt and resolved within 30 days.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const { t } = await requestI18n({ cookies, headers });
+  return { title: t("pages.titles.grievance"), description: t("pages.descriptions.grievance") };
+}
 
 // The in-app acknowledgement links here with ?ticket=G-XXXXXX, which pre-fills the status lookup.
 export default async function GrievancePage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {

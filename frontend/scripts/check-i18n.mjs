@@ -3,14 +3,19 @@
 // request that touches frontend/, and locally with: node scripts/check-i18n.mjs (from frontend/).
 //
 // It fails when:
-//   1. JSX in the customer and owner areas, src/app/(site), src/app/(auth) and src/app/shop, holds literal
-//      user-visible text: a text child, a string in a child expression (including both sides of a condition), or a
-//      string in an attribute people see or hear (aria-label, title, placeholder, alt, label and the like). Text with
-//      no letters (numbers, punctuation, symbols) is not text to translate, brand names in ALLOWED below are the
-//      same in every language, and a sample code in a placeholder (G-7KQ2MX) shows a format, not words. Admin screens stay in English and are not checked (plan section 8.16).
-//   2. A registered language's message file (src/lib/i18n.ts, LANGUAGES) is missing a key that English has, or has
+//   1. JSX in the customer and owner areas holds literal user-visible text: a text child, a string in a child
+//      expression (including both sides of a condition), or a string in an attribute people see or hear
+//      (aria-label, title, placeholder, alt, label and the like). The areas are src/app/(site), src/app/(auth),
+//      src/app/shop, the root app files that every page uses (layout, error and not-found pages) and the shared
+//      components in src/components, which those screens render. Text with no letters (numbers, punctuation,
+//      symbols, HTML entities such as &ldquo;) is not text to translate, brand names in ALLOWED below are the same
+//      in every language, and a sample code in a placeholder (G-7KQ2MX) shows a format, not words. Admin screens
+//      (src/app/admin) stay in English and are not checked (plan section 8.16).
+//   2. A page's title or description (export const metadata, or what generateMetadata returns) in those areas is a
+//      literal: the title is what a screen reader announces on navigation, so it is translated too.
+//   3. A registered language's message file (src/lib/i18n.ts, LANGUAGES) is missing a key that English has, or has
 //      a key English does not, or holds a value of the wrong kind (text where English has a group, or the reverse).
-//   3. A message key has no text (an empty value) in a language marked reviewed, which would be served to everyone.
+//   4. A message key has no text (an empty value) in a language marked reviewed, which would be served to everyone.
 //      In a language not yet reviewed (a preview language, falling back to English per key), empty values are the
 //      text still awaited from the team: they are counted and listed with --list-untranslated, and fail the check
 //      only with --strict (to confirm a language is complete before marking it reviewed).
@@ -33,7 +38,15 @@ const listUntranslated = args.has("--list-untranslated");
 // I18N_AREAS (comma-separated folders) checks other folders instead, for a review: it never changes what CI checks.
 const AREAS = process.env.I18N_AREAS
   ? process.env.I18N_AREAS.split(",").map((a) => a.trim()).filter(Boolean)
-  : ["src/app/(site)", "src/app/(auth)", "src/app/shop"];
+  : [
+      "src/app/(site)",
+      "src/app/(auth)",
+      "src/app/shop",
+      "src/app/layout.tsx",
+      "src/app/error.tsx",
+      "src/app/not-found.tsx",
+      "src/components",
+    ];
 
 /** Brand and product names, written the same in every language. Matched against the whole trimmed text. */
 const ALLOWED = new Set(["NearShop", "near", "shop", "UPI", "WhatsApp", "Google", "GSTIN", "FSSAI", "Udyam"]);
@@ -68,12 +81,13 @@ const LETTER = /\p{L}/u;
 const CODE_SAMPLE = /^(?=.*\d)[A-Z0-9]+(-[A-Z0-9]+)+$/;
 
 function isUserText(text) {
-  const trimmed = text.replace(/\s+/g, " ").trim();
+  const trimmed = text.replace(/&(?:[a-z]+|#\d+|#x[0-9a-f]+);/gi, " ").replace(/\s+/g, " ").trim();
   if (!trimmed || !LETTER.test(trimmed)) return false;
   return !ALLOWED.has(trimmed) && !CODE_SAMPLE.test(trimmed);
 }
 
 function walk(dir) {
+  if (!statSync(dir).isDirectory()) return dir.endsWith(".tsx") ? [dir] : [];
   const out = [];
   for (const name of readdirSync(dir)) {
     const path = join(dir, name);
@@ -104,6 +118,26 @@ function literalParts(node) {
   return [];
 }
 
+/** A page's metadata: export const metadata = {...}, or function generateMetadata() {...}. */
+function isMetadata(node) {
+  if (ts.isVariableDeclaration(node)) return node.name.getText() === "metadata" && !!node.initializer;
+  return ts.isFunctionDeclaration(node) && node.name?.getText() === "generateMetadata" && !!node.body;
+}
+
+/** Metadata properties people see or hear: the title (and its default and absolute forms) and the description. The
+ * template's "%s · NearShop" is a brand name around the page's own title. */
+const METADATA_TEXT = new Set(["title", "default", "absolute", "description"]);
+
+function metadataLiterals(root, report) {
+  const visit = (node) => {
+    if (ts.isPropertyAssignment(node) && METADATA_TEXT.has(node.name.getText())) {
+      for (const part of literalParts(node.initializer)) report(part.node, part.text, `metadata ${node.name.getText()}`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+}
+
 function checkFile(path) {
   const source = readFileSync(path, "utf8");
   const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -126,6 +160,8 @@ function checkFile(path) {
       if (ts.isJsxElement(parent) || ts.isJsxFragment(parent)) {
         for (const part of literalParts(node.expression)) report(part.node, part.text, "text");
       }
+    } else if (isMetadata(node)) {
+      metadataLiterals(node.initializer ?? node.body, report);
     } else if (ts.isJsxAttribute(node) && node.initializer) {
       const name = node.name.getText(file);
       if (VISIBLE_ATTRIBUTES.has(name)) {

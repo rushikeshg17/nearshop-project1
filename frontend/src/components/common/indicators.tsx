@@ -50,9 +50,19 @@ export function StockPill({
   );
 }
 
-/** "Updated 4 min ago": the core trust signal. A prefix replaces "Updated" (a translated one from the caller, or
- * empty for the time alone). */
-export function Freshness({ at, className, prefix }: { at: string | null; className?: string; prefix?: string }) {
+/** "Updated 4 min ago": the core trust signal. With stock, "Stock updated 4 min ago" (a shop's stock as a whole). A
+ * prefix replaces "Updated" (a translated one from the caller, or empty for the time alone). */
+export function Freshness({
+  at,
+  className,
+  prefix,
+  stock = false,
+}: {
+  at: string | null;
+  className?: string;
+  prefix?: string;
+  stock?: boolean;
+}) {
   const now = useNow(30_000);
   const { t, language } = useI18n();
   const ago = at ? timeAgo(at, now, language) : "";
@@ -70,7 +80,7 @@ export function Freshness({ at, className, prefix }: { at: string | null; classN
       {!at
         ? t("common.freshness.notConfirmed")
         : prefix === undefined
-          ? t("common.freshness.updated", { time: ago })
+          ? t(stock ? "common.freshness.stockUpdated" : "common.freshness.updated", { time: ago })
           : `${prefix} ${ago}`.trim()}
     </span>
   );

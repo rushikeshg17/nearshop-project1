@@ -28,12 +28,14 @@ const mono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"], pre
 const kannada = Noto_Sans_Kannada({ subsets: ["kannada"], weight: "400", display: "optional", preload: false });
 const SCRIPT_FONTS: Record<ScriptFont, { style: { fontFamily: string } }> = { kannada };
 
-export const metadata: Metadata = {
-  title: { default: "NearShop: find it nearby", template: "%s · NearShop" },
-  description:
-    "See which shops near you have what you need in stock right now. Compare prices, reserve for pickup, or get it delivered by the shop.",
-  applicationName: "NearShop",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const { t } = await requestI18n({ cookies, headers });
+  return {
+    title: { default: t("pages.site.title"), template: "%s · NearShop" },
+    description: t("pages.site.description"),
+    applicationName: "NearShop",
+  };
+}
 
 export const viewport: Viewport = {
   width: "device-width",

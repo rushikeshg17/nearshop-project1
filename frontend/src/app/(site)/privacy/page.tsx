@@ -7,10 +7,10 @@ import { requestI18n } from "@/lib/i18n";
 // Read from docs/legal once, when the page is built (see legal-document.tsx).
 const legal = loadLegal("privacy");
 
-export const metadata: Metadata = {
-  title: "Privacy notice",
-  description: "How NearShop collects, uses and protects your personal data.",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const { t } = await requestI18n({ cookies, headers });
+  return { title: t("pages.titles.privacy"), description: t("pages.descriptions.privacy") };
+}
 
 export default async function PrivacyPage() {
   const { t } = await requestI18n({ cookies, headers });

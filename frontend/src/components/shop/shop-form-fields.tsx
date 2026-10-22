@@ -4,6 +4,7 @@ import { Crosshair, MapPin } from "lucide-react";
 import { toast } from "sonner";
 
 import { AppIcon } from "@/components/common/app-icon";
+import { useI18n } from "@/components/providers";
 import { ShopMap } from "@/components/map/shop-map";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +13,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import type { MessageKey } from "@/lib/i18n";
 import type { KycType, Meta, ShopDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -44,7 +46,9 @@ const TIMES = Array.from({ length: 34 }, (_, i) => {
   const h12 = h % 12 || 12;
   return `${h12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
 });
-const DAYS = ["None", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+// The stored values (closed_on is the English day name, or empty for none); the labels are shopForm.days.
+const DAYS = ["None", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
+const dayKey = (d: (typeof DAYS)[number]) => `shopForm.days.${d.toLowerCase() as Lowercase<typeof d>}` as const;
 
 export function hoursString(s: ShopFormState) {
   return `${s.open_time} - ${s.close_time}`;
@@ -58,18 +62,19 @@ export function parseHours(hours: string | null) {
 type Update = <K extends keyof ShopFormState>(k: K, v: ShopFormState[K]) => void;
 
 export function ShopBasicsFields({ s, set, meta }: { s: ShopFormState; set: Update; meta?: Meta }) {
+  const { t } = useI18n();
   return (
     <div className="space-y-4">
       <div className="space-y-1.5">
-        <Label htmlFor="shop-name">Shop name</Label>
-        <Input id="shop-name" value={s.name} onChange={(e) => set("name", e.target.value)} placeholder="e.g. Sri Lakshmi Hardware" className="h-11" />
+        <Label htmlFor="shop-name">{t("shopForm.shopName")}</Label>
+        <Input id="shop-name" value={s.name} onChange={(e) => set("name", e.target.value)} placeholder={t("shopForm.shopNamePlaceholder")} className="h-11" />
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="tagline">Tagline <span className="font-normal text-muted-foreground">(optional)</span></Label>
-        <Input id="tagline" value={s.tagline} onChange={(e) => set("tagline", e.target.value)} placeholder="Tools, locks and fittings since 1994" />
+        <Label htmlFor="tagline">{t("shopForm.tagline")} <span className="font-normal text-muted-foreground">{t("shopForm.optional")}</span></Label>
+        <Input id="tagline" value={s.tagline} onChange={(e) => set("tagline", e.target.value)} placeholder={t("shopForm.taglinePlaceholder")} />
       </div>
       <fieldset className="space-y-2">
-        <legend className="text-sm font-medium">What do you sell? <span className="font-normal text-muted-foreground">Up to 3</span></legend>
+        <legend className="text-sm font-medium">{t("shopForm.whatYouSell")} <span className="font-normal text-muted-foreground">{t("shopForm.upTo3")}</span></legend>
         <div className="flex flex-wrap gap-2">
           {meta?.categories.map((c) => {
             const on = s.category_slugs.includes(c.slug);
@@ -93,34 +98,35 @@ export function ShopBasicsFields({ s, set, meta }: { s: ShopFormState; set: Upda
         </div>
       </fieldset>
       <div className="space-y-1.5">
-        <Label htmlFor="shop-phone">Shop phone</Label>
-        <Input id="shop-phone" inputMode="numeric" value={s.phone} onChange={(e) => set("phone", e.target.value.replace(/\D/g, "").slice(0, 10))} placeholder="10-digit mobile" />
+        <Label htmlFor="shop-phone">{t("shopForm.shopPhone")}</Label>
+        <Input id="shop-phone" inputMode="numeric" value={s.phone} onChange={(e) => set("phone", e.target.value.replace(/\D/g, "").slice(0, 10))} placeholder={t("shopForm.phonePlaceholder")} />
       </div>
     </div>
   );
 }
 
 export function ShopLocationFields({ s, set, meta }: { s: ShopFormState; set: Update; meta?: Meta }) {
+  const { t } = useI18n();
   function useGps() {
     navigator.geolocation?.getCurrentPosition(
       (p) => {
         set("lat", p.coords.latitude);
         set("lng", p.coords.longitude);
-        toast.success("Pin moved to your current location");
+        toast.success(t("shopForm.gpsMoved"));
       },
-      () => toast.error("Couldn't get your location. Tap the map instead."),
+      () => toast.error(t("shopForm.gpsFailed")),
       { enableHighAccuracy: true, timeout: 10_000 },
     );
   }
   return (
     <div className="space-y-4">
       <div className="space-y-1.5">
-        <Label htmlFor="addr">Street address</Label>
-        <Input id="addr" value={s.address_line} onChange={(e) => set("address_line", e.target.value)} placeholder="Shop no., street, landmark" />
+        <Label htmlFor="addr">{t("shopForm.street")}</Label>
+        <Input id="addr" value={s.address_line} onChange={(e) => set("address_line", e.target.value)} placeholder={t("shopForm.streetPlaceholder")} />
       </div>
       <div className="grid grid-cols-[1.4fr_1fr] gap-3">
         <div className="space-y-1.5">
-          <Label>Area</Label>
+          <Label>{t("shopForm.area")}</Label>
           <Select
             value={s.locality}
             onValueChange={(v) => {
@@ -133,7 +139,7 @@ export function ShopLocationFields({ s, set, meta }: { s: ShopFormState; set: Up
               }
             }}
           >
-            <SelectTrigger className="w-full"><SelectValue placeholder="Choose area" /></SelectTrigger>
+            <SelectTrigger className="w-full"><SelectValue placeholder={t("shopForm.chooseArea")} /></SelectTrigger>
             <SelectContent>
               {meta?.city.localities.map((l) => (
                 <SelectItem key={l.name} value={l.name}>{l.name}</SelectItem>
@@ -142,14 +148,14 @@ export function ShopLocationFields({ s, set, meta }: { s: ShopFormState; set: Up
           </Select>
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="pin">Pincode</Label>
+          <Label htmlFor="pin">{t("shopForm.pincode")}</Label>
           <Input id="pin" inputMode="numeric" value={s.pincode} onChange={(e) => set("pincode", e.target.value.replace(/\D/g, "").slice(0, 6))} />
         </div>
       </div>
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
-          <Label className="flex items-center gap-1.5"><MapPin className="size-3.5" /> Exact shop location</Label>
-          <Button type="button" variant="ghost" size="xs" onClick={useGps}><Crosshair /> Use GPS</Button>
+          <Label className="flex items-center gap-1.5"><MapPin className="size-3.5" /> {t("shopForm.exactLocation")}</Label>
+          <Button type="button" variant="ghost" size="xs" onClick={useGps}><Crosshair /> {t("shopForm.useGps")}</Button>
         </div>
         <div className="h-52 overflow-hidden rounded-xl border">
           <ShopMap
@@ -157,7 +163,7 @@ export function ShopLocationFields({ s, set, meta }: { s: ShopFormState; set: Up
             center={{ lat: s.lat, lng: s.lng }}
             zoom={15}
             fitToPoints={false}
-            points={[{ id: 1, lat: s.lat, lng: s.lng, label: "Your shop", title: "Shop location" }]}
+            points={[{ id: 1, lat: s.lat, lng: s.lng, label: t("shopForm.yourShop"), title: t("shopForm.shopLocation") }]}
             selected={1}
             onMapClick={(p) => {
               set("lat", p.lat);
@@ -165,43 +171,44 @@ export function ShopLocationFields({ s, set, meta }: { s: ShopFormState; set: Up
             }}
           />
         </div>
-        <p className="text-xs text-muted-foreground">Tap the map to place the pin on your shop&apos;s door. Customers use this for directions and distance.</p>
+        <p className="text-xs text-muted-foreground">{t("shopForm.mapHint")}</p>
       </div>
     </div>
   );
 }
 
 export function ShopOperationsFields({ s, set }: { s: ShopFormState; set: Update }) {
+  const { t } = useI18n();
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
-          <Label>Opens</Label>
+          <Label>{t("shopForm.opens")}</Label>
           <Select value={s.open_time} onValueChange={(v) => set("open_time", v)}>
             <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>{TIMES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
           </Select>
         </div>
         <div className="space-y-1.5">
-          <Label>Closes</Label>
+          <Label>{t("shopForm.closes")}</Label>
           <Select value={s.close_time} onValueChange={(v) => set("close_time", v)}>
             <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>{TIMES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
           </Select>
         </div>
         <div className="space-y-1.5">
-          <Label>Weekly holiday</Label>
+          <Label>{t("shopForm.weeklyHoliday")}</Label>
           <Select value={s.closed_on || "None"} onValueChange={(v) => set("closed_on", v === "None" ? "" : v)}>
             <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-            <SelectContent>{DAYS.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}</SelectContent>
+            <SelectContent>{DAYS.map((d) => <SelectItem key={d} value={d}>{t(dayKey(d))}</SelectItem>)}</SelectContent>
           </Select>
         </div>
         <div className="space-y-1.5">
-          <Label>Hold reservations for</Label>
+          <Label>{t("shopForm.holdFor")}</Label>
           <Select value={String(s.hold_minutes)} onValueChange={(v) => set("hold_minutes", Number(v))}>
             <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {[15, 30, 45, 60, 120].map((m) => <SelectItem key={m} value={String(m)}>{m} minutes</SelectItem>)}
+              {[15, 30, 45, 60, 120].map((m) => <SelectItem key={m} value={String(m)}>{t("shopForm.minutes", { count: m })}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
@@ -210,8 +217,8 @@ export function ShopOperationsFields({ s, set }: { s: ShopFormState; set: Update
       <div className="rounded-2xl border p-4">
         <div className="flex items-center justify-between gap-4">
           <Label htmlFor="delivery" className="flex flex-col items-start gap-0.5">
-            <span>I deliver myself</span>
-            <span className="text-xs font-normal text-muted-foreground">You or your staff deliver; customers pay cash on delivery.</span>
+            <span>{t("shopForm.deliverMyself")}</span>
+            <span className="text-xs font-normal text-muted-foreground">{t("shopForm.deliverHint")}</span>
           </Label>
           <Switch id="delivery" checked={s.offers_delivery} onCheckedChange={(v) => set("offers_delivery", v)} />
         </div>
@@ -219,19 +226,19 @@ export function ShopOperationsFields({ s, set }: { s: ShopFormState; set: Update
           <div className="mt-5 space-y-5">
             <div>
               <div className="mb-2 flex justify-between text-sm">
-                <span>Delivery radius</span>
-                <span className="font-medium tabular">{s.delivery_radius_km} km</span>
+                <span>{t("shopForm.radius")}</span>
+                <span className="font-medium tabular">{t("shopForm.radiusValue", { km: s.delivery_radius_km })}</span>
               </div>
-              <Slider min={1} max={15} step={0.5} value={[s.delivery_radius_km]} onValueChange={([v]) => set("delivery_radius_km", v)} aria-label="Delivery radius" />
+              <Slider min={1} max={15} step={0.5} value={[s.delivery_radius_km]} onValueChange={([v]) => set("delivery_radius_km", v)} aria-label={t("shopForm.radius")} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label htmlFor="fee">Delivery fee (Rs)</Label>
+                <Label htmlFor="fee">{t("shopForm.fee")}</Label>
                 <Input id="fee" inputMode="numeric" value={s.delivery_fee} onChange={(e) => set("delivery_fee", Number(e.target.value.replace(/\D/g, "")) || 0)} />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="free">Free above (Rs)</Label>
-                <Input id="free" inputMode="numeric" placeholder="Optional" value={s.free_delivery_above} onChange={(e) => set("free_delivery_above", e.target.value.replace(/\D/g, ""))} />
+                <Label htmlFor="free">{t("shopForm.freeAbove")}</Label>
+                <Input id="free" inputMode="numeric" placeholder={t("shopForm.freePlaceholder")} value={s.free_delivery_above} onChange={(e) => set("free_delivery_above", e.target.value.replace(/\D/g, ""))} />
               </div>
             </div>
           </div>
@@ -278,15 +285,11 @@ export function reviewFieldsChanged(initial: ShopDetail, s: ShopFormState): bool
   );
 }
 
-export const KYC_TYPES: { value: KycType; label: string; hint: string; example: string }[] = [
-  { value: "gstin", label: "GSTIN", hint: "Your 15-character GST number.", example: "27AAPFU0939F1ZV" },
-  { value: "udyam", label: "Udyam registration", hint: "From your Udyam (MSME) certificate.", example: "UDYAM-KR-03-0012345" },
-  {
-    value: "trade_licence",
-    label: "Trade licence",
-    hint: "Trade licence or Shop and Establishment registration number.",
-    example: "MCC/TL/2025/00123",
-  },
+/** The evidence types, with a sample number each; their labels and hints are shopForm.kycTypes in src/messages. */
+export const KYC_TYPES: { value: KycType; example: string }[] = [
+  { value: "gstin", example: "27AAPFU0939F1ZV" },
+  { value: "udyam", example: "UDYAM-KR-03-0012345" },
+  { value: "trade_licence", example: "MCC/TL/2025/00123" },
 ];
 
 const GSTIN_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -309,20 +312,18 @@ export function normalizeKycNumber(number: string) {
 }
 
 /** The same checks as the API (backend/app/models/core.py, validate_kyc_number), so mistakes show while typing.
- * Returns an error message, or null when the number is acceptable. */
-export function kycNumberError(type: KycType, number: string): string | null {
+ * Returns the message key of the error (shopForm.kycErrors), or null when the number is acceptable. */
+export function kycNumberError(type: KycType, number: string): MessageKey | null {
   const value = normalizeKycNumber(number);
-  if (!value) return "Enter the number";
-  if (AADHAAR_LIKE.test(value.replace(/[\s.-]/g, ""))) {
-    return "That looks like an Aadhaar number. NearShop never collects Aadhaar: enter your GSTIN, Udyam number or trade licence number";
-  }
+  if (!value) return "shopForm.kycErrors.empty";
+  if (AADHAAR_LIKE.test(value.replace(/[\s.-]/g, ""))) return "shopForm.kycErrors.aadhaar";
   if (type === "gstin") {
-    if (value.length !== 15 || !GSTIN_PATTERN.test(value)) return "A GSTIN has 15 characters, like 27AAPFU0939F1ZV";
-    if (gstinCheckChar(value.slice(0, 14)) !== value[14]) return "That GSTIN's last character does not match: check it for a typing mistake";
+    if (value.length !== 15 || !GSTIN_PATTERN.test(value)) return "shopForm.kycErrors.gstinFormat";
+    if (gstinCheckChar(value.slice(0, 14)) !== value[14]) return "shopForm.kycErrors.gstinCheck";
   } else if (type === "udyam") {
-    if (!UDYAM_PATTERN.test(value)) return "A Udyam number looks like UDYAM-KR-03-0012345";
+    if (!UDYAM_PATTERN.test(value)) return "shopForm.kycErrors.udyamFormat";
   } else if (!(value.length >= 4 && value.length <= 40 && TRADE_LICENCE_PATTERN.test(value))) {
-    return "A trade licence number has 4 to 40 letters, digits, spaces, slashes, dots or hyphens";
+    return "shopForm.kycErrors.tradeLicenceFormat";
   }
   return null;
 }
@@ -352,27 +353,28 @@ export function KycFields({
   attempted: boolean;
   onBlurNumber: () => void;
 }) {
-  const type = KYC_TYPES.find((t) => t.value === s.kyc_type) ?? KYC_TYPES[0];
+  const { t } = useI18n();
+  const type = KYC_TYPES.find((k) => k.value === s.kyc_type) ?? KYC_TYPES[0];
   const numberError = numberTouched || attempted ? kycNumberError(s.kyc_type, s.kyc_number) : null;
   const documentRequired = s.kyc_type === "trade_licence";
   return (
     <div className="space-y-4">
       <fieldset className="space-y-2">
-        <legend className="text-sm font-medium">Evidence type</legend>
+        <legend className="text-sm font-medium">{t("shopForm.evidenceType")}</legend>
         <RadioGroup value={s.kyc_type} onValueChange={(v) => set("kyc_type", v as KycType)} className="gap-3">
-          {KYC_TYPES.map((t) => (
-            <div key={t.value} className="flex items-start gap-2.5">
-              <RadioGroupItem id={`kyc-${t.value}`} value={t.value} className="mt-0.5" />
-              <Label htmlFor={`kyc-${t.value}`} className="flex flex-col items-start gap-0.5">
-                <span>{t.label}</span>
-                <span className="text-xs font-normal text-muted-foreground">{t.hint}</span>
+          {KYC_TYPES.map((k) => (
+            <div key={k.value} className="flex items-start gap-2.5">
+              <RadioGroupItem id={`kyc-${k.value}`} value={k.value} className="mt-0.5" />
+              <Label htmlFor={`kyc-${k.value}`} className="flex flex-col items-start gap-0.5">
+                <span>{t(`shopForm.kycTypes.${k.value}.label`)}</span>
+                <span className="text-xs font-normal text-muted-foreground">{t(`shopForm.kycTypes.${k.value}.hint`)}</span>
               </Label>
             </div>
           ))}
         </RadioGroup>
       </fieldset>
       <div className="space-y-1.5">
-        <Label htmlFor="kyc-number">{type.label} number</Label>
+        <Label htmlFor="kyc-number">{t("shopForm.numberLabel", { type: t(`shopForm.kycTypes.${type.value}.label`) })}</Label>
         <Input
           id="kyc-number"
           value={s.kyc_number}
@@ -384,25 +386,25 @@ export function KycFields({
           aria-describedby={numberError ? "kyc-number-error" : "kyc-number-hint"}
         />
         {numberError ? (
-          <p id="kyc-number-error" className="text-xs text-destructive">{numberError}</p>
+          <p id="kyc-number-error" className="text-xs text-destructive">{t(numberError)}</p>
         ) : (
-          <p id="kyc-number-hint" className="text-xs text-muted-foreground">Never enter an Aadhaar number: NearShop does not collect it.</p>
+          <p id="kyc-number-hint" className="text-xs text-muted-foreground">{t("shopForm.noAadhaar")}</p>
         )}
       </div>
       <div className="space-y-1.5">
         <Label htmlFor="kyc-document">
-          Photo of the {documentRequired ? "licence or registration" : "certificate"}{" "}
-          {!documentRequired && <span className="font-normal text-muted-foreground">(optional)</span>}
+          {t(documentRequired ? "shopForm.documentLicence" : "shopForm.documentCertificate")}{" "}
+          {!documentRequired && <span className="font-normal text-muted-foreground">{t("shopForm.optional")}</span>}
         </Label>
         <Input id="kyc-document" type="file" accept={PHOTO_TYPES} onChange={(e) => set("document_photo", e.target.files?.[0] ?? null)} />
         {attempted && documentRequired && !s.document_photo && (
-          <p className="text-xs text-destructive">Add a photo of your trade licence or Shop and Establishment registration</p>
+          <p className="text-xs text-destructive">{t("shopForm.documentMissing")}</p>
         )}
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="kyc-storefront">Storefront photo showing your signboard</Label>
+        <Label htmlFor="kyc-storefront">{t("shopForm.storefront")}</Label>
         <Input id="kyc-storefront" type="file" accept={PHOTO_TYPES} onChange={(e) => set("storefront_photo", e.target.files?.[0] ?? null)} />
-        {attempted && !s.storefront_photo && <p className="text-xs text-destructive">Add a photo of your shopfront with the signboard</p>}
+        {attempted && !s.storefront_photo && <p className="text-xs text-destructive">{t("shopForm.storefrontMissing")}</p>}
       </div>
     </div>
   );

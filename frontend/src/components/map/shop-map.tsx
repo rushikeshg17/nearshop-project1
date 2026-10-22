@@ -3,6 +3,7 @@
 import { Map as MapIcon } from "lucide-react";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 
+import { useI18n } from "@/components/providers";
 import { cn } from "@/lib/utils";
 
 export interface MapPoint {
@@ -62,6 +63,7 @@ function afterLoadWhenIdle(load: () => void): () => void {
  * Map button is tapped) never intersects, so it loads when it is shown.
  */
 export function ShopMap({ className, ...props }: ShopMapProps) {
+  const { t } = useI18n();
   const staticMap = props.interactive === false;
   const frame = useRef<HTMLDivElement>(null);
   // waiting: off screen; near: on or near the screen, waiting for the page to load and go idle; show: load it.
@@ -112,7 +114,7 @@ export function ShopMap({ className, ...props }: ShopMapProps) {
             onClick={() => setStage("show")}
             className="inline-flex items-center gap-1.5 rounded-full border bg-card px-3 py-1.5 text-sm font-medium shadow-soft transition-colors hover:bg-accent focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
           >
-            <MapIcon className="size-4 text-brand" aria-hidden /> Show map
+            <MapIcon className="size-4 text-brand" aria-hidden /> {t("common.map.show")}
           </button>
         </div>
       )}

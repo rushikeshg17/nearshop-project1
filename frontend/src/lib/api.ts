@@ -82,7 +82,9 @@ export const api = {
 // The API answers an error with a stable code and an English message. errorMessage shows the message in the interface
 // language when the code is one of TRANSLATED_ERRORS (common.apiErrors in src/messages), and the API's own text for
 // any other code, so a new error is never hidden. A code goes on the list only when its English message is fixed text:
-// a message that carries details (a count, a limit, a date) keeps the API's text, which has them.
+// a message that carries details (a count, a limit, a date) keeps the API's text, which has them. The one exception
+// is insufficient_stock: its details (how many are left, and of which product in an order) are read from the API's
+// text by stockMessage below and put into a translated message (common.stockErrors), so no language loses them.
 // The admin console stays in English (plan section 8.16), so its errors keep the API's text too.
 
 type TranslatedError = keyof Messages["common"]["apiErrors"];
@@ -115,11 +117,13 @@ const TRANSLATED_ERRORS: ReadonlySet<string> = new Set<TranslatedError>([
 ]);
 
 let translate: Translate | null = null;
+let translateLanguage: string | null = null;
 
 /** Called by the interface-language provider (src/components/providers.tsx) with a translator for the page's
  * language, whose messages always include the common area; null until then, and errors show the API's text. */
-export function setErrorTranslator(t: Translate | null) {
+export function setErrorTranslator(t: Translate | null, language: string | null = null) {
   translate = t;
+  translateLanguage = t ? language : null;
 }
 
 function translating(): Translate | null {
@@ -128,10 +132,29 @@ function translating(): Translate | null {
   return translate;
 }
 
+/** An insufficient_stock error in the interface language, with the count and the product the API's text names. The
+ * API's English forms (backend/app/services: reservations.py, orders.py, inventory.py) are "This item is out of
+ * stock", "Only {n} in stock", "Only {n} of {product} in stock" and "Only {n} of {product} left in stock". A form not
+ * recognised here gets the general message, or the API's own text where that is the language anyway (English). */
+function stockMessage(t: Translate, message: string): string {
+  const text = message.trim().replace(/\.$/, "");
+  if (/^This item is out of stock$/i.test(text)) return t("common.stockErrors.outOfStock");
+  let m = /^Only (\d+) in stock$/i.exec(text);
+  if (m) return Number(m[1]) === 0 ? t("common.stockErrors.outOfStock") : t("common.stockErrors.onlyLeft", { count: m[1] });
+  m = /^Only (\d+) of (.+?) (?:left )?in stock$/i.exec(text);
+  if (m) {
+    return Number(m[1]) === 0
+      ? t("common.stockErrors.outOfStockOf", { product: m[2] })
+      : t("common.stockErrors.onlyLeftOf", { count: m[1], product: m[2] });
+  }
+  return message && translateLanguage === "en" ? message : t("common.apiErrors.insufficient_stock");
+}
+
 /** The message to show for an error: translated for a known API error code, else the API's (or the error's) text. */
 export function errorMessage(error: unknown): string {
   const t = translating();
   if (error instanceof ApiError) {
+    if (t && error.code === "insufficient_stock") return stockMessage(t, error.message);
     return t && TRANSLATED_ERRORS.has(error.code) ? t(`common.apiErrors.${error.code as TranslatedError}`) : error.message;
   }
   if (error instanceof Error) return error.message;
