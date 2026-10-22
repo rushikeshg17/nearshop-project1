@@ -10,16 +10,20 @@ import { ProductThumb } from "@/components/common/product-thumb";
 import { ResponsiveDialog } from "@/components/common/responsive-dialog";
 import { Countdown, StatusBadge } from "@/components/common/status";
 import { ConfirmAction } from "@/components/fulfillment/confirm-action";
+import { useI18n } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useNow } from "@/hooks/use-debounce";
 import { api, ApiError, errorMessage } from "@/lib/api";
-import { formatDistance, formatPrice, timeAgo } from "@/lib/format";
+import { formatDistance, formatNumber, formatPrice, timeAgo } from "@/lib/format";
 import type { Order, Reservation } from "@/lib/types";
 
-type ActionInput = { id: number; action: string; reason?: string | null; code?: string };
+type Action = "confirm" | "reject" | "ready" | "complete" | "prepare" | "dispatch" | "deliver" | "fail" | "return" | "cancel";
+type ActionInput = { id: number; action: Action; reason?: string | null; code?: string };
 
 function useOwnerAction<T>(kind: "reservations" | "orders", silent = false) {
+  const { t } = useI18n();
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, action, reason, code }: ActionInput) =>
@@ -28,19 +32,7 @@ function useOwnerAction<T>(kind: "reservations" | "orders", silent = false) {
     meta: silent ? { silent: true } : undefined,
     onSuccess: (_d, v) => {
       qc.invalidateQueries({ queryKey: ["owner"] });
-      const done: Record<string, string> = {
-        confirm: "Confirmed. The customer has been notified.",
-        reject: "Declined. The customer has been notified.",
-        ready: "Marked ready. The customer has been told to come by.",
-        complete: "Completed. Sale recorded.",
-        prepare: "Marked as packing.",
-        dispatch: "Out for delivery. Customer notified.",
-        deliver: "Delivered. Cash collected and sale recorded.",
-        fail: "Marked as failed.",
-        return: "Returned to shop. Stock restored.",
-        cancel: "Cancelled. Stock returned to the shelf.",
-      };
-      toast.success(done[v.action] ?? "Updated");
+      toast.success(t(`owner.queue.done.${v.action}`));
     },
   });
 }
@@ -76,6 +68,7 @@ function CodeDialog({
   pending: boolean;
   onSubmit: (code: string) => Promise<unknown>;
 }) {
+  const { t } = useI18n();
   const id = useId();
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -97,7 +90,7 @@ function CodeDialog({
       close(false);
     } catch (e) {
       const wrong = e instanceof ApiError && e.code === "wrong_code";
-      setError(wrong ? `${errorMessage(e)}. Check the code with the customer and try again.` : errorMessage(e));
+      setError(wrong ? t("owner.queue.code.wrong", { message: errorMessage(e) }) : errorMessage(e));
     }
   };
   return (
@@ -105,14 +98,10 @@ function CodeDialog({
       open={open}
       onOpenChange={close}
       title={title}
-      description={
-        delivery
-          ? "Ask the customer for the 4-digit delivery code on their order screen. Hand over the order only after it is accepted."
-          : "Ask the customer to show the pickup code on their reservation screen, and type it here."
-      }
+      description={delivery ? t("owner.queue.code.deliveryDescription") : t("owner.queue.code.pickupDescription")}
       footer={
         <>
-          <Button variant="ghost" onClick={() => close(false)} disabled={pending}>Not yet</Button>
+          <Button variant="ghost" onClick={() => close(false)} disabled={pending}>{t("owner.queue.code.notYet")}</Button>
           <Button type="submit" form={`${id}-form`} disabled={!ready || pending}>
             {pending && <Loader2 className="animate-spin" />} {confirmLabel}
           </Button>
@@ -127,7 +116,7 @@ function CodeDialog({
           void submit();
         }}
       >
-        <Label htmlFor={`${id}-code`}>{delivery ? "Delivery code" : "Pickup code"}</Label>
+        <Label htmlFor={`${id}-code`}>{delivery ? t("owner.queue.code.deliveryLabel") : t("owner.queue.code.pickupLabel")}</Label>
         <Input
           id={`${id}-code`}
           value={code}
@@ -139,7 +128,7 @@ function CodeDialog({
           autoComplete="off"
           autoCapitalize="characters"
           spellCheck={false}
-          placeholder={delivery ? "4 digits" : "e.g. 7KQ2MX"}
+          placeholder={delivery ? t("owner.queue.code.deliveryPlaceholder") : t("owner.queue.code.pickupPlaceholder")}
           className="h-11 font-mono text-lg tracking-[0.2em]"
           aria-invalid={error ? true : undefined}
           aria-describedby={error ? `${id}-error` : undefined}
@@ -155,11 +144,13 @@ function CodeDialog({
 }
 
 export function OwnerReservationCard({ r }: { r: Reservation }) {
+  const { t, language } = useI18n();
+  const now = useNow(30_000);
   const act = useOwnerAction<Reservation>("reservations");
   const complete = useOwnerAction<Reservation>("reservations", true);
   const [codeOpen, setCodeOpen] = useState(false);
   const busy = act.isPending || complete.isPending;
-  const run = (action: string, reason?: string | null) => act.mutate({ id: r.id, action, reason });
+  const run = (action: Action, reason?: string | null) => act.mutate({ id: r.id, action, reason });
   const has = (a: string) => r.actions.includes(a);
 
   return (
@@ -172,11 +163,9 @@ export function OwnerReservationCard({ r }: { r: Reservation }) {
               <StatusBadge status={r.status} kind="reservation" />
               {/* Not the reservation code: the customer shows it at the counter to complete the pickup (P3.5). */}
               <span className="text-xs text-muted-foreground tabular">#{r.id}</span>
-              <span className="text-xs text-muted-foreground" suppressHydrationWarning>{timeAgo(r.created_at)}</span>
+              <span className="text-xs text-muted-foreground" suppressHydrationWarning>{timeAgo(r.created_at, now, language)}</span>
             </div>
-            <p className="mt-1.5 font-medium">
-              {r.quantity} x {r.product.name}
-            </p>
+            <p className="mt-1.5 font-medium">{t("owner.common.quantityItem", { count: formatNumber(r.quantity), name: r.product.name })}</p>
             <p className="text-sm text-muted-foreground">
               {r.customer?.name}
               {r.customer?.phone && (
@@ -190,8 +179,13 @@ export function OwnerReservationCard({ r }: { r: Reservation }) {
             )}
             {["REQUESTED", "CONFIRMED", "READY_FOR_PICKUP"].includes(r.status) && (
               <p className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-brand-ink">
-                <Timer className="size-3.5" /> {r.status === "REQUESTED" ? "Respond within" : "Hold ends in"} <Countdown to={r.expires_at} />
-                {r.status === "REQUESTED" && <span className="font-normal text-muted-foreground"> · {r.product.quantity_in_stock} on your shelf</span>}
+                <Timer className="size-3.5" /> {r.status === "REQUESTED" ? t("owner.queue.respondWithin") : t("owner.queue.holdEndsIn")} <Countdown to={r.expires_at} />
+                {r.status === "REQUESTED" && (
+                  <span className="font-normal text-muted-foreground">
+                    {" · "}
+                    {t("owner.queue.onShelf", { count: formatNumber(r.product.quantity_in_stock) })}
+                  </span>
+                )}
               </p>
             )}
           </div>
@@ -199,30 +193,32 @@ export function OwnerReservationCard({ r }: { r: Reservation }) {
         {r.actions.length > 0 && (
           <div className="mt-4 flex flex-wrap gap-2 border-t pt-3">
             {has("confirm") && (
-              <Button size="sm" onClick={() => run("confirm")} disabled={busy}><Check /> Confirm and hold</Button>
+              <Button size="sm" onClick={() => run("confirm")} disabled={busy}><Check /> {t("owner.queue.reservation.confirm")}</Button>
             )}
             {has("ready") && (
-              <Button size="sm" onClick={() => run("ready")} disabled={busy}><PackageCheck /> Mark ready</Button>
+              <Button size="sm" onClick={() => run("ready")} disabled={busy}><PackageCheck /> {t("owner.queue.reservation.ready")}</Button>
             )}
             {has("complete") && (
-              <Button size="sm" variant={has("ready") ? "outline" : "default"} onClick={() => setCodeOpen(true)} disabled={busy}><CheckCheck /> Picked up and paid</Button>
+              <Button size="sm" variant={has("ready") ? "outline" : "default"} onClick={() => setCodeOpen(true)} disabled={busy}><CheckCheck /> {t("owner.queue.reservation.complete")}</Button>
             )}
             {has("reject") && (
-              <ConfirmAction title="Decline this reservation?" description="The customer will be told and pointed to other shops." confirmLabel="Decline"
-                reasonLabel="Reason for the customer" reasonPlaceholder="e.g. Last piece just sold at the counter" pending={busy}
+              <ConfirmAction title={t("owner.queue.reservation.declineTitle")} description={t("owner.queue.reservation.declineBody")}
+                confirmLabel={t("owner.queue.reservation.decline")} reasonLabel={t("owner.queue.reasonForCustomer")}
+                reasonPlaceholder={t("owner.queue.reservation.declinePlaceholder")} pending={busy}
                 onConfirm={(reason) => run("reject", reason)}
-                trigger={(open) => <Button size="sm" variant="ghost" onClick={open} disabled={busy}><X /> Decline</Button>} />
+                trigger={(open) => <Button size="sm" variant="ghost" onClick={open} disabled={busy}><X /> {t("owner.queue.reservation.decline")}</Button>} />
             )}
             {has("cancel") && (
-              <ConfirmAction title="Cancel this reservation?" description="Use this when the customer didn't show up. The item goes back into stock." confirmLabel="Cancel reservation"
-                reasonLabel="Reason" reasonPlaceholder="e.g. Customer did not come" pending={busy}
+              <ConfirmAction title={t("owner.queue.reservation.cancelTitle")} description={t("owner.queue.reservation.cancelBody")}
+                confirmLabel={t("owner.queue.reservation.cancelConfirm")} reasonLabel={t("owner.queue.reservation.cancelReason")}
+                reasonPlaceholder={t("owner.queue.reservation.cancelPlaceholder")} pending={busy}
                 onConfirm={(reason) => run("cancel", reason)}
-                trigger={(open) => <Button size="sm" variant="ghost" onClick={open} disabled={busy}><Ban /> No-show</Button>} />
+                trigger={(open) => <Button size="sm" variant="ghost" onClick={open} disabled={busy}><Ban /> {t("owner.queue.reservation.noShow")}</Button>} />
             )}
           </div>
         )}
-        <CodeDialog open={codeOpen} onOpenChange={setCodeOpen} kind="pickup" title="Complete this pickup"
-          confirmLabel="Picked up and paid" pending={complete.isPending}
+        <CodeDialog open={codeOpen} onOpenChange={setCodeOpen} kind="pickup" title={t("owner.queue.reservation.completeTitle")}
+          confirmLabel={t("owner.queue.reservation.complete")} pending={complete.isPending}
           onSubmit={(code) => complete.mutateAsync({ id: r.id, action: "complete", code })} />
       </motion.li>
     </MotionConfig>
@@ -230,11 +226,13 @@ export function OwnerReservationCard({ r }: { r: Reservation }) {
 }
 
 export function OwnerOrderCard({ o }: { o: Order }) {
+  const { t, language } = useI18n();
+  const now = useNow(30_000);
   const act = useOwnerAction<Order>("orders");
   const deliver = useOwnerAction<Order>("orders", true);
   const [codeOpen, setCodeOpen] = useState(false);
   const busy = act.isPending || deliver.isPending;
-  const run = (action: string, reason?: string | null) => act.mutate({ id: o.id, action, reason });
+  const run = (action: Action, reason?: string | null) => act.mutate({ id: o.id, action, reason });
   const has = (a: string) => o.actions.includes(a);
 
   return (
@@ -243,41 +241,48 @@ export function OwnerOrderCard({ o }: { o: Order }) {
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={o.status} kind="order" />
           <span className="font-mono text-xs text-muted-foreground">{o.code}</span>
-          <span className="text-xs text-muted-foreground" suppressHydrationWarning>{timeAgo(o.created_at)}</span>
-          <span className="ml-auto font-semibold tabular">{formatPrice(o.total)} <span className="text-xs font-normal text-muted-foreground">COD</span></span>
+          <span className="text-xs text-muted-foreground" suppressHydrationWarning>{timeAgo(o.created_at, now, language)}</span>
+          <span className="ml-auto font-semibold tabular">{formatPrice(o.total)} <span className="text-xs font-normal text-muted-foreground">{t("owner.queue.order.cod")}</span></span>
         </div>
         <ul className="mt-3 space-y-1 text-sm">
           {o.items.map((i) => (
-            <li key={i.product_id} className="flex justify-between gap-3"><span className="truncate">{i.quantity} x {i.name}</span><span className="text-muted-foreground tabular">{formatPrice(i.unit_price * i.quantity)}</span></li>
+            <li key={i.product_id} className="flex justify-between gap-3"><span className="truncate">{t("owner.common.quantityItem", { count: formatNumber(i.quantity), name: i.name })}</span><span className="text-muted-foreground tabular">{formatPrice(i.unit_price * i.quantity)}</span></li>
           ))}
         </ul>
         <div className="mt-3 space-y-1 rounded-xl bg-muted/60 p-3 text-sm">
           <p className="font-medium">{o.customer?.name}{o.contact_phone && <> · <a href={`tel:${o.contact_phone}`} className="hover:underline">{o.contact_phone}</a></>}</p>
           <p className="flex gap-1.5 text-muted-foreground"><MapPin className="mt-0.5 size-3.5 shrink-0" /> {o.delivery_address} · {formatDistance(o.distance_km)}</p>
-          {o.note && <p className="text-muted-foreground">Note: {o.note}</p>}
+          {o.note && <p className="text-muted-foreground">{t("owner.queue.order.note", { note: o.note })}</p>}
           <a className="inline-flex items-center gap-1 text-xs font-medium text-info-ink hover:underline" target="_blank" rel="noreferrer"
-            href={`https://www.openstreetmap.org/directions?to=${o.delivery_lat}%2C${o.delivery_lng}`}>Open route</a>
+            href={`https://www.openstreetmap.org/directions?to=${o.delivery_lat}%2C${o.delivery_lng}`}>{t("owner.queue.order.openRoute")}</a>
         </div>
         {o.actions.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
-            {has("confirm") && <Button size="sm" onClick={() => run("confirm")} disabled={busy}><Check /> Confirm order</Button>}
-            {has("prepare") && <Button size="sm" onClick={() => run("prepare")} disabled={busy}><PackageCheck /> Start packing</Button>}
-            {has("dispatch") && <Button size="sm" onClick={() => run("dispatch")} disabled={busy}><Bike /> Out for delivery</Button>}
-            {has("deliver") && <Button size="sm" onClick={() => setCodeOpen(true)} disabled={busy}><CheckCheck /> Delivered, cash collected</Button>}
+            {has("confirm") && <Button size="sm" onClick={() => run("confirm")} disabled={busy}><Check /> {t("owner.queue.order.confirm")}</Button>}
+            {has("prepare") && <Button size="sm" onClick={() => run("prepare")} disabled={busy}><PackageCheck /> {t("owner.queue.order.prepare")}</Button>}
+            {has("dispatch") && <Button size="sm" onClick={() => run("dispatch")} disabled={busy}><Bike /> {t("owner.queue.order.dispatch")}</Button>}
+            {has("deliver") && <Button size="sm" onClick={() => setCodeOpen(true)} disabled={busy}><CheckCheck /> {t("owner.queue.order.deliver")}</Button>}
             {has("fail") && (
-              <ConfirmAction title="Delivery failed?" confirmLabel="Mark failed" reasonLabel="What happened?" reasonRequired reasonPlaceholder="e.g. Customer not reachable" pending={busy}
-                onConfirm={(reason) => run("fail", reason)} trigger={(open) => <Button size="sm" variant="ghost" onClick={open}>Couldn&apos;t deliver</Button>} />
+              <ConfirmAction title={t("owner.queue.order.failTitle")} confirmLabel={t("owner.queue.order.failConfirm")}
+                reasonLabel={t("owner.queue.order.failReason")} reasonRequired reasonPlaceholder={t("owner.queue.order.failPlaceholder")} pending={busy}
+                onConfirm={(reason) => run("fail", reason)}
+                trigger={(open) => <Button size="sm" variant="ghost" onClick={open}>{t("owner.queue.order.couldNotDeliver")}</Button>} />
             )}
-            {has("return") && <Button size="sm" variant="outline" onClick={() => run("return")} disabled={busy}><RotateCcw /> Back in shop</Button>}
+            {has("return") && <Button size="sm" variant="outline" onClick={() => run("return")} disabled={busy}><RotateCcw /> {t("owner.queue.order.return")}</Button>}
             {has("cancel") && (
-              <ConfirmAction title="Cancel this order?" description="The customer is notified and any held stock goes back on the shelf." confirmLabel="Cancel order"
-                reasonLabel="Reason for the customer" reasonRequired pending={busy} onConfirm={(reason) => run("cancel", reason)}
-                trigger={(open) => <Button size="sm" variant="ghost" onClick={open} disabled={busy}><X /> {o.status === "PENDING" ? "Decline" : "Cancel"}</Button>} />
+              <ConfirmAction title={t("owner.queue.order.cancelTitle")} description={t("owner.queue.order.cancelBody")}
+                confirmLabel={t("owner.queue.order.cancelConfirm")} reasonLabel={t("owner.queue.reasonForCustomer")} reasonRequired pending={busy}
+                onConfirm={(reason) => run("cancel", reason)}
+                trigger={(open) => (
+                  <Button size="sm" variant="ghost" onClick={open} disabled={busy}>
+                    <X /> {o.status === "PENDING" ? t("owner.queue.order.decline") : t("owner.queue.order.cancel")}
+                  </Button>
+                )} />
             )}
           </div>
         )}
-        <CodeDialog open={codeOpen} onOpenChange={setCodeOpen} kind="delivery" title="Deliver this order"
-          confirmLabel="Delivered, cash collected" pending={deliver.isPending}
+        <CodeDialog open={codeOpen} onOpenChange={setCodeOpen} kind="delivery" title={t("owner.queue.order.deliverTitle")}
+          confirmLabel={t("owner.queue.order.deliver")} pending={deliver.isPending}
           onSubmit={(code) => deliver.mutateAsync({ id: o.id, action: "deliver", code })} />
       </motion.li>
     </MotionConfig>

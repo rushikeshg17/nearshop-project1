@@ -63,6 +63,69 @@
     "travel": {
       "walk": "{minutes} min walk",
       "ride": "{minutes} min ride"
+    },
+    "status": {
+      "reservation": {
+        "REQUESTED": "Waiting for shop",
+        "CONFIRMED": "Held for you",
+        "READY_FOR_PICKUP": "Ready for pickup",
+        "COMPLETED": "Picked up",
+        "REJECTED": "Declined by shop",
+        "CANCELLED": "Cancelled",
+        "EXPIRED": "Expired"
+      },
+      "order": {
+        "PENDING": "Waiting for shop",
+        "SHOP_CONFIRMED": "Confirmed",
+        "PREPARING": "Packing",
+        "OUT_FOR_DELIVERY": "On the way",
+        "DELIVERED": "Delivered",
+        "CANCELLED": "Cancelled",
+        "DELIVERY_FAILED": "Delivery failed",
+        "RETURNED_TO_SHOP": "Returned to shop"
+      },
+      "timeUp": "Time's up",
+      "hoursMinutes": "{hours}h {minutes}m"
+    },
+    "progress": {
+      "label": "Progress",
+      "reservationSteps": {
+        "REQUESTED": "Requested",
+        "CONFIRMED": "Held for you",
+        "READY_FOR_PICKUP": "Ready",
+        "COMPLETED": "Picked up"
+      },
+      "orderSteps": {
+        "PENDING": "Placed",
+        "SHOP_CONFIRMED": "Confirmed",
+        "PREPARING": "Packing",
+        "OUT_FOR_DELIVERY": "On the way",
+        "DELIVERED": "Delivered"
+      },
+      "events": {
+        "REQUESTED": "Reservation requested",
+        "CONFIRMED": "Shop confirmed and set it aside",
+        "READY_FOR_PICKUP": "Packed and ready at the counter",
+        "COMPLETED": "Picked up",
+        "REJECTED": "Shop declined",
+        "CANCELLED": "Cancelled",
+        "EXPIRED": "Expired",
+        "PENDING": "Order placed",
+        "SHOP_CONFIRMED": "Shop confirmed the order",
+        "PREPARING": "Packing your order",
+        "OUT_FOR_DELIVERY": "Out for delivery",
+        "DELIVERED": "Delivered",
+        "DELIVERY_FAILED": "Delivery attempt failed",
+        "RETURNED_TO_SHOP": "Returned to shop"
+      },
+      "actors": {
+        "you": "You",
+        "customer": "Customer",
+        "shop": "Shop",
+        "system": "NearShop",
+        "admin": "Admin"
+      },
+      "note": "“{note}”"
     }
   },
   "discovery": {
@@ -756,6 +819,288 @@
       "mapYou": "You",
       "mapAddress": "Delivery address",
       "callShop": "Call shop"
+    }
+  },
+  "owner": {
+    "shell": {
+      "notOwnerTitle": "The shop dashboard is for shop owners",
+      "notOwnerBody": "Sign in with a shop owner account, or list your shop in a few minutes.",
+      "listShop": "List your shop",
+      "signIn": "Sign in",
+      "yourShop": "Your shop",
+      "nav": {
+        "overview": "Overview",
+        "reservations": "Reservations",
+        "orders": "Delivery orders",
+        "inventory": "Inventory",
+        "import": "Import from Excel",
+        "catalog": "Add from catalogue",
+        "insights": "AI insights",
+        "reviews": "Reviews",
+        "settings": "Shop settings"
+      }
+    },
+    "verification": {
+      "reason": "Reason:",
+      "draft": {
+        "title": "Customers cannot see your shop yet",
+        "body": "Verify your shop with your GSTIN, Udyam number or trade licence. You can set up everything else meanwhile.",
+        "action": "Verify your shop"
+      },
+      "submitted": {
+        "title": "Verification submitted",
+        "body": "An admin is checking your evidence, usually within 2 working days. Your shop stays hidden from customers until it is approved."
+      },
+      "rejected": {
+        "title": "Your verification was not approved",
+        "body": "Fix the problem and submit again. Customers cannot see your shop until it is verified.",
+        "action": "Resubmit"
+      },
+      "suspended": {
+        "title": "Your shop is suspended",
+        "body": "Customers cannot see your shop until it is verified again.",
+        "action": "Submit fresh evidence"
+      },
+      "renewalPending": {
+        "title": "Renewal submitted",
+        "body": "An admin is checking your fresh evidence. Your shop stays visible while it is reviewed."
+      },
+      "renew": {
+        "title": "Renew your verification by {date}",
+        "body": "Your verification ends on {date}. Submit fresh evidence before then to stay visible to customers.",
+        "action": "Renew"
+      },
+      "expired": {
+        "title": "Your verification has ended",
+        "body": "It ended on {date}. Your shop is hidden from customers until it is renewed.",
+        "action": "Renew"
+      }
+    },
+    "common": {
+      "active": "Active",
+      "history": "History",
+      "nothingHere": "Nothing here",
+      "quantityItem": "{count} x {name}",
+      "table": {
+        "code": "Code",
+        "customer": "Customer",
+        "status": "Status",
+        "total": "Total"
+      }
+    },
+    "overview": {
+      "greeting": {
+        "morning": "Good morning",
+        "afternoon": "Good afternoon",
+        "evening": "Good evening"
+      },
+      "stockUpdated": "Your stock counts were updated",
+      "updateNow": "Update now",
+      "viewAsCustomer": "View as customer",
+      "demoData": "Sales history includes seeded demo data so charts and forecasts have something to learn from. Real pickups and deliveries are added as they complete.",
+      "revenueToday": "Revenue today",
+      "unitsSold": {
+        "one": "{count} unit sold",
+        "other": "{count} units sold"
+      },
+      "last7Days": "Last 7 days",
+      "vsPreviousWeek": "{delta}% vs previous week",
+      "pickupsWaiting": "Pickups waiting",
+      "newRequests": {
+        "one": "{count} new request",
+        "other": "{count} new requests"
+      },
+      "lowOrOut": "Low or out of stock",
+      "ofListings": {
+        "one": "of {count} listing",
+        "other": "of {count} listings"
+      },
+      "needsAttention": "Needs your attention",
+      "allReservations": "All reservations",
+      "noRequestsTitle": "No new requests",
+      "noRequestsBody": "New reservations and delivery orders appear here instantly.",
+      "deliveriesInProgress": {
+        "one": "{count} delivery in progress",
+        "other": "{count} deliveries in progress"
+      },
+      "sales30d": "Sales, last 30 days",
+      "fromReviews": {
+        "one": "from {count} review",
+        "other": "from {count} reviews"
+      },
+      "readReviews": "Read reviews",
+      "runningLow": "Running low",
+      "restockPlan": "AI restock plan",
+      "runsOut": {
+        "one": "Runs out in ~{count} day",
+        "other": "Runs out in ~{count} days"
+      },
+      "noRecentSales": "No recent sales",
+      "restock": "restock {count}",
+      "wellStocked": "Everything is well stocked.",
+      "topSellers": "Top sellers, 30 days",
+      "sold": "{count} sold",
+      "noSales": "No sales yet.",
+      "autoRefresh": "Refreshes automatically every 15 seconds."
+    },
+    "reservations": {
+      "title": "Reservations",
+      "description": "Customers reserve, you confirm, they pick up and pay at the counter.",
+      "emptyTitle": "No active reservations",
+      "emptyBody": "When a customer reserves something from your shop it appears here, and you get a notification.",
+      "columns": {
+        "REQUESTED": {
+          "title": "New requests",
+          "hint": "Check the shelf, then confirm or decline"
+        },
+        "CONFIRMED": {
+          "title": "Held for customer",
+          "hint": "Set aside. Mark ready when packed."
+        },
+        "READY_FOR_PICKUP": {
+          "title": "Ready at counter",
+          "hint": "Complete when they pay and collect"
+        }
+      },
+      "table": {
+        "item": "Item",
+        "updated": "Updated"
+      }
+    },
+    "orders": {
+      "title": "Delivery orders",
+      "description": "You deliver with your own staff. Customers pay cash on delivery.",
+      "pickupOnlyTitle": "You offer pickup only",
+      "pickupOnlyBody": "Turn on delivery in settings to accept delivery orders. You set the radius and fee; you or your staff deliver, and customers pay cash.",
+      "setUpDelivery": "Set up delivery",
+      "emptyTitle": "No active deliveries",
+      "emptyBody": "New delivery orders appear here with the customer's address and route.",
+      "table": {
+        "items": "Items",
+        "when": "When"
+      }
+    },
+    "queue": {
+      "done": {
+        "confirm": "Confirmed. The customer has been notified.",
+        "reject": "Declined. The customer has been notified.",
+        "ready": "Marked ready. The customer has been told to come by.",
+        "complete": "Completed. Sale recorded.",
+        "prepare": "Marked as packing.",
+        "dispatch": "Out for delivery. Customer notified.",
+        "deliver": "Delivered. Cash collected and sale recorded.",
+        "fail": "Marked as failed.",
+        "return": "Returned to shop. Stock restored.",
+        "cancel": "Cancelled. Stock returned to the shelf."
+      },
+      "code": {
+        "wrong": "{message}. Check the code with the customer and try again.",
+        "deliveryDescription": "Ask the customer for the 4-digit delivery code on their order screen. Hand over the order only after it is accepted.",
+        "pickupDescription": "Ask the customer to show the pickup code on their reservation screen, and type it here.",
+        "notYet": "Not yet",
+        "deliveryLabel": "Delivery code",
+        "pickupLabel": "Pickup code",
+        "deliveryPlaceholder": "4 digits",
+        "pickupPlaceholder": "e.g. 7KQ2MX"
+      },
+      "respondWithin": "Respond within",
+      "holdEndsIn": "Hold ends in",
+      "onShelf": "{count} on your shelf",
+      "reasonForCustomer": "Reason for the customer",
+      "reservation": {
+        "confirm": "Confirm and hold",
+        "ready": "Mark ready",
+        "complete": "Picked up and paid",
+        "completeTitle": "Complete this pickup",
+        "declineTitle": "Decline this reservation?",
+        "declineBody": "The customer will be told and pointed to other shops.",
+        "decline": "Decline",
+        "declinePlaceholder": "e.g. Last piece just sold at the counter",
+        "cancelTitle": "Cancel this reservation?",
+        "cancelBody": "Use this when the customer didn't show up. The item goes back into stock.",
+        "cancelConfirm": "Cancel reservation",
+        "cancelReason": "Reason",
+        "cancelPlaceholder": "e.g. Customer did not come",
+        "noShow": "No-show"
+      },
+      "order": {
+        "cod": "COD",
+        "note": "Note: {note}",
+        "openRoute": "Open route",
+        "confirm": "Confirm order",
+        "prepare": "Start packing",
+        "dispatch": "Out for delivery",
+        "deliver": "Delivered, cash collected",
+        "deliverTitle": "Deliver this order",
+        "failTitle": "Delivery failed?",
+        "failConfirm": "Mark failed",
+        "failReason": "What happened?",
+        "failPlaceholder": "e.g. Customer not reachable",
+        "couldNotDeliver": "Couldn't deliver",
+        "return": "Back in shop",
+        "cancelTitle": "Cancel this order?",
+        "cancelBody": "The customer is notified and any held stock goes back on the shelf.",
+        "cancelConfirm": "Cancel order",
+        "decline": "Decline",
+        "cancel": "Cancel"
+      }
+    },
+    "inventory": {
+      "title": "Inventory",
+      "description": "Keep counts honest. Customers see how recently you updated, and fresh shops rank higher.",
+      "importExcel": "Import Excel",
+      "addFromCatalogue": "Add from catalogue",
+      "newProduct": "New product",
+      "searchPlaceholder": "Search your products or SKU",
+      "tabs": {
+        "all": "All",
+        "low_stock": "Low",
+        "out_of_stock": "Out",
+        "inactive": "Removed"
+      },
+      "category": "Category",
+      "allCategories": "All categories",
+      "sortLabel": "Sort products",
+      "sort": {
+        "name": "Name",
+        "stock_asc": "Lowest stock",
+        "stock_desc": "Highest stock",
+        "price_asc": "Price: low to high",
+        "updated": "Recently updated"
+      },
+      "noMatchTitle": "No products match",
+      "noMatchBody": "Try another search or filter.",
+      "noProductsTitle": "No products yet",
+      "noProductsBody": "Add products from the ready catalogue in a couple of minutes.",
+      "openCatalogue": "Open catalogue",
+      "listings": {
+        "one": "{count} listing",
+        "other": "{count} listings"
+      },
+      "toast": {
+        "stockSet": "{name}: stock set to {count}",
+        "priceUpdated": "Price updated to {price}",
+        "removed": "Removed from your shop. Past orders keep their history.",
+        "listedAgain": "Listed again",
+        "photoUpdated": "Photo updated"
+      },
+      "uploadPhotoFor": "Upload photo for {name}",
+      "rupee": "Rs",
+      "priceOf": "Price of {name}",
+      "decrease": "Decrease stock",
+      "stockOf": "Stock of {name}",
+      "increase": "Increase stock",
+      "save": "Save",
+      "recount": "Recount",
+      "moreActions": "More actions for {name}",
+      "editDetails": "Edit details",
+      "uploadPhoto": "Upload photo",
+      "viewAsCustomer": "View as customer",
+      "removeFromShop": "Remove from shop",
+      "listAgain": "List again",
+      "removeTitle": "Remove {name}?",
+      "removeBody": "It disappears from search. Past orders and reviews keep their history.",
+      "remove": "Remove"
     }
   }
 }
