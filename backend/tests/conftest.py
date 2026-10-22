@@ -68,6 +68,9 @@ os.environ["NEARSHOP_SECRET_KEY"] = secrets.token_urlsafe(32)  # never the real 
 os.environ["NEARSHOP_ENABLE_SCHEDULER"] = "false"
 os.environ["NEARSHOP_WARM_ON_STARTUP"] = "false"  # the fixture below creates the schema
 os.environ["NEARSHOP_COMPLETION_CODES_REQUIRED"] = "true"  # P3.5's completion codes (on by default since P3.7)
+# The email sign-in sunset (P4.2) far away, whatever the date: the seeded accounts sign in with email and have no
+# verified phone, and the background job would warn and switch them off. tests/test_phone_migration.py moves it.
+os.environ["NEARSHOP_EMAIL_LOGIN_SUNSET"] = "2100-01-01"
 os.environ["NEARSHOP_EMBEDDING_PROVIDER"] = "tfidf"  # fast and offline for tests
 os.environ["NEARSHOP_MEDIA_DIR"] = str(_tmp / "media")
 os.environ["NEARSHOP_KYC_MEDIA_DIR"] = str(_tmp / "private_media")  # KYC documents (P3.3), never the repo's

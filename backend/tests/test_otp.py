@@ -100,7 +100,8 @@ def test_phone_signin_is_reported_available_with_the_console_provider(api):
     res = api.get("/api/auth/phone-signin")
     assert res.status_code == 200
     assert res.json() == {"available": True, "channels": ["console"], "code_length": 6, "expires_in": 300,
-                          "resend_after": 60}
+                          "resend_after": 60, "email_login_sunset": settings.email_login_sunset.isoformat(),
+                          "email_login_ended": False}  # the sunset fields: P4.2
 
 
 def test_register_and_sign_in_by_code_end_to_end(api, db):

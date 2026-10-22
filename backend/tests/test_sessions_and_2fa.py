@@ -396,7 +396,8 @@ def test_admin_login_reports_a_missing_key_without_signing_in(make_user, monkeyp
 def test_customer_login_is_unchanged(client):
     res = client.post("/api/auth/login", json={"email": "cust@example.com", "password": PASSWORD}, headers=HEADERS)
     assert res.status_code == 200
-    assert set(res.json()) == {"id", "name", "email", "phone", "role", "home_lat", "home_lng", "home_label", "shop"}
+    assert set(res.json()) == {"id", "name", "email", "phone", "role", "home_lat", "home_lng", "home_label", "shop",
+                               "phone_verified", "email_login_sunset", "phone_migration"}  # the last three: P4.2
     assert res.json()["email"] == "cust@example.com"
     assert f"max-age={settings.access_token_minutes * 60}" in res.headers["set-cookie"].lower()
     assert "httponly" in res.headers["set-cookie"].lower()

@@ -1,6 +1,6 @@
 import logging
 import math
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -73,8 +73,11 @@ PHONE_TAKEN = Conflict("An account with this phone number already exists. Sign i
 # Where phone sign-in is unavailable, "sign in with a code" leads nowhere.
 PHONE_TAKEN_NO_CODES = Conflict("An account with this phone number already exists. Sign in to that account "
                                 "instead, or use another number.", code="phone_taken")
-# A verify code for a number verified on another account: signing in to that account is not what was asked.
-PHONE_IN_USE = Conflict("This phone number is verified on another account. Use another number.", code="phone_taken")
+# A verify code for a number verified on another account: signing in to that account is not what was asked, and
+# accounts are never merged automatically (P4.2): support looks at it.
+PHONE_IN_USE = Conflict("This phone number is already verified on another NearShop account. We never merge accounts "
+                        "automatically: to move the number to this account, contact us through the grievance page, "
+                        "or use another number.", code="phone_taken")
 
 
 def phone_taken() -> Conflict:
@@ -88,6 +91,41 @@ def account_inactive() -> AppError:
                      "grievance page.", code="account_inactive")
 
 
+# ---------------------------------------------------------------- the email sign-in sunset (P4.2)
+
+# The roles that move to phone sign-in. Admins keep their password and authenticator code.
+MIGRATING_ROLES = (Role.CUSTOMER, Role.OWNER)
+
+
+def ist_today() -> date:
+    """Today's IST calendar day (the sunset is an IST day), on the OTP clock that tests control."""
+    return date.fromisoformat(otp.today())
+
+
+def email_login_ended() -> bool:
+    """Whether the sunset (settings.email_login_sunset) has come. Only where phone sign-in is available: without a
+    provider nobody could verify a phone, so email sign-in carries on."""
+    return otp.available() and ist_today() >= settings.email_login_sunset
+
+
+def needs_verified_phone(user: User) -> bool:
+    return user.role in MIGRATING_ROLES and user.phone_verified_at is None
+
+
+def phone_migration(user: User) -> str | None:
+    """What the site asks of this user (providers.tsx): "warn" shows the banner with the sunset date, "required" sends
+    every page to /verify-phone, None asks nothing (a verified phone, an admin, or phone sign-in unavailable)."""
+    if not needs_verified_phone(user) or not otp.available():
+        return None
+    return "required" if ist_today() >= settings.email_login_sunset else "warn"
+
+
+def email_login_closed() -> AppError:
+    return Forbidden("Email sign-in has ended for customer and shop accounts. Sign in with your phone number instead. "
+                     "If you never verified a phone number on this account, contact us through the grievance page.",
+                     code="phone_signin_required")
+
+
 def invalid_credentials() -> AppError:
     return AppError("Email or password is incorrect", code="invalid_credentials", status_code=401)
 
@@ -98,9 +136,13 @@ def password_ok(password: str, password_hash: str) -> bool:
     return bool(password_hash) and verify_password(password, password_hash)
 
 
+def _phone_key(exc: DuplicateKeyError) -> bool:
+    return "phone" in ((exc.details or {}).get("keyPattern") or {})
+
+
 def _taken(exc: DuplicateKeyError) -> AppError:
     """The 409 for a unique-index refusal on users: uq_phone, else uq_email_set."""
-    return phone_taken() if "phone" in ((exc.details or {}).get("keyPattern") or {}) else EMAIL_TAKEN
+    return phone_taken() if _phone_key(exc) else EMAIL_TAKEN
 
 
 class LoginWithCodeIn(LoginIn):
@@ -108,6 +150,30 @@ class LoginWithCodeIn(LoginIn):
     Other roles leave it out."""
 
     code: str | None = Field(default=None, min_length=1, max_length=32)
+
+
+class PhoneVerifyIn(OtpVerifyIn):
+    """POST /api/auth/otp/verify. A phone registration may also give an email (P4.2: optional), kept as a contact
+    address; the account has no password, so it never signs in with it."""
+
+    email: EmailStr | None = None
+
+    @model_validator(mode="after")
+    def _email_only_to_register(self) -> "PhoneVerifyIn":
+        if self.email is not None and self.purpose != "register":
+            raise ValueError("An email is given only when creating an account")
+        return self
+
+
+class OwnerSignupIn(RegisterIn):
+    """The owner of a shop sign-up. code: the 6-digit code sent to the owner's phone (purpose register), which
+    verifies it (P4.2); the screens send it whenever phone sign-in is available."""
+
+    code: str | None = Field(default=None, pattern=OTP_CODE_PATTERN)
+
+
+class RegisterShopWithCodeIn(RegisterShopIn):
+    owner: OwnerSignupIn
 
 
 class PasswordChangeIn(BaseModel):
@@ -165,6 +231,10 @@ def user_out(user: User, db: Database) -> dict:
         "name": user.name,
         "email": user.email,
         "phone": user.phone,
+        # P4.2: whether the phone is verified, the email sign-in sunset (an IST day) and what the site asks.
+        "phone_verified": user.phone_verified_at is not None,
+        "email_login_sunset": settings.email_login_sunset.isoformat(),
+        "phone_migration": phone_migration(user),
         "role": user.role.value,
         "home_lat": user.home_lat,
         "home_lng": user.home_lng,
@@ -297,14 +367,34 @@ def register(body: RegisterIn, request: Request, response: Response, db: DB):
     return _with_phone_notice(user_out(user, db), body.phone, phone)
 
 
+def _verifiable_phone(db: Database, phone: str) -> None:
+    """Before a sign-up spends a code for `phone`: 409 when an account has already verified it (403 when that
+    account is switched off). One that only typed it in loses it once the code proves the phone."""
+    holder = _verified_holder(db, phone)
+    if holder is not None:
+        raise PHONE_TAKEN if holder.is_active else account_inactive()
+
+
 @router.post("/register-shop", dependencies=[Depends(require_open_signups)])
-def register_shop(body: RegisterShopIn, request: Request, response: Response, db: DB):
+def register_shop(body: RegisterShopWithCodeIn, request: Request, response: Response, db: DB):
+    """A shop and its owner's account. With owner.code (a register code sent to the owner's phone, which is the
+    shop's unless the owner gives another), the owner's phone is verified (P4.2), and so is the shop's when it is
+    the same number, which P3.3 needs before the shop goes live. Without one the phone stays unverified (where
+    phone sign-in is unavailable): an admin records the call-back instead (P3.3)."""
     check_consent(body.owner.consent)
     _ensure_email_free(db, body.owner.email)
-    kept = _phone_to_keep(db, body.owner.phone)
-    # The owner's phone defaults to the shop's, unless another account already has that number (one per phone).
-    owner_phone = kept or (None if body.owner.phone or db.users.exists({"phone": body.shop.phone})
-                           else body.shop.phone)
+    code_phone = body.owner.phone or body.shop.phone
+    verified_at = None
+    if body.owner.code:
+        if not otp.available():
+            raise otp.unavailable()
+        _verifiable_phone(db, code_phone)
+        kept, owner_phone = code_phone, code_phone
+    else:
+        kept = _phone_to_keep(db, body.owner.phone)
+        # The owner's phone defaults to the shop's, unless another account already has that number (one per phone).
+        owner_phone = kept or (None if body.owner.phone or db.users.exists({"phone": body.shop.phone})
+                               else body.shop.phone)
     cats = [c for c in categories(db).values() if c.slug in set(body.shop.category_slugs)]
     if len(cats) != len(set(body.shop.category_slugs)):
         raise AppError("Choose categories from the list")
@@ -315,13 +405,20 @@ def register_shop(body: RegisterShopIn, request: Request, response: Response, db
     slug, n = base, 2
     while slug in taken:
         slug, n = f"{base}-{n}", n + 1
+    if body.owner.code:  # last, so that a sign-up refused above has not spent the code
+        otp.verify_code(db, code_phone, "register", body.owner.code)
+        verified_at = utcnow()
+    shop_verified_at = verified_at if body.shop.phone == owner_phone else None
 
     def create() -> User:
         # The owner account and the shop are created together or not at all.
+        if verified_at is not None:
+            _release_unverified(db, code_phone)
         user = db.users.insert(User(name=body.owner.name, email=body.owner.email.lower(), phone=owner_phone,
-                                    password_hash=password_hash, role=Role.OWNER))
+                                    phone_verified_at=verified_at, password_hash=password_hash, role=Role.OWNER))
         db.shops.insert(Shop(**data, owner_id=user.id, slug=slug, city=city_config()["name"],
-                             category_ids=[c.id for c in cats], inventory_updated_at=utcnow()))
+                             category_ids=[c.id for c in cats], inventory_updated_at=utcnow(),
+                             phone_verified_at=shop_verified_at))
         record_consents(db, user.id, body.owner.consent)
         return user
 
@@ -391,6 +488,10 @@ def login(body: LoginWithCodeIn, request: Request, response: Response, db: DB):
     # Same message for unknown email and wrong password, so accounts cannot be enumerated.
     if not user or not password_ok(body.password, user.password_hash) or not user.is_active:
         raise invalid_credentials()
+    # After the sunset (P4.2), only the phone signs customers and owners in until they verify one. Checked after
+    # the password, so the answer says nothing about an account to someone without it.
+    if needs_verified_phone(user) and email_login_ended():
+        raise email_login_closed()
     if user.role == Role.ADMIN:
         _check_second_factor(db, user, body.code)
     user = _start_session(request, response, db, user, {"last_login_at": utcnow()})
@@ -464,8 +565,10 @@ def update_me(body: ProfileUpdateIn, user: CurrentUser, db: DB):
 
 @router.get("/phone-signin")
 def phone_signin():
-    """Whether phone sign-in is available here (a provider configured); P4.2 shows the phone screens only then."""
-    return otp.status()
+    """Whether phone sign-in is available here (a provider configured); P4.2 shows the phone screens only then. Also
+    the email sign-in sunset (an IST day) and whether it has come (email_login_ended), for the sign-in screen."""
+    return {**otp.status(), "email_login_sunset": settings.email_login_sunset.isoformat(),
+            "email_login_ended": email_login_ended()}
 
 
 def _otp_preconditions(purpose: str, user: User | None) -> int | None:
@@ -503,8 +606,11 @@ def request_otp(body: OtpRequestIn, user: OptionalUser, db: DB):
 
 
 def _no_account() -> AppError:
+    if email_login_ended():
+        return NotFound("No account has this verified phone number. Create an account with it, or, if you used to "
+                        "sign in with email, contact us through the grievance page.", code="no_account")
     return NotFound("No account has this verified phone number yet. Create an account, or sign in with your "
-                    "email and verify your phone from your account page.", code="no_account")
+                    "email and verify your phone on the verify-phone page.", code="no_account")
 
 
 def _verified_holder(db: Database, phone: str) -> User | None:
@@ -524,11 +630,12 @@ def _release_unverified(db: Database, phone: str, keep: int | None = None) -> No
 
 
 @router.post("/otp/verify")
-def verify_otp(body: OtpVerifyIn, request: Request, response: Response, user: OptionalUser, db: DB):
+def verify_otp(body: PhoneVerifyIn, request: Request, response: Response, user: OptionalUser, db: DB):
     """Check the code, then act on its purpose:
       * login: start a session on the account with this verified phone (the same cookie as a password sign-in).
         Admins sign in with their password and second factor only.
-      * register: a customer account for the phone, with the P3.1 consent (checked before the code is spent).
+      * register: a customer account for the phone, with the P3.1 consent (checked before the code is spent) and,
+        optionally, an email (P4.2).
       * verify: set (or confirm) the signed-in user's phone. A new number ends every session (P2.4); this device
         continues on a new one, and an admin signs in again.
       * reset: a new password for the account with this verified phone; every session ends, this device signs in.
@@ -536,6 +643,8 @@ def verify_otp(body: OtpVerifyIn, request: Request, response: Response, user: Op
     user_id = _otp_preconditions(body.purpose, user)
     if body.purpose == "register":
         check_consent(body.consent)
+        if body.email:
+            _ensure_email_free(db, body.email)
     otp.verify_code(db, body.phone, body.purpose, body.code, user_id=user_id)
     holder = _verified_holder(db, body.phone)
     now = utcnow()
@@ -568,15 +677,15 @@ def verify_otp(body: OtpVerifyIn, request: Request, response: Response, user: Op
 
         def create() -> User:
             _release_unverified(db, body.phone)
-            new = db.users.insert(User(name=body.name, phone=body.phone, phone_verified_at=now, password_hash="",
-                                       role=Role.CUSTOMER))
+            new = db.users.insert(User(name=body.name, email=body.email.lower() if body.email else None,
+                                       phone=body.phone, phone_verified_at=now, password_hash="", role=Role.CUSTOMER))
             record_consents(db, new.id, body.consent)
             return new
 
         try:
             new_user = db.transaction(create)
-        except DuplicateKeyError:
-            raise PHONE_TAKEN from None
+        except DuplicateKeyError as exc:
+            raise (PHONE_TAKEN if _phone_key(exc) else EMAIL_TAKEN) from None
         new_user = _start_session(request, response, db, new_user, {"last_login_at": now})
         return user_out(new_user, db)
 

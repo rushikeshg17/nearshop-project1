@@ -20,8 +20,11 @@ it holds the lease, so at any instance count each job runs once per tick.
 The leased jobs are sweep_expired, every tick; snapshot_storage (P2.2), which records each
 collection's data and index size in storage_snapshots once a day (app/services/analytics.py); retention
 (P3.2), the nightly retention rules of plan section 8.4 (app/services/privacy.py, docs/legal/retention.md),
-once a day at RETENTION_AT; and process_deletions (P3.2), every tick, which runs account deletions that were
-waiting for orders in flight and flags overdue ones for the admins.
+once a day at RETENTION_AT; process_deletions (P3.2), every tick, which runs account deletions that were
+waiting for orders in flight and flags overdue ones for the admins; and phone_migration (P4.2), once per IST day,
+which moves customers and owners to phone sign-in before the email sign-in sunset (NEARSHOP_EMAIL_LOGIN_SUNSET):
+it warns those without a verified phone in the app 30, 7 and 1 days before the sunset, and switches off any still
+unverified 30 days after it.
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -67,8 +70,9 @@ import re
 import socket
 import uuid
 from collections.abc import Callable, Mapping
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from pymongo import ReturnDocument
 from pymongo.database import Database as MongoDatabase
@@ -76,6 +80,7 @@ from pymongo.errors import DuplicateKeyError
 
 from app.core.database import Database, utcnow
 from app.core.errors import AppError, Conflict
+from app.models import Notification
 from app.services.orders import cancel_stale_pending
 from app.services.reservations import expire_due
 
@@ -87,8 +92,15 @@ LEASES = "job_leases"
 TICK_SECONDS = 30
 LEASE_TTL = timedelta(seconds=60)
 # Jobs too costly, or too loud, to repeat on every tick after a failure: retried after this long.
-RETRY_AFTER_FAILURE: dict[str, timedelta] = {"snapshot_storage": timedelta(hours=1), "retention": timedelta(hours=1)}
+RETRY_AFTER_FAILURE: dict[str, timedelta] = {"snapshot_storage": timedelta(hours=1), "retention": timedelta(hours=1),
+                                              "phone_migration": timedelta(hours=1)}
 RETENTION_AT = time(21, 30)  # UTC: 03:00 IST, the nightly retention job (P3.2)
+# The phone migration (P4.2): in-app warnings this many days before the email sign-in sunset, and accounts still
+# without a verified phone switched off this many days after it.
+SUNSET_WARN_DAYS = (30, 7, 1)
+SUNSET_DEACTIVATE_AFTER_DAYS = 30
+PHONE_MIGRATION_KIND = "phone_migration"  # the notifications' kind
+IST = ZoneInfo("Asia/Kolkata")
 
 RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
@@ -210,9 +222,104 @@ def process_deletions() -> dict[str, int]:
     return process_scheduled_deletions(Database(), utcnow())
 
 
+def ist_day(at: datetime) -> date:
+    """The IST calendar day of a naive UTC time."""
+    return at.replace(tzinfo=ZoneInfo("UTC")).astimezone(IST).date()
+
+
+def ist_midnight_utc(day: date) -> datetime:
+    """The start of an IST day, as a naive UTC time."""
+    return datetime.combine(day, time(0), tzinfo=IST).astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+
+
+def _unverified() -> dict[str, Any]:
+    """Active customer and owner accounts without a verified phone (deleted accounts are switched off)."""
+    return {"role": {"$in": ["customer", "owner"]}, "is_active": True, "phone_verified_at": None}
+
+
+def _warning(sunset: date, days_left: int) -> tuple[str, str]:
+    when = f"{sunset.day} {sunset:%B %Y}"
+    left = "tomorrow" if days_left == 1 else f"in {days_left} days"
+    return (f"Verify your phone number: email sign-in ends {left}",
+            f"From {when} you sign in to NearShop with a code sent to your phone. Verify your phone number now so you "
+            f"can keep using your account. Accounts without a verified phone are switched off "
+            f"{SUNSET_DEACTIVATE_AFTER_DAYS} days after that.")
+
+
+def warn_before_sunset(db: Database, sunset: date, now: datetime) -> int:
+    """Warn every unverified customer and owner once per stage: the stage is the smallest of SUNSET_WARN_DAYS that is
+    at least the days left, so a day the job missed is caught up on the next run. A stage's warning goes to users
+    without a phone_migration notification since the stage began. The notifications are written as notify() writes
+    them (app/services/notifications.py), dated now. Returns the number warned."""
+    days_left = (sunset - ist_day(now)).days
+    stages = [d for d in SUNSET_WARN_DAYS if days_left <= d]
+    if days_left < 1 or not stages:
+        return 0
+    stage_start = ist_midnight_utc(sunset - timedelta(days=min(stages)))
+    title, body = _warning(sunset, days_left)
+    warned = 0
+    batch: list[int] = []
+
+    def flush() -> int:
+        done = {n["user_id"] for n in db.mongo["notifications"].find(
+            {"user_id": {"$in": batch}, "kind": PHONE_MIGRATION_KIND, "created_at": {"$gte": stage_start}},
+            {"user_id": 1})}
+        todo = [uid for uid in batch if uid not in done]
+        if todo:
+            db.notifications.insert_many([Notification(user_id=uid, kind=PHONE_MIGRATION_KIND, title=title, body=body,
+                                                        link="/verify-phone", created_at=now) for uid in todo])
+        batch.clear()
+        return len(todo)
+
+    for doc in db.mongo["users"].find(_unverified(), {"_id": 1}).sort("_id", 1):
+        batch.append(doc["_id"])
+        if len(batch) >= 500:
+            warned += flush()
+    if batch:
+        warned += flush()
+    return warned
+
+
+def deactivate_after_sunset(db: Database, sunset: date, now: datetime) -> int:
+    """From SUNSET_DEACTIVATE_AFTER_DAYS after the sunset, switch off every customer and owner account still without
+    a verified phone, ending its sessions. Returns the number switched off."""
+    if (ist_day(now) - sunset).days < SUNSET_DEACTIVATE_AFTER_DAYS:
+        return 0
+    from app.core.security import revoke_all_update
+
+    update = revoke_all_update({"is_active": False, "deactivated_at": now, "deactivated_reason": "phone_not_verified"})
+    count = db.mongo["users"].update_many(_unverified(), update).modified_count
+    if count:
+        log.warning("phone migration: switched off %d accounts without a verified phone", count)
+    return count
+
+
+def phone_migration(clock: Clock = utcnow) -> dict[str, Any]:
+    """The move to phone sign-in (P4.2), once per IST day: the day it ran for is kept in the lease's last_result
+    (ran_for), and every later tick that day only repeats the last result. While phone sign-in is unavailable nobody
+    can verify a phone, so it only counts. last_result: warned, deactivated, and remaining (active customer and owner
+    accounts still without a verified phone). A failed run is retried an hour later (RETRY_AFTER_FAILURE)."""
+    from app.core.config import settings
+    from app.services import otp
+
+    now = clock()
+    today = ist_day(now)
+    db = Database()
+    last = (db.mongo[LEASES].find_one({"_id": "phone_migration"}, {"last_result": 1}) or {}).get("last_result") or {}
+    if last.get("ok") is True and last.get("ran_for") == today.isoformat():
+        return {k: v for k, v in last.items() if k != "ok"}
+    sunset = settings.email_login_sunset
+    available = otp.available()
+    warned = warn_before_sunset(db, sunset, now) if available else 0
+    deactivated = deactivate_after_sunset(db, sunset, now) if available else 0
+    remaining = db.mongo["users"].count_documents(_unverified())
+    return {"ran_for": today.isoformat(), "sunset": sunset.isoformat(), "phone_signin_available": available,
+            "warned": warned, "deactivated": deactivated, "remaining": remaining}
+
+
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {
     "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage, "retention": retention,
-    "process_deletions": process_deletions}
+    "process_deletions": process_deletions, "phone_migration": phone_migration}
 
 
 class SearchIndexRefresher:

@@ -7,6 +7,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { CodeField, CodeSentNote, usePhoneSignin, useSendCode } from "@/app/(auth)/login/login-form";
 import {
   type Consent,
   consentComplete,
@@ -32,11 +33,20 @@ import type { User } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const STEPS = ["Your account", "Your shop", "Location", "Hours and delivery"];
+// While phone sign-in is available (P4.2), a last step verifies the shop's phone with a code: it becomes the owner's
+// verified sign-in number, and the shop's phone counts as verified, which an admin needs before the shop goes live
+// (P3.3). The code comes last because it is valid for 5 minutes.
+const VERIFY_STEP = "Verify your phone";
 
 export function ShopSignup() {
   const router = useRouter();
   const qc = useQueryClient();
   const { data: meta, isPending: metaPending } = useMeta();
+  const { data: phoneSignin, isPending: phonePending } = usePhoneSignin();
+  const phoneOn = phoneSignin?.available === true;
+  const steps = phoneOn ? [...STEPS, VERIFY_STEP] : STEPS;
+  const otp = useSendCode("register");
+  const [code, setCode] = useState("");
   const [step, setStep] = useState(0);
   const [owner, setOwner] = useState({ name: "", email: "", password: "" });
   const [consent, setConsent] = useState<Consent>(NO_CONSENT);
@@ -53,9 +63,11 @@ export function ShopSignup() {
   }, [meta]);
 
   const submit = useMutation({
-    mutationFn: () =>
+    // value: the code sent to the shop's phone, on the verify step (the field's state may not have caught up yet
+    // when the browser fills it in from the SMS).
+    mutationFn: (value?: string) =>
       api.post<User>("/auth/register-shop", {
-        owner: { ...owner, phone: shop.phone || null, consent },
+        owner: { ...owner, phone: shop.phone || null, consent, ...(phoneOn && value ? { code: value } : {}) },
         shop: shopPayload(shop),
       }),
     meta: { silent: true },
@@ -70,20 +82,23 @@ export function ShopSignup() {
     shop.name.trim().length >= 3 && shop.category_slugs.length > 0 && /^[6-9]\d{9}$/.test(shop.phone),
     shop.address_line.trim().length >= 5 && !!shop.locality,
     true,
+    code.length === 6,
   ];
 
   if (meta?.signups_open === false || isSignupsClosed(submit.error)) {
     return <SignupsPaused signInHref="/login?next=/shop" />;
   }
-  if (metaPending) return <SignupsChecking />;
+  if (metaPending || phonePending) return <SignupsChecking />;
+  const last = steps.length - 1;
+  const error = submit.error ?? otp.send.error;
 
   return (
     <MotionConfig reducedMotion="user">
       <div>
-        <p className="text-sm font-medium text-brand-ink">Step {step + 1} of {STEPS.length}</p>
-        <h1 className="mt-1 text-3xl font-semibold">{STEPS[step]}</h1>
+        <p className="text-sm font-medium text-brand-ink">Step {step + 1} of {steps.length}</p>
+        <h1 className="mt-1 text-3xl font-semibold">{steps[step]}</h1>
         <div className="mt-4 flex gap-1.5" aria-hidden>
-          {STEPS.map((s, i) => (
+          {steps.map((s, i) => (
             <span key={s} className={cn("h-1 flex-1 rounded-full transition-colors duration-300", i <= step ? "bg-brand" : "bg-muted")} />
           ))}
         </div>
@@ -93,8 +108,13 @@ export function ShopSignup() {
           onSubmit={(e) => {
             e.preventDefault();
             if (!valid[step]) return;
-            if (step < STEPS.length - 1) setStep(step + 1);
-            else submit.mutate();
+            if (phoneOn && step === STEPS.length - 1) {
+              // Into the verify step: a code to the shop's phone, unless one sent to it is still valid.
+              submit.reset();
+              if (otp.fresh(shop.phone)) setStep(step + 1);
+              else otp.send.mutate({ phone: shop.phone }, { onSuccess: () => setStep(step + 1) });
+            } else if (step < last) setStep(step + 1);
+            else submit.mutate(phoneOn ? code : undefined);
           }}
         >
           <AnimatePresence mode="wait" initial={false}>
@@ -120,11 +140,20 @@ export function ShopSignup() {
               {step === 1 && <ShopBasicsFields s={shop} set={set} meta={meta} />}
               {step === 2 && <ShopLocationFields s={shop} set={set} meta={meta} />}
               {step === 3 && <ShopOperationsFields s={shop} set={set} />}
+              {step === 4 && (
+                <div className="space-y-4">
+                  <p className="text-sm text-muted-foreground">
+                    This number becomes your sign-in number, and your shop&apos;s phone counts as verified when an admin reviews it.
+                  </p>
+                  <CodeSentNote otp={otp} id="code-sent" channels={phoneSignin?.channels ?? []} />
+                  <CodeField id="code" value={code} onChange={setCode} onAutoFill={(c) => submit.mutate(c)} describedBy="code-sent" />
+                </div>
+              )}
             </motion.div>
           </AnimatePresence>
 
-          {submit.isError && (
-            <p role="alert" className="mt-4 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{errorMessage(submit.error)}</p>
+          {error && (
+            <p role="alert" className="mt-4 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{errorMessage(error)}</p>
           )}
 
           <div className="mt-8 flex gap-3">
@@ -133,10 +162,10 @@ export function ShopSignup() {
                 <ArrowLeft /> Back
               </Button>
             )}
-            <Button type="submit" size="lg" className="h-11 flex-1" disabled={!valid[step] || submit.isPending}>
-              {submit.isPending ? <Loader2 className="animate-spin" /> : step === STEPS.length - 1 ? <Check /> : null}
-              {step === STEPS.length - 1 ? "Open my shop" : "Continue"}
-              {step < STEPS.length - 1 && <ArrowRight />}
+            <Button type="submit" size="lg" className="h-11 flex-1" disabled={!valid[step] || submit.isPending || otp.send.isPending}>
+              {submit.isPending || otp.send.isPending ? <Loader2 className="animate-spin" /> : step === last ? <Check /> : null}
+              {step === last ? "Open my shop" : phoneOn && step === STEPS.length - 1 ? "Send code" : "Continue"}
+              {step < last && <ArrowRight />}
             </Button>
           </div>
         </form>

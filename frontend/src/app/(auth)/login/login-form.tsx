@@ -1,18 +1,18 @@
 "use client";
 
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Eye, EyeOff, Loader2, ShieldCheck } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CheckCircle2, Eye, EyeOff, Loader2, LogOut, ShieldCheck, Smartphone } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { homeFor } from "@/hooks/use-session";
+import { homeFor, useMe, useSignOut } from "@/hooks/use-session";
 import { ApiError, api, errorMessage } from "@/lib/api";
-import type { User } from "@/lib/types";
+import type { OtpChannel, OtpSent, PhoneSignin, User } from "@/lib/types";
 
 // Build-time flag, off by default (next.config.ts gives it the value "false"). Only a demo
 // deployment built with NEXT_PUBLIC_NEARSHOP_DEMO_MODE=true shows the demo-account shortcuts;
@@ -20,15 +20,360 @@ import type { User } from "@/lib/types";
 const DemoAccounts =
   process.env.NEXT_PUBLIC_NEARSHOP_DEMO_MODE === "true" ? dynamic(() => import("./demo-accounts")) : null;
 
+const linkClass = "font-medium text-foreground underline underline-offset-4";
+
 export function safeNext(next: string | null) {
   // Only allow same-site relative paths to avoid open redirects.
   return next && next.startsWith("/") && !next.startsWith("//") ? next : null;
 }
 
-export function LoginForm() {
+// ---------------------------------------------------------------- phone codes (P4.2), shared by every sign-in screen
+
+/** Whether phone sign-in is available here (P4.1), the code's rules and the email sign-in sunset. The phone screens
+ * show only while it says available; if it cannot be loaded, the email screens show. */
+export function usePhoneSignin() {
+  return useQuery({
+    queryKey: ["phone-signin"],
+    queryFn: () => api.get<PhoneSignin>("/auth/phone-signin"),
+    staleTime: 5 * 60_000,
+  });
+}
+
+/** The 10 digits of an Indian mobile number typed with or without +91 (or a leading 0), spaces and dashes. */
+export function normalisePhone(value: string) {
+  const digits = value.replace(/\D/g, "");
+  if (digits.length === 12 && digits.startsWith("91")) return digits.slice(2);
+  if (digits.length === 11 && digits.startsWith("0")) return digits.slice(1);
+  return digits;
+}
+
+/** The inline format error for a phone field, or null when the number is a valid Indian mobile. */
+export function phoneProblem(value: string) {
+  const phone = normalisePhone(value);
+  if (!phone) return "Enter your 10-digit mobile number.";
+  if (!/^[6-9]\d{9}$/.test(phone)) return "Enter a 10-digit mobile number that starts with 6, 7, 8 or 9, with or without +91.";
+  return null;
+}
+
+export function formatPhone(phone: string) {
+  return `+91 ${phone.slice(0, 5)} ${phone.slice(5)}`;
+}
+
+/** An IST day (YYYY-MM-DD) as "10 April 2027". */
+export function formatDay(day: string) {
+  return new Date(`${day}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+const CHANNEL_TEXT: Record<OtpChannel, string> = {
+  whatsapp: "on WhatsApp",
+  sms: "by SMS",
+  console: "(development: the code is in the API log)",
+};
+
+/** A phone number field: 10 digits, with or without +91. The format error shows inline once the field is left, or
+ * after a submit (showError). */
+export function PhoneField({
+  id,
+  value,
+  onChange,
+  showError = false,
+  label = "Mobile number",
+  hint = "10 digits, with or without +91.",
+}: {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+  showError?: boolean;
+  label?: React.ReactNode;
+  hint?: string;
+}) {
+  const [left, setLeft] = useState(false);
+  const problem = (left && value !== "") || showError ? phoneProblem(value) : null;
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <Input
+        id={id}
+        type="tel"
+        inputMode="tel"
+        autoComplete="tel"
+        maxLength={16}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={() => setLeft(true)}
+        aria-invalid={!!problem}
+        aria-describedby={`${id}-hint`}
+        className="h-11"
+      />
+      <p id={`${id}-hint`} className={problem ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+        {problem ?? hint}
+      </p>
+    </div>
+  );
+}
+
+/** The 6-digit code field: the one-time-code autocomplete hint and the numeric keypad. Where the browser has WebOTP
+ * (Android Chrome), the code from the SMS (its last line is "@<domain> #<code>", P4.1) fills the field and calls
+ * onAutoFill. Typing the code always works too. */
+export function CodeField({
+  id,
+  value,
+  onChange,
+  onAutoFill,
+  describedBy,
+  length = 6,
+}: {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+  onAutoFill?: (code: string) => void;
+  describedBy?: string;
+  length?: number;
+}) {
+  const filled = useEffectEvent((code: string) => {
+    onChange(code);
+    onAutoFill?.(code);
+  });
+  useEffect(() => {
+    if (!("OTPCredential" in window) || !navigator.credentials) return;
+    const abort = new AbortController();
+    navigator.credentials
+      .get({ otp: { transport: ["sms"] }, signal: abort.signal } as CredentialRequestOptions)
+      .then((credential) => {
+        const code = (credential as { code?: string } | null)?.code;
+        if (code && /^\d+$/.test(code)) filled(code.slice(0, length));
+      })
+      .catch(() => undefined); // dismissed, aborted, or no SMS: the code is typed instead
+    return () => abort.abort();
+  }, [length]);
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{length}-digit code</Label>
+      <Input
+        id={id}
+        inputMode="numeric"
+        autoComplete="one-time-code"
+        pattern={`[0-9]{${length}}`}
+        maxLength={length}
+        required
+        // The field appears in answer to the user's own "Send code", so focus moves to it (P2.10, docs/accessibility.md).
+        // eslint-disable-next-line jsx-a11y/no-autofocus
+        autoFocus
+        value={value}
+        onChange={(e) => onChange(e.target.value.replace(/\D/g, "").slice(0, length))}
+        aria-describedby={describedBy}
+        className="h-11 font-mono text-lg tracking-[0.4em]"
+      />
+    </div>
+  );
+}
+
+type Sent = { phone: string; channel: OtpChannel; at: number; expiresIn: number };
+
+/** Sending codes for one purpose: the last send (phone, channel, time) and the seconds before a resend is allowed. */
+export function useSendCode(purpose: "login" | "register" | "verify") {
+  const [sent, setSent] = useState<Sent | null>(null);
+  const [resendIn, setResendIn] = useState(0);
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const timer = setTimeout(() => setResendIn((s) => s - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [resendIn]);
+  const send = useMutation({
+    mutationFn: ({ phone, channel }: { phone: string; channel?: OtpChannel }) =>
+      api.post<OtpSent>("/auth/otp/request", { phone, purpose, ...(channel ? { channel } : {}) }),
+    meta: { silent: true },
+    onSuccess: (res, { phone }) => {
+      setSent({ phone, channel: res.channel, at: Date.now(), expiresIn: res.expires_in });
+      setResendIn(res.resend_after);
+    },
+  });
+  /** Whether a code sent to this phone is still valid (with a minute to spare), so a step back and forward need
+   * not send another. */
+  const fresh = (phone: string) => !!sent && sent.phone === phone && Date.now() - sent.at < (sent.expiresIn - 60) * 1000;
+  const reset = () => {
+    setSent(null);
+    send.reset();
+  };
+  return { send, sent, resendIn, fresh, reset };
+}
+
+type SendCode = ReturnType<typeof useSendCode>;
+
+/** Where the code went, and the resend controls: a new code after 60 s, by SMS instead of WhatsApp when both exist. */
+export function CodeSentNote({ otp, id, channels }: { otp: SendCode; id: string; channels: OtpChannel[] }) {
+  if (!otp.sent) return null;
+  const { phone, channel } = otp.sent;
+  return (
+    <div className="space-y-2 text-sm">
+      <p id={id} role="status" className="text-muted-foreground">
+        We sent a 6-digit code to <span className="font-medium whitespace-nowrap text-foreground">{formatPhone(phone)}</span>{" "}
+        {CHANNEL_TEXT[channel]}. It is valid for 5 minutes.
+      </p>
+      {otp.resendIn > 0 ? (
+        <p className="text-muted-foreground">You can ask for a new code in {otp.resendIn} s.</p>
+      ) : (
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          <button type="button" className={linkClass} disabled={otp.send.isPending} onClick={() => otp.send.mutate({ phone })}>
+            Send a new code
+          </button>
+          {channel === "whatsapp" && channels.includes("sms") && (
+            <button type="button" className={linkClass} disabled={otp.send.isPending} onClick={() => otp.send.mutate({ phone, channel: "sms" })}>
+              Send it by SMS instead
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function FormError({ children }: { children: React.ReactNode }) {
+  return <div role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">{children}</div>;
+}
+
+function Checking({ label }: { label: string }) {
+  return (
+    <div role="status" className="flex items-center gap-2 py-16 text-sm text-muted-foreground">
+      <Loader2 className="size-4 animate-spin" aria-hidden /> {label}
+    </div>
+  );
+}
+
+/** After a sign-in: the new user in the cache, then the page asked for (when the role may see it), else home. */
+function useSignedIn() {
   const router = useRouter();
   const params = useSearchParams();
   const qc = useQueryClient();
+  return (user: User) => {
+    qc.setQueryData(["me"], user);
+    qc.invalidateQueries({ refetchType: "none" });
+    const next = safeNext(params.get("next"));
+    const allowed = next && !(next.startsWith("/shop") && user.role !== "owner") && !(next.startsWith("/admin") && user.role !== "admin");
+    router.replace(allowed ? next : homeFor(user));
+  };
+}
+
+function SignUpLinks() {
+  const params = useSearchParams();
+  return (
+    <p className="mt-6 text-sm text-muted-foreground">
+      New here?{" "}
+      <Link href={`/register${params.get("next") ? `?next=${encodeURIComponent(params.get("next")!)}` : ""}`} className={linkClass}>
+        Create an account
+      </Link>{" "}
+      or{" "}
+      <Link href="/register/shop" className={linkClass}>list your shop</Link>
+    </p>
+  );
+}
+
+// ---------------------------------------------------------------- the sign-in screen
+
+/** Phone first, with a code, while phone sign-in is available (P4.2); otherwise today's email and password form. The
+ * "Use email and password" link stays until the sunset; from then on it is for admins (password and authenticator
+ * code) and for owners whose phone is verified. */
+export function LoginForm() {
+  const { data: status, isPending } = usePhoneSignin();
+  const [method, setMethod] = useState<"phone" | "email" | null>(null);
+  if (isPending) return <Checking label="Loading sign-in…" />;
+  const phoneOn = status?.available === true;
+  if (phoneOn && (method ?? "phone") === "phone") return <PhoneLogin status={status} onUseEmail={() => setMethod("email")} />;
+  return <EmailLogin phoneStatus={phoneOn ? status : undefined} onUsePhone={() => setMethod("phone")} />;
+}
+
+function PhoneLogin({ status, onUseEmail }: { status: PhoneSignin; onUseEmail: () => void }) {
+  const done = useSignedIn();
+  const otp = useSendCode("login");
+  const [phone, setPhone] = useState("");
+  const [tried, setTried] = useState(false);
+  const [code, setCode] = useState("");
+  const verify = useMutation({
+    mutationFn: (value: string) => api.post<User>("/auth/otp/verify", { phone: otp.sent!.phone, purpose: "login", code: value }),
+    meta: { silent: true },
+    onSuccess: done,
+  });
+  const noAccount = verify.error instanceof ApiError && verify.error.code === "no_account";
+
+  return (
+    <div>
+      <h1 className="text-3xl font-semibold">Welcome back</h1>
+      <p className="mt-2 text-sm text-muted-foreground">Sign in with a code sent to your phone.</p>
+
+      {!otp.sent ? (
+        <form
+          className="mt-8 space-y-4"
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault();
+            setTried(true);
+            if (!phoneProblem(phone)) otp.send.mutate({ phone: normalisePhone(phone) });
+          }}
+        >
+          <PhoneField id="phone" value={phone} onChange={setPhone} showError={tried} />
+          {otp.send.isError && <FormError>{errorMessage(otp.send.error)}</FormError>}
+          <Button type="submit" size="lg" className="h-11 w-full" disabled={otp.send.isPending}>
+            {otp.send.isPending ? <Loader2 className="animate-spin" /> : <Smartphone />} Send code
+          </Button>
+        </form>
+      ) : (
+        <form
+          className="mt-8 space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (code.length === 6) verify.mutate(code);
+          }}
+        >
+          <CodeSentNote otp={otp} id="code-sent" channels={status.channels} />
+          <CodeField id="code" value={code} onChange={setCode} onAutoFill={(c) => verify.mutate(c)} describedBy="code-sent" />
+          {(verify.isError || otp.send.isError) && (
+            <FormError>
+              {errorMessage(verify.error ?? otp.send.error)}
+              {noAccount && (
+                <>
+                  {" "}
+                  <Link href="/register" className="font-medium underline underline-offset-4">Create an account</Link>
+                </>
+              )}
+            </FormError>
+          )}
+          <Button type="submit" size="lg" className="h-11 w-full" disabled={verify.isPending || code.length !== 6}>
+            {verify.isPending && <Loader2 className="animate-spin" />} Sign in
+          </Button>
+          <button
+            type="button"
+            className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
+            onClick={() => {
+              otp.reset();
+              verify.reset();
+              setCode("");
+            }}
+          >
+            Use a different number
+          </button>
+        </form>
+      )}
+
+      <p className="mt-6 text-sm text-muted-foreground">
+        {status.email_login_ended ? (
+          <>
+            Admin, or a shop owner with a verified phone?{" "}
+            <button type="button" className={linkClass} onClick={onUseEmail}>Sign in with your password</button>
+          </>
+        ) : (
+          <>
+            <button type="button" className={linkClass} onClick={onUseEmail}>Use email and password</button>{" "}
+            <span>(until {formatDay(status.email_login_sunset)})</span>
+          </>
+        )}
+      </p>
+      <SignUpLinks />
+    </div>
+  );
+}
+
+function EmailLogin({ phoneStatus, onUsePhone }: { phoneStatus?: PhoneSignin; onUsePhone: () => void }) {
+  const done = useSignedIn();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
@@ -49,14 +394,10 @@ export function LoginForm() {
     onError: (error) => {
       if (error instanceof ApiError && error.code === "totp_required") setNeedsCode(true);
     },
-    onSuccess: (user) => {
-      qc.setQueryData(["me"], user);
-      qc.invalidateQueries({ refetchType: "none" });
-      const next = safeNext(params.get("next"));
-      const allowed = next && !(next.startsWith("/shop") && user.role !== "owner") && !(next.startsWith("/admin") && user.role !== "admin");
-      router.replace(allowed ? next : homeFor(user));
-    },
+    onSuccess: done,
   });
+  // After the sunset (P4.2) a customer or owner without a verified phone is told to sign in with the phone.
+  const phoneRequired = login.error instanceof ApiError && login.error.code === "phone_signin_required";
 
   return (
     <div>
@@ -126,25 +467,183 @@ export function LoginForm() {
           </div>
         )}
         {login.isError && !(login.error instanceof ApiError && login.error.code === "totp_required") && (
-          <p role="alert" className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <FormError>
             {errorMessage(login.error)}
-          </p>
+            {phoneRequired && phoneStatus && (
+              <>
+                {" "}
+                <button type="button" className="font-medium underline underline-offset-4" onClick={onUsePhone}>Sign in with your phone</button>
+              </>
+            )}
+          </FormError>
         )}
         <Button type="submit" size="lg" className="h-11 w-full" disabled={login.isPending}>
           {login.isPending && <Loader2 className="animate-spin" />} {needsCode ? "Verify and sign in" : "Sign in"}
         </Button>
       </form>
 
-      <p className="mt-6 text-sm text-muted-foreground">
-        New here?{" "}
-        <Link href={`/register${params.get("next") ? `?next=${encodeURIComponent(params.get("next")!)}` : ""}`} className="font-medium text-foreground underline underline-offset-4">
-          Create an account
-        </Link>{" "}
-        or{" "}
-        <Link href="/register/shop" className="font-medium text-foreground underline underline-offset-4">list your shop</Link>
-      </p>
+      {phoneStatus && (
+        <p className="mt-6 text-sm text-muted-foreground">
+          <button type="button" className={linkClass} onClick={onUsePhone}>Sign in with a code sent to your phone</button>
+        </p>
+      )}
+      <SignUpLinks />
 
       {DemoAccounts && <DemoAccounts onPick={changeEmail} />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- /verify-phone
+
+/** The /verify-phone screen (P4.2): a signed-in customer or owner verifies a phone number with a code (purpose verify).
+ * The banner links here before the sunset, and every page sends such a user here from it. A number already verified
+ * on another account is refused with a support message: accounts are never merged automatically. */
+export function VerifyPhoneForm() {
+  const { data: me, isPending } = useMe();
+  const { data: status, isPending: statusPending } = usePhoneSignin();
+  const params = useSearchParams();
+  const router = useRouter();
+  const qc = useQueryClient();
+  const signOut = useSignOut();
+  const otp = useSendCode("verify");
+  const [phone, setPhone] = useState<string | null>(null); // null: the account's own number, if it has one
+  const [tried, setTried] = useState(false);
+  const [code, setCode] = useState("");
+  const next = safeNext(params.get("next"));
+  const verify = useMutation({
+    mutationFn: (value: string) => api.post<User>("/auth/otp/verify", { phone: otp.sent!.phone, purpose: "verify", code: value }),
+    meta: { silent: true },
+    onSuccess: (user) => {
+      qc.setQueryData(["me"], user);
+      qc.invalidateQueries({ refetchType: "none" });
+      router.replace(next && !next.startsWith("/verify-phone") ? next : homeFor(user));
+    },
+  });
+
+  if (isPending || statusPending) return <Checking label="Loading…" />;
+  if (!me) {
+    return (
+      <div>
+        <h1 className="text-3xl font-semibold">Verify your phone number</h1>
+        <p className="mt-3 text-sm text-muted-foreground">Sign in first, then verify the phone number on your account.</p>
+        <Button asChild size="lg" className="mt-8 h-11">
+          <Link href="/login?next=/verify-phone">Sign in</Link>
+        </Button>
+      </div>
+    );
+  }
+
+  const value = phone ?? me.phone ?? "";
+  const sunset = formatDay(me.email_login_sunset);
+  const required = me.phone_migration === "required";
+  const inUse = verify.error instanceof ApiError && verify.error.code === "phone_taken";
+  const signOutLink = (
+    <p className="mt-6 text-sm text-muted-foreground">
+      Not your account?{" "}
+      <button type="button" className={`${linkClass} inline-flex items-center gap-1`} onClick={signOut}>
+        <LogOut className="size-3.5" aria-hidden /> Sign out
+      </button>
+    </p>
+  );
+
+  if (me.phone_verified || me.role === "admin") {
+    return (
+      <div>
+        <div className="mb-5 grid size-12 place-items-center rounded-2xl bg-success-soft text-success-ink">
+          <CheckCircle2 className="size-6" aria-hidden />
+        </div>
+        <h1 className="text-3xl font-semibold">{me.role === "admin" ? "Nothing to verify" : "Your phone number is verified"}</h1>
+        <p className="mt-3 text-sm text-muted-foreground">
+          {me.role === "admin"
+            ? "Admins sign in with their email, password and authenticator code."
+            : `You sign in with a code sent to ${me.phone ? formatPhone(me.phone) : "your phone"}.`}
+        </p>
+        <Button asChild size="lg" className="mt-8 h-11">
+          <Link href={next && !next.startsWith("/verify-phone") ? next : homeFor(me)}>Continue</Link>
+        </Button>
+      </div>
+    );
+  }
+
+  if (!status?.available) {
+    return (
+      <div>
+        <h1 className="text-3xl font-semibold">Verify your phone number</h1>
+        <p className="mt-3 text-sm text-muted-foreground">
+          Phone verification is not available yet. Keep signing in with your email and password; we will tell you when it is.
+        </p>
+        <Button asChild size="lg" className="mt-8 h-11">
+          <Link href={homeFor(me)}>Continue</Link>
+        </Button>
+        {signOutLink}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h1 className="text-3xl font-semibold">{required ? "Verify your phone number to continue" : "Verify your phone number"}</h1>
+      <p className="mt-2 text-sm text-muted-foreground">
+        {required
+          ? `Email sign-in ended on ${sunset}. Verify your mobile number with a code to keep using NearShop.`
+          : `From ${sunset} you sign in with a code sent to your phone instead of your email and password. Verify your number now: it takes a minute.`}
+      </p>
+
+      {!otp.sent ? (
+        <form
+          className="mt-8 space-y-4"
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault();
+            setTried(true);
+            if (!phoneProblem(value)) otp.send.mutate({ phone: normalisePhone(value) });
+          }}
+        >
+          <PhoneField id="phone" value={value} onChange={setPhone} showError={tried} />
+          {otp.send.isError && <FormError>{errorMessage(otp.send.error)}</FormError>}
+          <Button type="submit" size="lg" className="h-11 w-full" disabled={otp.send.isPending}>
+            {otp.send.isPending ? <Loader2 className="animate-spin" /> : <Smartphone />} Send code
+          </Button>
+        </form>
+      ) : (
+        <form
+          className="mt-8 space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (code.length === 6) verify.mutate(code);
+          }}
+        >
+          <CodeSentNote otp={otp} id="code-sent" channels={status.channels} />
+          <CodeField id="code" value={code} onChange={setCode} onAutoFill={(c) => verify.mutate(c)} describedBy="code-sent" />
+          {(verify.isError || otp.send.isError) && (
+            <FormError>
+              {errorMessage(verify.error ?? otp.send.error)}
+              {inUse && (
+                <>
+                  {" "}
+                  <Link href="/grievance" className="font-medium underline underline-offset-4">Contact support</Link>
+                </>
+              )}
+            </FormError>
+          )}
+          <Button type="submit" size="lg" className="h-11 w-full" disabled={verify.isPending || code.length !== 6}>
+            {verify.isPending && <Loader2 className="animate-spin" />} Verify
+          </Button>
+          <button
+            type="button"
+            className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
+            onClick={() => {
+              otp.reset();
+              verify.reset();
+              setCode("");
+            }}
+          >
+            Use a different number
+          </button>
+        </form>
+      )}
+      {signOutLink}
     </div>
   );
 }

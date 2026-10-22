@@ -13,6 +13,41 @@ export interface User {
   home_lng: number | null;
   home_label: string | null;
   shop: { id: number; slug: string; name: string } | null;
+  /** P4.2: whether the phone is verified by a code (phone sign-in reaches only a verified phone). */
+  phone_verified: boolean;
+  /** The email sign-in sunset, an IST day (YYYY-MM-DD, NEARSHOP_EMAIL_LOGIN_SUNSET). */
+  email_login_sunset: string;
+  /** What the site asks of this account (components/providers.tsx): "warn" shows the banner with the sunset date,
+   * "required" sends every page to /verify-phone, null asks nothing (a verified phone, an admin, or phone sign-in
+   * unavailable here). */
+  phone_migration: PhoneMigration;
+}
+
+export type PhoneMigration = "warn" | "required" | null;
+
+export type OtpChannel = "whatsapp" | "sms" | "console";
+
+/** GET /api/auth/phone-signin (P4.1, P4.2): whether the phone screens are shown, the code's rules and the sunset. */
+export interface PhoneSignin {
+  available: boolean;
+  channels: OtpChannel[];
+  code_length: number;
+  /** Seconds a code stays valid. */
+  expires_in: number;
+  /** Seconds before another code may be asked for. */
+  resend_after: number;
+  email_login_sunset: string;
+  /** True from the sunset: customers and owners without a verified phone can no longer sign in with email. */
+  email_login_ended: boolean;
+}
+
+/** POST /api/auth/otp/request. */
+export interface OtpSent {
+  ok: true;
+  channel: OtpChannel;
+  code_length: number;
+  expires_in: number;
+  resend_after: number;
 }
 
 export interface Category {

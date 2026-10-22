@@ -1,12 +1,22 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Loader2, PauseCircle } from "lucide-react";
+import { Loader2, PauseCircle, Smartphone } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 
-import { safeNext } from "@/app/(auth)/login/login-form";
+import {
+  CodeField,
+  CodeSentNote,
+  FormError,
+  normalisePhone,
+  PhoneField,
+  phoneProblem,
+  safeNext,
+  usePhoneSignin,
+  useSendCode,
+} from "@/app/(auth)/login/login-form";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -14,7 +24,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useMeta } from "@/hooks/use-session";
 import { api, ApiError, errorMessage } from "@/lib/api";
-import type { User } from "@/lib/types";
+import type { PhoneSignin, User } from "@/lib/types";
 
 /** True when the API refused a sign-up because sign-ups are closed (403 signups_closed). */
 export function isSignupsClosed(error: unknown) {
@@ -132,11 +142,137 @@ export function consentMessage(consent: Consent) {
 
 export function RegisterForm() {
   const { data: meta, isPending } = useMeta();
+  const { data: phone, isPending: phonePending } = usePhoneSignin();
   if (meta?.signups_open === false) return <SignupsPaused />;
-  if (isPending) return <SignupsChecking />;
+  if (isPending || phonePending) return <SignupsChecking />;
   // If /api/meta failed, show the form: the API still refuses a closed sign-up, and the form then
-  // switches to the paused state.
-  return <OpenRegisterForm />;
+  // switches to the paused state. Phone first while phone sign-in is available (P4.2); otherwise email.
+  return phone?.available ? <PhoneRegisterForm status={phone} /> : <OpenRegisterForm />;
+}
+
+/** Registration by phone (P4.2): name, mobile number, an optional email and the consent, then the 6-digit code sent to
+ * the phone, which creates the account (POST /api/auth/otp/verify, purpose register) and signs it in. */
+function PhoneRegisterForm({ status }: { status: PhoneSignin }) {
+  const router = useRouter();
+  const params = useSearchParams();
+  const qc = useQueryClient();
+  const otp = useSendCode("register");
+  const [form, setForm] = useState({ name: "", phone: "", email: "" });
+  const [consent, setConsent] = useState<Consent>(NO_CONSENT);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [tried, setTried] = useState(false);
+  const [step, setStep] = useState<"details" | "code">("details");
+  const [code, setCode] = useState("");
+  const phone = normalisePhone(form.phone);
+
+  const register = useMutation({
+    mutationFn: (value: string) =>
+      api.post<User>("/auth/otp/verify", {
+        phone: otp.sent!.phone, purpose: "register", code: value, name: form.name.trim(), consent,
+        ...(form.email.trim() ? { email: form.email.trim() } : {}),
+      }),
+    meta: { silent: true },
+    onSuccess: (user) => {
+      qc.setQueryData(["me"], user);
+      router.replace(safeNext(params.get("next")) ?? "/search");
+    },
+  });
+  const phoneTaken = register.error instanceof ApiError && register.error.code === "phone_taken";
+
+  if (isSignupsClosed(register.error) || isSignupsClosed(otp.send.error)) return <SignupsPaused />;
+
+  const details = () => {
+    setTried(true);
+    // A wrong phone number shows inline under its field; the other problems show above the button.
+    const missing = form.name.trim().length < 2 ? "Please enter your full name." : consentMessage(consent);
+    setProblem(missing);
+    if (missing || phoneProblem(form.phone)) return;
+    register.reset();
+    if (otp.fresh(phone)) setStep("code"); // back from the code step with the same number: that code still works
+    else otp.send.mutate({ phone }, { onSuccess: () => setStep("code") });
+  };
+
+  return (
+    <div>
+      <h1 className="text-3xl font-semibold">Create your account</h1>
+      <p className="mt-2 text-sm text-muted-foreground">Reserve items at nearby shops and track pickups in one place. You sign in with a code sent to your phone.</p>
+      {step === "details" ? (
+        <form
+          className="mt-8 space-y-4"
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault();
+            details();
+          }}
+        >
+          <div className="space-y-1.5">
+            <Label htmlFor="name">Full name</Label>
+            <Input id="name" autoComplete="name" required minLength={2} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} className="h-11" />
+          </div>
+          <PhoneField id="phone" value={form.phone} onChange={(v) => setForm((f) => ({ ...f, phone: v }))} showError={tried} />
+          <div className="space-y-1.5">
+            <Label htmlFor="email">
+              Email <span className="font-normal text-muted-foreground">(optional)</span>
+            </Label>
+            <Input id="email" type="email" autoComplete="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} className="h-11" />
+          </div>
+          <ConsentFields
+            idPrefix="reg"
+            value={consent}
+            onChange={(c) => {
+              setConsent(c);
+              if (problem) setProblem(null);
+            }}
+          />
+          {(problem || otp.send.isError) && <FormError>{problem ?? errorMessage(otp.send.error)}</FormError>}
+          <Button type="submit" size="lg" className="h-11 w-full" disabled={otp.send.isPending}>
+            {otp.send.isPending ? <Loader2 className="animate-spin" /> : <Smartphone />} Send code
+          </Button>
+        </form>
+      ) : (
+        <form
+          className="mt-8 space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (code.length === 6) register.mutate(code);
+          }}
+        >
+          <CodeSentNote otp={otp} id="code-sent" channels={status.channels} />
+          <CodeField id="code" value={code} onChange={setCode} onAutoFill={(c) => register.mutate(c)} describedBy="code-sent" />
+          {(register.isError || otp.send.isError) && (
+            <FormError>
+              {errorMessage(register.error ?? otp.send.error)}
+              {phoneTaken && (
+                <>
+                  {" "}
+                  <Link href="/login" className="font-medium underline underline-offset-4">Sign in</Link>
+                </>
+              )}
+            </FormError>
+          )}
+          <Button type="submit" size="lg" className="h-11 w-full" disabled={register.isPending || code.length !== 6}>
+            {register.isPending && <Loader2 className="animate-spin" />} Create account
+          </Button>
+          <button
+            type="button"
+            className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground"
+            onClick={() => {
+              setStep("details");
+              setCode("");
+            }}
+          >
+            Change your details
+          </button>
+        </form>
+      )}
+      <p className="mt-6 text-sm text-muted-foreground">
+        Already have an account? <Link href="/login" className="font-medium text-foreground underline underline-offset-4">Sign in</Link>
+      </p>
+      <p className="mt-2 text-sm text-muted-foreground">
+        Own a shop? <Link href="/register/shop" className="font-medium text-foreground underline underline-offset-4">List it on NearShop</Link>
+      </p>
+    </div>
+  );
 }
 
 function OpenRegisterForm() {

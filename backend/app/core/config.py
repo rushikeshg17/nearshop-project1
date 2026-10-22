@@ -1,4 +1,5 @@
 """Application settings, loaded from environment variables / .env."""
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, get_args
@@ -16,6 +17,8 @@ RateLimitMode = Literal["enforce", "log_only", "off"]
 EDGE_SECRET_MIN_LENGTH = 32
 # The deployed environments, served over https: the API refuses to start in them with cookie_secure false.
 SECURE_COOKIE_ENVIRONMENTS: tuple[str, ...] = ("staging", "production", "demo")
+# The email sign-in sunset (P4.2, NEARSHOP_EMAIL_LOGIN_SUNSET): at least 8 weeks after phone sign-in starts.
+DEFAULT_EMAIL_LOGIN_SUNSET = date(2027, 4, 10)
 
 
 class Settings(BaseSettings):
@@ -179,6 +182,21 @@ class Settings(BaseSettings):
     sms_code_variable: str = "otp"
     sms_api_url: str = "https://control.msg91.com/api/v5/flow"
     sms_cost_inr: float = 0.295  # ₹0.25 plus 18% GST per message (plan section 8.3: about ₹590 for 2,000)
+
+    # The email sign-in sunset (P4.2): from this IST day, customers and owners without a verified phone can no longer
+    # sign in with email and password, and the site sends a signed-in one to /verify-phone on every page. Before it,
+    # from the day phone sign-in is available, they see a banner with this date. It must be at least 8 weeks after
+    # phone sign-in starts in production (10 Feb 2027 at the latest for 10 Apr 2027). The sunset takes effect only
+    # where phone sign-in is available: without a provider, nobody could verify a phone, so email sign-in stays.
+    # The daily phone_migration job (app/jobs.py) warns these users 30, 7 and 1 days before it and switches off any
+    # still unverified 30 days after it. Staging sets it to yesterday to rehearse the sunset.
+    email_login_sunset: date = DEFAULT_EMAIL_LOGIN_SUNSET
+
+    @field_validator("email_login_sunset", mode="before")
+    @classmethod
+    def _blank_sunset(cls, value: object) -> object:
+        # An empty value (a Render variable left blank) means the default date.
+        return DEFAULT_EMAIL_LOGIN_SUNSET if isinstance(value, str) and not value.strip() else value
 
     @field_validator("otp_daily_cap", mode="after")
     @classmethod
