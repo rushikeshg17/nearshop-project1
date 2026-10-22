@@ -54,6 +54,17 @@ failed) in it. Above 5% it reports a warning event to the error tracker (report_
 whatsapp-failure-rate), on which the WhatsApp alert of plan section 8.10 fires (set up at plan step 4-A). The job
 reports it at most once every FAILURE_ALERT_EVERY while the rate stays above.
 
+Replies from shops (P4.4)
+-------------------------
+The webhook hands every message a phone sends to handle_messages. Each is handled once (its id claimed in
+whatsapp_inbound first) and only from a shop's verified phone (shop_for_phone): a Confirm or Decline button on the
+new-reservation template runs that transition as the owner, noted "via WhatsApp"; lines of item and count are matched
+to the shop's listings with the importer's matcher and shown back, and applied with set_stock (reason
+whatsapp_update) when the owner replies Yes; an ambiguous line offers up to 3 candidates; any other number gets the
+support reply. Replies are free-form texts, sent only inside the sender's 24-hour service window. send_stock_checks,
+run by the stock_check job, sends each shop's daily stock check from its opening time. docs/whatsapp-templates.md
+describes the conversation.
+
 Message text is never logged: it can hold a customer's name or a delivery code. Phone numbers are logged masked.
 """
 from __future__ import annotations
@@ -63,18 +74,22 @@ import hmac
 import logging
 import re
 import time
+import uuid
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from datetime import time as dtime
 from typing import Any, Protocol
+from zoneinfo import ZoneInfo
 
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from app.core.config import Settings, settings
 from app.core.database import Database, utcnow
-from app.models import Notification
+from app.core.errors import AppError
+from app.models import InventoryReason, Notification, Product, Reservation, Shop, User
 from app.models.enums import OrderStatus, Role
 from app.services import messaging
 from app.services.messaging import Delivery, masked
@@ -97,6 +112,7 @@ FAILURE_THRESHOLD = 0.05  # the WhatsApp alert (plan section 8.10): failure rate
 FAILURE_ALERT_EVERY = timedelta(minutes=15)
 FAILURE_WARNING = "WhatsApp notification failure rate above 5% over the last hour"
 PARAM_MAX = 400  # characters per template variable (Meta allows 1,024 for the whole body)
+TEXT_MAX = 4096  # characters in a free-form text message (Cloud API limit)
 STATUSES = ("queued", "sending", "sent", "delivered", "read", "failed", "cancelled")
 # A status callback's field on the row. "sent" is Meta's confirmation that it sent the message to WhatsApp; the row's
 # own sent_at is when the Cloud API accepted it.
@@ -119,6 +135,7 @@ _ORDER_STATUS = Template("nearshop_order_status", Role.CUSTOMER)
 TEMPLATES: dict[str, Template] = {
     "reservation_new": Template("nearshop_shop_new_reservation", Role.OWNER, ("confirm", "decline")),
     "order_new": Template("nearshop_shop_new_order", Role.OWNER),
+    "stock_check": Template("nearshop_shop_stock_check", Role.OWNER),  # the daily stock check (P4.4)
     "reservation_confirmed": Template("nearshop_reservation_confirmed", Role.CUSTOMER),
     "reservation_ready": Template("nearshop_reservation_ready", Role.CUSTOMER),
     "reservation_expired": Template("nearshop_reservation_closed", Role.CUSTOMER),
@@ -139,6 +156,8 @@ class WhatsAppClient(Protocol):
     def send_template(self, phone: str, template: str, language: str,
                       components: list[dict[str, Any]]) -> Delivery: ...
 
+    def send_text(self, to: str, text: str) -> Delivery: ...
+
 
 class CloudClient:
     """Meta's WhatsApp Cloud API, with the access token and phone number id from settings."""
@@ -150,6 +169,13 @@ class CloudClient:
                       components: list[dict[str, Any]]) -> Delivery:
         payload = messaging.whatsapp_template_payload(phone, template, language, components)
         return messaging.send_whatsapp(self.config, payload, self.config.whatsapp_utility_cost_inr)
+
+    def send_text(self, to: str, text: str) -> Delivery:
+        """A free-form text reply (P4.4), allowed only inside the recipient's 24-hour service window, where Meta does
+        not charge for it. to: the WhatsApp id the message came from (country code first, digits only)."""
+        payload = {"messaging_product": "whatsapp", "recipient_type": "individual", "to": to, "type": "text",
+                   "text": {"preview_url": False, "body": text[:TEXT_MAX]}}
+        return messaging.send_whatsapp(self.config, payload, 0.0)
 
 
 class FakeClient:
@@ -171,6 +197,16 @@ class FakeClient:
         self.sent.append({"phone": phone, "template": template, "language": language, "components": components,
                           "message_id": message_id})
         log.info("fake WhatsApp %s to %s (%s)", template, masked(phone), message_id)
+        return Delivery(True, CHANNEL, message_id=message_id)
+
+    def send_text(self, to: str, text: str) -> Delivery:
+        if self.failures > 0:
+            self.failures -= 1
+            return Delivery(False, CHANNEL, error="http_503")
+        self._n += 1
+        message_id = f"wamid.fake.{self._n}.{time.time_ns()}"
+        self.sent.append({"phone": to, "template": None, "text": text[:TEXT_MAX], "message_id": message_id})
+        log.info("fake WhatsApp reply to %s (%s)", masked(to), message_id)
         return Delivery(True, CHANNEL, message_id=message_id)
 
     def reset(self) -> None:
@@ -500,11 +536,494 @@ def record_status(db: Database, status: dict[str, Any], now: datetime) -> str:
 
 
 def record_statuses(db: Database, payload: Any, now: datetime | None = None) -> dict[str, int]:
-    """Every status callback in a webhook call (Meta batches them), each recorded once. Messages from users (P4.4)
-    are not handled here. Returns how many were recorded, duplicate, late, held and unknown."""
+    """Every status callback in a webhook call (Meta batches them), each recorded once. Messages from phones
+    (P4.4) go to handle_messages. Returns how many were recorded, duplicate, late, held and unknown."""
     now = now or utcnow()
     counts = {"recorded": 0, "duplicate": 0, "late": 0, "held": 0, "unknown": 0}
     for status in _statuses(payload):
         counts[record_status(db, status, now)] += 1
     return counts
 
+
+
+# ---------------------------------------------------------------- replies from shops (P4.4)
+
+INBOUND = "whatsapp_inbound"  # every webhook message id, once
+SESSIONS = "whatsapp_sessions"  # per owner: the last message time (the service window) and a stock update in progress
+STOCK_CHECKS = "whatsapp_stock_checks"  # one row per shop and IST day the stock check was considered
+INBOUND_KEEP = timedelta(days=8)  # Meta retries an unanswered webhook call for up to 7 days
+SERVICE_WINDOW = timedelta(hours=24)  # Meta's customer-service window: free-form messages only inside it
+PREVIEW_TTL = timedelta(minutes=30)  # a stock preview not answered by then is dropped
+MAX_STOCK_LINES = 20
+MAX_QUANTITY = 100_000
+MAX_SKIPPED = 40  # lines left out, kept for the summary
+CHOICES = 3  # candidates offered for an ambiguous line
+VIA_WHATSAPP = "via WhatsApp"  # the status-event note of a reservation answered by button
+BUTTON_ACTIONS = {"confirm": "confirm", "decline": "reject"}  # quick-reply action -> reservation transition
+OPEN_RESERVATION = ("REQUESTED", "CONFIRMED", "READY_FOR_PICKUP")  # the statuses a reservation's timer applies to
+YES = frozenset({"yes", "y", "ok", "okay", "haan", "ha", "han", "houdu", "sari", "confirm", "save"})
+NO = frozenset({"no", "n", "cancel", "nahi", "illa", "beda"})
+_WA_ID = re.compile(r"[1-9]\d{6,14}")
+_LOCAL_PHONE = re.compile(r"[6-9]\d{9}")
+# One stock line: an item name and a count, either way round ("Tape 20", "Tape: 20", "Tape x 20", "20 Tape").
+_UNIT = r"(?:\s*(?:pcs|pc|nos|no|units|unit|qty))?\.?"
+_LINE_QTY_LAST = re.compile(rf"^(?P<name>.+?)(?:\s*[:=,\-–]\s*|\s+[x×*]\s*|\s+)(?P<qty>\d{{1,6}}){_UNIT}$", re.I)
+_LINE_QTY_FIRST = re.compile(rf"^(?P<qty>\d{{1,6}}){_UNIT}(?:\s*[x×*]\s*|\s*[:=,\-–]\s*|\s+)(?P<name>.+)$", re.I)
+
+HELP_TEXT = ("To update your stock on NearShop, send one line per item with its name and count, for example:\n"
+             "Thread seal tape 20\nSamsung charger 5\n\nWe show you the matches first, and change nothing until you "
+             "reply Yes. Answer new reservations with the Confirm and Decline buttons.")
+
+
+def local_phone(wa_id: Any) -> str | None:
+    """A WhatsApp id (country code first) as the 10 digits a phone is stored as, or None for any other number."""
+    digits = re.sub(r"\D", "", str(wa_id or ""))
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    return digits if _LOCAL_PHONE.fullmatch(digits) else None
+
+
+def support_reply() -> str:
+    """The reply to a number that is not a shop's verified phone, with the support number when one is set (the
+    grievance officer's phone, P3.8: the public contact)."""
+    phone = settings.grievance_officer_phone.strip()
+    contact = f"call or message NearShop support on {phone}" if phone else "use Help on the NearShop website"
+    return (f"Hello, and thank you for your message. This number is not linked to a shop on NearShop, so we could "
+            f"not act on it. For help, please {contact}.")
+
+
+def _messages(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    found = []
+    for entry in payload.get("entry") or []:
+        for change in (entry.get("changes") or []) if isinstance(entry, dict) else []:
+            value = change.get("value") if isinstance(change, dict) else None
+            if isinstance(value, dict):
+                found += [m for m in value.get("messages") or [] if isinstance(m, dict)]
+    return found
+
+
+def shop_for_phone(db: Database, phone: str) -> tuple[User, Shop] | None:
+    """The owner and shop a message from this 10-digit phone speaks for: the owner's own verified phone (P4.1), or the
+    shop's number verified by an admin's call-back (P3.3). The owner's account must be active. V1: one shop per
+    owner, the first (as the owner pages take it)."""
+    owner = db.users.find_one({"phone": phone, "phone_verified_at": {"$ne": None}, "role": Role.OWNER.value,
+                               "is_active": True})
+    if owner is not None:
+        shop = db.shops.find_one({"owner_id": owner.id}, sort=[("_id", 1)])
+        return (owner, shop) if shop is not None else None
+    shop = db.shops.find_one({"phone": phone, "phone_verified_at": {"$ne": None}}, sort=[("_id", 1)])
+    if shop is None:
+        return None
+    owner = db.users.get(shop.owner_id)
+    if owner is None or not owner.is_active or owner.role != Role.OWNER:
+        return None
+    return owner, shop
+
+
+def handle_messages(db: Database, payload: Any, client: WhatsAppClient | None = None,
+                    now: datetime | None = None) -> dict[str, int]:
+    """Every message in a webhook call (Meta batches them), each handled once (handle_message). Nothing is done while
+    WhatsApp is off here (get_client). Returns how many were handled, duplicate and ignored."""
+    counts = {"handled": 0, "duplicate": 0, "ignored": 0}
+    messages = _messages(payload)
+    if not messages:
+        return counts
+    client = client if client is not None else get_client()
+    if client is None:
+        counts["ignored"] = len(messages)
+        return counts
+    now = now or utcnow()
+    for message in messages:
+        counts[handle_message(db, message, client, now)] += 1
+    return counts
+
+
+def handle_message(db: Database, message: dict[str, Any], client: WhatsAppClient, now: datetime) -> str:
+    """Handle one message from a phone (module docstring, "Replies from shops"), once: its id is
+    claimed in whatsapp_inbound first, so a replayed or concurrent copy is a duplicate. A failure while acting
+    removes the claim and raises, so the webhook answers 500 and Meta's retry handles the message. The reply is sent
+    after the action committed, as a free-form text inside the service window; never outside it."""
+    message_id, sender = message.get("id"), str(message.get("from") or "")
+    if not isinstance(message_id, str) or not message_id or len(message_id) > 256 or not _WA_ID.fullmatch(sender):
+        return "ignored"
+    at = _callback_time(message.get("timestamp"), now)
+    try:
+        db.mongo[INBOUND].insert_one({"_id": message_id, "type": str(message.get("type") or "")[:20],
+                                      "received_at": now, "expires_at": now + INBOUND_KEEP})
+    except DuplicateKeyError:
+        return "duplicate"
+    try:
+        outcome, reply, last_inbound = _respond(db, message, at, now)
+    except Exception:
+        db.mongo[INBOUND].delete_one({"_id": message_id})
+        raise
+    sent = _reply(client, sender, reply, last_inbound, now) if reply else None
+    db.mongo[INBOUND].update_one({"_id": message_id}, {"$set": {"outcome": outcome[:40], "reply": sent}})
+    return "handled"
+
+
+def _reply(client: WhatsAppClient, to: str, text: str, last_inbound: datetime, now: datetime) -> str:
+    """Send a free-form reply when the sender's service window is open (it is for a message just received; a
+    webhook call Meta retried a day later finds it closed). Returns sent, failed or window_closed."""
+    if now - last_inbound >= SERVICE_WINDOW:
+        log.info("WhatsApp reply to %s not sent: the service window has closed", masked(to))
+        return "window_closed"
+    try:
+        delivery = client.send_text(to, text)
+    except Exception as exc:  # a client must not raise; a failed reply must not undo the action
+        delivery = Delivery(False, CHANNEL, error=type(exc).__name__)
+    if not delivery.ok:
+        log.warning("WhatsApp reply to %s failed: %s", masked(to), (delivery.error or "failed")[:80])
+    return "sent" if delivery.ok else "failed"
+
+
+def _respond(db: Database, message: dict[str, Any], at: datetime, now: datetime) -> tuple[str, str, datetime]:
+    """Act on one message: (outcome, the reply's text, the sender's last message time)."""
+    phone = local_phone(message.get("from"))
+    found = shop_for_phone(db, phone) if phone else None
+    if found is None:
+        return "unknown_phone", support_reply(), at
+    owner, shop = found
+    session = db.mongo[SESSIONS].find_one_and_update(
+        {"_id": owner.id}, {"$max": {"last_inbound_at": at}, "$set": {"updated_at": now}},
+        upsert=True, return_document=ReturnDocument.AFTER)
+    last_inbound = session.get("last_inbound_at") or at
+    kind = message.get("type")
+    if kind == "button":
+        button = message.get("button") if isinstance(message.get("button"), dict) else {}
+        outcome, reply = answer_button(db, owner, shop, str(button.get("payload") or ""))
+    elif kind == "interactive":
+        interactive = message.get("interactive") if isinstance(message.get("interactive"), dict) else {}
+        chosen = interactive.get("button_reply") or interactive.get("list_reply") or {}
+        outcome, reply = answer_button(db, owner, shop, str(chosen.get("id") or "") if isinstance(chosen, dict) else "")
+    elif kind == "text":
+        text = message.get("text") if isinstance(message.get("text"), dict) else {}
+        outcome, reply = answer_text(db, owner, shop, str(text.get("body") or ""), now)
+    else:
+        outcome, reply = "unsupported", HELP_TEXT
+    return outcome, reply, last_inbound
+
+
+# ---------------------------------------------------------------- Confirm and Decline buttons
+
+
+def _reservation_for(db: Database, owner: User, payload: str) -> tuple[Reservation | None, str | None]:
+    """The reservation a button's payload names (reservation:<code or id>:<action>, or notification:<id>:<action>
+    for a notification without a code), and the action; (None, None) for a payload that is not one."""
+    parts = payload.split(":")
+    if len(parts) != 3 or parts[2] not in BUTTON_ACTIONS:
+        return None, None
+    entity, ref, action = parts
+    if entity == "notification" and ref.isdigit():
+        note = db.notifications.get(int(ref))
+        subject = subject_of(note) if note is not None and note.user_id == owner.id else None
+        entity, _, ref = (subject or ":").partition(":")
+    if entity != "reservation" or not ref:
+        return None, action
+    res = db.reservations.get(int(ref)) if ref.isdigit() else db.reservations.find_one({"code": ref.upper()})
+    return res, action
+
+
+def answer_button(db: Database, owner: User, shop: Shop, payload: str) -> tuple[str, str]:
+    """A Confirm or Decline button on the new-reservation template: the transition, as the owner, with the note
+    "via WhatsApp" on its status event, all in one transaction. Returns (outcome, reply)."""
+    from app.services.reservations import transition  # reservations -> notifications -> this module
+
+    res, action = _reservation_for(db, owner, payload)
+    if action is None:
+        return "bad_button", "Sorry, we could not read that button. Please answer the request in NearShop."
+    if res is None or db.shops.get(res.shop_id).owner_id != owner.id:
+        return "not_found", "We could not find that reservation in your shop. Please check it in NearShop."
+    to = BUTTON_ACTIONS[action]
+    if res.status in OPEN_RESERVATION and res.expires_at <= utcnow():
+        # Its timer ran out before the sweep reached it (a button can be tapped hours later): expire it first, as
+        # the sweep would, so the owner's answer finds it expired.
+        try:
+            transition(db, res.id, "expire", None)
+        except AppError:
+            pass
+
+    def run() -> Reservation:
+        done = transition(db, res.id, to, owner)
+        db.mongo["status_events"].find_one_and_update(
+            {"entity": "reservation", "entity_id": res.id, "to_status": done.status.value, "actor_id": owner.id},
+            {"$set": {"note": VIA_WHATSAPP}}, sort=[("_id", -1)], session=db.session)
+        return done
+
+    try:
+        done = db.transaction(run)
+    except AppError as exc:
+        verb = "confirmed" if to == "confirm" else "declined"
+        hint = (" Send the new count to update your stock, or decline the request."
+                if exc.code == "insufficient_stock" else "")
+        return f"{to}_refused", f"Reservation {res.code} was not {verb}: {exc.message.rstrip('.')}.{hint}"
+    product = db.products.get(done.product_id)
+    name = product.name if product else "the item"
+    if to == "confirm":
+        return "confirmed", (f"Confirmed reservation {done.code}: {done.quantity} x {name} is held for the customer "
+                             f"for {done.hold_minutes} minutes. We have told the customer.")
+    return "declined", f"Declined reservation {done.code} for {done.quantity} x {name}. We have told the customer."
+
+
+# ---------------------------------------------------------------- stock updates
+
+
+def parse_stock_lines(text: str) -> tuple[list[tuple[str, int]], list[str]]:
+    """The (item name, count) lines of a stock message, and the lines that are not one. A name needs a letter."""
+    lines, unread = [], []
+    for raw in text.splitlines():
+        line = " ".join(raw.split()).strip(" .;")
+        if not line:
+            continue
+        match = _LINE_QTY_LAST.match(line) or _LINE_QTY_FIRST.match(line)
+        name = match.group("name").strip(" -:,") if match else ""
+        if not match or not re.search(r"[^\W\d_]", name) or int(match.group("qty")) > MAX_QUANTITY:
+            unread.append(line[:80])
+            continue
+        lines.append((name[:120], int(match.group("qty"))))
+    return lines, unread
+
+
+def match_line(name: str, listings: list[Product]) -> tuple[str, list[Product]]:
+    """Match one line's name to the shop's listings with the importer's matcher and thresholds
+    (app/services/importer.py): ("match", [listing]) for an exact name or a single confident match (AUTO_MATCH),
+    ("ambiguous", up to CHOICES candidates) when it is less sure (at least SUGGEST_MATCH before the importer's
+    two-word cap), and ("unknown", []) otherwise."""
+    from app.services import importer  # importer -> inventory; kept off this module's import path
+
+    key = importer.normalize_name(name)
+    exact = [p for p in listings if importer.normalize_name(p.name) == key]
+    if len(exact) == 1:
+        return "match", exact
+    by_id = {p.id: p for p in listings}
+    keys = {p.id: importer.normalize_name(f"{p.brand or ''} {p.name}") for p in listings}
+    ranked = importer.best_matches(name, keys, limit=CHOICES + 1)
+    confident = [pid for pid, raw in ranked if importer.capped_score(name, raw) >= importer.AUTO_MATCH]
+    if len(confident) == 1:
+        return "match", [by_id[confident[0]]]
+    candidates = [by_id[pid] for pid, raw in ranked if raw >= importer.SUGGEST_MATCH][:CHOICES]
+    return ("ambiguous", candidates) if candidates else ("unknown", [])
+
+
+def _item(product: Product, quantity: int) -> dict[str, Any]:
+    return {"product_id": product.id, "name": product.name[:120], "quantity": quantity, "before": product.quantity}
+
+
+def _add_item(pending: dict[str, Any], item: dict[str, Any]) -> None:
+    pending["items"] = [i for i in pending["items"] if i["product_id"] != item["product_id"]] + [item]
+
+
+def _session_pending(db: Database, owner: User, shop: Shop, now: datetime) -> dict[str, Any] | None:
+    session = db.mongo[SESSIONS].find_one({"_id": owner.id}, {"pending": 1}) or {}
+    pending = session.get("pending")
+    if not isinstance(pending, dict) or pending.get("shop_id") != shop.id or pending.get("expires_at", now) <= now:
+        return None
+    return pending
+
+
+def _save_pending(db: Database, owner: User, pending: dict[str, Any] | None, now: datetime) -> None:
+    if pending is not None:
+        pending["expires_at"] = now + PREVIEW_TTL
+        pending["skipped"] = pending["skipped"][:MAX_SKIPPED]
+    db.mongo[SESSIONS].update_one({"_id": owner.id}, {"$set": {"pending": pending, "updated_at": now}},
+                                  session=db.session)
+
+
+def preview_text(pending: dict[str, Any]) -> str:
+    """The bot's reply for a stock update in progress: the next ambiguous line's choices, or the preview to confirm."""
+    parts = []
+    if pending["items"]:
+        parts.append(("Matched so far:\n" if pending["queue"] else "Update your stock to:\n")
+                     + "\n".join(f"- {i['name']}: {i['quantity']} (now {i['before']})" for i in pending["items"]))
+    if pending["skipped"]:
+        parts.append("Not matched, left out: " + "; ".join(pending["skipped"]))
+    if pending["queue"]:
+        line = pending["queue"][0]
+        options = "\n".join(f"{n}. {c['name']}" for n, c in enumerate(line["candidates"], start=1))
+        parts.append(f'Which item is "{line["line"]}" ({line["quantity"]})?\n{options}\n'
+                     f"Reply with its number, or 0 to leave this line out.")
+    elif pending["items"]:
+        parts.append("Reply Yes to save these counts, or No to cancel.")
+    else:
+        parts.append("Nothing matched your listings, so nothing will change. Check the names, or add the items in "
+                     "NearShop first.")
+    return "\n\n".join(parts)
+
+
+def answer_text(db: Database, owner: User, shop: Shop, text: str, now: datetime) -> tuple[str, str]:
+    """A text from a shop: Yes or No to the stock preview, a number choosing among an ambiguous line's candidates, or
+    new stock lines (which replace any preview in progress). Returns (outcome, reply)."""
+    word = " ".join(text.lower().split()).strip(" .!")
+    pending = _session_pending(db, owner, shop, now)
+    if pending and pending["queue"] and word.isdigit():
+        return choose(db, owner, pending, int(word), now)
+    if word in YES:
+        if pending and pending["queue"]:
+            return "choices", "Please choose the item first.\n\n" + preview_text(pending)
+        if pending and pending["items"]:
+            return apply_stock(db, owner, shop, pending["token"], now)
+        return "nothing_to_confirm", "There is no stock update waiting for your Yes.\n\n" + HELP_TEXT
+    if word in NO:
+        if pending:
+            _save_pending(db, owner, None, now)
+            return "cancelled", "Cancelled. Your stock was not changed."
+        return "help", HELP_TEXT
+    lines, unread = parse_stock_lines(text)
+    if not lines:
+        return "help", HELP_TEXT
+    if len(lines) > MAX_STOCK_LINES:
+        return "too_many_lines", (f"Please send at most {MAX_STOCK_LINES} items in one message. Nothing was "
+                                  f"changed.")
+    listings = db.products.find({"shop_id": shop.id})
+    pending = {"token": uuid.uuid4().hex, "shop_id": shop.id, "items": [], "queue": [],
+               "skipped": [f"{u} (no count)" for u in unread][:10]}
+    for name, quantity in lines:
+        result, found = match_line(name, listings)
+        if result == "match":
+            _add_item(pending, _item(found[0], quantity))
+        elif result == "ambiguous":
+            pending["queue"].append({"line": name, "quantity": quantity,
+                                     "candidates": [{"product_id": p.id, "name": p.name[:120]} for p in found]})
+        else:
+            pending["skipped"].append(name)
+    _save_pending(db, owner, pending if pending["items"] or pending["queue"] else None, now)
+    return ("choices" if pending["queue"] else "preview"), preview_text(pending)
+
+
+def choose(db: Database, owner: User, pending: dict[str, Any], number: int, now: datetime) -> tuple[str, str]:
+    """The answer to an ambiguous line: 1 to 3 picks a candidate, 0 leaves the line out."""
+    line = pending["queue"][0]
+    if not 0 <= number <= len(line["candidates"]):
+        return "choices", f"Please reply with a number from 1 to {len(line['candidates'])}, or 0.\n\n" + preview_text(
+            pending)
+    pending["queue"].pop(0)
+    if number == 0:
+        pending["skipped"].append(line["line"])
+    else:
+        product = db.products.get(line["candidates"][number - 1]["product_id"])
+        if product is None:
+            pending["skipped"].append(line["line"])
+        else:
+            _add_item(pending, _item(product, line["quantity"]))
+    _save_pending(db, owner, pending, now)
+    return ("choices" if pending["queue"] else "preview"), preview_text(pending)
+
+
+def apply_stock(db: Database, owner: User, shop: Shop, token: str, now: datetime) -> tuple[str, str]:
+    """Yes: set each previewed count with set_stock, reason whatsapp_update and the owner as the actor, and clear
+    the preview, in one transaction. The preview is taken by its token inside the transaction, so two Yes messages
+    apply it once."""
+    from app.services.inventory import set_stock
+
+    def run() -> list[tuple[str, int]] | None:
+        session = db.mongo[SESSIONS].find_one_and_update(
+            {"_id": owner.id, "pending.token": token}, {"$set": {"pending": None, "updated_at": now}},
+            session=db.session)
+        if session is None:
+            return None
+        saved = []
+        for item in session["pending"]["items"]:
+            product = db.products.get(item["product_id"])
+            if product is None or product.shop_id != shop.id:
+                continue
+            set_stock(db, product, item["quantity"], owner.id, InventoryReason.WHATSAPP_UPDATE)
+            saved.append((product.name, item["quantity"]))
+        return saved
+
+    saved = db.transaction(run)
+    if saved is None:
+        return "nothing_to_confirm", "There is no stock update waiting for your Yes.\n\n" + HELP_TEXT
+    if not saved:
+        return "saved", "Those items are no longer in your shop, so nothing was changed."
+    return "saved", "Saved. Your stock is now:\n" + "\n".join(f"- {name}: {qty}" for name, qty in saved)
+
+
+# ---------------------------------------------------------------- the daily stock check
+
+STOCK_CHECK_KIND = "stock_check"
+STALE_STOCK = timedelta(hours=48)  # listings counted longer ago than this are listed
+STOCK_CHECK_ITEMS = 5
+STOCK_CHECK_GRACE = timedelta(hours=3)  # sent from the opening time until this long after it
+STOCK_CHECK_KEEP = timedelta(days=3)
+DEFAULT_OPENING = dtime(9, 0)  # when a shop's opening hours cannot be read
+IST = ZoneInfo("Asia/Kolkata")
+_TIME_12H = re.compile(r"\b(\d{1,2})(?:[:.](\d{2}))?\s*([ap])\.?\s*m\b\.?", re.I)
+_TIME_24H = re.compile(r"\b([01]?\d|2[0-3])[:.]([0-5]\d)\b")
+
+
+def opening_time(hours: str | None) -> dtime:
+    """The opening time in a shop's free-text opening hours ("9:30 AM - 9:00 PM", "10am-8pm", "09:00-21:00"): the
+    first time written in it, or DEFAULT_OPENING."""
+    text = hours or ""
+    if match := _TIME_12H.search(text):
+        hour, minute = int(match.group(1)), int(match.group(2) or 0)
+        if 1 <= hour <= 12 and minute < 60:
+            return dtime(hour % 12 + (12 if match.group(3).lower() == "p" else 0), minute)
+    if match := _TIME_24H.search(text):
+        return dtime(int(match.group(1)), int(match.group(2)))
+    return DEFAULT_OPENING
+
+
+def _ago(then: datetime, now: datetime) -> str:
+    days = max(2, int((now - then).total_seconds() // 86400))
+    return f"{days} days ago"
+
+
+def stock_check_text(shop: dict[str, Any], stale: list[dict[str, Any]], now: datetime) -> tuple[str, str]:
+    """The stock check's title and text: the listings and their counts, oldest count first."""
+    items = "; ".join(f"{p['name'][:60]}: {p['quantity']} (counted {_ago(p['stock_updated_at'], now)})"
+                      for p in stale)
+    return (f"Stock check for {shop.get('name') or 'your shop'}",
+            f"Are these counts still right? {items}. Reply with each item's name and count, one per line, to update "
+            f"them.")
+
+
+def send_stock_checks(db: Database, now: datetime | None = None, limit: int = BATCH) -> dict[str, Any]:
+    """The daily stock check (P4.4): from each active shop's opening time (IST) until STOCK_CHECK_GRACE after it, once
+    a day, the owner gets the stock-check template listing up to STOCK_CHECK_ITEMS active listings counted more than
+    48 hours ago, oldest first. It goes as a notification of kind stock_check (in the app and, through the outbox,
+    on WhatsApp), only to an owner the WhatsApp template can reach (verified phone and consent), and only while
+    WhatsApp is on here. A shop's day is claimed in whatsapp_stock_checks first, so it is considered once. Returns
+    the counts of shops sent, fresh (nothing stale), unreachable and not due yet."""
+    if get_client() is None:
+        return {"enabled": False}
+    from app.services.notifications import notify  # notifications -> this module
+
+    now = now or utcnow()
+    local = now.replace(tzinfo=UTC).astimezone(IST)
+    day = local.date().isoformat()
+    counts = {"sent": 0, "fresh": 0, "unreachable": 0}
+    done = {d["shop_id"] for d in db.mongo[STOCK_CHECKS].find({"day": day}, {"shop_id": 1})}
+    template = TEMPLATES[STOCK_CHECK_KIND]
+    for shop in db.shops.find_raw({"is_active": True}, {"_id": 1, "owner_id": 1, "name": 1, "opening_hours": 1},
+                                  sort=[("_id", 1)]):
+        if shop["_id"] in done:
+            continue
+        opens = datetime.combine(local.date(), opening_time(shop.get("opening_hours")), IST)
+        if not opens <= local < opens + STOCK_CHECK_GRACE:
+            continue
+        if sum(counts.values()) >= limit:
+            break
+        try:
+            db.mongo[STOCK_CHECKS].insert_one({"_id": f"{shop['_id']}:{day}", "shop_id": shop["_id"], "day": day,
+                                               "at": now, "expires_at": now + STOCK_CHECK_KEEP})
+        except DuplicateKeyError:
+            continue
+        stale = db.products.find_raw(
+            {"shop_id": shop["_id"], "is_active": True, "stock_updated_at": {"$lt": now - STALE_STOCK}},
+            {"name": 1, "quantity": 1, "stock_updated_at": 1}, sort=[("stock_updated_at", 1), ("_id", 1)],
+            limit=STOCK_CHECK_ITEMS)
+        if not stale:
+            outcome = "fresh"
+        elif _recipient(db, shop["owner_id"], template)[0] is None:
+            outcome = "unreachable"
+        else:
+            title, body = stock_check_text(shop, stale, now)
+            db.transaction(lambda s=shop, t=title, b=body: notify(db, s["owner_id"], STOCK_CHECK_KIND, t, b,
+                                                                  "/shop/inventory"))
+            outcome = "sent"
+        db.mongo[STOCK_CHECKS].update_one({"_id": f"{shop['_id']}:{day}"}, {"$set": {"outcome": outcome}})
+        counts[outcome] += 1
+    return {"enabled": True, "day": day, **counts}

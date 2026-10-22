@@ -11,7 +11,7 @@ import csv
 import io
 import re
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from typing import TYPE_CHECKING
 
 from rapidfuzz import fuzz, process
@@ -55,6 +55,27 @@ TEMPLATE_CSV = (
 
 def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9. ]+", " ", str(s).lower()).strip()
+
+
+def normalize_name(s: str) -> str:
+    """An item name as the matcher compares it: lower case, letters, digits, dots and single spaces."""
+    return " ".join(_norm(s).split())
+
+
+def capped_score(name: str, score: float) -> float:
+    """token_set_ratio scores 100 when one name's words are a subset of the other's, so a bare "cable" would match
+    every cable: a name with fewer than two meaningful words (longer than 2 letters) never scores a confident match."""
+    if len([w for w in _norm(name).split() if len(w) > 2]) < 2:
+        return min(score, SUGGEST_MATCH - 1)
+    return score
+
+
+def best_matches[K](query: str, choices: Mapping[K, str], limit: int = 1) -> list[tuple[K, float]]:
+    """The matcher the import uses (and P4.4's stock replies on WhatsApp): token_set_ratio between the normalised
+    query and each normalised choice, best first, as (key, raw score). Apply capped_score to the raw score before
+    comparing it with AUTO_MATCH and SUGGEST_MATCH."""
+    found = process.extract(_norm(query), choices, scorer=fuzz.token_set_ratio, limit=limit)
+    return [(key, score) for _, score, key in found]
 
 
 def _detect_columns(columns: list[str]) -> dict[str, str]:
@@ -220,13 +241,10 @@ def preview(db: Database, shop: Shop, data: bytes, filename: str) -> dict:
                "category_slug": default_cat, "issues": []}
 
         existing = mine_by_name.get(_norm(name))
-        match = process.extractOne(_norm(f"{brand} {name}"), catalog_keys, scorer=fuzz.token_set_ratio)
+        match = best_matches(f"{brand} {name}", catalog_keys)
         if match:
-            _, score, cid = match
-            # token_set_ratio scores 100 when one name's words are a subset of the other's, so a bare
-            # "cable" would match every cable. Require at least two meaningful words to auto-match.
-            if len([w for w in _norm(name).split() if len(w) > 2]) < 2:
-                score = min(score, SUGGEST_MATCH - 1)
+            [(cid, score)] = match
+            score = capped_score(name, score)  # at least two meaningful words to auto-match
             item = catalog_by_id[cid]
             row["category_slug"] = item.category.slug if score >= SUGGEST_MATCH - 10 else row["category_slug"]
             if score >= SUGGEST_MATCH:

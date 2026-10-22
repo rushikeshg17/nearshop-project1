@@ -1,9 +1,10 @@
 # WhatsApp message templates
 
-The WhatsApp templates NearShop sends, for approval at Meta (B8) and for the code that sends them. Plan section 8.7;
-P4.3 (outbound notifications); P4.1 (the login code). Every notification template is submitted in English (en) and
-Kannada (kn), all under the **utility** category. The code is in backend/app/services/whatsapp.py (notifications)
-and backend/app/services/messaging.py (the login code).
+The WhatsApp templates NearShop sends, for approval at Meta (B8) and for the code that sends them, and how shops
+reply. Plan section 8.7; P4.3 (outbound notifications); P4.4 (replies from shops and the daily stock check); P4.1
+(the login code). Every notification template is submitted in English (en) and Kannada (kn), all under the
+**utility** category. The code is in backend/app/services/whatsapp.py (notifications and replies) and
+backend/app/services/messaging.py (the login code).
 
 ## How a notification becomes a message
 
@@ -85,7 +86,23 @@ phone.
 |---|---|---|
 | Body | NearShop: your order has an update.<br><br>{{1}}.<br>Details: {{2}}<br><br>You can follow the order in NearShop under My orders. | NearShop: ನಿಮ್ಮ ಆರ್ಡರ್‌ನ ಸ್ಥಿತಿ ಬದಲಾಗಿದೆ.<br><br>{{1}}.<br>ವಿವರ: {{2}}<br><br>NearShop ನಲ್ಲಿ ನನ್ನ ಆರ್ಡರ್‌ಗಳು ವಿಭಾಗದಲ್ಲಿ ಆರ್ಡರ್ ಅನ್ನು ನೋಡಬಹುದು. |
 
-Have a native Kannada speaker read every Kannada body and button before submission.
+Have a native Kannada speaker read every Kannada body and button before submission (the stock check's too).
+
+### nearshop_shop_stock_check (shop, daily stock check)
+
+Kind stock_check, to the shop's owner (P4.4). Sent once a day from the shop's opening time (IST, read from its
+opening hours; 9:00 AM when they cannot be read) until 3 hours after it, when the shop has active listings counted
+more than 48 hours ago. {{2}} lists up to 5 of them, oldest count first, with their counts. The owner answers with
+a stock message (below). Submitted as **utility**; Meta may class it as **marketing** (see Rates).
+
+| | English (en) | Kannada (kn) |
+|---|---|---|
+| Body | NearShop: time for a quick stock check.<br><br>{{1}}.<br>{{2}}<br><br>Reply with each item's name and its count, one per line. Nothing changes until you reply Yes to the summary we send back. | NearShop: ಒಂದು ಸಣ್ಣ ಸ್ಟಾಕ್ ಪರಿಶೀಲನೆಯ ಸಮಯ.<br><br>{{1}}.<br>{{2}}<br><br>ಪ್ರತಿ ವಸ್ತುವಿನ ಹೆಸರು ಮತ್ತು ಅದರ ಸಂಖ್ಯೆಯನ್ನು ಸಾಲಿಗೊಂದರಂತೆ ಉತ್ತರಿಸಿ. ನಾವು ಕಳುಹಿಸುವ ಸಾರಾಂಶಕ್ಕೆ ನೀವು Yes ಎಂದು ಉತ್ತರಿಸುವವರೆಗೆ ಏನೂ ಬದಲಾಗುವುದಿಲ್ಲ. |
+
+| Variable | Holds | Example |
+|---|---|---|
+| {{1}} | Stock check for the shop | Stock check for Sri Ganesh Hardware |
+| {{2}} | The listings, counts and age, on one line (at most 400 characters) | Are these counts still right? Astral PTFE Thread Seal Tape: 50 (counted 3 days ago); Samsung 25W Charger: 3 (counted 5 days ago). Reply with each item's name and count, one per line, to update them. |
 
 ### Not sent on WhatsApp
 
@@ -97,15 +114,45 @@ expiry notice, delivery-code reminders, grievances, shop verification, phone-mig
 | Template | Category | Variables | Where |
 |---|---|---|---|
 | The login code (NEARSHOP_WHATSAPP_OTP_TEMPLATE) | authentication | {{1}}: the code; copy-code button with the code | P4.1, backend/app/services/messaging.py |
-| Shop daily stock check | utility (Meta may class it as marketing) | Listed by P4.4 | P4.4 |
+| nearshop_shop_stock_check | utility (Meta may class it as marketing) | {{1}}, {{2}}: see above | P4.4 |
 
 Phases 9 and 10 add their templates here (P9.3 and later).
+
+## Replies from shops (P4.4)
+
+Meta sends every message a phone sends to NearShop's number to POST /api/webhooks/whatsapp (the messages field),
+signed like the status callbacks. backend/app/services/whatsapp.py handle_messages acts on each one once: its message
+id is claimed in whatsapp_inbound before anything is done, so Meta's retries and duplicates change nothing. A message
+is handled only while WhatsApp is on (NEARSHOP_WHATSAPP_NOTIFICATIONS).
+
+Who is speaking: a message counts as the shop's only when it comes from the owner's verified phone (P4.1, the one the
+notifications go to) or from the shop's own number after an admin verified it by calling back (P3.3), and the
+owner's account is active. Every other number gets a polite reply with the support number (the grievance officer's
+phone, NEARSHOP_GRIEVANCE_OFFICER_PHONE; without it, a pointer to Help on the website), and nothing else happens.
+
+| The shop sends | What happens | The bot replies |
+|---|---|---|
+| Confirm or Decline on nearshop_shop_new_reservation | The reservation is confirmed (stock held) or rejected, as the owner, in one transaction; its status event has the note "via WhatsApp". A request whose 20 minutes ran out is expired first. | The result, or why nothing changed (already answered, expired, not enough stock) |
+| Lines of item name and count ("Thread seal tape 20", "Charger: 5", "4 x Notebook") | Each line is matched to the shop's listings with the importer's matcher and thresholds (backend/app/services/importer.py): an exact name or one match scoring 86 or more is taken; otherwise the listings scoring 72 or more are candidates. Nothing changes yet. At most 20 lines. | The matched listings with the new and current counts, and "Reply Yes" |
+| A line with several or weak candidates | Held until it is answered | Up to 3 numbered candidates: reply 1 to 3, or 0 to leave the line out |
+| Yes (or ok, haan, houdu) to the summary, within 30 minutes | set_stock for each listing with reason whatsapp_update and the owner as the actor, all in one transaction: one inventory_events row per changed count | The counts saved |
+| No | The summary is dropped | Cancelled |
+| Anything else | Nothing | How to send a stock update |
+
+Replies are free-form text messages, sent only inside the shop's 24-hour customer-service window (they are answers to
+a message the shop has just sent, so Meta does not charge for them). A reply that would fall outside the window (a
+webhook call Meta retried a day later) is not sent. The bot's replies are in English; P7.11 adds Kannada.
+
+What is stored: whatsapp_inbound keeps each message id, its type, the outcome and whether the reply went, never the
+number or the text, for 8 days (Meta retries for up to 7). whatsapp_sessions keeps, per owner, the time of their
+last message and the summary waiting for Yes (listing names and counts), removed 2 days after the last message.
+whatsapp_stock_checks records that a shop's stock check was considered on an IST day (3 days).
 
 ## Rates
 
 India per-message rates, as published by the business service provider Interakt (Starter plan), **read on
-18 Oct 2026** (plan section 8.7). They were not re-read for P4.3 (22 Oct 2026). Meta's own INR rate card (a CSV)
-could not be read and may be lower. Recheck both before budgeting.
+18 Oct 2026** (plan section 8.7). They were not re-read for P4.3 or P4.4 (22 Oct 2026). Meta's own INR rate card (a
+CSV) could not be read and may be lower. Recheck both before budgeting.
 
 | Category | Per message |
 |---|---|
@@ -121,6 +168,17 @@ service window was open, so it is an upper bound).
 
 Example: 50 reservations a day, each with a new-reservation message to the shop and about two customer messages,
 is about 150 utility messages a day: about ₹24 a day, or ₹720 a month, before any free service-window sends.
+
+**The daily stock check under both categories.** It is submitted as utility, but Meta decides the category and may
+class it as marketing. Each shop gets at most one a day, and only on a day it has listings counted more than 48
+hours ago. Per shop sent every day for 30 days: utility, 30 × ₹0.160 = ₹4.80 a month (free on a day the shop
+messaged NearShop in the 24 hours before); marketing, 30 × ₹0.970 = ₹29.10 a month (always charged). For the plan's
+budget of 1,300 stock checks a month (section 11): ₹208 as utility, ₹1,261 as marketing. Record the category Meta
+gives when the template is approved; if it is marketing, consider sending the check only to shops whose service
+window is open (plan section 12).
+
+Bot replies to shops (P4.4) are free-form messages inside the service window the shop's own message opened: no
+charge, and the code records none.
 
 ## Configuration
 
@@ -140,7 +198,8 @@ the phone masked and nothing leaves the machine. The test suite always uses the 
 
 Webhook setup at Meta (App dashboard > WhatsApp > Configuration): callback URL
 https://<site domain>/api/webhooks/whatsapp (through Vercel, which adds the edge secret; P2.3), the verify token
-above, and a subscription to the messages field (status callbacks arrive on it; P4.4 adds incoming messages).
+above, and a subscription to the messages field (status callbacks and the shops' replies both arrive on it).
+NEARSHOP_GRIEVANCE_OFFICER_PHONE is the support number the bot gives unknown numbers (P3.8 sets it on production).
 
 ## Alert and retention
 

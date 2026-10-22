@@ -4,16 +4,18 @@ guard (the X-NearShop-Client header) does not apply: Meta's calls never send it.
   * GET /api/webhooks/whatsapp: Meta's verification challenge when the webhook is set up. It answers hub.challenge,
     as plain text, only when hub.mode is subscribe and hub.verify_token equals NEARSHOP_WHATSAPP_WEBHOOK_VERIFY_TOKEN
     (compared in constant time); otherwise 403.
-  * POST /api/webhooks/whatsapp: status callbacks (sent, delivered, read, failed) for the notification outbox. The
-    raw body must carry a valid X-Hub-Signature-256, the HMAC-SHA256 of the body keyed with the Meta app secret
-    (NEARSHOP_WHATSAPP_APP_SECRET); otherwise 403 bad_signature, and nothing is read. Each status is recorded once
-    (app/services/whatsapp.py record_statuses), so Meta's retries and duplicates change nothing; one that comes
-    before the sender has saved its message id is held and applied when the id is saved. A signed call
-    always gets 200, whatever it holds, so Meta does not retry it.
+  * POST /api/webhooks/whatsapp: status callbacks (sent, delivered, read, failed) for the notification outbox, and
+    messages from phones (P4.4). The raw body must carry a valid X-Hub-Signature-256, the HMAC-SHA256 of the body
+    keyed with the Meta app secret (NEARSHOP_WHATSAPP_APP_SECRET); otherwise 403 bad_signature, and nothing is read.
+    Each status is recorded once (app/services/whatsapp.py record_statuses), so Meta's retries and duplicates change
+    nothing; one that comes before the sender has saved its message id is held and applied when the id is saved.
+    Each message is handled once by its id (whatsapp.handle_messages): a shop's Confirm or Decline button, a stock
+    update, or a reply to an unknown number. A signed call gets 200, whatever it holds, so Meta does not retry it,
+    except when handling a message failed: that message's claim is removed and the call answers 500, so Meta's
+    retry handles it (statuses already recorded are duplicates then).
 
 The secret and the token come only from settings. Like every /api path, these are reached through the site's domain
-(Vercel's proxy adds the edge secret, P2.3), and count against the default per-IP rate limit. Replies from shops
-(messages) are P4.4.
+(Vercel's proxy adds the edge secret, P2.3), and count against the default per-IP rate limit.
 """
 import hmac
 import json
@@ -50,7 +52,7 @@ def whatsapp_verify(mode: str = Query("", alias="hub.mode"), token: str = Query(
 
 @router.post("/whatsapp")
 async def whatsapp_events(request: Request):
-    """Status callbacks, signed by Meta (module docstring)."""
+    """Status callbacks and messages, signed by Meta (module docstring)."""
     body = await request.body()
     secret = settings.whatsapp_app_secret.get_secret_value().strip()
     if not whatsapp.signature_valid(secret, body, request.headers.get("x-hub-signature-256")):
@@ -62,4 +64,5 @@ async def whatsapp_events(request: Request):
         log.warning("WhatsApp webhook call with a signed body that is not JSON")
         return {"ok": True, "recorded": 0}
     counts = await run_in_threadpool(whatsapp.record_statuses, Database(), payload)
-    return {"ok": True, **counts}
+    messages = await run_in_threadpool(whatsapp.handle_messages, Database(), payload)
+    return {"ok": True, **counts, "messages": messages}

@@ -409,6 +409,48 @@ VALIDATORS: dict[str, dict] = {
             "expires_at": {"bsonType": DATE},
         },
     }},
+    # Messages from phones (P4.4, app/services/whatsapp.py handle_message): one row per webhook message id (_id),
+    # claimed before the message is handled, so each is handled once. No phone number and no text: the message's
+    # type, what was done (outcome) and whether the reply went (reply). Removed at expires_at (8 days: Meta retries
+    # an unanswered call for up to 7).
+    "whatsapp_inbound": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "received_at", "expires_at"],
+        "properties": {
+            "_id": {"bsonType": STR, "maxLength": 256}, "type": {"bsonType": STR, "maxLength": 20},
+            "received_at": {"bsonType": DATE}, "expires_at": {"bsonType": DATE},
+            "outcome": {"bsonType": STR_N, "maxLength": 40},
+            "reply": {"enum": ["sent", "failed", "window_closed", None]},
+        },
+    }},
+    # One row per shop owner who messaged NearShop on WhatsApp (P4.4), _id the owner's user id: the time of their
+    # last message (last_inbound_at, the 24-hour service window) and the stock update waiting for their Yes
+    # (pending: the matched listings and counts, the ambiguous lines' candidates, a token and expires_at). Listing
+    # names and counts only, nothing about customers. The TTL index removes a row 2 days after the last message.
+    "whatsapp_sessions": schema(
+        ["last_inbound_at"],
+        last_inbound_at=DATE, updated_at=DATE_N,
+        pending={"bsonType": ["object", "null"], "required": ["token", "shop_id", "items", "queue", "expires_at"],
+                 "properties": {
+                     "token": {"bsonType": STR}, "shop_id": {"bsonType": INT}, "expires_at": {"bsonType": DATE},
+                     "items": {"bsonType": "array", "maxItems": 20, "items": {
+                         "bsonType": "object", "required": ["product_id", "quantity"],
+                         "properties": {"product_id": {"bsonType": INT}, "name": {"bsonType": STR},
+                                        "quantity": {"bsonType": INT, "minimum": 0},
+                                        "before": {"bsonType": INT, "minimum": 0}}}},
+                     "queue": {"bsonType": "array", "maxItems": 20},
+                     "skipped": {"bsonType": "array", "maxItems": 40, "items": {"bsonType": STR}}}},
+    ),
+    # The daily stock check (P4.4, app/services/whatsapp.py send_stock_checks): one row per shop and IST day it was
+    # considered, _id "<shop id>:<YYYY-MM-DD>", so each shop gets at most one a day, with the outcome (sent, fresh
+    # when nothing was stale, unreachable when the owner cannot get the template). Removed at expires_at (3 days).
+    "whatsapp_stock_checks": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "shop_id", "day", "at", "expires_at"],
+        "properties": {
+            "_id": {"bsonType": STR, "maxLength": 40}, "shop_id": {"bsonType": INT},
+            "day": {"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}, "at": {"bsonType": DATE},
+            "expires_at": {"bsonType": DATE}, "outcome": {"enum": ["sent", "fresh", "unreachable", None]},
+        },
+    }},
     # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
     "counters": {},
     "text_embeddings": {},
@@ -427,6 +469,7 @@ IS_INT = {"$type": "number"}  # partial-index filter: "this optional reference i
 OTP_CODES_KEEP_SECONDS = 10 * 60  # otp_codes: removed 10 minutes after they were created (plan section 8.4)
 OTP_SENDS_KEEP_SECONDS = 30 * 24 * 60 * 60  # otp_sends: the send log is kept 30 days
 OUTBOX_KEEP_SECONDS = 30 * 24 * 60 * 60  # notification_outbox rows are deleted 30 days after the notification (P4.3)
+WHATSAPP_SESSION_KEEP_SECONDS = 2 * 24 * 60 * 60  # whatsapp_sessions: removed 2 days after the owner's last message
 # One account per email and one per phone, among the accounts that have one (migration 7 built both; uq_email_set
 # replaced uq_email, which also counted a missing email as a value). Phones are stored as their 10 digits. The
 # filter is "a string after the empty one": it leaves out a missing or null value, and, unlike a $type filter, an
@@ -583,6 +626,13 @@ INDEXES: dict[str, list[IndexModel]] = {
     ],
     "whatsapp_status_pending": [
         IndexModel([("message_id", A)], name="message_id"),  # the sender's lookup once it saves an id
+        IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl"),
+    ],
+    "whatsapp_inbound": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
+    "whatsapp_sessions": [IndexModel([("last_inbound_at", A)], expireAfterSeconds=WHATSAPP_SESSION_KEEP_SECONDS,
+                                     name="last_inbound_ttl_2d")],
+    "whatsapp_stock_checks": [
+        IndexModel([("day", A)], name="day"),  # the job's "already considered today" read
         IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl"),
     ],
     "admin_audit": [
