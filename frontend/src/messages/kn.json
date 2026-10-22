@@ -44,5 +44,276 @@
       "themeSystem": "",
       "signOut": ""
     }
+  },
+  "common": {
+    "states": {
+      "retry": "",
+      "loading": ""
+    },
+    "searchBox": {
+      "placeholder": "",
+      "label": "",
+      "clear": "",
+      "submit": "",
+      "recentAndPopular": "",
+      "popularNearYou": "",
+      "searchFor": "",
+      "category": ""
+    },
+    "travel": {
+      "walk": "",
+      "ride": ""
+    }
+  },
+  "discovery": {
+    "home": {
+      "heroTitle": "",
+      "heroSubtitle": "",
+      "heroBody": "",
+      "searchPlaceholder": "",
+      "quick": {
+        "charger": "",
+        "elbow": "",
+        "shoes": "",
+        "bulb": "",
+        "umbrella": "",
+        "oil": ""
+      },
+      "statShopsIn": "",
+      "statShopsHere": "",
+      "statItems": "",
+      "statRiders": "",
+      "demoItems": {
+        "one": "",
+        "other": ""
+      },
+      "demoShops": {
+        "one": "",
+        "other": ""
+      },
+      "searching": "",
+      "moreShops": {
+        "one": "",
+        "other": ""
+      },
+      "reserveBanner": "",
+      "browseTitle": "",
+      "browseBody": "",
+      "categoryInStock": "",
+      "shopsNear": "",
+      "shopsNearYou": "",
+      "shopsBody": "",
+      "seeMap": "",
+      "howTitle": "",
+      "howBody": "",
+      "steps": {
+        "search": {
+          "title": "",
+          "body": "",
+          "tag": ""
+        },
+        "reserve": {
+          "title": "",
+          "body": "",
+          "tag": ""
+        },
+        "pay": {
+          "title": "",
+          "body": "",
+          "tag": ""
+        }
+      },
+      "owners": {
+        "badge": "",
+        "title": "",
+        "body": "",
+        "listFree": "",
+        "seeDashboard": "",
+        "features": {
+          "alerts": {
+            "title": "",
+            "body": ""
+          },
+          "forecasts": {
+            "title": "",
+            "body": ""
+          },
+          "demand": {
+            "title": "",
+            "body": ""
+          },
+          "trust": {
+            "title": "",
+            "body": ""
+          },
+          "delivery": {
+            "title": "",
+            "body": ""
+          },
+          "commission": {
+            "title": "",
+            "body": ""
+          }
+        }
+      }
+    },
+    "search": {
+      "sort": {
+        "label": "",
+        "relevance": "",
+        "distance": "",
+        "priceAsc": "",
+        "priceDesc": ""
+      },
+      "filters": "",
+      "all": "",
+      "everythingNearby": "",
+      "checking": "",
+      "items": {
+        "one": "",
+        "other": ""
+      },
+      "shops": {
+        "one": "",
+        "other": ""
+      },
+      "summary": "",
+      "summaryOf": "",
+      "corrected": "",
+      "didYouMean": "",
+      "matched": "",
+      "matchedAlso": "",
+      "noShopsTitle": "",
+      "noShopsBody": "",
+      "nothingTitle": "",
+      "nothingBody": "",
+      "expand": "",
+      "clearFilters": "",
+      "showMore": "",
+      "pinOutOfStock": "",
+      "pinTitle": {
+        "one": "",
+        "other": ""
+      },
+      "close": "",
+      "delivers": "",
+      "matchingInStock": {
+        "one": "",
+        "other": ""
+      },
+      "matchingOutOfStock": "",
+      "openShop": "",
+      "list": "",
+      "map": ""
+    },
+    "result": {
+      "label": "",
+      "upTo": "",
+      "pickup": "",
+      "delivery": "",
+      "shopsHaveThis": {
+        "one": "",
+        "other": ""
+      },
+      "inStock": "",
+      "compareAll": ""
+    },
+    "product": {
+      "opening": "",
+      "breadcrumb": "",
+      "goneTitle": "",
+      "goneBody": "",
+      "searchNearby": "",
+      "compareTitle": "",
+      "shopsList": "",
+      "onlyThisShop": "",
+      "typicalPrice": "",
+      "columns": {
+        "shop": "",
+        "price": "",
+        "stock": "",
+        "distance": ""
+      },
+      "viewing": "",
+      "boughtTogether": "",
+      "popularIn": "",
+      "basketAi": "",
+      "boughtTogetherBody": "",
+      "popularBody": "",
+      "alsoAtShop": "",
+      "buyersShare": "",
+      "reviewsTitle": "",
+      "reviewsEmpty": "",
+      "allReviews": "",
+      "sold30d": "",
+      "youReserved": "",
+      "reserve": "",
+      "requestDelivery": "",
+      "hintCustomer": "",
+      "hintOut": "",
+      "hintPickupOnly": "",
+      "hintDelivery": "",
+      "free": "",
+      "hintPayAtShop": "",
+      "hours": "",
+      "closedOn": "",
+      "directions": "",
+      "callShop": "",
+      "trustTitle": "",
+      "stickyStock": "",
+      "reserveShort": ""
+    },
+    "shop": {
+      "notFoundTitle": "",
+      "notFoundBody": "",
+      "browseShops": "",
+      "stockUpdated": "",
+      "closedOn": "",
+      "pickupHold": "",
+      "delivers": "",
+      "deliversFreeAbove": "",
+      "free": "",
+      "pickupOnly": "",
+      "servingSince": "",
+      "directions": "",
+      "call": "",
+      "shelfTitle": "",
+      "shelfCount": "",
+      "inStockOnly": "",
+      "searchShop": "",
+      "all": "",
+      "nothingMatches": "",
+      "searchAllShops": "",
+      "trackRecord": "",
+      "reviews": ""
+    },
+    "trust": {
+      "inventoryUpdated": "",
+      "notYet": "",
+      "updateDays": "",
+      "noUpdatesWeek": "",
+      "reservationsConfirmed": "",
+      "confirmedOf": "",
+      "newShop": "",
+      "acceptance": "",
+      "noRequests": "",
+      "typicalConfirmation": "",
+      "minutes": "",
+      "noData": "",
+      "confirmationSub": "",
+      "rating": "",
+      "ratingValue": "",
+      "ratingPending": "",
+      "purchases": {
+        "one": "",
+        "other": ""
+      },
+      "purchasesAccuracy": {
+        "one": "",
+        "other": ""
+      },
+      "reviewsCompletedOnly": "",
+      "fulfilment": ""
+    }
   }
 }

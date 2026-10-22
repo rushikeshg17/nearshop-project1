@@ -1,3 +1,5 @@
+import { createElement, Fragment, type ReactNode } from "react";
+
 import type englishMessages from "@/messages/en.json";
 
 // The interface language layer (P7.5, plan section 8.16).
@@ -28,7 +30,7 @@ import type englishMessages from "@/messages/en.json";
 // - server components and the root layout call requestI18n with the cookies and headers functions from
 //   next/headers, and get the language, its messages and a translator;
 // - client components call useI18n (src/components/providers.tsx). The root layout sends the browser only the
-//   areas in CLIENT_AREAS (the shell); a route's layout that has client components of its own adds its area for
+//   areas in CLIENT_AREAS (the shell and the shared components); a route's layout that has client components of its own adds its area for
 //   its pages only with I18nAreas (providers.tsx), so no page carries every screen's strings. No message file is
 //   ever part of the browser's JavaScript.
 //
@@ -218,9 +220,11 @@ export async function servableLanguages(): Promise<LanguageCode[]> {
 
 // ------------------------------------------------------------------------------------------------ client areas
 
-/** The message areas every page sends to the browser: the site shell's client components. Each later area
- * (P7.6 to P7.10) reaches the browser only on its own pages, through I18nAreas in that route's layout. */
-export const CLIENT_AREAS = ["shell"] as const satisfies readonly (keyof Messages)[];
+/** The message areas every page sends to the browser: the site shell's client components, and "common", the
+ * shared components used on every part of the site (the search box in the header, the empty, error and loading
+ * states). Each screen area (P7.6 to P7.10) reaches the browser only on its own pages, through I18nAreas in that
+ * route's layout: "discovery" from src/app/(site)/layout.tsx. */
+export const CLIENT_AREAS = ["shell", "common"] as const satisfies readonly (keyof Messages)[];
 
 /** Only the named areas of a message tree, for passing to client components. */
 export function pickAreas<K extends keyof Messages>(messages: Messages, areas: readonly K[]): Pick<Messages, K> {
@@ -242,6 +246,27 @@ export function createTranslator(messages: Partial<Messages>): Translate {
     if (!values) return node;
     return node.replace(/\{(\w+)\}/g, (match, name: string) => (name in values ? String(values[name]) : match));
   };
+}
+
+/** The plural form of a count in a language, as CLDR defines it, reduced to the two forms the message files use:
+ * a counted message is a pair of keys, "one" and "other", each with {count}, and the caller picks one:
+ *   t(`discovery.search.items.${plural(language, n)}`, { count: formatNumber(n) })
+ * English says "1 item" but "0 items"; Kannada uses its "one" form for 0 and 1. */
+export function plural(language: LanguageCode, n: number): "one" | "other" {
+  return new Intl.PluralRules(languageInfo(language).htmlLang).select(n) === "one" ? "one" : "other";
+}
+
+/** A message with elements inside it, such as a link or bold text: each {name} in the text that parts names is
+ * replaced by that element, wherever the language puts it ("Did you mean {suggestion}?"). Placeholders t has
+ * already filled, and any not in parts, stay as they are. */
+export function richText(text: string, parts: Record<string, ReactNode>): ReactNode[] {
+  return text
+    .split(/(\{\w+\})/)
+    .filter(Boolean)
+    .map((piece, i) => {
+      const name = /^\{(\w+)\}$/.exec(piece)?.[1];
+      return createElement(Fragment, { key: i }, name !== undefined && name in parts ? parts[name] : piece);
+    });
 }
 
 // ------------------------------------------------------------------------------------------------ requests

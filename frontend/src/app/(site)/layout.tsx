@@ -1,9 +1,16 @@
+import { cookies, headers } from "next/headers";
+
+import { I18nAreas } from "@/components/providers";
 import { DemoBanner } from "@/components/site/demo-banner";
 import { MobileTabBar } from "@/components/site/mobile-tab-bar";
 import { SiteFooter } from "@/components/site/site-footer";
 import { SiteHeader } from "@/components/site/site-header";
+import { pickAreas, requestI18n } from "@/lib/i18n";
 
-export default function SiteLayout({ children }: LayoutProps<"/">) {
+export default async function SiteLayout({ children }: LayoutProps<"/">) {
+  // The discovery screens' strings (home, search, product and shop: P7.6) reach the browser on the customer site
+  // only. With English the only language offered, the request is not read and pages stay static (src/lib/i18n.ts).
+  const { messages } = await requestI18n({ cookies, headers });
   return (
     <>
       <a
@@ -15,7 +22,7 @@ export default function SiteLayout({ children }: LayoutProps<"/">) {
       <DemoBanner />
       <SiteHeader />
       <main id="main" className="min-h-[calc(100dvh-4rem)] pb-20 md:pb-0">
-        {children}
+        <I18nAreas messages={pickAreas(messages, ["discovery"])}>{children}</I18nAreas>
       </main>
       <SiteFooter />
       <MobileTabBar />

@@ -6,8 +6,10 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { AppIcon } from "@/components/common/app-icon";
+import { useI18n } from "@/components/providers";
 import { useDebounce } from "@/hooks/use-debounce";
 import { api } from "@/lib/api";
+import { richText } from "@/lib/i18n";
 import type { Suggestions } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -39,9 +41,10 @@ function SearchPageBox(props: SearchBoxProps) {
 function SearchBoxField({
   size = "md",
   className,
-  placeholder = "Search for a product, brand or need",
+  placeholder,
   query,
 }: SearchBoxProps & { query: string | null }) {
+  const { t } = useI18n();
   const router = useRouter();
   const listId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -150,8 +153,8 @@ function SearchBoxField({
           onFocus={() => setOpen(true)}
           onBlur={() => setTimeout(() => setOpen(false), 120)}
           onKeyDown={onKeyDown}
-          placeholder={placeholder}
-          aria-label="Search products"
+          placeholder={placeholder ?? t("common.searchBox.placeholder")}
+          aria-label={t("common.searchBox.label")}
           aria-expanded={showPanel}
           aria-controls={listId}
           aria-autocomplete="list"
@@ -171,7 +174,7 @@ function SearchBoxField({
               inputRef.current?.focus();
             }}
             className="grid size-7 place-items-center rounded-full text-muted-foreground hover:bg-muted"
-            aria-label="Clear search"
+            aria-label={t("common.searchBox.clear")}
           >
             <X className="size-4" />
           </button>
@@ -181,7 +184,7 @@ function SearchBoxField({
             type="submit"
             className="h-10 rounded-xl bg-primary px-5 text-sm font-medium text-primary-foreground transition-transform active:scale-[0.97]"
           >
-            Find nearby
+            {t("common.searchBox.submit")}
           </button>
         )}
       </form>
@@ -194,7 +197,7 @@ function SearchBoxField({
         >
           {debounced.length < 2 && (
             <li className="px-3 pt-2 pb-1 text-xs font-medium text-muted-foreground">
-              {discover.data?.recent.length ? "Recent and popular" : "Popular near you"}
+              {discover.data?.recent.length ? t("common.searchBox.recentAndPopular") : t("common.searchBox.popularNearYou")}
             </li>
           )}
           {options.map((opt, i) => (
@@ -223,14 +226,14 @@ function SearchBoxField({
               </span>
               <span className="min-w-0 flex-1 truncate">
                 {opt.kind === "query" && opt.icon === "search" ? (
-                  <>
-                    Search for <span className="font-medium">&ldquo;{opt.value}&rdquo;</span>
-                  </>
+                  richText(t("common.searchBox.searchFor"), {
+                    query: <span className="font-medium">&ldquo;{opt.value}&rdquo;</span>,
+                  })
                 ) : (
                   opt.value
                 )}
               </span>
-              {opt.kind === "category" && <span className="text-xs text-muted-foreground">Category</span>}
+              {opt.kind === "category" && <span className="text-xs text-muted-foreground">{t("common.searchBox.category")}</span>}
               {opt.kind === "item" && opt.sub && <span className="hidden text-xs text-muted-foreground sm:inline">{opt.sub}</span>}
               {i === active && <ArrowUpRight className="size-4 text-muted-foreground" />}
             </li>

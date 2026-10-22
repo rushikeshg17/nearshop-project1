@@ -44,5 +44,276 @@
       "themeSystem": "System",
       "signOut": "Sign out"
     }
+  },
+  "common": {
+    "states": {
+      "retry": "Try again",
+      "loading": "Loading"
+    },
+    "searchBox": {
+      "placeholder": "Search for a product, brand or need",
+      "label": "Search products",
+      "clear": "Clear search",
+      "submit": "Find nearby",
+      "recentAndPopular": "Recent and popular",
+      "popularNearYou": "Popular near you",
+      "searchFor": "Search for {query}",
+      "category": "Category"
+    },
+    "travel": {
+      "walk": "{minutes} min walk",
+      "ride": "{minutes} min ride"
+    }
+  },
+  "discovery": {
+    "home": {
+      "heroTitle": "Find it nearby.",
+      "heroSubtitle": "Skip the five-shop hunt.",
+      "heroBody": "See which shops around you have it on the shelf right now, what they charge, and how fresh that stock count is. Reserve it and walk in, or let the shop deliver.",
+      "searchPlaceholder": "Try 'phone charging adapter' or 'tap leaking'",
+      "quick": {
+        "charger": "phone charger",
+        "elbow": "PVC elbow joint",
+        "shoes": "school shoes",
+        "bulb": "9W LED bulb",
+        "umbrella": "umbrella",
+        "oil": "bike engine oil"
+      },
+      "statShopsIn": "local shops in {city}",
+      "statShopsHere": "local shops in your city",
+      "statItems": "items in stock right now",
+      "statRiders": "delivery riders needed",
+      "demoItems": {
+        "one": "{count} item",
+        "other": "{count} items"
+      },
+      "demoShops": {
+        "one": "{count} shop",
+        "other": "{count} shops"
+      },
+      "searching": "searching...",
+      "moreShops": {
+        "one": "+{count} more shop",
+        "other": "+{count} more shops"
+      },
+      "reserveBanner": "Reserve now, pick up in 30 min",
+      "browseTitle": "Browse by what you need",
+      "browseBody": "The everyday things that are hard to find online and easy to find nearby.",
+      "categoryInStock": "{count} in stock",
+      "shopsNear": "Shops near {place}",
+      "shopsNearYou": "Shops near you",
+      "shopsBody": "Sorted by distance. The freshness line tells you how recently they counted their shelves.",
+      "seeMap": "See map",
+      "howTitle": "Check the shelf before you leave home",
+      "howBody": "Pickup is the default because you get to see it before you pay. Delivery is there when the shop offers it, handled by the shop itself.",
+      "steps": {
+        "search": {
+          "title": "Search the way you talk",
+          "body": "Type 'charging adapter' or 'tap leaking'. NearShop understands meaning, not just exact product names.",
+          "tag": "AI search"
+        },
+        "reserve": {
+          "title": "Reserve in one tap",
+          "body": "The shop confirms and sets it aside for 30 minutes. You get a pickup code and a live countdown.",
+          "tag": "No payment upfront"
+        },
+        "pay": {
+          "title": "Walk in, check, pay",
+          "body": "Inspect it at the counter and pay there. If the shop delivers, cash on delivery works too.",
+          "tag": "Pickup or delivery"
+        }
+      },
+      "owners": {
+        "badge": "For shop owners",
+        "title": "Your shelf, online by this evening.",
+        "body": "Pick products from a ready catalogue, set your price and count. Customers nearby find you, reserve, and walk in ready to buy.",
+        "listFree": "List your shop free",
+        "seeDashboard": "See the dashboard",
+        "features": {
+          "alerts": {
+            "title": "Reservation alerts",
+            "body": "Confirm or decline with one tap."
+          },
+          "forecasts": {
+            "title": "Restock forecasts",
+            "body": "Know what will run out next week."
+          },
+          "demand": {
+            "title": "Local demand",
+            "body": "See what people nearby search for."
+          },
+          "trust": {
+            "title": "Earn trust",
+            "body": "Fresh stock counts rank you higher."
+          },
+          "delivery": {
+            "title": "Your delivery, your rules",
+            "body": "Set radius, fee and free-delivery limit."
+          },
+          "commission": {
+            "title": "No commission to start",
+            "body": "Pay at the counter, as always."
+          }
+        }
+      }
+    },
+    "search": {
+      "sort": {
+        "label": "Sort results",
+        "relevance": "Best match",
+        "distance": "Nearest first",
+        "priceAsc": "Price: low to high",
+        "priceDesc": "Price: high to low"
+      },
+      "filters": "Filters",
+      "all": "All",
+      "everythingNearby": "Everything nearby",
+      "checking": "Checking shelves nearby...",
+      "items": {
+        "one": "{count} item",
+        "other": "{count} items"
+      },
+      "shops": {
+        "one": "{count} shop",
+        "other": "{count} shops"
+      },
+      "summary": "{items} at {shops} within {radius} km",
+      "summaryOf": "{items} at {shops} within {radius} km of {place}",
+      "corrected": "Showing results for {query}. No matches for “{original}”.",
+      "didYouMean": "Did you mean {suggestion}?",
+      "matched": "Matched by meaning and keywords",
+      "matchedAlso": "Matched by meaning and keywords, also looked for {terms}",
+      "noShopsTitle": "No shops in this radius yet",
+      "noShopsBody": "Try a wider radius or a different area.",
+      "nothingTitle": "Nothing matching within {radius} km",
+      "nothingBody": "Shops nearby don't list this yet. Try a wider radius, fewer filters, or a simpler word.",
+      "expand": "Expand to {radius} km",
+      "clearFilters": "Clear filters",
+      "showMore": "Show more results",
+      "pinOutOfStock": "Out of stock",
+      "pinTitle": {
+        "one": "{shop}, {count} matching item in stock",
+        "other": "{shop}, {count} matching items in stock"
+      },
+      "close": "Close",
+      "delivers": "Delivers",
+      "matchingInStock": {
+        "one": "{count} matching item in stock, from {price}",
+        "other": "{count} matching items in stock, from {price}"
+      },
+      "matchingOutOfStock": "Has matching items, but they're out of stock",
+      "openShop": "Open shop",
+      "list": "List",
+      "map": "Map"
+    },
+    "result": {
+      "label": "{name}, from {price}",
+      "upTo": "up to {price}",
+      "pickup": "Pickup",
+      "delivery": "Delivery",
+      "shopsHaveThis": {
+        "one": "{count} shop nearby has this",
+        "other": "{count} shops nearby have this"
+      },
+      "inStock": "{count} in stock",
+      "compareAll": "Compare all"
+    },
+    "product": {
+      "opening": "Opening…",
+      "breadcrumb": "Breadcrumb",
+      "goneTitle": "This listing is gone",
+      "goneBody": "The shop may have removed it. Search to find it elsewhere nearby.",
+      "searchNearby": "Search nearby",
+      "compareTitle": "Compare shops nearby",
+      "shopsList": "{count} shops list this item.",
+      "onlyThisShop": "Only this shop lists this item right now.",
+      "typicalPrice": "Typical price {price}.",
+      "columns": {
+        "shop": "Shop",
+        "price": "Price",
+        "stock": "Stock",
+        "distance": "Distance"
+      },
+      "viewing": "You're viewing",
+      "boughtTogether": "Often bought together",
+      "popularIn": "Popular in {category}",
+      "basketAi": "Market-basket AI",
+      "boughtTogetherBody": "Learned from what customers nearby buy in the same visit. Save a second trip.",
+      "popularBody": "Bestsellers in this category near you.",
+      "alsoAtShop": "Also at this shop",
+      "buyersShare": "{percent}% of buyers",
+      "reviewsTitle": "What customers say about {shop}",
+      "reviewsEmpty": "No reviews yet. Reviews come only from completed pickups and deliveries.",
+      "allReviews": "All {count} reviews",
+      "sold30d": "{count} sold here in the last 30 days",
+      "youReserved": "You reserved this · {code}",
+      "reserve": "Reserve for pickup",
+      "requestDelivery": "Request delivery",
+      "hintCustomer": "Sign in with a customer account to reserve.",
+      "hintOut": "Out of stock here. Compare other shops below.",
+      "hintPickupOnly": "Pickup only. Held {minutes} min after the shop confirms.",
+      "hintDelivery": "Delivery {fee} · {distance} away · Cash on delivery",
+      "free": "free",
+      "hintPayAtShop": "Pay at the shop. No online payment.",
+      "hours": "Hours {hours}",
+      "closedOn": "closed {day}s",
+      "directions": "Directions",
+      "callShop": "Call shop",
+      "trustTitle": "Why you can trust this listing",
+      "stickyStock": "{count} in stock · {shop}",
+      "reserveShort": "Reserve"
+    },
+    "shop": {
+      "notFoundTitle": "Shop not found",
+      "notFoundBody": "It may have paused its listing.",
+      "browseShops": "Browse shops",
+      "stockUpdated": "Stock updated",
+      "closedOn": "closed {day}s",
+      "pickupHold": "Pickup: items held {minutes} min after confirming",
+      "delivers": "Delivers within {radius} km · {fee}",
+      "deliversFreeAbove": "Delivers within {radius} km · {fee}, free above {threshold}",
+      "free": "free",
+      "pickupOnly": "Pickup only",
+      "servingSince": "Serving since {year}",
+      "directions": "Directions",
+      "call": "Call",
+      "shelfTitle": "On the shelf",
+      "shelfCount": "{inStock} of {total} items in stock right now",
+      "inStockOnly": "In stock only",
+      "searchShop": "Search {shop}",
+      "all": "All",
+      "nothingMatches": "Nothing matches here. {link}",
+      "searchAllShops": "Search all shops nearby",
+      "trackRecord": "Track record",
+      "reviews": "Reviews"
+    },
+    "trust": {
+      "inventoryUpdated": "Inventory updated",
+      "notYet": "Not yet",
+      "updateDays": "on {count} of the last 7 days",
+      "noUpdatesWeek": "No updates this week",
+      "reservationsConfirmed": "Reservations confirmed",
+      "confirmedOf": "{confirmed} of {requests}",
+      "newShop": "New shop",
+      "acceptance": "{percent}% in the last 90 days",
+      "noRequests": "No requests yet",
+      "typicalConfirmation": "Typical confirmation",
+      "minutes": "{count} min",
+      "noData": "No data",
+      "confirmationSub": "from request to 'held for you'",
+      "rating": "Customer rating",
+      "ratingValue": "{rating} / 5",
+      "ratingPending": "A rating shows once 5 customers have reviewed it",
+      "purchases": {
+        "one": "{count} verified purchase",
+        "other": "{count} verified purchases"
+      },
+      "purchasesAccuracy": {
+        "one": "{count} verified purchase, accuracy {accuracy}",
+        "other": "{count} verified purchases, accuracy {accuracy}"
+      },
+      "reviewsCompletedOnly": "Reviews come from completed purchases only",
+      "fulfilment": "{delivered} deliveries completed and {cancelled} cancelled by the shop in the last 90 days."
+    }
   }
 }

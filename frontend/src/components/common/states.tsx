@@ -1,5 +1,8 @@
+"use client";
+
 import { AlertTriangle, RotateCcw } from "lucide-react";
 
+import { useI18n } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { errorMessage } from "@/lib/api";
@@ -31,13 +34,14 @@ export function EmptyState({
 }
 
 export function ErrorState({ error, onRetry, className }: { error: unknown; onRetry?: () => void; className?: string }) {
+  const { t } = useI18n();
   return (
     <div className={cn("flex flex-col items-center rounded-2xl border border-destructive/20 bg-destructive/5 px-6 py-10 text-center", className)}>
       <AlertTriangle className="mb-3 size-6 text-destructive" />
       <p className="text-sm font-medium">{errorMessage(error)}</p>
       {onRetry && (
         <Button variant="outline" size="sm" className="mt-4" onClick={onRetry}>
-          <RotateCcw /> Try again
+          <RotateCcw /> {t("common.states.retry")}
         </Button>
       )}
     </div>
@@ -45,8 +49,9 @@ export function ErrorState({ error, onRetry, className }: { error: unknown; onRe
 }
 
 export function ListSkeleton({ rows = 4, className }: { rows?: number; className?: string }) {
+  const { t } = useI18n();
   return (
-    <div className={cn("space-y-3", className)} aria-busy aria-label="Loading">
+    <div className={cn("space-y-3", className)} aria-busy aria-label={t("common.states.loading")}>
       {Array.from({ length: rows }).map((_, i) => (
         <div key={i} className="flex gap-4 rounded-2xl border bg-card p-4">
           <Skeleton className="size-16 rounded-xl" />

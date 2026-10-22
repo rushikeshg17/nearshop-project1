@@ -28,24 +28,58 @@ export function formatDistance(km: number | null | undefined) {
   return `${km < 10 ? km.toFixed(1) : Math.round(km)} km`;
 }
 
-/** Rough walking/riding estimate for local context. */
-export function travelHint(km: number | null | undefined) {
-  if (km === null || km === undefined) return "";
-  if (km <= 1.2) return `${Math.max(2, Math.round(km * 13))} min walk`;
-  return `${Math.max(4, Math.round(km * 3.2 + 2))} min ride`;
+/** Rough walking or riding time for local context, for a message in the interface language
+ * (common.travel.walk or common.travel.ride, with {minutes}). Null when the distance is not known. */
+export function travelTime(km: number | null | undefined): { mode: "walk" | "ride"; minutes: number } | null {
+  if (km === null || km === undefined) return null;
+  if (km <= 1.2) return { mode: "walk", minutes: Math.max(2, Math.round(km * 13)) };
+  return { mode: "ride", minutes: Math.max(4, Math.round(km * 3.2 + 2)) };
 }
 
-const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+/** Rough walking/riding estimate for local context, in English (screens not yet translated). */
+export function travelHint(km: number | null | undefined) {
+  const time = travelTime(km);
+  if (!time) return "";
+  return `${time.minutes} min ${time.mode}`;
+}
 
-export function timeAgo(iso: string | null | undefined, now: number = Date.now()) {
+const relativeFormats = new Map<LanguageCode, Intl.RelativeTimeFormat>();
+
+function relativeFormat(language: LanguageCode) {
+  let format = relativeFormats.get(language);
+  if (!format) {
+    format = new Intl.RelativeTimeFormat(languageInfo(language).htmlLang, { numeric: "auto" });
+    relativeFormats.set(language, format);
+  }
+  return format;
+}
+
+/** "4 minutes ago", "yesterday": phrased in the interface language by Intl (its grammar for each language), with
+ * Latin digits. English when no language is given. */
+export function timeAgo(iso: string | null | undefined, now: number = Date.now(), language: LanguageCode = DEFAULT_LANGUAGE) {
   if (!iso) return "never";
+  const rtf = relativeFormat(language);
   const diff = (new Date(iso).getTime() - now) / 1000;
   const abs = Math.abs(diff);
-  if (abs < 45) return "just now";
+  if (abs < 45) return language === DEFAULT_LANGUAGE ? "just now" : rtf.format(0, "second");
   if (abs < 3600) return rtf.format(Math.round(diff / 60), "minute");
   if (abs < 86400) return rtf.format(Math.round(diff / 3600), "hour");
   if (abs < 86400 * 30) return rtf.format(Math.round(diff / 86400), "day");
-  return new Date(iso).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+  return new Date(iso).toLocaleDateString(languageInfo(language).htmlLang, { day: "numeric", month: "short" });
+}
+
+const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+
+/** A weekday the owner wrote in English ("Monday", as shops store closed_on), named in the interface language.
+ * Anything else is returned as written. */
+export function weekdayName(day: string, language: LanguageCode = DEFAULT_LANGUAGE) {
+  const index = WEEKDAYS.indexOf(day.trim().toLowerCase());
+  if (index < 0 || language === DEFAULT_LANGUAGE) return day;
+  // 4 Jan 1970 was a Sunday.
+  return new Date(Date.UTC(1970, 0, 4 + index)).toLocaleDateString(languageInfo(language).htmlLang, {
+    weekday: "long",
+    timeZone: "UTC",
+  });
 }
 
 /** Dates and times are written in the interface language (month names, AM and PM); English when not given. */

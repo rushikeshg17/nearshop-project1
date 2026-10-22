@@ -22,13 +22,15 @@ import { AppIcon } from "@/components/common/app-icon";
 import { Distance, Rating } from "@/components/common/indicators";
 import { EmptyState, ErrorState, ListSkeleton } from "@/components/common/states";
 import { ShopMap } from "@/components/map/shop-map";
+import { useI18n } from "@/components/providers";
 import { ResultCard } from "@/components/search/result-card";
 import { LocationPicker } from "@/components/site/location-picker";
 import { SearchBox } from "@/components/site/search-box";
 import { Button } from "@/components/ui/button";
 import { useMeta } from "@/hooks/use-session";
 import { api } from "@/lib/api";
-import { formatPrice, pluralize } from "@/lib/format";
+import { formatNumber, formatPrice } from "@/lib/format";
+import { plural, richText } from "@/lib/i18n";
 import { useLocation } from "@/lib/location";
 import type { MapPin, SearchResponse } from "@/lib/types";
 import { cn, revealFocused } from "@/lib/utils";
@@ -39,13 +41,14 @@ const loadFilters = () => import("@/components/search/search-filters");
 const SearchFiltersSheet = lazy(() => loadFilters().then((m) => ({ default: m.SearchFiltersSheet })));
 
 const SORTS = [
-  { value: "relevance", label: "Best match" },
-  { value: "distance", label: "Nearest first" },
-  { value: "price_asc", label: "Price: low to high" },
-  { value: "price_desc", label: "Price: high to low" },
-];
+  { value: "relevance", label: "discovery.search.sort.relevance" },
+  { value: "distance", label: "discovery.search.sort.distance" },
+  { value: "price_asc", label: "discovery.search.sort.priceAsc" },
+  { value: "price_desc", label: "discovery.search.sort.priceDesc" },
+] as const;
 
 export function SearchView() {
+  const { t, language } = useI18n();
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
@@ -106,16 +109,24 @@ export function SearchView() {
         id: s.id,
         lat: s.lat,
         lng: s.lng,
-        label: s.min_price !== null ? formatPrice(s.min_price) : "Out of stock",
-        title: `${s.name}, ${s.in_stock_count} matching items in stock`,
+        label: s.min_price !== null ? formatPrice(s.min_price) : t("discovery.search.pinOutOfStock"),
+        title: t(`discovery.search.pinTitle.${plural(language, s.in_stock_count)}`, {
+          shop: s.name,
+          count: formatNumber(s.in_stock_count),
+        }),
         muted: s.in_stock_count === 0,
       })),
-    [pins],
+    [pins, t, language],
   );
   const selected = pins.find((s) => s.id === selectedShop);
   const catName = meta?.categories.find((c) => c.slug === category)?.name;
   const activeFilters = [inStock, !!fulfillment, !!minPrice || !!maxPrice].filter(Boolean).length;
-  const heading = q ? `"${first?.corrected_from ? first.normalized_query : q}"` : catName ?? "Everything nearby";
+  const heading = q ? `"${first?.corrected_from ? first.normalized_query : q}"` : catName ?? t("discovery.search.everythingNearby");
+  const counts = first && {
+    items: t(`discovery.search.items.${plural(language, first.total)}`, { count: formatNumber(first.total) }),
+    shops: t(`discovery.search.shops.${plural(language, first.shops.length)}`, { count: formatNumber(first.shops.length) }),
+    radius: radiusKm,
+  };
 
   const filtersButton = (
     <Button
@@ -133,7 +144,7 @@ export function SearchView() {
             }
       }
     >
-      <SlidersHorizontal /> Filters
+      <SlidersHorizontal /> {t("discovery.search.filters")}
       {activeFilters > 0 && (
         <span className="grid size-5 place-items-center rounded-full bg-primary text-[11px] text-primary-foreground tabular">{activeFilters}</span>
       )}
@@ -151,7 +162,7 @@ export function SearchView() {
 
         {/* category chips */}
         <div className="-mx-4 mt-4 flex gap-2 overflow-x-auto px-4 pb-1 scrollbar-none md:mx-0 md:mt-1 md:px-0" onFocus={revealFocused}>
-          <Chip active={!category} onClick={() => setParam({ category: null })}>All</Chip>
+          <Chip active={!category} onClick={() => setParam({ category: null })}>{t("discovery.search.all")}</Chip>
           {meta?.categories.map((c) => (
             <Chip key={c.slug} active={category === c.slug} onClick={() => setParam({ category: category === c.slug ? null : c.slug })}>
               <AppIcon name={c.icon} className="size-3.5" />
@@ -168,14 +179,11 @@ export function SearchView() {
           <div className="min-w-0">
             <h1 className="truncate text-2xl font-semibold">{heading}</h1>
             <p className="mt-0.5 text-sm text-muted-foreground" aria-live="polite">
-              {query.isLoading || !first ? (
-                "Checking shelves nearby..."
-              ) : (
-                <>
-                  {pluralize(first.total, "item")} at {pluralize(first.shops.length, "shop")} within {radiusKm} km
-                  {location && <> of {location.label}</>}
-                </>
-              )}
+              {query.isLoading || !counts
+                ? t("discovery.search.checking")
+                : location
+                  ? t("discovery.search.summaryOf", { ...counts, place: location.label })
+                  : t("discovery.search.summary", counts)}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -185,11 +193,11 @@ export function SearchView() {
               <select
                 value={sort}
                 onChange={(e) => setParam({ sort: e.target.value === "relevance" ? null : e.target.value })}
-                aria-label="Sort results"
+                aria-label={t("discovery.search.sort.label")}
                 className="h-full cursor-pointer appearance-none rounded-full bg-transparent pr-8 pl-8 outline-none"
               >
                 {SORTS.map((s) => (
-                  <option key={s.value} value={s.value}>{s.label}</option>
+                  <option key={s.value} value={s.value}>{t(s.label)}</option>
                 ))}
               </select>
               <ChevronDown className="pointer-events-none absolute right-2.5 size-4 text-muted-foreground" aria-hidden />
@@ -213,22 +221,28 @@ export function SearchView() {
         {/* AI hint / corrections */}
         {first?.corrected_from && (
           <p className="mt-3 animate-in text-sm duration-300 fade-in">
-            Showing results for <span className="font-medium">{first.normalized_query}</span>. No matches for &ldquo;{first.corrected_from}&rdquo;.
+            {richText(t("discovery.search.corrected", { original: first.corrected_from }), {
+              query: <span className="font-medium">{first.normalized_query}</span>,
+            })}
           </p>
         )}
         {first?.did_you_mean && (
           <p className="mt-3 animate-in text-sm duration-300 fade-in">
-            Did you mean{" "}
-            <Link href={`/search?q=${encodeURIComponent(first.did_you_mean)}`} className="font-medium text-brand-ink underline underline-offset-4">
-              {first.did_you_mean}
-            </Link>
-            ?
+            {richText(t("discovery.search.didYouMean"), {
+              suggestion: (
+                <Link href={`/search?q=${encodeURIComponent(first.did_you_mean)}`} className="font-medium text-brand-ink underline underline-offset-4">
+                  {first.did_you_mean}
+                </Link>
+              ),
+            })}
           </p>
         )}
         {q && first && first.total > 0 && !first.corrected_from && (
           <p className="mt-3 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Sparkles className="size-3.5 text-brand" /> Matched by meaning and keywords
-            {first.expanded_terms.length > 0 && <>, also looked for {first.expanded_terms.slice(0, 3).join(", ")}</>}
+            <Sparkles className="size-3.5 text-brand" />
+            {first.expanded_terms.length > 0
+              ? t("discovery.search.matchedAlso", { terms: first.expanded_terms.slice(0, 3).join(", ") })
+              : t("discovery.search.matched")}
           </p>
         )}
 
@@ -241,20 +255,24 @@ export function SearchView() {
           ) : groups.length === 0 ? (
             <EmptyState
               icon={PackageSearch}
-              title={first.shops_in_radius === 0 ? "No shops in this radius yet" : `Nothing matching within ${radiusKm} km`}
-              description={
+              title={
                 first.shops_in_radius === 0
-                  ? "Try a wider radius or a different area."
-                  : "Shops nearby don't list this yet. Try a wider radius, fewer filters, or a simpler word."
+                  ? t("discovery.search.noShopsTitle")
+                  : t("discovery.search.nothingTitle", { radius: radiusKm })
+              }
+              description={
+                first.shops_in_radius === 0 ? t("discovery.search.noShopsBody") : t("discovery.search.nothingBody")
               }
               action={
                 <>
                   {radiusKm < 15 && (
-                    <Button onClick={() => setRadiusKm(Math.min(15, radiusKm + 5))}>Expand to {Math.min(15, radiusKm + 5)} km</Button>
+                    <Button onClick={() => setRadiusKm(Math.min(15, radiusKm + 5))}>
+                      {t("discovery.search.expand", { radius: Math.min(15, radiusKm + 5) })}
+                    </Button>
                   )}
                   {activeFilters > 0 && (
                     <Button variant="outline" onClick={() => setParam({ stock: null, fulfillment: null, min: null, max: null })}>
-                      Clear filters
+                      {t("discovery.search.clearFilters")}
                     </Button>
                   )}
                 </>
@@ -273,7 +291,7 @@ export function SearchView() {
               ))}
               {query.hasNextPage && (
                 <Button variant="outline" className="w-full" onClick={() => query.fetchNextPage()} disabled={query.isFetchingNextPage}>
-                  {query.isFetchingNextPage ? <Loader2 className="animate-spin" /> : null} Show more results
+                  {query.isFetchingNextPage ? <Loader2 className="animate-spin" /> : null} {t("discovery.search.showMore")}
                 </Button>
               )}
             </div>
@@ -302,7 +320,7 @@ export function SearchView() {
             />
             {selected && (
               <div className="absolute inset-x-3 bottom-3 animate-in rounded-2xl border bg-card p-4 shadow-lift duration-200 fade-in slide-in-from-bottom-4">
-                <button onClick={() => setSelectedShop(null)} className="absolute top-3 right-3 rounded-full p-1 text-muted-foreground hover:bg-muted" aria-label="Close">
+                <button onClick={() => setSelectedShop(null)} className="absolute top-3 right-3 rounded-full p-1 text-muted-foreground hover:bg-muted" aria-label={t("discovery.search.close")}>
                   <X className="size-4" />
                 </button>
                 <div className="flex items-center gap-2 pr-8">
@@ -314,16 +332,19 @@ export function SearchView() {
                   <Distance km={selected.distance_km} className="text-sm" />
                   <Rating value={selected.rating_avg} count={selected.rating_count} />
                   {selected.offers_delivery && (
-                    <span className="inline-flex items-center gap-1 text-xs"><Bike className="size-3.5" /> Delivers</span>
+                    <span className="inline-flex items-center gap-1 text-xs"><Bike className="size-3.5" /> {t("discovery.search.delivers")}</span>
                   )}
                 </div>
                 <p className="mt-2 text-sm">
                   {selected.in_stock_count > 0
-                    ? `${pluralize(selected.in_stock_count, "matching item")} in stock, from ${formatPrice(selected.min_price)}`
-                    : "Has matching items, but they're out of stock"}
+                    ? t(`discovery.search.matchingInStock.${plural(language, selected.in_stock_count)}`, {
+                        count: formatNumber(selected.in_stock_count),
+                        price: formatPrice(selected.min_price),
+                      })
+                    : t("discovery.search.matchingOutOfStock")}
                 </p>
                 <Button asChild size="sm" variant="outline" className="mt-3">
-                  <Link href={`/shops/${selected.slug}${q ? `?q=${encodeURIComponent(q)}` : ""}`}>Open shop</Link>
+                  <Link href={`/shops/${selected.slug}${q ? `?q=${encodeURIComponent(q)}` : ""}`}>{t("discovery.search.openShop")}</Link>
                 </Button>
               </div>
             )}
@@ -336,7 +357,15 @@ export function SearchView() {
         onClick={() => setMobileMap((v) => !v)}
         className="fixed bottom-[calc(4.6rem+env(safe-area-inset-bottom))] left-1/2 z-30 h-11 -translate-x-1/2 rounded-full px-5 shadow-lift lg:hidden"
       >
-        {mobileMap ? <><List /> List</> : <><MapIcon /> Map</>}
+        {mobileMap ? (
+          <>
+            <List /> {t("discovery.search.list")}
+          </>
+        ) : (
+          <>
+            <MapIcon /> {t("discovery.search.map")}
+          </>
+        )}
       </Button>
     </div>
   );
