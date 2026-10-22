@@ -32,7 +32,7 @@ from app.services.fulfillment_common import record_event, record_sales
 from app.services.inventory import change_stock
 from app.services.notification_text import Term
 from app.services.notifications import notify
-from app.services.reservations import SHOP_NOT_VERIFIED, check_payment_method
+from app.services.reservations import NOT_ENOUGH_STOCK, SHOP_NOT_VERIFIED, check_payment_method, check_public_cap
 from app.utils.geo import haversine_km
 from app.utils.text import short_code
 
@@ -118,8 +118,6 @@ def create_order(
             raise NotFound("One of the items is no longer listed")
         if qty < 1 or qty > 50:
             raise Conflict("Quantity must be between 1 and 50")
-        if p.quantity < qty:
-            raise Conflict(f"Only {p.quantity} of {p.name} in stock", code="insufficient_stock")
         products.append((p, qty))
     shop_ids = {p.shop_id for p, _ in products}
     if len(shop_ids) != 1:
@@ -129,6 +127,17 @@ def create_order(
         raise Conflict("This shop is not taking orders right now")
     if not shop.is_live:  # not verified, or its approval has ended (P3.3, plan section 8.1)
         raise Conflict(SHOP_NOT_VERIFIED, code="shop_not_verified")
+    # Public stock bands (P10.1): without the shop's exact-stock opt-in, a line asks for at most the public cap, and
+    # a shortage is reported without a count. Lines for the same product are added up first, so splitting a quantity
+    # across several lines neither gets past the cap nor hides a combined shortage.
+    wanted: dict[int, tuple[Product, int]] = {}
+    for p, qty in products:
+        wanted[p.id] = (p, wanted[p.id][1] + qty if p.id in wanted else qty)
+    for p, qty in wanted.values():
+        check_public_cap(shop, qty)
+        if p.quantity < qty:
+            message = f"Only {p.quantity} of {p.name} in stock" if shop.show_exact_stock else NOT_ENOUGH_STOCK
+            raise Conflict(message, code="insufficient_stock")
 
     subtotal = round(sum(p.price * q for p, q in products), 2)
     quote = quote_delivery(shop, lat, lng, subtotal)

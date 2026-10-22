@@ -4,16 +4,19 @@ import threading
 import time
 from datetime import datetime, timedelta
 from statistics import median
+from typing import Literal
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Query, Request, Response
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.ai.recommend import bundle_for
 from app.core.database import Database, utcnow
-from app.core.deps import DB, OptionalUser
+from app.core.deps import DB, ClientIP, OptionalUser
 from app.core.errors import NotFound
 from app.models import Product, Role, Shop
 from app.models.core import live_shop_filter
-from app.schemas.serializers import iso, listing, review_out, shop_brief, shop_detail
+from app.schemas.serializers import iso, public_listing, review_out, shop_brief, shop_detail
+from app.services import leads
 from app.services import reservations as reservation_service
 from app.services.loaders import (
     category_by_slug,
@@ -109,7 +112,7 @@ def product_detail(product_id: int, db: DB, user: OptionalUser, lat: float | Non
         raise NotFound("This product is no longer listed")
     distance = _dist(lat, lng, shop)
 
-    others = [listing(r, shop_brief(r.shop, _dist(lat, lng, r.shop))) for r in peers if r.id != p.id]
+    others = [public_listing(r, shop_brief(r.shop, _dist(lat, lng, r.shop))) for r in peers if r.id != p.id]
     others.sort(key=lambda o: (o["quantity"] <= 0, o["shop"]["distance_km"] if o["shop"]["distance_km"]
                                is not None else o["price"]))
 
@@ -126,7 +129,7 @@ def product_detail(product_id: int, db: DB, user: OptionalUser, lat: float | Non
     )
 
     return {
-        **listing(p, None),
+        **public_listing(p, None, seller=shop),
         "description": p.description,
         "specs": p.specs or {},
         "sku": p.sku,
@@ -192,7 +195,7 @@ def product_recommendations(product_id: int, db: DB, lat: float | None = None, l
         items.append({
             **{k: t[k] for k in ("confidence", "lift", "support")},
             "same_shop": same is not None,
-            "offer": listing(best, shop_brief(best.shop, haversine_km(lat, lng, best.shop.lat, best.shop.lng))),
+            "offer": public_listing(best, shop_brief(best.shop, haversine_km(lat, lng, best.shop.lat, best.shop.lng))),
         })
     return {"source": source, "items": items[:4]}
 
@@ -336,3 +339,32 @@ def sitemap_entries(db: DB, response: Response):
             _sitemap_cache[key] = hit
     response.headers["Cache-Control"] = f"public, max-age={int(SITEMAP_TTL_SECONDS)}"
     return hit[1]
+
+
+# ---------------------------------------------------------------- lead events (P9.2)
+
+
+class LeadTap(BaseModel):
+    """A tap on a shop's Call or Directions link: the shop, the kind, and the listing when the tap came from a
+    product page."""
+    model_config = ConfigDict(extra="forbid")
+
+    shop_id: int = Field(ge=1)
+    kind: Literal["call_tap", "directions_tap"]
+    product_id: int | None = Field(None, ge=1)
+
+
+@router.post("/leads", status_code=204)
+def lead_event(body: LeadTap, request: Request, db: DB, ip: ClientIP) -> Response:
+    """Record a Call or Directions tap, once per visitor, shop, kind and IST day (app/services/leads.py). Public and
+    limited to 30 per IP per minute. Nothing about the visitor is stored with the event; the IP address and user
+    agent are used only for the salted dedupe hash. Answers 204 whether or not the tap counted."""
+    shop = db.shops.get(body.shop_id)
+    if shop is None or not shop.is_live:
+        raise NotFound("Shop not found")
+    if body.product_id is not None:
+        product = db.products.get(body.product_id)
+        if product is None or product.shop_id != shop.id or not product.is_active:
+            raise NotFound("This product is no longer listed")
+    leads.record_tap(db, shop.id, body.kind, body.product_id, ip, request.headers.get("user-agent", ""))
+    return Response(status_code=204)

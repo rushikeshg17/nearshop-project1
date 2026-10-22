@@ -11,7 +11,7 @@ from app.core.deps import DB, CurrentUser, CustomerUser
 from app.core.errors import Conflict, NotFound
 from app.models import Order, OrderStatus, Reservation, ReservationStatus, Review, Shop, User
 from app.schemas.requests import NotificationsReadIn, OrderIn, OrderQuoteIn, ReservationIn, ReviewIn, TransitionIn
-from app.schemas.serializers import listing, notification_out, order_out, reservation_out, shop_brief
+from app.schemas.serializers import notification_out, order_out, public_listing, reservation_out, shop_brief
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
 from app.services import reviews as review_service
@@ -304,7 +304,7 @@ def _recommendations_for(db: Database, user: User) -> list[dict]:
             continue
         best = min(offers[cid], key=lambda o: haversine_km(lat, lng, o.shop.lat, o.shop.lng))
         picks.append({"confidence": rec["confidence"], "lift": rec["lift"],
-                      "offer": listing(best, shop_brief(best.shop, haversine_km(lat, lng, best.shop.lat,
+                      "offer": public_listing(best, shop_brief(best.shop, haversine_km(lat, lng, best.shop.lat,
                                                                                  best.shop.lng)))})
         if len(picks) >= 4:
             break

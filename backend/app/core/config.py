@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, get_args
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -308,6 +308,11 @@ class Settings(BaseSettings):
     # Fulfillment defaults
     reservation_hold_minutes: int = 30
     request_response_minutes: int = 20  # shop must respond to a reservation request within this window
+    # Public stock bands (P10.1, plan section 8.20). For a shop that has not opted in to showing its exact stock
+    # (Shop.show_exact_stock), public responses show at most this many units of a listing, and one reservation or
+    # order line may ask for at most this many (more needs a call to the shop). Owners, staff and admins always see
+    # exact counts. NEARSHOP_PUBLIC_STOCK_CAP.
+    public_stock_cap: int = Field(10, ge=1)
     # Reviews (P3.5, plan section 8.2): only from a verified phone (User.phone_verified_at). On since P4.1
     # wherever a customer can verify a phone: where phone sign-in is live (otp_live), and in development, where
     # the console provider verifies phones. A decision that departs from the prompt's "turn it on": it stays off
@@ -446,6 +451,169 @@ class Settings(BaseSettings):
     # either way, so NEARSHOP_COMPLETION_CODES_REQUIRED=false is a safe switch back. Delivery codes are created
     # either way.
     completion_codes_required: bool = True
+
+    # Plans and subscriptions (P9.4, app/services/plans.py; plan section 8.18). The prices and entitlements are data
+    # (the plans collection, versioned); these are the rules around them, all assumptions under test
+    # (business/BUSINESS_MODEL.md), so they are settings, never constants in code.
+    # The IST day paid plans start: advance subscriptions become active for one year on it, and no shop-paid plan is
+    # recorded before it (until then a shop can only pay a refundable advance).
+    billing_starts_on: date = date(2027, 8, 1)
+    # The founding offer: Growth at the catalogue's founding price for the first year, for the first founding_offer_cap
+    # shops in these cities (comma-separated, compared without case), counted in order of first payment, advances
+    # included. The cap is enforced in a transaction (plans.claim_founding_slot).
+    founding_offer_cap: int = 100
+    founding_offer_cities: str = "Ballari,Bellary"
+    # The outcome guarantee: a paid quarter that ends with fewer than this many customer requests (P9.2) adds
+    # plan_guarantee_credit_months to the subscription's end date.
+    plan_guarantee_min_requests: int = 3
+    plan_guarantee_credit_months: int = 3
+    # An advance must be used within 365 days of its payment (plan section 8.18); the admins are alerted when one is
+    # still not active this many days after it.
+    advance_alert_days: int = 300
+
+    @field_validator("founding_offer_cap", "plan_guarantee_min_requests", "plan_guarantee_credit_months",
+                     "advance_alert_days", mode="after")
+    @classmethod
+    def _check_plan_numbers(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("NEARSHOP_FOUNDING_OFFER_CAP, NEARSHOP_PLAN_GUARANTEE_* and NEARSHOP_ADVANCE_ALERT_DAYS "
+                             "must be 0 or more")
+        return value
+
+    @property
+    def founding_city_list(self) -> list[str]:
+        """NEARSHOP_FOUNDING_OFFER_CITIES as lower-case names, without blanks."""
+        return [c.strip().lower() for c in self.founding_offer_cities.split(",") if c.strip()]
+
+    # Payments to NearShop's own account, receipts and invoices (P9.5, app/services/billing.py, docs/runbooks/billing.md).
+    # No account number, UPI handle or GSTIN is ever in the repository: they are these settings, set per environment.
+    # Payment requests are refused (503 billing_not_configured) until the UPI ID and the payee name are set.
+    billing_upi_id: str = ""  # NearShop's merchant UPI ID on the company's current account (B22)
+    billing_payee_name: str = ""  # the payee name the UPI app shows
+    # The supplier on every document: NearShop's legal name, address and GST state code (29 is Karnataka), and its
+    # GSTIN once registered (B5).
+    billing_legal_name: str = ""
+    billing_address: str = ""
+    billing_state_code: str = "29"
+    billing_gstin: str = ""
+    # The GST position (B5): "unregistered" (payment receipts that state no GST is charged) or "registered" (tax
+    # invoices and credit notes, GST added to the price) from billing_gst_registered_from, the IST day the CA sets.
+    billing_gst_mode: Literal["unregistered", "registered"] = "unregistered"
+    billing_gst_registered_from: date | None = None
+    billing_gst_rate_pct: int = 18
+    billing_sac: str = ""  # the SAC the CA chooses, printed on tax invoices and credit notes
+    # The document number: <prefix>/<YY-YY>/<6 digits>, one series per financial year, at most 16 characters.
+    billing_number_prefix: str = "NS"
+    # The document format the CA approved in writing (B22), as its version label, or "draft". A draft document
+    # carries "Draft format, not for use", and production refuses to issue one. The wording of each document type is
+    # the CA's approved text, copied here exactly, never written by the team; an approved format with no wording for
+    # a type refuses to issue that type.
+    billing_document_format: str = "draft"
+    billing_wording_receipt: str = ""
+    billing_wording_tax_invoice: str = ""
+    billing_wording_refund_receipt: str = ""
+    billing_wording_credit_note: str = ""
+    # The daily reconciliation alert: a bank credit still unmatched this many working days (Monday to Friday, except
+    # the bank holidays listed, comma-separated ISO dates) after the day it was credited.
+    billing_unmatched_alert_working_days: int = 3
+    billing_bank_holidays: str = ""
+
+    @field_validator("billing_gst_rate_pct", "billing_unmatched_alert_working_days", mode="after")
+    @classmethod
+    def _check_billing_numbers(cls, value: int) -> int:
+        if not 0 <= value <= 100:
+            raise ValueError("NEARSHOP_BILLING_GST_RATE_PCT and NEARSHOP_BILLING_UNMATCHED_ALERT_WORKING_DAYS must be "
+                             "between 0 and 100")
+        return value
+
+    @field_validator("billing_number_prefix", mode="after")
+    @classmethod
+    def _check_number_prefix(cls, value: str) -> str:
+        # <prefix>/YY-YY/NNNNNN stays within the 16 characters the GST rules allow.
+        if not (1 <= len(value) <= 3 and value.isascii() and value.isalnum() and value == value.upper()):
+            raise ValueError("NEARSHOP_BILLING_NUMBER_PREFIX is 1 to 3 capital letters or digits")
+        return value
+
+    @field_validator("billing_state_code", mode="after")
+    @classmethod
+    def _check_state_code(cls, value: str) -> str:
+        if not (len(value) == 2 and value.isdigit()):
+            raise ValueError("NEARSHOP_BILLING_STATE_CODE is the two-digit GST state code (29 for Karnataka)")
+        return value
+
+    @model_validator(mode="after")
+    def _check_gst_mode(self) -> "Settings":
+        if self.billing_gst_mode == "registered" and (self.billing_gst_registered_from is None
+                                                      or not self.billing_gstin.strip()):
+            raise ValueError("NEARSHOP_BILLING_GST_MODE=registered needs NEARSHOP_BILLING_GST_REGISTERED_FROM and "
+                             "NEARSHOP_BILLING_GSTIN")
+        return self
+
+    # UPI Autopay for monthly plans (P9.6, app/services/gateway.py, docs/runbooks/billing.md). Off by default: until
+    # autopay_enabled is on and the gateway is configured, POST /api/owner/billing/autopay answers 503
+    # autopay_not_configured. The gateway is an RBI-authorised one with UPI Autopay (Razorpay subscriptions; B22: an
+    # account in the company's name). autopay_provider "fake" is an in-memory stand-in for development and test only;
+    # the test suite never reaches the gateway. Keys: the key id and secret from the gateway's dashboard, and the
+    # webhook secret typed into its webhook settings, which signs every webhook call (X-Razorpay-Signature). Test-mode
+    # keys only outside production: a live key id (rzp_live_...) anywhere else stops startup. Live keys are set only in
+    # the production Render environment, never in the repository or on staging.
+    autopay_enabled: bool = False
+    autopay_provider: Literal["fake", "razorpay"] = "fake"
+    autopay_key_id: str = ""
+    autopay_key_secret: SecretStr = SecretStr("")
+    autopay_webhook_secret: SecretStr = SecretStr("")
+    autopay_api_base: str = "https://api.razorpay.com/v1"
+    # How many monthly debits one mandate allows (the gateway's total_count); the owner sets it up again after.
+    autopay_total_count: int = 60
+    # A monthly subscription under an authorised mandate does not lapse at its end date while the gateway debits and
+    # retries: it is held this many days, then lapses if no debit succeeded (confirm the retry schedule with the
+    # gateway). The gateway's final failure (subscription.halted) lapses it at once.
+    autopay_grace_days: int = 3
+    # The daily reconciliation: the gateway's settlement reports of the last autopay_reconcile_days IST days are
+    # compared with the payment rows, and a debit not settled autopay_settlement_days after it was paid is a mismatch.
+    autopay_reconcile_days: int = 3
+    autopay_settlement_days: int = 5
+
+    @field_validator("autopay_total_count", "autopay_grace_days", "autopay_reconcile_days",
+                     "autopay_settlement_days", mode="after")
+    @classmethod
+    def _check_autopay_numbers(cls, value: int) -> int:
+        if not 1 <= value <= 120:
+            raise ValueError("NEARSHOP_AUTOPAY_TOTAL_COUNT, _GRACE_DAYS, _RECONCILE_DAYS and _SETTLEMENT_DAYS must be "
+                             "between 1 and 120")
+        return value
+
+    @model_validator(mode="after")
+    def _check_autopay_keys(self) -> "Settings":
+        if self.environment != "production" and self.autopay_key_id.strip().startswith("rzp_live_"):
+            raise ValueError(f"NEARSHOP_AUTOPAY_KEY_ID is a live key; {self.environment} uses gateway test-mode keys "
+                             f"only")
+        if self.autopay_enabled and self.autopay_provider == "fake" and self.environment not in ("development",
+                                                                                                "test"):
+            raise ValueError("NEARSHOP_AUTOPAY_PROVIDER=fake is for development and test only")
+        return self
+
+    @property
+    def autopay_configured(self) -> bool:
+        """Whether Autopay mandates can be set up here: on, and the fake gateway (development and test) or the
+        gateway's key id, key secret and webhook secret."""
+        if not self.autopay_enabled:
+            return False
+        if self.autopay_provider == "fake":
+            return self.environment in ("development", "test")
+        return bool(self.autopay_key_id.strip() and self.autopay_key_secret.get_secret_value().strip()
+                    and self.autopay_webhook_secret.get_secret_value().strip())
+
+    @property
+    def billing_holiday_list(self) -> list[date]:
+        """NEARSHOP_BILLING_BANK_HOLIDAYS as dates (an entry that is not an ISO date is ignored)."""
+        days = []
+        for part in self.billing_bank_holidays.split(","):
+            try:
+                days.append(date.fromisoformat(part.strip()))
+            except ValueError:
+                continue
+        return days
 
     # AI
     embedding_provider: str = "fastembed"  # fastembed | tfidf

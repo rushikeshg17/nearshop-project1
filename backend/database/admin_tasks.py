@@ -12,6 +12,7 @@
     uv run python -m database.admin_tasks search-index status --tier Flex
     uv run python -m database.admin_tasks search-index drop [--production]
     uv run python -m database.admin_tasks consent-report --since 2027-01-17
+    uv run python -m database.admin_tasks facilitated-sales --fy 2027-28
 
 They act on the database in NEARSHOP_MONGODB_URI / NEARSHOP_MONGODB_DB, the same one the API uses,
 without wiping anything (the seed is the tool that replaces a database).
@@ -57,6 +58,12 @@ without wiping anything (the seed is the tool that replaces a database).
   consent-report   read-only (P3.1). The number of users created on or after --since (a UTC date), and how
                    many of them lack a granted consent row for a required purpose, an age-declaration row,
                    or either, with the ids (at most 50) of those that lack one.
+  facilitated-sales  read-only (P9.2). For an Indian financial year (--fy 2027-28: 1 April 2027 to 31 March 2028,
+                   IST) it writes a CSV of shop id, shop name, completed pickups, completed deliveries and their
+                   total value in rupees (app/services/leads.py facilitated_sales), for the CA's review of TDS on
+                   e-commerce sales (business model risk R22). The file goes to --out, by default
+                   ~/.nearshop/reports/facilitated-sales-FY<fy>.csv (outside the repository), and is never
+                   overwritten unless --force is given. It prints only the file path and the row count.
 
 Commands that write (backfill-thumbnails writes to the photo storage, not the database) show the
 database name and ask the operator to type it; anything else changes nothing. No command prints an email
@@ -66,6 +73,7 @@ account's sessions (a new token_version, no recorded sessions).
 from __future__ import annotations
 
 import argparse
+import csv
 import getpass
 import hashlib
 import os
@@ -75,6 +83,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time
+from pathlib import Path
 
 from pydantic import EmailStr, TypeAdapter, ValidationError
 from pymongo import UpdateOne
@@ -100,7 +109,7 @@ from app.core.security import (
 )
 from app.models import Role, User
 from app.schemas.requests import AGE_PURPOSE, REQUIRED_PURPOSES
-from app.services import media
+from app.services import leads, media
 from app.utils.hours import IST
 from database.seed.seed import RETIRED_DEMO_PASSWORD_SHA256
 
@@ -772,6 +781,54 @@ def consent_report(db: Database, since: date, out: Out = print) -> int:
     return 1 if missing else 0
 
 
+# ---------------------------------------------------------------- facilitated sales (P9.2)
+REPORTS_DIR = Path.home() / ".nearshop" / "reports"
+
+
+def financial_year(value: str) -> int:
+    """The starting year of an Indian financial year written 2027-28 (or 2027-2028, or 2027)."""
+    head, _, tail = value.strip().partition("-")
+    if not (head.isdigit() and len(head) == 4):
+        raise argparse.ArgumentTypeError(f"{value!r} is not a financial year such as 2027-28")
+    start = int(head)
+    if tail and tail not in (f"{(start + 1) % 100:02d}", str(start + 1)):
+        raise argparse.ArgumentTypeError(f"{value!r}: a financial year runs from April {start} to March {start + 1}")
+    return start
+
+
+def fy_label(start_year: int) -> str:
+    return f"{start_year}-{(start_year + 1) % 100:02d}"
+
+
+CSV_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_text(value: str) -> str:
+    """A text cell safe to open in a spreadsheet: text that a spreadsheet would run as a formula (it starts with =, +,
+    -, @, a tab or a carriage return) gets a leading apostrophe, so shop owners' own names cannot inject formulas."""
+    return f"'{value}" if value.startswith(CSV_FORMULA_START) else value
+
+
+def facilitated_sales(db: Database, start_year: int, path: Path | None = None, *, force: bool = False,
+                      out: Out = print) -> int:
+    """Write the financial year's facilitated sales per shop as a CSV (module docstring). Read-only on the database;
+    prints the path and the row count, never a shop's figures."""
+    path = (path or REPORTS_DIR / f"facilitated-sales-FY{fy_label(start_year)}.csv").expanduser()
+    if path.exists() and not force:
+        out(f"{path} already exists; give --force to replace it, or another --out.")
+        return 1
+    rows = leads.facilitated_sales(db, start_year)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=leads.FACILITATED_COLUMNS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({**row, "shop_name": csv_text(row["shop_name"]), "total_value": f"{row['total_value']:.2f}"})
+    out(f"{path}")
+    out(f"{len(rows)} row(s)")
+    return 0
+
+
 # ---------------------------------------------------------------- command line
 def _retired_password_from_operator() -> str | None:
     """The old default, from the environment or hidden input, refused unless it matches the digest."""
@@ -811,6 +868,10 @@ def main(argv: list[str] | None = None, ask: Ask = input, out: Out = print) -> i
                               help="required to create or drop on production (21:00 to 06:00 IST only)")
     consents = sub.add_parser("consent-report", help="read-only: users since a date without consent rows")
     consents.add_argument("--since", type=date.fromisoformat, required=True, help="a UTC date, YYYY-MM-DD")
+    sales = sub.add_parser("facilitated-sales", help="read-only: a CSV of each shop's completed sales in a financial year")
+    sales.add_argument("--fy", type=financial_year, required=True, help="the financial year, such as 2027-28")
+    sales.add_argument("--out", type=Path, help="the CSV file (default ~/.nearshop/reports/...)")
+    sales.add_argument("--force", action="store_true", help="replace the file if it exists")
     args = parser.parse_args(argv)
 
     db = Database()
@@ -840,6 +901,8 @@ def main(argv: list[str] | None = None, ask: Ask = input, out: Out = print) -> i
         return backfill_thumbnails(db, ask, out, args.batch_size)
     if args.command == "consent-report":
         return consent_report(db, args.since, out)
+    if args.command == "facilitated-sales":
+        return facilitated_sales(db, args.fy, args.out, force=args.force, out=out)
     return list_admins(db, out)
 
 

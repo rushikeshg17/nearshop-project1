@@ -19,7 +19,7 @@ from app.ai.semantic_index import index
 from app.core.config import settings
 from app.core.database import Collection, Database
 from app.models import CatalogItem, Category, Product, Role, Shop, User
-from app.schemas.serializers import STALE_DAYS, freshness, listing, shop_brief
+from app.schemas.serializers import STALE_DAYS, freshness, listing, public_listing, shop_brief
 from app.services import search as search_module
 from app.services.loaders import category_by_slug, with_category
 from app.services.search import (
@@ -174,8 +174,9 @@ def uncapped(db: Database, p: SearchParams, now: datetime = NOW) -> dict:
             "min_price": min(prices), "max_price": max(prices), "mrp": best.mrp,
             "nearest_km": round(nearest, 2), "shop_count": len(items), "in_stock_count": len(in_stock),
             "relevance": round(rel, 3), "score": round(score, 4),
-            "best_offer": listing(best, shop_json(best.shop_id), now),
-            "offers": [listing(x, shop_json(x.shop_id), now) for x in offers[:6]]})
+            # Public counts (P10.1): capped unless the shop opted in.
+            "best_offer": public_listing(best, shop_json(best.shop_id), now, seller=shops[best.shop_id][0]),
+            "offers": [public_listing(x, shop_json(x.shop_id), now, seller=shops[x.shop_id][0]) for x in offers[:6]]})
     sorters = {"relevance": lambda g: -g["score"], "distance": lambda g: (g["in_stock_count"] == 0, g["nearest_km"]),
                "price_asc": lambda g: (g["in_stock_count"] == 0, g["min_price"]),
                "price_desc": lambda g: (g["in_stock_count"] == 0, -g["min_price"])}

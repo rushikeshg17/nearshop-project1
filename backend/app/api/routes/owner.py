@@ -13,6 +13,7 @@ from app.core.database import Database, utcnow
 from app.core.deps import DB, OwnerShop, OwnerUser
 from app.core.errors import AppError, Conflict, NotFound
 from app.models import Category, GeoPoint, InventoryReason, Order, Product, Reservation, Shop
+from app.models.billing import Actor
 from app.models.core import (
     RENEWAL_WINDOW_DAYS,
     KycType,
@@ -21,8 +22,10 @@ from app.models.core import (
     validate_kyc_number,
 )
 from app.schemas.requests import (
+    BillingAccountIn,
     CatalogAddIn,
     PaymentMethod,
+    PaymentRequestIn,
     ProductIn,
     ProductUpdateIn,
     ShopUpdateIn,
@@ -39,7 +42,7 @@ from app.schemas.serializers import (
     shop_detail,
     thumbnail_url,
 )
-from app.services import analytics, importer
+from app.services import analytics, billing, gateway, importer, plans
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
 from app.services import reviews as review_service
@@ -228,6 +231,58 @@ def overview(shop: OwnerShop, db: DB):
     data["pending_orders"] = _ord(db, pending)
     data["shop"] = {"id": shop.id, "name": shop.name, "slug": shop.slug, "offers_delivery": shop.offers_delivery}
     return data
+
+
+@router.get("/plan")
+def my_plan(shop: OwnerShop, db: DB):
+    """The shop's plan (P9.4): its entitlements and end date, the founding offer, this quarter's outcome-guarantee
+    progress, any advance waiting for billing to start, and the plans on sale."""
+    return plans.owner_plan(db, shop)
+
+
+# ------------------------------------------------------------------ payments to NearShop (P9.5, app/services/billing.py)
+
+
+@router.get("/billing")
+def my_billing(shop: OwnerShop, db: DB):
+    """The billing account, open payment requests (NearShop's UPI ID, payee name, amount and the request number as
+    the note), payments and their receipts or invoices, and UPI Autopay for Growth monthly (P9.6)."""
+    return {**billing.owner_billing(db, shop), "autopay": gateway.owner_autopay(db, shop)}
+
+
+@router.put("/billing/account")
+def update_billing_account(body: BillingAccountIn, shop: OwnerShop, user: OwnerUser, db: DB):
+    """The legal name, address, GST state code and GSTIN printed on future documents."""
+    account = billing.update_account(db, user.id, legal_name=body.legal_name, address=body.address,
+                                     state_code=body.state_code, gstin=body.gstin, shop=shop)
+    return billing.account_out(account)
+
+
+@router.post("/billing/requests")
+def request_payment(body: PaymentRequestIn, shop: OwnerShop, user: OwnerUser, db: DB):
+    """A payment request for a plan year: pay it by UPI to NearShop's account with its number as the note."""
+    req = billing.create_request(db, shop, plan_code=body.plan_code, period=body.period,
+                                 actor=Actor(type="owner", id=user.id))
+    return billing.request_out(req)
+
+
+@router.post("/billing/autopay")
+def start_autopay(shop: OwnerShop, user: OwnerUser, db: DB):
+    """Growth monthly by UPI Autopay (P9.6, app/services/gateway.py): the mandate, with the gateway's checkout link
+    where the owner approves it in their UPI app. A mandate still waiting for approval is returned as it is."""
+    return gateway.mandate_out(gateway.create_mandate(db, shop, actor=Actor(type="owner", id=user.id)))
+
+
+@router.post("/billing/autopay/cancel")
+def cancel_autopay(shop: OwnerShop, user: OwnerUser, db: DB):
+    """Cancel UPI Autopay: no more debits; the plan ends at the end of the paid month."""
+    return gateway.mandate_out(gateway.cancel_mandate(db, shop, actor=Actor(type="owner", id=user.id)))
+
+
+@router.get("/billing/documents/{document_id}")
+def billing_document(document_id: int, shop: OwnerShop, db: DB):
+    """One receipt, tax invoice, refund receipt or credit note, as issued."""
+    return billing.owner_document(db, shop, document_id)
 
 
 @router.get("/insights")

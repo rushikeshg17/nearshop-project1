@@ -13,8 +13,15 @@ guard (the X-NearShop-Client header) does not apply: Meta's calls never send it.
     update, or a reply to an unknown number. A signed call gets 200, whatever it holds, so Meta does not retry it,
     except when handling a message failed: that message's claim is removed and the call answers 500, so Meta's
     retry handles it (statuses already recorded are duplicates then).
+  * POST /api/webhooks/autopay (P9.6): the payment gateway's UPI Autopay events (mandate authorised, debit
+    succeeded, debit failed, last retry failed, mandate cancelled) for app/services/gateway.py. The raw body must
+    carry a valid X-Razorpay-Signature, the HMAC-SHA256 of the body keyed with NEARSHOP_AUTOPAY_WEBHOOK_SECRET;
+    otherwise 403 bad_signature, and nothing is read. Each event id (X-Razorpay-Event-Id, or the body's hash when
+    there is none) is processed once, so the gateway's retries and replayed events change nothing. A signed call
+    gets 200 once its event is recorded; an unexpected error answers 500, nothing is recorded, and the gateway
+    retries it.
 
-The secret and the token come only from settings. Like every /api path, these are reached through the site's domain
+The secrets and the token come only from settings. Like every /api path, these are reached through the site's domain
 (Vercel's proxy adds the edge secret, P2.3), and count against the default per-IP rate limit.
 """
 import hmac
@@ -28,7 +35,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.config import settings
 from app.core.database import Database
 from app.core.errors import AppError
-from app.services import whatsapp
+from app.services import gateway, whatsapp
 
 log = logging.getLogger("nearshop.webhooks")
 
@@ -66,3 +73,23 @@ async def whatsapp_events(request: Request):
     counts = await run_in_threadpool(whatsapp.record_statuses, Database(), payload)
     messages = await run_in_threadpool(whatsapp.handle_messages, Database(), payload)
     return {"ok": True, **counts, "messages": messages}
+
+
+@router.post("/autopay")
+async def autopay_events(request: Request):
+    """UPI Autopay events from the payment gateway, signed with the webhook secret (module docstring)."""
+    body = await request.body()
+    secret = settings.autopay_webhook_secret.get_secret_value().strip()
+    if not gateway.signature_valid(secret, body, request.headers.get(gateway.SIGNATURE_HEADER)):
+        log.warning("Autopay webhook call refused: %s", "bad signature" if secret else "no webhook secret configured")
+        raise WebhookRefused("The request signature is not valid.", code="bad_signature")
+    try:
+        payload = json.loads(body) if body else {}
+    except ValueError:
+        payload = None
+    if not isinstance(payload, dict):
+        log.warning("Autopay webhook call with a signed body that is not a JSON object")
+        return {"ok": True, "outcome": "ignored"}
+    event_id = (request.headers.get(gateway.EVENT_ID_HEADER) or "").strip() or gateway.body_event_id(body)
+    result = await run_in_threadpool(gateway.process_event, Database(), event_id, payload)
+    return {"ok": True, **result}

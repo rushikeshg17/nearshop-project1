@@ -56,7 +56,7 @@ from app.core.config import SEARCH_SIMILARITY_SCALE, EnginePair, RankingConfig, 
 from app.core.database import Database, utcnow
 from app.models import Product, SearchEvent, Shop
 from app.models.core import live_shop_filter
-from app.schemas.serializers import STALE_DAYS, freshness, listing, media_url, shop_brief, thumbnail_url
+from app.schemas.serializers import STALE_DAYS, freshness, media_url, public_listing, shop_brief, thumbnail_url
 from app.services.loaders import categories, category_by_slug, with_categories, with_category
 from app.services.privacy import consent_granted
 from app.utils.geo import haversine_km, within_km
@@ -495,8 +495,10 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
             "in_stock_count": g["in_stock_count"],
             "relevance": g["relevance"],
             "score": g["score"],
-            "best_offer": listing(best_offer, shop_json(best_offer.shop_id), now),
-            "offers": [listing(x, shop_json(x.shop_id), now) for o in g["offers"] if (x := shown.get(o["_id"]))],
+            "best_offer": public_listing(best_offer, shop_json(best_offer.shop_id), now,
+                                         seller=shops[best_offer.shop_id][0]),
+            "offers": [public_listing(x, shop_json(x.shop_id), now, seller=shops[x.shop_id][0])
+                       for o in g["offers"] if (x := shown.get(o["_id"]))],
         })
 
     # Map pins: every shop with at least one matching listing.

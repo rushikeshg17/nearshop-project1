@@ -175,9 +175,11 @@ def test_the_default_scheduler_runs_the_real_sweep(mongo):
     mongo[jobs.LEASES].delete_many({"_id": {"$in": list(jobs.JOBS)}})
     s = jobs.Scheduler(mongo, holder="process-real")
     # The storage snapshot (P2.2), the retention and scheduled-deletion jobs (P3.2), the phone migration (P4.2) and
-    # the WhatsApp outbox sender (P4.3) and the daily stock check (P4.4).
+    # the WhatsApp outbox sender (P4.3), the daily stock check (P4.4), the monthly lead counts (P9.2), the
+    # subscriptions job (P9.4) and the daily billing reconciliation (P9.5).
     assert s.tick() == {"sweep_expired": True, "snapshot_storage": True, "retention": True, "process_deletions": True,
-                        "phone_migration": True, "send_notifications": True, "stock_check": True}
+                        "phone_migration": True, "send_notifications": True, "stock_check": True,
+                        "lead_counts": True, "subscriptions": True, "billing_reconciliation": True}
     result = mongo[jobs.LEASES].find_one({"_id": "sweep_expired"})["last_result"]
     assert result["ok"] is True and {"expired_reservations", "cancelled_orders"} <= set(result)
     s.shutdown()

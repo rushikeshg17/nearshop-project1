@@ -39,6 +39,18 @@ ACTIVE = {RS.REQUESTED, RS.CONFIRMED, RS.READY_FOR_PICKUP}
 # Customers cannot see or reserve from a shop whose verification is not in force (P3.3).
 SHOP_NOT_VERIFIED = "This shop is not available on NearShop right now"
 MAX_ACTIVE_PER_CUSTOMER = 5
+# Public stock bands (P10.1, plan section 8.20). For a shop that has not opted in to exact stock (Shop.show_exact_stock),
+# a customer's error never states a count, and one request may ask for at most settings.public_stock_cap units.
+NOT_ENOUGH_STOCK = "Not enough in stock for that quantity"
+
+
+def check_public_cap(shop: Shop, quantity: int) -> None:
+    """Refuse (422 quantity_above_cap) a reservation or order line above settings.public_stock_cap from a shop without
+    the exact-stock opt-in; opted-in shops keep the request schemas' limits."""
+    cap = settings.public_stock_cap
+    if not shop.show_exact_stock and quantity > cap:
+        raise AppError(f"You can ask for up to {cap} at a time online. Call the shop for more",
+                       code="quantity_above_cap", status_code=422)
 
 # (from_status, action) -> (to_status, who may do it)
 TRANSITIONS: dict[tuple[RS, str], tuple[RS, set[str]]] = {
@@ -92,11 +104,15 @@ def _create_reservation(db: Database, customer: User, product_id: int, quantity:
         raise Conflict(SHOP_NOT_VERIFIED, code="shop_not_verified")
     if quantity < 1 or quantity > 20:
         raise Conflict("You can reserve between 1 and 20 units")
+    check_public_cap(shop, quantity)
     if product.quantity < quantity:
-        raise Conflict(
-            f"Only {product.quantity} in stock" if product.quantity else "This item is out of stock",
-            code="insufficient_stock",
-        )
+        if not product.quantity:
+            message = "This item is out of stock"
+        elif shop.show_exact_stock:
+            message = f"Only {product.quantity} in stock"
+        else:
+            message = NOT_ENOUGH_STOCK
+        raise Conflict(message, code="insufficient_stock")
 
     active = db.reservations.find_raw({"customer_id": customer.id, "status": {"$in": list(ACTIVE)}}, {"product_id": 1})
     if any(r["product_id"] == product.id for r in active):

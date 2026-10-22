@@ -72,6 +72,28 @@ export const api = {
   },
 };
 
+export type LeadKind = "call_tap" | "directions_tap";
+
+/**
+ * Records a tap on a shop's Call or Directions link (P9.2), just before the browser follows it. Fire and forget:
+ * fetch with keepalive still completes when the tap opens the dialler or the map (a beacon could not send the
+ * X-NearShop-Client header the API requires), and a failed, slow or refused call never blocks or delays the link.
+ * No cookies are sent: nothing ties the tap to an account.
+ */
+export function recordLead(shopId: number, kind: LeadKind, productId?: number): void {
+  try {
+    fetch("/api/leads", {
+      method: "POST",
+      keepalive: true,
+      credentials: "omit",
+      headers: { "X-NearShop-Client": "web", "Content-Type": "application/json" },
+      body: JSON.stringify(productId === undefined ? { shop_id: shopId, kind } : { shop_id: shopId, kind, product_id: productId }),
+    }).catch(() => undefined);
+  } catch {
+    // Never let counting get in the way of the link.
+  }
+}
+
 export function errorMessage(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
