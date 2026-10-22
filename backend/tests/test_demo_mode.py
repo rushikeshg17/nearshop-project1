@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from app.ai import anomaly
 from app.core.config import Settings, settings
 from app.core.database import Database, utcnow
 from app.core.database import client as mongo_client
@@ -105,6 +106,7 @@ def test_bootstrap_in_production_upserts_reference_data_and_never_deletes(boot_d
     counts = seed.bootstrap_catalogue(boot_db)
     assert counts["categories_added"] == counts["catalog_items_added"] == 0
     assert counts["categories_updated"] == categories and counts["catalog_items_updated"] == items
+    assert counts["local_terms_listings"] == 0  # no listings: the only write outside the catalogue had nothing
     assert boot_db["categories"].count_documents({}) == categories + 1
     assert boot_db["catalog_items"].count_documents({}) == items + 1
 
@@ -227,6 +229,23 @@ def check_db(ids):
     mongo_client.drop_database(name)
     yield mongo_client[name]
     mongo_client.drop_database(name)
+
+
+def test_price_flag_runs_record_demo_data_truthfully(check_db):
+    """A price-flag run is marked as demo data only when it touched a seeded shop, so a private lab shows the
+    card to admins once the model runs on real listings."""
+    check_db["users"].insert_many([{"_id": 1, "email": "Shop1@Shops.NearShop.Demo"},
+                                   {"_id": 2, "email": "owner@example.org"}])
+    check_db["shops"].insert_many([{"_id": 10, "owner_id": 1, "is_active": True, "is_verified": True},
+                                   {"_id": 20, "owner_id": 2, "is_active": True, "is_verified": True}])
+    db = Database(check_db.name)
+    assert anomaly.demo_shop_ids(db) == {10}
+    assert anomaly.detect(db).uses_demo_data is True  # a seeded shop is among those counted
+
+    check_db["shops"].delete_one({"_id": 10})
+    run = anomaly.detect(db)
+    assert run.uses_demo_data is False
+    assert check_db["model_runs"].find_one({"_id": run.id})["uses_demo_data"] is False
 
 
 def test_demo_check_counts_is_demo_documents_and_demo_users(check_db, monkeypatch):

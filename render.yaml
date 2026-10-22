@@ -191,7 +191,10 @@ services:
   # The demo (P7.1, docs/runbooks/demo-environment.md): the synthetic Ballari city for the research paper and the
   # AI Lab, in its own M0 cluster and database (nearshop_demo), never staging's or production's. Free instance:
   # acceptable for a demo; it sleeps after 15 idle minutes and wakes on the next request (about a minute). A free
-  # instance has no pre-deploy step, so the schema migrations run when nearshop-reseed-demo resets the database.
+  # instance has no pre-deploy step, so the start command runs the schema migrations first (idempotent: nothing
+  # to do once applied), and a release that adds migrations is applied when the new instance starts, not only at
+  # the next reseed. nearshop-reseed-demo restarts it after each reseed (its deploy hook), so the in-process
+  # search index is rebuilt from the new data.
   # Its own Vercel project points at it, with NEXT_PUBLIC_NEARSHOP_DEMO_MODE=true and NEARSHOP_INDEXING unset.
   - type: web
     name: nearshop-api-demo
@@ -204,7 +207,9 @@ services:
     buildCommand: >-
       pip install uv && uv sync --frozen --no-dev &&
       uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"
-    startCommand: uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    startCommand: >-
+      uv run --no-dev python -m database.migrate &&
+      uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /api/health
     autoDeployTrigger: checksPass
     envVars:
@@ -254,7 +259,13 @@ services:
     buildCommand: >-
       pip install uv && uv sync --frozen --no-dev &&
       uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"
-    startCommand: uv run --no-dev python -m database.seed.seed --confirm-db "$NEARSHOP_MONGODB_DB"
+    # After a successful reseed only, the demo API is restarted through its Render deploy hook, so its in-process
+    # search index and caches are rebuilt from the new data. Blank NEARSHOP_DEMO_API_DEPLOY_HOOK_URL: no restart
+    # (restart it by hand, docs/runbooks/demo-environment.md). A failed hook call fails the job, so it shows.
+    startCommand: >-
+      uv run --no-dev python -m database.seed.seed --confirm-db "$NEARSHOP_MONGODB_DB" &&
+      { [ -z "$NEARSHOP_DEMO_API_DEPLOY_HOOK_URL" ] ||
+      curl -fsS -m 30 --retry 3 -X POST -o /dev/null "$NEARSHOP_DEMO_API_DEPLOY_HOOK_URL"; }
     autoDeployTrigger: checksPass
     envVars:
       - key: PYTHON_VERSION
@@ -278,6 +289,8 @@ services:
         value: ballari
       - key: NEARSHOP_DEMO_PASSWORD
         sync: false # secret: a random value of at least 16 characters, shared privately with the team
+      - key: NEARSHOP_DEMO_API_DEPLOY_HOOK_URL
+        sync: false # secret: nearshop-api-demo's deploy hook (Dashboard > Settings > Deploy Hook); blank: no restart
 
   # Nightly off-site backup of the staging database (P1.6, backend/database/backup.py): every collection as
   # gzipped BSON plus a manifest, in the private backup bucket under staging/<set id>/, then sets older than

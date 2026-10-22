@@ -46,7 +46,8 @@ minute. That is acceptable for a demo and never for production.
      NEARSHOP_PROTECTED_HOSTS (the staging and production Atlas project domains, so the reseed can never reach
      them), NEARSHOP_TOTP_KEY (its own);
    - nearshop-reseed-demo: NEARSHOP_DEMO_PASSWORD (a random value of at least 16 characters, kept in the team
-     password manager; the demo accounts get it).
+     password manager; the demo accounts get it), and NEARSHOP_DEMO_API_DEPLOY_HOOK_URL (nearshop-api-demo's
+     deploy hook, from its Settings; the reseed restarts the demo API with it, see "Reseed schedule").
 3. **First seed.** Trigger a run of nearshop-reseed-demo (Dashboard > nearshop-reseed-demo > Trigger Run). It
    resets nearshop_demo (which also runs the schema migrations), writes the city and trains the models, in a few
    minutes. Then open the demo API's /api/health/ready.
@@ -69,8 +70,17 @@ with NEARSHOP_ENVIRONMENT=demo. The P1.1 guard lets it run only in demo, develop
 host in NEARSHOP_PROTECTED_HOSTS and never against the production database name (nearshop_prod). Everything a
 visitor changed during the day (reservations, reviews, stock edits) is gone after the reseed, and the demo
 accounts work again with the demo password. A failed run leaves the demo as the reset left it: trigger the job
-again. If search on the demo looks stale after a reseed, restart nearshop-api-demo (Dashboard > Manual Deploy >
-Restart service).
+again.
+
+After a successful reseed the job calls nearshop-api-demo's deploy hook (NEARSHOP_DEMO_API_DEPLOY_HOOK_URL on
+the cron job: copy it from nearshop-api-demo > Settings > Deploy Hook), so the API starts again and rebuilds
+its in-process search index from the new data; a failed hook call fails the job. With the variable blank there
+is no restart: if search on the demo looks stale after a reseed, restart nearshop-api-demo by hand (Dashboard >
+Manual Deploy > Restart service).
+
+Schema: the free instance has no pre-deploy step, so its start command runs python -m database.migrate before
+the server starts. A release that adds migrations is applied to nearshop_demo when the new demo instance
+starts, and again (as a no-op) on each wake from sleep.
 
 ## Reproducing the paper's figures
 
@@ -107,8 +117,11 @@ the release log (P1.3).
 
    The catalogue bootstrap upserts the categories and catalogue items (by slug, with their Kannada, Telugu and
    Hindi terms) and never deletes. It writes no shops, users, sales or searches, and it refuses to run unless
-   --confirm-db repeats the database name and the migrations have run. It is safe to run again later to add
-   catalogue items.
+   --confirm-db repeats the database name and the migrations have run. Its one write outside the catalogue:
+   listings linked to a catalogue item get that item's local terms copied onto their local_terms field (as
+   migration m0004 does on every migrate); on the fresh database there are none. It is safe to run again later
+   to add catalogue items; on a database with real listings, its output's local_terms_listings says how many
+   listings' local terms it changed.
 3. **Switch.** One pull request changes render.yaml for production: NEARSHOP_MONGODB_DB to nearshop_prod on
    nearshop-api and on its backup, archive and retrain cron jobs, and NEARSHOP_DEMO_MODE to "false" on
    nearshop-api. Merge to main, check staging, fast-forward release (docs/runbooks/release-and-rollback.md).

@@ -22,7 +22,10 @@ What it creates (all demo data; sales are flagged is_demo=True so AI outputs say
 
 Catalogue-bootstrap mode (--catalogue-bootstrap, P7.1) is the only mode allowed in staging and production. It
 writes reference data only: it upserts the categories and catalogue items (matched by slug) and their local
-terms, and never deletes, resets or creates anything else (no shops, users, sales or searches). It needs
+terms, and never deletes, resets or creates anything else (no shops, users, sales or searches). The one write
+outside the catalogue: listings already linked to a catalogue item get that item's local_terms copied onto them
+(that field only, as migration m0004 does), so on a database with real listings a re-run can change their
+local_terms. It needs
 --confirm-db repeating the database name, and a database whose schema migrations have run
 (python -m database.migrate). docs/runbooks/demo-environment.md uses it to start production's fresh database.
 
@@ -237,8 +240,10 @@ def _upsert_by_slug(mongo: MongoDatabase, collection: str, docs: list[dict]) -> 
 def bootstrap_catalogue(mongo: MongoDatabase, categories_data: list[dict] | None = None,
                         catalog_data: list[dict] | None = None) -> dict[str, int]:
     """Upsert the categories and catalogue items from data/categories.json and data/catalog.json (or the lists
-    given) by slug, then their local terms (data/local_terms.json). Never deletes and writes nothing else.
-    Returns how many were added and updated."""
+    given) by slug, then their local terms (data/local_terms.json). Never deletes. Besides the catalogue, it
+    writes one field elsewhere: apply_local_terms copies each item's local_terms onto the listings (products)
+    linked to it whose terms differ, as migration m0004 does; nothing on a fresh database, but on one with
+    listings a re-run rewrites their local_terms. Returns how many were added and updated."""
     categories_data = load("categories.json") if categories_data is None else categories_data
     catalog_data = load("catalog.json") if catalog_data is None else catalog_data
     icons = {c["slug"]: c["icon"] for c in categories_data}
@@ -263,9 +268,10 @@ def bootstrap_catalogue(mongo: MongoDatabase, categories_data: list[dict] | None
         doc.pop("_id")
         item_docs.append(doc)
     items_added, items_updated = _upsert_by_slug(mongo, "catalog_items", item_docs)
-    terms_items, _listings = apply_local_terms(mongo)
+    terms_items, terms_listings = apply_local_terms(mongo)
     return {"categories_added": cats_added, "categories_updated": cats_updated, "catalog_items_added": items_added,
-            "catalog_items_updated": items_updated, "local_terms_items": terms_items}
+            "catalog_items_updated": items_updated, "local_terms_items": terms_items,
+            "local_terms_listings": terms_listings}
 
 
 def run_catalogue_bootstrap(confirm: str | None) -> dict[str, int]:
