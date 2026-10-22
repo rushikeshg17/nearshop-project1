@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BadgeCheck, Camera, Loader2, Save, ShieldCheck } from "lucide-react";
+import { BadgeCheck, Camera, IndianRupee, Loader2, Save, ShieldCheck } from "lucide-react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -33,13 +33,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useMeta } from "@/hooks/use-session";
-import { api, errorMessage } from "@/lib/api";
-import type { LanguageCode, Translate } from "@/lib/i18n";
+import { api, ApiError, errorMessage } from "@/lib/api";
+import type { LanguageCode, MessageKey, Translate } from "@/lib/i18n";
 import type { OwnerShopSettings, ShopDetail, ShopVerification } from "@/lib/types";
+import { normalizePayeeName, normalizeUpiId, payeeNameError, UPI_LIMITS, upiIdError } from "@/lib/upi";
 
 function toForm(s: ShopDetail): ShopFormState {
   return {
@@ -92,11 +94,22 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
   const [active, setActive] = useState(initial.is_active);
   const [confirming, setConfirming] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  // Direct UPI (P6.1, P6.2): the shop's own UPI ID, where customers pay it directly. Empty removes it.
+  const [upi, setUpi] = useState<UpiFormState>(() => ({ upi_id: initial.upi_id ?? "", upi_payee_name: initial.upi_payee_name ?? "" }));
+  const upiErrors = upiErrorsOf(upi);
 
   const save = useMutation({
-    mutationFn: () => api.patch<OwnerShopSettings>("/owner/shop", { ...shopPayload(form), offers_pickup: form.offers_pickup, is_active: active }),
+    mutationFn: () =>
+      api.patch<OwnerShopSettings>("/owner/shop", {
+        ...shopPayload(form),
+        offers_pickup: form.offers_pickup,
+        is_active: active,
+        upi_id: normalizeUpiId(upi.upi_id) || null,
+        upi_payee_name: normalizePayeeName(upi.upi_payee_name) || null,
+      }),
     onSuccess: (s) => {
       setConfirming(false);
+      setUpi({ upi_id: s.upi_id ?? "", upi_payee_name: s.upi_payee_name ?? "" });
       qc.setQueryData(["owner", "shop"], s);
       qc.setQueryData(["owner", "verification"], s.verification);
       qc.invalidateQueries({ queryKey: ["me"] });
@@ -105,6 +118,10 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
     },
     onError: (e) => {
       setConfirming(false);
+      // The API's own format check (the same rules) shows next to the field it names, in the interface language.
+      if (e instanceof ApiError && (e.field === "upi_id" || e.field === "upi_payee_name")) {
+        setUpi((u) => ({ ...u, server: { field: e.field! } }));
+      }
       toast.error(errorMessage(e));
     },
   });
@@ -124,6 +141,11 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
     <form
       onSubmit={(e) => {
         e.preventDefault();
+        if (upiErrors.upi_id || upiErrors.upi_payee_name) {
+          setUpi((u) => ({ ...u, shown: true }));
+          document.getElementById(upiErrors.upi_id ? "upi-id" : "upi-payee")?.focus();
+          return;
+        }
         if (needsReview) setConfirming(true);
         else save.mutate();
       }}
@@ -169,6 +191,7 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
             <Switch id="active" checked={active} onCheckedChange={setActive} />
           </div>
         </section>
+        <UpiFields s={upi} set={setUpi} errors={upiErrors} />
       </div>
       <div className="fixed inset-x-0 bottom-0 z-40 border-t bg-background/95 p-3 backdrop-blur lg:left-[248px]">
         <div className="mx-auto flex max-w-6xl justify-end px-1 md:px-3">
@@ -195,6 +218,97 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
         </DialogContent>
       </Dialog>
     </form>
+  );
+}
+
+type UpiFormState = {
+  upi_id: string;
+  upi_payee_name: string;
+  /** Show format errors: set once the owner leaves a field or tries to save. */
+  shown?: boolean;
+  /** The field the API refused in the last save, until it changes. */
+  server?: { field: string };
+};
+
+type UpiErrors = { upi_id: MessageKey | null; upi_payee_name: MessageKey | null };
+
+function upiErrorsOf(s: UpiFormState): UpiErrors {
+  // The API checks the same format rules (src/lib/upi.ts), so its refusal shows the same message.
+  return {
+    upi_id: upiIdError(s.upi_id) ?? (s.server?.field === "upi_id" ? "owner.settings.upi.idError" : null),
+    upi_payee_name: payeeNameError(s.upi_payee_name) ?? (s.server?.field === "upi_payee_name" ? "owner.settings.upi.payeeError" : null),
+  };
+}
+
+/** "Get paid by UPI" (P6.2): the shop's own UPI ID and payee name, with the format error under each field. */
+function UpiFields({
+  s,
+  set,
+  errors,
+}: {
+  s: UpiFormState;
+  set: (f: (s: UpiFormState) => UpiFormState) => void;
+  errors: UpiErrors;
+}) {
+  const { t } = useI18n();
+  const change = (k: "upi_id" | "upi_payee_name", v: string) => set((f) => ({ ...f, [k]: v, server: f.server?.field === k ? undefined : f.server }));
+  const show = (k: "upi_id" | "upi_payee_name") => {
+    const key = s.shown || s.server?.field === k ? errors[k] : null;
+    return key ? t(key, UPI_LIMITS[k]) : null;
+  };
+  const idError = show("upi_id");
+  const nameError = show("upi_payee_name");
+  return (
+    <section aria-labelledby="upi-title" className="space-y-5 rounded-2xl border bg-card p-5">
+      <div className="flex items-start gap-3">
+        <IndianRupee className="mt-0.5 size-5 shrink-0 text-primary" />
+        <div>
+          <h2 id="upi-title" className="font-semibold">{t("owner.settings.upi.title")}</h2>
+          <p className="text-sm text-muted-foreground">
+            {t("owner.settings.upi.intro")}
+          </p>
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="upi-id">{t("owner.settings.upi.idLabel")}</Label>
+        <Input
+          id="upi-id"
+          value={s.upi_id}
+          onChange={(e) => change("upi_id", e.target.value.replace(/\s/g, "").slice(0, 50))}
+          onBlur={() => s.upi_id && set((f) => ({ ...f, shown: true }))}
+          inputMode="email"
+          autoComplete="off"
+          autoCapitalize="none"
+          spellCheck={false}
+          placeholder={t("owner.settings.upi.idPlaceholder")}
+          aria-invalid={idError ? true : undefined}
+          aria-describedby={idError ? "upi-id-error" : "upi-id-hint"}
+        />
+        {idError ? (
+          <p id="upi-id-error" role="alert" className="text-sm font-medium text-destructive">{idError}</p>
+        ) : (
+          <p id="upi-id-hint" className="text-xs text-muted-foreground">{t("owner.settings.upi.idHint")}</p>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="upi-payee">{t("owner.settings.upi.payeeLabel")}</Label>
+        <Input
+          id="upi-payee"
+          value={s.upi_payee_name}
+          onChange={(e) => change("upi_payee_name", e.target.value.slice(0, 60))}
+          onBlur={() => s.upi_payee_name && set((f) => ({ ...f, shown: true }))}
+          autoComplete="off"
+          placeholder={t("owner.settings.upi.payeePlaceholder")}
+          aria-invalid={nameError ? true : undefined}
+          aria-describedby={nameError ? "upi-payee-error" : "upi-payee-hint"}
+        />
+        {nameError ? (
+          <p id="upi-payee-error" role="alert" className="text-sm font-medium text-destructive">{nameError}</p>
+        ) : (
+          <p id="upi-payee-hint" className="text-xs text-muted-foreground">{t("owner.settings.upi.payeeHint")}</p>
+        )}
+      </div>
+    </section>
   );
 }
 

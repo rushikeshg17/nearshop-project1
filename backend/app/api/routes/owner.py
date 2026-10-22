@@ -1,18 +1,19 @@
 """Shop owner: shop settings, inventory, catalog, reservation and delivery queues, insights."""
 import re
-from datetime import timedelta
-from typing import Literal
+from datetime import date, timedelta
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, File, Form, Query, UploadFile
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Discriminator, Field, Tag
 
-from app.ai.semantic_index import index
+from app.core import cache_version
 from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.core.deps import DB, OwnerShop, OwnerUser
 from app.core.errors import AppError, Conflict, NotFound
 from app.models import Category, GeoPoint, InventoryReason, Order, Product, Reservation, Shop
+from app.models.billing import Actor
 from app.models.core import (
     RENEWAL_WINDOW_DAYS,
     KycType,
@@ -21,7 +22,10 @@ from app.models.core import (
     validate_kyc_number,
 )
 from app.schemas.requests import (
+    BillingAccountIn,
     CatalogAddIn,
+    PaymentMethod,
+    PaymentRequestIn,
     ProductIn,
     ProductUpdateIn,
     ShopUpdateIn,
@@ -38,7 +42,7 @@ from app.schemas.serializers import (
     shop_detail,
     thumbnail_url,
 )
-from app.services import analytics, importer
+from app.services import analytics, billing, gateway, importer, plans
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
 from app.services import reviews as review_service
@@ -55,7 +59,6 @@ from app.services.loaders import (
 )
 from app.services.media import delete_image, delete_private, save_image, save_private_image
 from app.services.reliability import shop_reliability
-from app.services.search import reset_vocabulary
 from app.utils.text import normalize_query
 
 router = APIRouter(prefix="/owner", tags=["shop owner"])
@@ -64,10 +67,10 @@ RES_ACTIVE = list(reservation_service.ACTIVE)
 ORDER_OPEN = [*order_service.ACTIVE, "DELIVERY_FAILED"]
 
 
-def _listings_changed() -> None:
-    """Search caches (semantic index, spelling vocabulary) are rebuilt on the next query."""
-    index.mark_dirty()
-    reset_vocabulary()
+def _listings_changed(db: Database) -> None:
+    """After a committed change to listings: every API process's search caches (the semantic index, refreshed
+    incrementally, and the spelling vocabulary) follow within 5 seconds, this process's on its next search."""
+    cache_version.bump(db.mongo, cache_version.LISTINGS)
 
 
 # ------------------------------------------------------------------ verification (P3.3, plan section 8.1)
@@ -105,8 +108,9 @@ def verification_out(shop: Shop) -> dict:
 
 
 def _shop_settings(db: Database, shop: Shop, review_started: bool = False) -> dict:
+    # The UPI ID (P6.1) is added here, for the owner, and never by shop_detail, which public shop pages use too.
     return {**shop_detail(shop, None, shop_reliability(db, shop)), "verification": verification_out(shop),
-            "review_started": review_started}
+            "review_started": review_started, "upi_id": shop.upi_id, "upi_payee_name": shop.upi_payee_name}
 
 
 @router.get("/verification")
@@ -229,6 +233,58 @@ def overview(shop: OwnerShop, db: DB):
     return data
 
 
+@router.get("/plan")
+def my_plan(shop: OwnerShop, db: DB):
+    """The shop's plan (P9.4): its entitlements and end date, the founding offer, this quarter's outcome-guarantee
+    progress, any advance waiting for billing to start, and the plans on sale."""
+    return plans.owner_plan(db, shop)
+
+
+# ------------------------------------------------------------------ payments to NearShop (P9.5, app/services/billing.py)
+
+
+@router.get("/billing")
+def my_billing(shop: OwnerShop, db: DB):
+    """The billing account, open payment requests (NearShop's UPI ID, payee name, amount and the request number as
+    the note), payments and their receipts or invoices, and UPI Autopay for Growth monthly (P9.6)."""
+    return {**billing.owner_billing(db, shop), "autopay": gateway.owner_autopay(db, shop)}
+
+
+@router.put("/billing/account")
+def update_billing_account(body: BillingAccountIn, shop: OwnerShop, user: OwnerUser, db: DB):
+    """The legal name, address, GST state code and GSTIN printed on future documents."""
+    account = billing.update_account(db, user.id, legal_name=body.legal_name, address=body.address,
+                                     state_code=body.state_code, gstin=body.gstin, shop=shop)
+    return billing.account_out(account)
+
+
+@router.post("/billing/requests")
+def request_payment(body: PaymentRequestIn, shop: OwnerShop, user: OwnerUser, db: DB):
+    """A payment request for a plan year: pay it by UPI to NearShop's account with its number as the note."""
+    req = billing.create_request(db, shop, plan_code=body.plan_code, period=body.period,
+                                 actor=Actor(type="owner", id=user.id))
+    return billing.request_out(req)
+
+
+@router.post("/billing/autopay")
+def start_autopay(shop: OwnerShop, user: OwnerUser, db: DB):
+    """Growth monthly by UPI Autopay (P9.6, app/services/gateway.py): the mandate, with the gateway's checkout link
+    where the owner approves it in their UPI app. A mandate still waiting for approval is returned as it is."""
+    return gateway.mandate_out(gateway.create_mandate(db, shop, actor=Actor(type="owner", id=user.id)))
+
+
+@router.post("/billing/autopay/cancel")
+def cancel_autopay(shop: OwnerShop, user: OwnerUser, db: DB):
+    """Cancel UPI Autopay: no more debits; the plan ends at the end of the paid month."""
+    return gateway.mandate_out(gateway.cancel_mandate(db, shop, actor=Actor(type="owner", id=user.id)))
+
+
+@router.get("/billing/documents/{document_id}")
+def billing_document(document_id: int, shop: OwnerShop, db: DB):
+    """One receipt, tax invoice, refund receipt or credit note, as issued."""
+    return billing.owner_document(db, shop, document_id)
+
+
 @router.get("/insights")
 def insights(shop: OwnerShop, db: DB):
     return analytics.owner_insights(db, shop)
@@ -334,7 +390,7 @@ def create_product(body: ProductIn, shop: OwnerShop, user: OwnerUser, db: DB):
             change_stock(db, p, body.quantity, InventoryReason.INITIAL, user.id)
 
     db.transaction(create)
-    _listings_changed()
+    _listings_changed(db)
     return listing(p)
 
 
@@ -351,7 +407,7 @@ def update_product(product_id: int, body: ProductUpdateIn, shop: OwnerShop, db: 
         data["keywords"] = _keywords([t.lower() for t in data.pop("tags")], p.category)
     if data:
         db.products.set(p, **data)
-    _listings_changed()
+    _listings_changed(db)
     return listing(p)
 
 
@@ -370,7 +426,7 @@ def delete_product(product_id: int, shop: OwnerShop, db: DB):
     if active_holds:
         raise Conflict(f"This item has {active_holds} active reservation(s). Complete or cancel them first.")
     db.products.set(p, is_active=False)
-    _listings_changed()
+    _listings_changed(db)
     return {"ok": True}
 
 
@@ -439,7 +495,7 @@ def add_from_catalog(body: CatalogAddIn, shop: OwnerShop, user: OwnerUser, db: D
                                 keywords=_keywords(c.tags or [], cats[c.category_id], c.subcategory), icon=c.icon,
                                 price=item.price, mrp=c.mrp, quantity=0), item.quantity))
     apply_bulk(db, shop, user.id, creates, updates)
-    _listings_changed()
+    _listings_changed(db)
     return {"added": len(creates), "reactivated": len(updates)}
 
 
@@ -448,16 +504,19 @@ def add_from_catalog(body: CatalogAddIn, shop: OwnerShop, user: OwnerUser, db: D
 class ShopTransitionIn(TransitionIn):
     """An owner's action on a reservation or order. code is required to complete a pickup (the reservation code
     the customer shows) and to deliver an order (the 4-digit delivery code only the customer sees), once
-    settings.completion_codes_required is on (P3.5; on by default since P3.7, whose screens ask for it)."""
+    settings.completion_codes_required is on (P3.5; on by default since P3.7, whose screens ask for it).
+    payment_method is required to complete or deliver (P6.1): cod, or upi_direct when the shop has a UPI ID."""
 
     code: str | None = Field(default=None, max_length=20)
+    payment_method: PaymentMethod | None = None
 
 
 def _res(db: Database, rows: list[Reservation], with_events: bool = False) -> list[dict]:
     hydrate_reservations(db, rows, customers=True)
     events = timelines(db, "reservation", [r.id for r in rows]) if with_events else {}
-    return [reservation_out(r, actions=reservation_service.allowed_actions(r, "owner"), for_owner=True,
-                            events=events.get(r.id) if with_events else None) for r in rows]
+    return [{**reservation_out(r, actions=reservation_service.allowed_actions(r, "owner"), for_owner=True,
+                               events=events.get(r.id) if with_events else None),
+             "payment_method": r.payment_method, "payment_status": r.payment_status} for r in rows]
 
 
 def _ord(db: Database, rows: list[Order], with_events: bool = False) -> list[dict]:
@@ -502,7 +561,8 @@ def shop_reservation(reservation_id: int, shop: OwnerShop, db: DB):
 def act_on_reservation(reservation_id: int, action: Literal["confirm", "reject", "ready", "complete", "cancel"],
                        body: ShopTransitionIn, shop: OwnerShop, user: OwnerUser, db: DB):
     r = _shop_reservation(db, shop, reservation_id)
-    r = reservation_service.transition(db, r.id, action, user, body.reason, code=body.code)
+    r = reservation_service.transition(db, r.id, action, user, body.reason, code=body.code,
+                                       payment_method=body.payment_method)
     return _res(db, [r], with_events=True)[0]
 
 
@@ -528,7 +588,8 @@ def act_on_order(order_id: int, action: Literal["confirm", "prepare", "dispatch"
                                                  "cancel"],
                  body: ShopTransitionIn, shop: OwnerShop, user: OwnerUser, db: DB):
     o = _shop_order(db, shop, order_id)
-    o = order_service.transition(db, o.id, action, user, body.reason, code=body.code)
+    o = order_service.transition(db, o.id, action, user, body.reason, code=body.code,
+                                 payment_method=body.payment_method)
     return _ord(db, [o], with_events=True)[0]
 
 
@@ -552,6 +613,36 @@ class ImportCommitIn(BaseModel):
     rows: list[ImportRow] = Field(min_length=1, max_length=importer.MAX_ROWS)
 
 
+# A sales report (P7.2): the lines the owner kept from the preview, with the report's first and last dates. Every
+# imported row the shop already has from start to end is replaced. is_demo and source are never taken from here.
+class SalesImportRow(BaseModel):
+    model_config = {"extra": "ignore"}
+    row: int | None = None
+    product_id: int
+    date: date
+    quantity: int = Field(ge=1, le=100_000)
+    unit_price: float = Field(ge=0, le=10_000_000)
+    bill: str | None = Field(default=None, max_length=importer.BILL_MAX_LENGTH)
+
+
+class SalesImportCommitIn(BaseModel):
+    kind: Literal["sales"]
+    start: date
+    end: date
+    rows: list[SalesImportRow] = Field(min_length=1, max_length=importer.MAX_ROWS)
+
+
+def _commit_kind(body: Any) -> str:
+    kind = body.get("kind") if isinstance(body, dict) else getattr(body, "kind", None)
+    return "sales" if kind == "sales" else "stock"
+
+
+# The stock and sales imports share the preview and commit routes (and so their rate limits): the preview takes
+# ?kind=sales, and a sales commit body has kind "sales".
+CommitBody = Annotated[Annotated[ImportCommitIn, Tag("stock")] | Annotated[SalesImportCommitIn, Tag("sales")],
+                       Discriminator(_commit_kind)]
+
+
 @router.get("/import/template", response_class=PlainTextResponse)
 def import_template(_: OwnerShop):
     return PlainTextResponse(importer.TEMPLATE_CSV, media_type="text/csv",
@@ -559,13 +650,16 @@ def import_template(_: OwnerShop):
 
 
 @router.post("/import/preview")
-def import_preview(shop: OwnerShop, db: DB, file: UploadFile = File(...)):
+def import_preview(shop: OwnerShop, db: DB, file: UploadFile = File(...),
+                   kind: Literal["stock", "sales"] = Query("stock")):
     data = file.file.read(settings.import_max_mb * 1024 * 1024 + 1)
+    if kind == "sales":
+        return importer.sales_preview(db, shop, data, file.filename or "upload.csv")
     return importer.preview(db, shop, data, file.filename or "upload.csv")
 
 
 @router.post("/import/commit")
-def import_commit(body: ImportCommitIn, shop: OwnerShop, user: OwnerUser, db: DB):
-    result = importer.commit(db, shop, [r.model_dump() for r in body.rows], user.id)
-    _listings_changed()
-    return result
+def import_commit(body: CommitBody, shop: OwnerShop, user: OwnerUser, db: DB):
+    if isinstance(body, SalesImportCommitIn):
+        return importer.sales_commit(db, shop, body.start, body.end, [r.model_dump() for r in body.rows])
+    return importer.commit(db, shop, [r.model_dump() for r in body.rows], user.id)  # bumps the listings version

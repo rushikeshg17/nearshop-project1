@@ -71,6 +71,10 @@ export function SiteHeader() {
   const { data: me, isLoading } = useMe();
   const { data: meta } = useMeta();
   const isHome = pathname === "/";
+  // The AI Lab link shows only where the lab answers (P7.1): open to everyone (ai_lab_public: the demo and
+  // development) or to an admin; production answers 404 to everyone else. Same rule as site-footer.tsx.
+  const labPublic = (meta as { ai_lab_public?: boolean } | undefined)?.ai_lab_public === true;
+  const showLab = labPublic || me?.role === "admin";
 
   useEffect(() => {
     if (meta) registerCategoryHues(meta.categories);
@@ -101,16 +105,18 @@ export function SiteHeader() {
           >
             {t("shell.nav.shops")}
           </Link>
-          <Link
-            href="/ai"
-            prefetch={false}
-            className={cn(
-              "hidden rounded-full px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground xl:inline-flex",
-              pathname === "/ai" && "text-foreground",
-            )}
-          >
-            {t("shell.nav.aiLab")}
-          </Link>
+          {showLab && (
+            <Link
+              href="/ai"
+              prefetch={false}
+              className={cn(
+                "hidden rounded-full px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground xl:inline-flex",
+                pathname === "/ai" && "text-foreground",
+              )}
+            >
+              {t("shell.nav.aiLab")}
+            </Link>
+          )}
           <LanguageSwitch />
           {me && <NotificationsBell />}
           {isLoading ? (

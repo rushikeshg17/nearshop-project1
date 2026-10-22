@@ -4,13 +4,20 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal, get_args
 
 from pydantic import Field, model_validator
 
 from app.core.database import utcnow
 from app.models.base import Document, Embedded, GeoPoint, Timestamps
 from app.models.enums import InventoryReason, Role
+
+# The language a user reads notifications and WhatsApp messages in (P7.11, app/services/notification_text.py): a
+# language code, so Telugu and Hindi (P8.4) are one more value here and in the users validator
+# (database/schema.py), nothing else.
+Language = Literal["en", "kn"]
+LANGUAGES: tuple[str, ...] = get_args(Language)
+DEFAULT_LANGUAGE = "en"
 
 
 class UserSession(Embedded):
@@ -61,6 +68,8 @@ class User(Document, Timestamps):
     home_lat: float | None = None
     home_lng: float | None = None
     home_label: str | None = None
+    # The language notifications and WhatsApp messages reach the user in (P7.11). Documents written before it read en.
+    language: Language = DEFAULT_LANGUAGE
     # Revocable sessions (P2.4). Defaults cover documents written before them.
     token_version: int = 0
     sessions: list[UserSession] = Field(default_factory=list)
@@ -187,6 +196,30 @@ def validate_kyc_number(kyc_type: KycType | str, number: str) -> str:
     return value
 
 
+# The shop's own UPI ID (P6.1, plan section 8.8): a handle, an at sign and a provider, as in shopname@okhdfcbank or
+# 9876543210@ybl. Customers pay it directly; NearShop never holds their money.
+UPI_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*@[a-z][a-z0-9]*$")
+UPI_ID_MIN, UPI_ID_MAX = 3, 50
+UPI_PAYEE_MIN, UPI_PAYEE_MAX = 2, 60
+
+
+def validate_upi_id(value: str) -> str:
+    """The UPI ID, normalised (lower case, outer spaces removed), or ValueError with a message an owner can act on."""
+    upi = (value or "").strip().lower()
+    if not (UPI_ID_MIN <= len(upi) <= UPI_ID_MAX) or not UPI_ID_PATTERN.match(upi):
+        raise ValueError(f"A UPI ID looks like yourshop@okhdfcbank: a name or number, an @ and your bank or app, "
+                         f"{UPI_ID_MIN} to {UPI_ID_MAX} characters with no spaces")
+    return upi
+
+
+def validate_upi_payee_name(value: str) -> str:
+    """The payee name UPI apps show the customer, with runs of spaces collapsed, or ValueError."""
+    name = " ".join((value or "").split())
+    if not (UPI_PAYEE_MIN <= len(name) <= UPI_PAYEE_MAX) or any(not ch.isprintable() for ch in name):
+        raise ValueError(f"The payee name has {UPI_PAYEE_MIN} to {UPI_PAYEE_MAX} characters, as your UPI app shows it")
+    return name
+
+
 def evidence_keys(evidence: dict[str, Any] | None) -> list[str]:
     """The private photo keys in a stashed set of KYC evidence (Shop.previous_kyc)."""
     return [k for k in ((evidence or {}).get("kyc_document_key"), (evidence or {}).get("kyc_storefront_key")) if k]
@@ -234,6 +267,14 @@ class Shop(Document, Timestamps):
     delivery_fee: float = 0
     free_delivery_above: float | None = None
     hold_minutes: int = 30
+    # Direct UPI (P6.1, plan section 8.8): the shop's own UPI ID and the payee name for the payment link. Shown only
+    # in the owner's settings and in a customer's own orders and reservations, never in a public shop response.
+    upi_id: str | None = None
+    upi_payee_name: str | None = None
+    # Public stock bands (P10.1, plan section 8.20): false by default, so customers see a listing's quantity capped at
+    # settings.public_stock_cap and no exact count in any error, and may ask for at most that many units at once. The
+    # owner turns it on in shop settings to show exact counts. Owners, staff and admins always see exact counts.
+    show_exact_stock: bool = False
 
     is_active: bool = True
     # Kept in step with verification_status (true only while it is verified) for older readers.

@@ -26,11 +26,12 @@
       "forShopsHeading": "For shops",
       "howItWorksHeading": "How it works",
       "pickupDelivery": "Pickup and delivery",
-      "notice": "Map data from OpenStreetMap contributors. Demo data: shops, prices and sales are generated for demonstration.",
       "legal": "Legal",
       "privacy": "Privacy notice",
       "terms": "Terms of use",
-      "grievances": "Grievances"
+      "grievances": "Grievances",
+      "mapCredit": "Map data from OpenStreetMap contributors.",
+      "demoData": "Demo data: shops, prices and sales are generated for demonstration."
     },
     "userMenu": {
       "trigger": "Account menu",
@@ -463,7 +464,14 @@
         "other": "{count} shops nearby have this"
       },
       "inStock": "{count} in stock",
-      "compareAll": "Compare all"
+      "compareAll": "Compare all",
+      "freshness": {
+        "aging": {
+          "one": "Updated {count} day ago",
+          "other": "Updated {count} days ago"
+        },
+        "stale": "Stock not confirmed recently"
+      }
     },
     "product": {
       "opening": "Opening…",
@@ -795,8 +803,8 @@
           "body": "Once confirmed, walk in any time before the timer ends."
         },
         "pay": {
-          "title": "Inspect, then pay at the counter",
-          "body": "Cash or UPI at the shop. Nothing is charged online."
+          "title": "Inspect, then pay the shop",
+          "body": "Cash at the counter, or UPI to the shop directly if it takes UPI. NearShop never charges you."
         }
       },
       "note": "Note for the shop (optional)",
@@ -806,7 +814,7 @@
     },
     "delivery": {
       "title": "Request delivery",
-      "description": "{shop} delivers this themselves. Cash on delivery.",
+      "description": "{shop} delivers this themselves. Pay the shop on delivery, in cash or by UPI if it takes UPI.",
       "placeOrder": "Place order",
       "placeOrderTotal": "Place order · {price}",
       "each": "{price} each",
@@ -824,7 +832,7 @@
       "note": "Note (optional)",
       "notePlaceholder": "Call before coming",
       "sent": "Order {code} sent to {shop}",
-      "sentBody": "Pay cash when it arrives."
+      "sentBody": "Pay the shop when it arrives."
     },
     "account": {
       "ownerTitle": "Your activity is on your dashboard",
@@ -982,7 +990,9 @@
         },
         "COMPLETED": {
           "title": "Picked up",
-          "body": "Thanks for shopping local."
+          "body": "Thanks for shopping local.",
+          "bodyCash": "Paid in cash. Thanks for shopping local.",
+          "bodyUpi": "Paid to the shop by UPI. Thanks for shopping local."
         },
         "REJECTED": {
           "title": "The shop couldn't hold it",
@@ -1010,7 +1020,8 @@
       "cancelReason": "Reason (optional, helps the shop)",
       "cancelReasonPlaceholder": "e.g. Found it elsewhere",
       "rate": "Rate this pickup",
-      "findElsewhere": "Find it at another shop"
+      "findElsewhere": "Find it at another shop",
+      "pickupCodeHintUpi": "Pickup code. The shop enters it to hand over your item. Pay {price} at the shop, in cash or by UPI."
     },
     "order": {
       "status": {
@@ -1040,7 +1051,11 @@
       "rate": "Rate this delivery",
       "mapYou": "You",
       "mapAddress": "Delivery address",
-      "callShop": "Call shop"
+      "callShop": "Call shop",
+      "keepReadyUpi": "Keep {price} ready in cash, or pay by UPI. {shop} is delivering it themselves.",
+      "paidCash": "Paid in cash",
+      "paidUpi": "Paid to the shop by UPI",
+      "payOnDeliveryUpi": "Pay on delivery: cash or UPI"
     },
     "review": {
       "title": "How was {shop}?",
@@ -1072,6 +1087,24 @@
       "delivery": "Delivery",
       "shopHas": "Shop has {time}",
       "heldFor": "Held for {time}"
+    },
+    "policy": {
+      "title": "Cancellation and refunds",
+      "reserveBody": "Free cancellation before pickup. If you paid the shop directly by UPI and the reservation is cancelled, the shop refunds you within {days} days under its agreement with NearShop.",
+      "deliveryBody": "Cancelling is free before dispatch: cancel it yourself until the shop starts packing, then ask the shop to cancel it before it goes out. If you paid the shop directly by UPI and the order is cancelled, the shop refunds you within {days} days under its agreement with NearShop.",
+      "link": "Read the cancellation and refund policy"
+    },
+    "upi": {
+      "title": "Pay the shop by UPI",
+      "body": "Pay {payee} {price} directly with any UPI app. The money goes straight to the shop: NearShop never holds it.",
+      "qrLabel": "QR code to pay {payee} {price} by UPI",
+      "payButton": "Pay {price} by UPI",
+      "scanHint": "On a computer or another phone? Scan the QR code with any UPI app.",
+      "upiId": "UPI ID",
+      "note": "Note",
+      "refund": "Show the shop the payment confirmation. If it is cancelled after you pay, the shop refunds you within {days} days. {policy}",
+      "cashOnDelivery": "Or pay cash when it arrives.",
+      "cashAtCounter": "Or pay cash at the counter."
     }
   },
   "owner": {
@@ -1244,13 +1277,21 @@
         "deliver": "Delivered. Cash collected and sale recorded.",
         "fail": "Marked as failed.",
         "return": "Returned to shop. Stock restored.",
-        "cancel": "Cancelled. Stock returned to the shelf."
+        "cancel": "Cancelled. Stock returned to the shelf.",
+        "completePaid": {
+          "cash": "Completed. Cash payment and sale recorded.",
+          "upi": "Completed. UPI payment and sale recorded."
+        },
+        "deliverPaid": {
+          "cash": "Delivered. Cash payment and sale recorded.",
+          "upi": "Delivered. UPI payment and sale recorded."
+        }
       },
       "code": {
         "wrongPickup": "That is not this reservation's code. Check the code with the customer and try again.",
         "wrongDelivery": "That is not this order's delivery code. Check the code with the customer and try again.",
-        "deliveryDescription": "Ask the customer for the 4-digit delivery code on their order screen. Hand over the order only after it is accepted.",
-        "pickupDescription": "Ask the customer to show the pickup code on their reservation screen, and type it here.",
+        "deliveryDescription": "Ask the customer for the 4-digit delivery code on their order screen, and choose how they paid. Hand over the order only after it is accepted.",
+        "pickupDescription": "Ask the customer to show the pickup code on their reservation screen, type it here, and choose how they paid.",
         "notYet": "Not yet",
         "deliveryLabel": "Delivery code",
         "pickupLabel": "Pickup code",
@@ -1284,7 +1325,7 @@
         "confirm": "Confirm order",
         "prepare": "Start packing",
         "dispatch": "Out for delivery",
-        "deliver": "Delivered, cash collected",
+        "deliver": "Delivered and paid",
         "deliverTitle": "Deliver this order",
         "failTitle": "Delivery failed?",
         "failConfirm": "Mark failed",
@@ -1296,7 +1337,21 @@
         "cancelBody": "The customer is notified and any held stock goes back on the shelf.",
         "cancelConfirm": "Cancel order",
         "decline": "Decline",
-        "cancel": "Cancel"
+        "cancel": "Cancel",
+        "paidUpi": "Paid by UPI",
+        "paidCash": "Paid in cash",
+        "payOnDelivery": "Pay on delivery",
+        "cashOrUpi": "Cash or UPI"
+      },
+      "payment": {
+        "legend": "How did the customer pay?",
+        "cash": "Cash",
+        "cashHint": "The customer paid you in cash.",
+        "upi": "UPI",
+        "upiHint": "The customer paid your UPI ID. Check the payment reached your UPI app first.",
+        "checkingUpi": "Checking whether your shop takes UPI",
+        "addUpi": "To take UPI payments, add your UPI ID in {settings}.",
+        "settingsLink": "Shop settings"
       }
     },
     "inventory": {
@@ -1499,6 +1554,100 @@
       "importCount": {
         "one": "Import {count} item",
         "other": "Import {count} items"
+      },
+      "tabs": {
+        "label": "What to import",
+        "stock": "Stock list",
+        "sales": "Sales report"
+      },
+      "sales": {
+        "status": {
+          "matched": "Matched",
+          "check": "Check match",
+          "unmatched": "Not listed",
+          "invalid": "Can't import"
+        },
+        "fields": {
+          "date": "Date",
+          "item": "Item",
+          "quantity": "Quantity",
+          "bill": "Bill number",
+          "rate": "Rate",
+          "amount": "Amount"
+        },
+        "issues": {
+          "futureDate": "The date is in the future",
+          "noQuantity": "No quantity",
+          "return": "A return or credit note: not imported",
+          "lessThanOne": "Quantity is less than 1",
+          "listedPrice": "No rate or amount in file; using your listed price",
+          "notListed": "Not in your listings: add it (stock import) and upload again",
+          "checkMatch": "Check the match",
+          "rounded": "Quantity {quantity} rounded to {whole}",
+          "badDate": "Couldn't read the date '{value}'"
+        },
+        "counts": {
+          "lines": {
+            "one": "{count} sales line",
+            "other": "{count} sales lines"
+          },
+          "matched": {
+            "one": "{count} matched",
+            "other": "{count} matched"
+          },
+          "check": {
+            "one": "{count} to check",
+            "other": "{count} to check"
+          },
+          "unmatched": {
+            "one": "{count} not in your listings",
+            "other": "{count} not in your listings"
+          },
+          "invalid": {
+            "one": "{count} can't be imported",
+            "other": "{count} can't be imported"
+          },
+          "importLines": {
+            "one": "Import {count} sales line",
+            "other": "Import {count} sales lines"
+          }
+        },
+        "doneToast": "{lines} imported",
+        "doneTitle": "Sales imported",
+        "doneBody": "{lines} from {start} to {end} saved. Demand forecasts and bundle suggestions learn from them.",
+        "doneBodyReplaced": "{lines} from {start} to {end} saved, replacing {replaced} rows from an earlier upload. Demand forecasts and bundle suggestions learn from them.",
+        "importAnother": "Import another report",
+        "title": "Import sales from your billing app",
+        "description": "Upload the sales report your billing app exports, so demand forecasts and bundle suggestions learn from everything you sell, not only NearShop orders.",
+        "dropTitle": "Drop your sales report (.xlsx or .csv) here",
+        "dropHint": "Needs a date, an item and a quantity column. Bill number and rate or amount are picked up too. Up to 90 days per upload.",
+        "steps": {
+          "export": {
+            "title": "1. Export",
+            "body": "In Tally, Vyapar or your billing app, export the item-wise sales report (sales register) for up to 90 days."
+          },
+          "check": {
+            "title": "2. Check the matches",
+            "body": "Every line is matched to your listings. Items you don't list yet are left out: add them with the stock import first."
+          },
+          "import": {
+            "title": "3. Import",
+            "body": "Uploading the same dates again replaces them, so nothing is counted twice."
+          }
+        },
+        "checkDescription": "{lines} from {start} to {end}. Columns detected: {columns}.",
+        "replaces": "You already imported {count} sales rows for these dates. Importing replaces them.",
+        "table": {
+          "import": "Import",
+          "date": "Date",
+          "item": "Item in your report",
+          "match": "Match",
+          "bill": "Bill",
+          "rate": "Rate (Rs)"
+        },
+        "includeRow": "Import {name}",
+        "yourListing": "Your listing: {name} {score}",
+        "nothingSaved": "Nothing is saved until you import."
       }
     },
     "insights": {
@@ -1534,8 +1683,8 @@
         "empty": "Nothing is at risk of running out in the next two weeks."
       },
       "area": {
-        "title": "What people within 3 km search for",
-        "hint": "Last 14 days of searches near your shop.",
+        "title": "What people near you search for",
+        "hint": "Last {days} days of searches near your shop. A search is shown only when {people} or more people made it.",
         "searches": {
           "one": "{count} search",
           "other": "{count} searches"
@@ -1565,6 +1714,20 @@
         },
         "empty": "Your prices are in line with shops nearby.",
         "footnote": "Flags are for your review only. NearShop never hides or penalises a listing automatically."
+      },
+      "gate": {
+        "haveOfNeed": "{have} of {need}",
+        "progress": {
+          "days": "days",
+          "saleDays": "days with a sale",
+          "unitsSold": "units sold",
+          "betterThanLastWeek": "% better than same as last week",
+          "multiItemPurchases": "multi-item purchases",
+          "verifiedShops": "verified shops",
+          "flagsReviewed": "flags reviewed",
+          "upheld": "% upheld",
+          "people": "people"
+        }
       }
     },
     "settings": {
@@ -1617,6 +1780,18 @@
           "suspended": "Suspended. Submit fresh evidence to be verified again.",
           "draft": "Not submitted yet. Your shop is hidden from customers until it is verified."
         }
+      },
+      "upi": {
+        "title": "Get paid by UPI",
+        "intro": "Customers can pay your own UPI ID straight from their order or reservation, with a link and a QR code. The money goes to you directly: NearShop never holds it. Leave it empty to take cash only.",
+        "idLabel": "Your UPI ID",
+        "idPlaceholder": "yourshop@okhdfcbank",
+        "idHint": "As your UPI app shows it, for example 98xxxxxx10@ybl.",
+        "payeeLabel": "Payee name (optional)",
+        "payeePlaceholder": "The name on your UPI account",
+        "payeeHint": "Customers see it before paying. Empty uses your shop's name.",
+        "idError": "A UPI ID looks like yourshop@okhdfcbank: a name or number, an @ and your bank or app, {min} to {max} characters with no spaces",
+        "payeeError": "The payee name has {min} to {max} characters, as your UPI app shows it"
       }
     },
     "reviews": {
@@ -1817,6 +1992,85 @@
       "itemGroups": "Item groups",
       "isolated": "Isolated by forest",
       "flagged": "Flagged for review"
+    },
+    "languages": {
+      "all": "All languages",
+      "other": "Other scripts",
+      "en": "English",
+      "kn": "Kannada",
+      "knLatn": "Kannada (Latin)",
+      "te": "Telugu",
+      "teLatn": "Telugu (Latin)",
+      "hi": "Hindi",
+      "hiLatn": "Hindi (Latin)",
+      "misspelt": "Misspelt"
+    },
+    "quality": {
+      "title": "Search quality, measured",
+      "intro": "Labelled queries run through the live search on a fixed copy of the demo city. Queries counts those with a relevant item in range out of all; no results is the share of those that found nothing.",
+      "dev": "Dev split",
+      "test": "Test split (held out)",
+      "examples": "Example queries",
+      "runLine": "{count} queries, commit {commit}",
+      "unknownCommit": "unknown",
+      "syntheticNote": "Synthetic example rows only: not a quality measurement until the labelled set arrives.",
+      "loadFailed": "Could not load the evaluation results.",
+      "notMeasured": "Not measured yet. Figures appear here once this split of the labelled queries has been run.",
+      "captionDev": "Search quality on the dev split, by language",
+      "captionTest": "Search quality on the test split, by language",
+      "language": "Language",
+      "queries": "Queries",
+      "noResults": "No results",
+      "p95": "p95 time",
+      "ms": "{value} ms",
+      "ndcg": "nDCG@10",
+      "recall": "Recall@20",
+      "mrr": "MRR"
+    },
+    "live": {
+      "title": "Live search, measured",
+      "intro": "No results over all searches comes from the search log. The other figures count only signed-in customers who allow search measurement, and hold nothing that identifies them.",
+      "saveSnapshot": "Save snapshot",
+      "snapshotSaved": "Snapshot saved with the live ranking config version.",
+      "lastDays": "Last {days} days",
+      "ranking": "Ranking config {ranking}",
+      "lastSnapshot": "Last snapshot {ago}, ranking config {ranking}.",
+      "loadFailed": "Could not load the live figures.",
+      "caption": "Live search figures over the last {days} days, by language",
+      "noResultsAll": "No results, all searches",
+      "measured": "Measured searches",
+      "success": "Success",
+      "reformulated": "Reformulated",
+      "firstClick": "First click: mean, median, top 3",
+      "converted": "Reserved or ordered",
+      "n": "n {n}",
+      "notEnoughHistory": "Not enough data (n {n})",
+      "notEnough": "Not enough data: under {count} measured searches"
+    },
+    "shadow": {
+      "title": "Shadow ranking",
+      "on": "Candidate {candidate} on {share} of measured searches. Customers always see the production ranking.",
+      "off": "Off: no candidate is set.",
+      "empty": "No shadowed searches yet.",
+      "caption": "Shadow ranking candidates against production",
+      "candidate": "Candidate",
+      "searchesDays": "Searches, days",
+      "overlap": "Top-10 overlap",
+      "moreNoResults": "More with no results",
+      "clickInTop10": "Click in its top 10",
+      "rankChange": "Rank change",
+      "p95": "p95, candidate / production",
+      "guardrails": "Guardrails",
+      "difference": "{difference} ({pp} pp)",
+      "times": "{candidate} / {production} ms",
+      "pass": "Pass",
+      "fail": "Fail",
+      "notApplicable": "n/a"
+    },
+    "gate": {
+      "badge": "Gated",
+      "shown": "Shown to shop owners",
+      "hidden": "Gated: hidden from shop owners"
     }
   },
   "shopForm": {

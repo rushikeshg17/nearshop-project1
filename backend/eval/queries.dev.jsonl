@@ -1,0 +1,6 @@
+{"query_id": "example-dev-01", "synthetic": true, "text": "phone charging adapter", "lang": "en", "lat": 15.148, "lng": 76.923, "radius_km": 5, "judgments": {"33": 3, "34": 3, "37": 3, "38": 3, "35": 2, "36": 2, "39": 1, "60": 1}}
+{"query_id": "example-dev-02", "synthetic": true, "text": "istri petti", "lang": "kn-Latn", "lat": 15.148, "lng": 76.923, "radius_km": 5, "judgments": {"11": 3, "12": 3, "13": 3}}
+{"query_id": "example-dev-03", "synthetic": true, "text": "ಬೈಕ್ ಆಯಿಲ್", "lang": "kn", "lat": 15.148, "lng": 76.923, "radius_km": 5, "judgments": {"127": 3, "128": 3, "130": 3, "132": 3, "129": 2, "133": 1}}
+{"query_id": "example-dev-04", "synthetic": true, "text": "nal tonti", "lang": "hi-Latn", "lat": 15.148, "lng": 76.923, "radius_km": 5, "judgments": {"113": 3, "114": 3, "115": 2, "116": 2}}
+{"query_id": "example-dev-05", "synthetic": true, "text": "battery cell kavali", "lang": "te-Latn", "lat": 15.148, "lng": 76.923, "radius_km": 5, "judgments": {"17": 3, "18": 3, "19": 2, "20": 1}}
+{"query_id": "example-dev-06", "synthetic": true, "text": "chargr type c", "lang": "misspelt", "lat": 15.148, "lng": 76.923, "radius_km": 5, "judgments": {"33": 3, "37": 3, "34": 2, "39": 1, "43": 1}}

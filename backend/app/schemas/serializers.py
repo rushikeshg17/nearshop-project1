@@ -1,9 +1,10 @@
 """Model -> JSON dict helpers. References (`product.category`, `reservation.shop`, ...) must be
 resolved first with app/services/loaders.py. Timestamps are emitted as ISO-8601 UTC with a trailing Z so
 browsers never mistake them for local time (important for 'updated 2 minutes ago')."""
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.core.config import settings
+from app.core.database import utcnow
 from app.models import Category, Notification, Order, Product, Reservation, Review, Shop, StatusEvent
 from app.services.media import thumbnail_key
 from app.utils.hours import open_status
@@ -11,6 +12,30 @@ from app.utils.hours import open_status
 
 def iso(dt: datetime | None) -> str | None:
     return dt.isoformat(timespec="seconds") + "Z" if dt else None
+
+
+# Stock freshness (P7.4): how long ago a listing's stock was confirmed. Up to FRESH_HOURS it is fresh (no label,
+# no change). Beyond that and up to STALE_DAYS it is labelled "updated N days ago" and its search group ranks with
+# FRESHNESS_MULTIPLIERS["aging"]; beyond STALE_DAYS it is labelled "stock not confirmed recently", ranks with
+# FRESHNESS_MULTIPLIERS["stale"] and is left out of the in-stock-only filter (app/services/search.py).
+FRESH_HOURS = 48
+STALE_DAYS = 7
+FRESHNESS_MULTIPLIERS = {"fresh": 1.0, "aging": 0.85, "stale": 0.6}
+STALE_LABEL = "stock not confirmed recently"
+
+
+def freshness(updated_at: datetime | None, now: datetime) -> dict:
+    """A listing's freshness band at `now`: band (fresh, aging or stale), label (None when fresh) and the ranking
+    multiplier. A listing with no confirmation time counts as stale."""
+    age = now - updated_at if updated_at else None
+    if age is not None and age <= timedelta(hours=FRESH_HOURS):
+        band, label = "fresh", None
+    elif age is not None and age <= timedelta(days=STALE_DAYS):
+        days = age.days
+        band, label = "aging", f"updated {days} day{'' if days == 1 else 's'} ago"
+    else:
+        band, label = "stale", STALE_LABEL
+    return {"band": band, "label": label, "multiplier": FRESHNESS_MULTIPLIERS[band]}
 
 
 def media_url(path: str | None) -> str | None:
@@ -75,14 +100,17 @@ def shop_detail(s: Shop, distance_km: float | None, reliability: dict) -> dict:
         "closed_on": s.closed_on,
         "established_year": s.established_year,
         "hold_minutes": s.hold_minutes,
+        "show_exact_stock": s.show_exact_stock,
         "is_active": s.is_active,
         "reliability": rel,
         "category_details": [category_out(c) for c in s.categories],
     }
 
 
-def listing(p: Product, shop: dict | None = None) -> dict:
-    """A product as sold by one shop (an 'offer')."""
+def listing(p: Product, shop: dict | None = None, now: datetime | None = None) -> dict:
+    """A product as sold by one shop (an 'offer'). `now` is the clock its freshness is judged at (search passes
+    its own, so the evaluation harness can fix it)."""
+    fresh = freshness(p.stock_updated_at, now or utcnow())
     return {
         "id": p.id,
         "catalog_item_id": p.catalog_item_id,
@@ -99,9 +127,34 @@ def listing(p: Product, shop: dict | None = None) -> dict:
         "low_stock_threshold": p.low_stock_threshold,
         "stock_status": p.stock_status,
         "stock_updated_at": iso(p.stock_updated_at),
+        "freshness": {"band": fresh["band"], "label": fresh["label"]},
         "is_active": p.is_active,
         "shop": shop,
     }
+
+
+def shows_exact_stock(seller: Shop | None) -> bool:
+    """Whether customers may see this shop's exact stock (P10.1, plan section 8.20): only when the shop opted in. An
+    unknown shop counts as not opted in, so a caller that forgot to load it shows the capped count, never the exact one."""
+    return bool(seller is not None and seller.show_exact_stock)
+
+
+def public_quantity(quantity: int, exact: bool) -> int:
+    """The stock count customers see: the exact count for an opted-in shop, otherwise at most settings.public_stock_cap."""
+    return quantity if exact else min(quantity, settings.public_stock_cap)
+
+
+def public_listing(p: Product, shop: dict | None = None, now: datetime | None = None, *,
+                   seller: Shop | None = None) -> dict:
+    """A listing as customers and anyone else outside the shop see it (P10.1, plan section 8.20). `seller` is the
+    listing's Shop (p.shop when omitted). Without the shop's opt-in, quantity is capped at settings.public_stock_cap and
+    stock_exact is false; stock_status and stock_updated_at come from the real count, unchanged. Every public caller
+    uses this; owner, admin and analytics responses use listing, which keeps exact counts."""
+    exact = shows_exact_stock(seller if seller is not None else p.shop)
+    out = listing(p, shop, now)
+    out["quantity"] = public_quantity(p.quantity, exact)
+    out["stock_exact"] = exact
+    return out
 
 
 def event_out(e: StatusEvent) -> dict:
@@ -116,6 +169,8 @@ def person(u) -> dict:
 def reservation_out(r: Reservation, *, actions: list[str], events: list[StatusEvent] | None = None,
                     for_owner: bool = False, reviewed: bool = False) -> dict:
     p = r.product
+    # The owner sees the exact count on the shelf; the customer the public count (P10.1).
+    exact = for_owner or shows_exact_stock(r.shop)
     out = {
         "id": r.id,
         "code": r.code,
@@ -135,7 +190,7 @@ def reservation_out(r: Reservation, *, actions: list[str], events: list[StatusEv
         "close_reason": r.close_reason,
         "product": {"id": p.id, "name": p.name, "brand": p.brand, "unit": p.unit, "icon": p.icon,
                     "image_url": media_url(p.image_path), "thumbnail_url": thumbnail_url(p.image_path),
-                    "quantity_in_stock": p.quantity},
+                    "quantity_in_stock": public_quantity(p.quantity, exact), "stock_exact": exact},
         "shop": {"id": r.shop.id, "slug": r.shop.slug, "name": r.shop.name, "locality": r.shop.locality,
                  "address_line": r.shop.address_line, "phone": r.shop.phone, "lat": r.shop.lat, "lng": r.shop.lng,
                  "hours_label": open_status(r.shop.opening_hours, r.shop.closed_on)["label"]},

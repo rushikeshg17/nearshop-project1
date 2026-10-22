@@ -8,6 +8,12 @@ metrics show whether it actually adds value.
 
 Predictions feed restock suggestions: days until stock-out and how much to reorder.
 If the training data contains seeded demo sales, every output is flagged is_demo.
+
+Gating (P7.3, plan section 8.9; thresholds in app/core/config.py): is_demo sales are left out when
+NEARSHOP_MODELS_REAL_DATA_ONLY is on (the default in production). Forecasts are published only for eligible
+listings (enough days of history, days with a sale and units), and only when, over the last
+demand_backtest_days days, the eligible listings' MAE beats the naive baseline by demand_min_improvement_pct
+percent; otherwise none are published and the run's metrics["gate"] says why.
 """
 from __future__ import annotations
 
@@ -20,13 +26,19 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
 
+from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.models import DemandForecast, ModelRun, Product
+from app.services.analytics import (
+    DEMAND_HISTORY_DAYS,
+    demand_listing_eligible,
+    demand_model_gate,
+    real_sales_filter,
+)
 from app.services.loaders import with_catalog_items
 
-HISTORY_DAYS = 150
+HISTORY_DAYS = DEMAND_HISTORY_DAYS
 HORIZON = 7
-MIN_HISTORY_DAYS = 35
 FEATURES = ["lag7", "lag14", "lag28", "same_dow_avg", "dow", "month", "category_id", "price_ratio", "trend"]
 
 
@@ -34,7 +46,7 @@ def _daily_matrix(db: Database) -> tuple[pd.DataFrame, bool]:
     since = utcnow() - timedelta(days=HISTORY_DAYS)
     # Summed per product and day inside MongoDB, so only the daily totals travel over the network.
     rows = db.sales_history.aggregate([
-        {"$match": {"sold_at": {"$gte": since}}},
+        {"$match": {"sold_at": {"$gte": since}, **real_sales_filter()}},
         {"$group": {"_id": {"p": "$product_id", "d": {"$dateTrunc": {"date": "$sold_at", "unit": "day"}}},
                     "quantity": {"$sum": "$quantity"}, "is_demo": {"$max": "$is_demo"}}},
     ])
@@ -68,31 +80,40 @@ def train_and_forecast(db: Database) -> ModelRun:
         db, db.products.find({"is_active": True}, projection={"description": 0, "specs": 0}))}
 
     run = ModelRun(name="demand", algorithm="RandomForestRegressor", uses_demo_data=uses_demo)
-    if daily.empty:
-        run.data_note = "No sales history yet. Forecasts appear once reservations and orders are completed."
-        run.metrics = {}
-        db.model_runs.insert(run)
-        return run
-
     dates = list(daily.columns)
     n_days = len(dates)
-    X, y, day_idx = [], [], []
+    eligible: set[int] = set()
+    X, y, day_idx, row_pid = [], [], [], []
     for pid, row in daily.iterrows():
         p = products.get(pid)
         if p is None:
             continue
         series = row.to_numpy(dtype=float)
+        if listing_eligible(series):
+            eligible.add(pid)
         ratio = _price_ratio(p)
         for t in range(27, n_days - HORIZON):
             X.append(_features_at(series, t, dates[t], p.category_id, ratio))
             y.append(series[t + 1 : t + 1 + HORIZON].sum())
             day_idx.append(t)
+            row_pid.append(pid)
+    if not X:
+        run.data_note = "No sales history yet. Forecasts appear once reservations and orders are completed."
+        run.metrics = {"gate": demand_model_gate(None, None, 0)}
+
+        def publish_empty() -> None:  # no forecasts from an older run stay on show
+            db.demand_forecasts.delete_many({})
+            db.model_runs.insert(run)
+
+        db.transaction(publish_empty)
+        return run
     X = np.array(X, dtype=float)
     y = np.array(y, dtype=float)
     day_idx = np.array(day_idx)
+    is_eligible = np.isin(np.array(row_pid), list(eligible))
 
-    # Time-based split: validate on the last 21 usable days.
-    split = (n_days - HORIZON) - 21
+    # Time-based split: validate on the last demand_backtest_days usable days (the gate's backtest).
+    split = (n_days - HORIZON) - settings.demand_backtest_days
     train_mask, test_mask = day_idx < split, day_idx >= split
     rng = np.random.default_rng(7)
     train_rows = np.flatnonzero(train_mask)
@@ -102,17 +123,26 @@ def train_and_forecast(db: Database) -> ModelRun:
     model = RandomForestRegressor(n_estimators=120, max_depth=14, min_samples_leaf=4, n_jobs=-1, random_state=7)
     model.fit(X[train_rows], y[train_rows])
 
-    metrics: dict = {"train_rows": int(len(train_rows)), "test_rows": int(test_mask.sum())}
-    if test_mask.any():
-        pred = model.predict(X[test_mask])
-        naive = X[test_mask][:, 0]  # lag7: "next week sells like last week"
-        mae, naive_mae = mean_absolute_error(y[test_mask], pred), mean_absolute_error(y[test_mask], naive)
+    # The backtest the gate reads covers the eligible listings only; with none, every listing (for the card).
+    backtest = test_mask & is_eligible if eligible else test_mask
+    metrics: dict = {"train_rows": int(len(train_rows)), "test_rows": int(backtest.sum()),
+                     "listings": len(products.keys() & set(daily.index)), "eligible_listings": len(eligible),
+                     "backtest_scope": "eligible listings" if eligible else "all listings",
+                     "backtest_days": settings.demand_backtest_days}
+    mae = naive_mae = None
+    if backtest.any():
+        pred = model.predict(X[backtest])
+        naive = X[backtest][:, 0]  # lag7: "next week sells like last week"
+        mae = float(mean_absolute_error(y[backtest], pred))
+        naive_mae = float(mean_absolute_error(y[backtest], naive))
         metrics.update(
-            mae_7d=round(float(mae), 3),
-            naive_mae_7d=round(float(naive_mae), 3),
-            improvement_pct=round(float((naive_mae - mae) / naive_mae * 100), 1) if naive_mae else None,
-            r2=round(float(r2_score(y[test_mask], pred)), 3),
+            mae_7d=round(mae, 3),
+            naive_mae_7d=round(naive_mae, 3),
+            improvement_pct=round((naive_mae - mae) / naive_mae * 100, 1) if naive_mae else None,
+            r2=round(float(r2_score(y[backtest], pred)), 3),
         )
+    model_gate = demand_model_gate(mae, naive_mae, len(eligible))
+    metrics["gate"] = model_gate
     metrics["feature_importance"] = {
         f: round(float(v), 3) for f, v in sorted(zip(FEATURES, model.feature_importances_), key=lambda x: -x[1])
     }
@@ -126,12 +156,12 @@ def train_and_forecast(db: Database) -> ModelRun:
     )
     run.id = db.next_id("model_runs")
 
-    # Forecast the next 7 days for every listing with enough history.
+    # Forecast the next 7 days for every eligible listing, and only when the model passes its gate.
     forecasts = []
     t = n_days - 1
     for pid, row in daily.iterrows():
         p = products.get(pid)
-        if p is None:
+        if p is None or pid not in eligible or not model_gate["shown"]:
             continue
         series = row.to_numpy(dtype=float)
         active_days = int((series > 0).sum())
@@ -166,6 +196,15 @@ def train_and_forecast(db: Database) -> ModelRun:
 
     db.transaction(publish)
     return run
+
+
+def listing_eligible(series: np.ndarray) -> bool:
+    """A listing's daily units (oldest first, ending today): eligible for forecasts with enough days since its
+    first sale, days with a sale and units in total."""
+    sold = np.flatnonzero(series)
+    if not len(sold):
+        return False
+    return demand_listing_eligible(len(series) - int(sold[0]), len(sold), int(series.sum()))
 
 
 def _price_ratio(p: Product) -> float:

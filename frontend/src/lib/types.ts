@@ -21,6 +21,8 @@ export interface User {
    * "required" sends every page to /verify-phone, null asks nothing (a verified phone, an admin, or phone sign-in
    * unavailable here). */
   phone_migration: PhoneMigration;
+  /** P7.11: the language notifications and WhatsApp messages come in (PATCH /api/auth/me sets it). */
+  language?: "en" | "kn";
 }
 
 export type PhoneMigration = "warn" | "required" | null;
@@ -174,6 +176,20 @@ export interface ShopVerification {
 export interface OwnerShopSettings extends ShopDetail {
   verification: ShopVerification;
   review_started: boolean;
+  /** The shop's own UPI ID and the payee name UPI apps show (P6.1). Only the owner's settings and the customer's own
+   * orders and reservations carry them, never a public shop response. */
+  upi_id: string | null;
+  upi_payee_name: string | null;
+}
+
+/** How the customer paid, recorded by the owner when completing a pickup or delivering an order (P6.1). */
+export type PaymentMethod = "cod" | "upi_direct";
+
+/** Where the customer can pay the shop directly by UPI (P6.1, P6.2): only in the customer's own order and
+ * reservation responses. Both null while the shop has no UPI ID; upi_payee_name falls back to the shop's name. */
+export interface PayTo {
+  upi_id?: string | null;
+  upi_payee_name?: string | null;
 }
 
 /** One row of GET /admin/shops. */
@@ -478,9 +494,12 @@ export interface Reservation {
     lat: number;
     lng: number;
     hours_label: string;
-  };
+  } & PayTo;
   actions: string[];
   reviewed: boolean;
+  /** Both null until the owner completes the pickup, then the method and "paid" (P6.1). */
+  payment_method?: PaymentMethod | null;
+  payment_status?: "paid" | null;
   customer?: Person;
   timeline?: TimelineEvent[];
 }
@@ -490,8 +509,9 @@ export interface Order {
   code: string;
   kind: "order";
   status: OrderStatus;
-  payment_method: string;
-  payment_status: string;
+  /** cod until delivery, when the owner records how the customer paid (P6.1). */
+  payment_method: PaymentMethod;
+  payment_status: "unpaid" | "paid" | "refunded";
   delivery_address: string;
   delivery_lat: number;
   delivery_lng: number;
@@ -514,7 +534,7 @@ export interface Order {
     image_url: string | null;
     thumbnail_url: string | null; // the 320 px thumbnail (P2.7), for lists and small previews
   }[];
-  shop: { id: number; slug: string; name: string; locality: string | null; phone: string | null; lat: number; lng: number };
+  shop: { id: number; slug: string; name: string; locality: string | null; phone: string | null; lat: number; lng: number } & PayTo;
   actions: string[];
   reviewed: boolean;
   /** The 4-digit code the customer gives the shop at delivery (P3.5). Only in the customer's own responses, and

@@ -30,7 +30,33 @@ lease (phone_signin_since), so a provider that goes live late moves the sunset l
 send_notifications (P4.3), every tick, delivers the WhatsApp notification outbox (app/services/whatsapp.py): rows
 written by notify() in the reservation and order transactions, sent here, outside them, with retries after 30 s,
 2 min and 10 min. Each run also computes the hourly failure rate and, above 5%, reports the warning event the
-WhatsApp alert fires on, at most once every 15 minutes (failure_alert_at on its lease).
+WhatsApp alert fires on, at most once every 15 minutes (failure_alert_at on its lease). stock_check (P4.4, cadence
+P9.3), every tick, considers each shop once a day from its opening time (IST) and sends its stock check, a stock-check
+notification delivered on WhatsApp through the outbox, listing up to 5 listings counted more than 48 hours ago
+(app/services/whatsapp.py send_stock_checks): daily as a free-form message when the owner's 24-hour service window
+stays open at least 30 minutes more, otherwise the template once a week (NEARSHOP_STOCK_CHECK_WEEKLY_DAY); never on
+the shop's closed day or when every listing is fresh. A shop's day is recorded once considered, so each tick after
+that reads today's rows and the active shops (their id, owner, name, opening hours and closed day), and sends nothing
+more to that shop that day.
+lead_counts (P9.2), once a month, on the 1st at 02:00 IST or on the first tick after it, writes the previous IST
+month's lead_counts row for every shop (app/services/leads.py rollup_month); the month it ran for is kept in the
+lease's last_result (ran_for), and every later tick that month only repeats the last result. A re-run replaces the
+month's rows.
+subscriptions (P9.4), every tick, runs the plan rules of app/services/plans.py run_jobs: advances become active on
+NEARSHOP_BILLING_STARTS_ON, the outcome guarantee credits paid quarters with too few customer requests, subscriptions
+past their end date lapse to Free, owners are reminded 30, 7 and 1 days before the end, and admins are alerted about
+an advance still not active 300 days after its payment. Each step is one indexed query when nothing is due, and each
+change is conditional on the state it read, so a run repeated or overlapping a lease take-over changes nothing twice.
+billing_reconciliation (P9.5), once per IST day (the first tick of the day), first compares the payment gateway's
+settlement reports with the UPI Autopay payment rows (P9.6, app/services/gateway.py reconcile; while Autopay is off it
+does nothing), putting every mismatch in the unmatched queue, then alerts the admins about every bank credit still
+unmatched NEARSHOP_BILLING_UNMATCHED_ALERT_WORKING_DAYS (3) working days after it was credited
+(app/services/billing.py alert_unmatched), once per credit; the day it ran for is kept in the lease's last_result
+(ran_for), like lead_counts. A gateway that cannot be reached is logged and the alert still runs; the next day's run
+reads the missed day's report again (NEARSHOP_AUTOPAY_RECONCILE_DAYS).
+demand_report (P9.7), once a week, on Monday at 03:00 IST or on the first tick after it, builds the "asked for near you"
+report of every verified live shop and draws R5's weekly audit sample (app/services/demand_report.py build_week); the
+ISO week it ran for is kept in the lease's last_result (ran_for), like lead_counts. Counts only, never a query.
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -99,7 +125,10 @@ TICK_SECONDS = 30
 LEASE_TTL = timedelta(seconds=60)
 # Jobs too costly, or too loud, to repeat on every tick after a failure: retried after this long.
 RETRY_AFTER_FAILURE: dict[str, timedelta] = {"snapshot_storage": timedelta(hours=1), "retention": timedelta(hours=1),
-                                              "phone_migration": timedelta(hours=1)}
+                                              "phone_migration": timedelta(hours=1),
+                                              "stock_check": timedelta(minutes=15), "lead_counts": timedelta(hours=1),
+                                              "billing_reconciliation": timedelta(hours=1),
+                                              "demand_report": timedelta(hours=1)}
 RETENTION_AT = time(21, 30)  # UTC: 03:00 IST, the nightly retention job (P3.2)
 # The phone migration (P4.2): in-app warnings this many days before the email sign-in sunset, and accounts still
 # without a verified phone switched off this many days after it.
@@ -112,6 +141,12 @@ DEACTIVATED_NO_PHONE = "phone_not_verified"  # User.deactivated_reason of an acc
 IST = ZoneInfo("Asia/Kolkata")
 SEND_NOTIFICATIONS_JOB = "send_notifications"  # the WhatsApp outbox sender (P4.3)
 FAILURE_ALERT_AT = "failure_alert_at"  # on that job's lease: when the failure-rate warning was last reported
+STOCK_CHECK_JOB = "stock_check"  # the WhatsApp stock check (P4.4; daily in the window, else weekly: P9.3)
+LEAD_COUNTS_JOB = "lead_counts"  # the monthly lead counts per shop (P9.2)
+LEAD_COUNTS_AT = time(2, 0)  # IST, on the 1st of each month
+SUBSCRIPTIONS_JOB = "subscriptions"  # plans and subscriptions (P9.4)
+BILLING_JOB = "billing_reconciliation"  # the daily unmatched-credit alert (P9.5)
+DEMAND_REPORT_JOB = "demand_report"  # the weekly "asked for near you" report (P9.7)
 
 RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
@@ -394,10 +429,95 @@ def send_notifications(clock: Clock = utcnow) -> dict[str, Any]:
     return result
 
 
+def stock_check(clock: Clock = utcnow) -> dict[str, Any]:
+    """The stock check (P4.4, cadence P9.3, app/services/whatsapp.py send_stock_checks): nothing while WhatsApp is
+    off here. last_result: the IST day and the shops considered this run: sent (in_window plus template), fresh
+    (nothing older than 48 hours), unreachable, closed (the shop's closed day) and waiting (no open window and not
+    the weekly template day). A failed run is retried 15 minutes later (RETRY_AFTER_FAILURE)."""
+    from app.services import whatsapp
+
+    return whatsapp.send_stock_checks(Database(), clock())
+
+
+def lead_counts_month(now: datetime) -> tuple[int, int]:
+    """The month the lead_counts job rolls up at now: the one before the most recent slot (the 1st at LEAD_COUNTS_AT
+    IST) at or before now."""
+    local = now.replace(tzinfo=ZoneInfo("UTC")).astimezone(IST)
+    year, month = local.year, local.month
+    if local < datetime.combine(date(year, month, 1), LEAD_COUNTS_AT, tzinfo=IST):
+        year, month = (year - 1, 12) if month == 1 else (year, month - 1)  # this month's slot is still ahead
+    return (year - 1, 12) if month == 1 else (year, month - 1)
+
+
+def lead_counts(clock: Clock = utcnow) -> dict[str, Any]:
+    """The monthly lead counts (P9.2, app/services/leads.py rollup_month), once per month: the month it ran for is kept
+    in the lease's last_result (ran_for), and every later tick only repeats the last result. A failed run is retried
+    an hour later (RETRY_AFTER_FAILURE)."""
+    from app.services import leads
+
+    now = clock()
+    year, month = lead_counts_month(now)
+    key = leads.month_key(year, month)
+    db = Database()
+    last = (db.mongo[LEASES].find_one({"_id": LEAD_COUNTS_JOB}, {"last_result": 1}) or {}).get("last_result") or {}
+    if last.get("ok") is True and last.get("ran_for") == key:
+        return {k: v for k, v in last.items() if k != "ok"}
+    return {"ran_for": key, **leads.rollup_month(db, year, month, now)}
+
+
+def subscriptions(clock: Clock = utcnow) -> dict[str, Any]:
+    """Plans and subscriptions (P9.4, app/services/plans.py run_jobs), every tick. last_result: the numbers of advances
+    activated, guarantee credits and quarters met, lapses, reminders and advance alerts of this run."""
+    from app.services import plans
+
+    return plans.run_jobs(Database(), clock())
+
+
+def billing_reconciliation(clock: Clock = utcnow) -> dict[str, Any]:
+    """The daily Autopay reconciliation (P9.6, app/services/gateway.py reconcile) and unmatched-credit alert (P9.5,
+    app/services/billing.py alert_unmatched), once per IST day: the day it ran for is kept in the lease's last_result
+    (ran_for), and every later tick that day only repeats the last result. A failed run is retried an hour later
+    (RETRY_AFTER_FAILURE)."""
+    from app.services import billing, gateway
+
+    now = clock()
+    today = ist_day(now).isoformat()
+    db = Database()
+    last = (db.mongo[LEASES].find_one({"_id": BILLING_JOB}, {"last_result": 1}) or {}).get("last_result") or {}
+    if last.get("ok") is True and last.get("ran_for") == today:
+        return {k: v for k, v in last.items() if k != "ok"}
+    try:
+        autopay: dict[str, Any] = gateway.reconcile(db, now)
+    except AppError as exc:
+        log.warning("Autopay reconciliation failed: %s", exc.message)
+        autopay = {"error": exc.code}
+    except Exception as exc:  # noqa: BLE001 - the unmatched-credit alert below must still run today
+        log.exception("Autopay reconciliation failed unexpectedly: %s", type(exc).__name__)
+        autopay = {"error": "unexpected"}
+    return {"ran_for": today, **billing.alert_unmatched(db, now), "autopay": autopay}
+
+
+def demand_report(clock: Clock = utcnow) -> dict[str, Any]:
+    """The weekly demand report (P9.7, app/services/demand_report.py build_week), once per week from Monday 03:00 IST:
+    the ISO week it ran for is kept in the lease's last_result (ran_for), and every later tick that week only repeats
+    the last result. A failed run is retried an hour later (RETRY_AFTER_FAILURE)."""
+    from app.services import demand_report as report
+
+    now = clock()
+    week = report.week_of(report.weekly_slot(now))
+    db = Database()
+    last = (db.mongo[LEASES].find_one({"_id": DEMAND_REPORT_JOB}, {"last_result": 1}) or {}).get("last_result") or {}
+    if last.get("ok") is True and last.get("ran_for") == week:
+        return {k: v for k, v in last.items() if k != "ok"}
+    built = report.build_week(db, now)
+    return {"ran_for": week, **{k: v for k, v in built.items() if k != "week"}}
+
+
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {
     "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage, "retention": retention,
     "process_deletions": process_deletions, PHONE_MIGRATION_JOB: phone_migration,
-    SEND_NOTIFICATIONS_JOB: send_notifications}
+    SEND_NOTIFICATIONS_JOB: send_notifications, STOCK_CHECK_JOB: stock_check, LEAD_COUNTS_JOB: lead_counts,
+    SUBSCRIPTIONS_JOB: subscriptions, BILLING_JOB: billing_reconciliation, DEMAND_REPORT_JOB: demand_report}
 
 
 class SearchIndexRefresher:

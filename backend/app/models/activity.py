@@ -11,9 +11,14 @@ from app.models.base import Document, Embedded, GeoPoint, Timestamps
 from app.models.core import Product, Shop, User
 from app.models.enums import AnomalyStatus, OrderStatus, ReservationStatus, SaleSource
 
+# How the customer paid the shop, recorded by the owner when delivering an order or completing a pickup (P6.1, plan
+# section 8.8): cash, or the shop's own UPI ID. NearShop never holds customer money.
+PAYMENT_METHODS: tuple[str, ...] = ("cod", "upi_direct")
+
 
 class Reservation(Document, Timestamps):
-    """Collection `reservations`. Unique on code."""
+    """Collection `reservations`. Unique on code. payment_method and payment_status stay None until the owner
+    completes the pickup, which records the method (PAYMENT_METHODS) and sets payment_status to paid."""
 
     code: str
     customer_id: int
@@ -31,6 +36,8 @@ class Reservation(Document, Timestamps):
     completed_at: datetime | None = None
     closed_at: datetime | None = None
     close_reason: str | None = None
+    payment_method: str | None = None
+    payment_status: str | None = None
 
     customer: User | None = Field(default=None, exclude=True)
     shop: Shop | None = Field(default=None, exclude=True)
@@ -54,7 +61,8 @@ class OrderItem(Embedded):
 
 class Order(Document, Timestamps):
     """Collection `orders`. Shop-managed delivery order with its line items embedded, so an order
-    is read and written as one document (cash on delivery in V1; payment_method keeps it modular)."""
+    is read and written as one document. payment_method is cod until delivery, when the owner records how the
+    customer paid (PAYMENT_METHODS) and payment_status becomes paid."""
 
     code: str
     customer_id: int
@@ -183,13 +191,19 @@ class Notification(Document):
 class SearchEvent(Document):
     """Collection `search_history`. `location` (rounded to 2 decimals, about 1.1 km) lets a shop see what
     people nearby are searching for with a geo query. Retention (P3.2): user_id only with the personalised-
-    suggestions consent and for 30 days; the row itself for 180 days (TTL index)."""
+    suggestions consent and for 30 days; the row itself for 180 days (TTL index).
+
+    P9.7 (app/services/demand_report.py): demand_key, on a signed-in user's search only, is a keyed hash of the user
+    id that lets the demand report count distinct people without knowing who they are; the retention job removes it
+    after 30 days. in_stock_results is the number of in-stock listings the search found inside its radius."""
 
     user_id: int | None = None
     query: str
     normalized_query: str
     category_slug: str | None = None
     results_count: int = 0
+    in_stock_results: int = 0
+    demand_key: str | None = None
     location: GeoPoint | None = None
     created_at: datetime = Field(default_factory=utcnow)
 

@@ -1,9 +1,13 @@
-# Render Blueprint for the NearShop API (the frontend is deployed on Vercel). Two web services and four
+# Render Blueprint for the NearShop API (the frontend is deployed on Vercel). Three web services and seven
 # cron jobs:
 #   nearshop-api-staging         tracks main     NEARSHOP_ENVIRONMENT=staging     Starter  (0.5 CPU, 512 MB)
 #   nearshop-api                 tracks release  NEARSHOP_ENVIRONMENT=production  Standard (1 CPU, 2 GB), always on
+#   nearshop-api-demo            tracks release  NEARSHOP_ENVIRONMENT=demo        Free (sleeps when idle), synthetic data
+#   nearshop-reseed-demo         tracks release  nightly: replaces the demo database with a freshly seeded city
 #   nearshop-backup-staging      tracks main     nightly off-site backup of the staging database
 #   nearshop-backup-production   tracks release  nightly off-site backup of the production database
+#   nearshop-archive-staging     tracks main     monthly: staging sales_history months older than 18 months, off-site
+#   nearshop-archive-production  tracks release  monthly: production sales_history months older than 18 months, off-site
 #   nearshop-retrain-staging     tracks main     model training for the staging database, outside the API
 #   nearshop-retrain-production  tracks release  model training for the production database, outside the API
 # Every change reaches staging first; production deploys only when release is fast-forwarded to a main
@@ -25,19 +29,27 @@ services:
     name: nearshop-api-staging
     runtime: python
     plan: 0.5c-512mb # Starter
+    # Two instances (P8.1). Each holds its own search caches and follows the shared versions in cache_versions
+    # (backend/app/core/cache_version.py): a change made through one instance is searchable on the other within
+    # seconds. Background jobs run once at any instance count (job_leases, P1.7).
+    numInstances: 2
     region: singapore
     branch: main
     rootDir: backend
-    # The search model (90 MB) is downloaded while building, so a cold start does not wait for it.
+    # The search model is downloaded while building, so a cold start does not wait for it: get_provider loads
+    # the model NEARSHOP_EMBEDDING_MODEL names (unset: all-MiniLM-L6-v2, 90 MB; P5.3 kept it, see
+    # docs/perf/embedding-models.md). Adopting another model means setting that variable on every service
+    # that builds with this command, so each build downloads the new one.
     buildCommand: >-
       pip install uv && uv sync --frozen --no-dev &&
       uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"
     # Schema migrations (backend/database/migrate.py) run after the build and before the new version
     # starts, while the previous version still serves. A failure stops the deploy; nothing new goes live.
     preDeployCommand: uv run --no-dev python -m database.migrate
-    # One worker: the semantic search index lives inside each API process, so a second worker would hold
-    # a second index (until P8.1). Background jobs no longer stop a second process or instance: each job
-    # runs only in the process holding its lease in job_leases (app/jobs.py, P1.7).
+    # One worker per instance: each API process holds its own semantic search index in memory, so a second
+    # worker would double the memory, not the safety. Processes keep their indexes in step through
+    # cache_versions (P8.1), and each background job runs only in the process holding its lease in
+    # job_leases (app/jobs.py, P1.7).
     startCommand: uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
     # /api/health is liveness only (it also reports RENDER_GIT_COMMIT, which tells the smoke workflow which
     # commit it tests). Uptime monitors use /api/health/ready instead (plan section 8.10): booleans for the
@@ -109,6 +121,13 @@ services:
     name: nearshop-api
     runtime: python
     plan: 1c-2g # Standard: always on (a free instance sleeps after 15 idle minutes and must not serve production)
+    # One instance until the P8.1 promotion. Every Blueprint sync applies this file to both services at once,
+    # whatever branch each deploys, so a 2 here would scale production as soon as it reached main: before
+    # release runs code that keeps two instances' search in step, and before the staging check. Promotion
+    # is its own commit that changes this to 2, made only after staging with two instances made a new
+    # listing searchable on both within 10 s in 20 of 20 tries, and fast-forwarded to release with or after
+    # the P8.1 code.
+    numInstances: 1
     region: singapore
     branch: release
     rootDir: backend
@@ -130,6 +149,10 @@ services:
         sync: false # secret: the production Atlas cluster's connection string
       - key: NEARSHOP_PROTECTED_HOSTS
         sync: false # the staging and production Atlas project domains, comma-separated
+      # P7.1 switches production to a fresh database, nearshop_prod (the name the seed and reset always refuse,
+      # NEARSHOP_PRODUCTION_MONGODB_DB), holding only the catalogue, and sets NEARSHOP_DEMO_MODE to false below.
+      # Both values change in one commit, made only after the steps in docs/runbooks/demo-environment.md
+      # (Switching production to real data): a Blueprint sync applies this file to production at once.
       - key: NEARSHOP_MONGODB_DB
         value: nearshop
       - key: NEARSHOP_COOKIE_SECURE
@@ -137,7 +160,7 @@ services:
       - key: NEARSHOP_SEED_CITY
         value: ballari
       # Launch lockdown (P0.2): sign-ups stay closed until launch, and the site shows a banner saying
-      # it runs on generated data.
+      # it runs on generated data. In production the AI Lab is admin-only (NEARSHOP_AI_LAB_PUBLIC unset: false).
       - key: NEARSHOP_SIGNUPS_OPEN
         value: "false"
       - key: NEARSHOP_DEMO_MODE
@@ -164,6 +187,110 @@ services:
       # Storage budget (P2.2): Atlas Flex, 5 GB (plan step 1-A). Set 512 while production is still on M0.
       - key: NEARSHOP_STORAGE_LIMIT_MB
         value: "5120"
+
+  # The demo (P7.1, docs/runbooks/demo-environment.md): the synthetic Ballari city for the research paper and the
+  # AI Lab, in its own M0 cluster and database (nearshop_demo), never staging's or production's. Free instance:
+  # acceptable for a demo; it sleeps after 15 idle minutes and wakes on the next request (about a minute). A free
+  # instance has no pre-deploy step, so the start command runs the schema migrations first (idempotent: nothing
+  # to do once applied), and a release that adds migrations is applied when the new instance starts, not only at
+  # the next reseed. nearshop-reseed-demo restarts it after each reseed (its deploy hook), so the in-process
+  # search index is rebuilt from the new data.
+  # Its own Vercel project points at it, with NEXT_PUBLIC_NEARSHOP_DEMO_MODE=true and NEARSHOP_INDEXING unset.
+  - type: web
+    name: nearshop-api-demo
+    runtime: python
+    plan: free
+    numInstances: 1
+    region: singapore
+    branch: release
+    rootDir: backend
+    buildCommand: >-
+      pip install uv && uv sync --frozen --no-dev &&
+      uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"
+    startCommand: >-
+      uv run --no-dev python -m database.migrate &&
+      uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /api/health
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: NEARSHOP_ENVIRONMENT
+        value: demo
+      - key: NEARSHOP_SECRET_KEY
+        sync: false # secret: the demo's own key, never staging's or production's
+      - key: NEARSHOP_MONGODB_URI
+        sync: false # secret: the demo M0 cluster's connection string, never staging's or production's
+      - key: NEARSHOP_PROTECTED_HOSTS
+        sync: false # the staging and production Atlas project domains: the reseed refuses both
+      - key: NEARSHOP_MONGODB_DB
+        value: nearshop_demo
+      - key: NEARSHOP_COOKIE_SECURE
+        value: "true"
+      - key: NEARSHOP_SEED_CITY
+        value: ballari
+      # The demo banner and footer sentence, the public AI Lab (NEARSHOP_AI_LAB_PUBLIC defaults to true in demo)
+      # and closed sign-ups: visitors use the demo accounts, so nobody is asked for real details.
+      - key: NEARSHOP_DEMO_MODE
+        value: "true"
+      - key: NEARSHOP_SIGNUPS_OPEN
+        value: "false"
+      # Admin second factor (P2.4): the demo's own key, without which every admin sign-in answers 503. The seeded
+      # admin has no second factor and cannot sign in; the demo's public accounts are the customer and the owner.
+      - key: NEARSHOP_TOTP_KEY
+        sync: false # secret: the demo's own Fernet key, never staging's or production's
+      # M0: 512 MB.
+      - key: NEARSHOP_STORAGE_LIMIT_MB
+        value: "512"
+
+  # Nightly reseed of the demo (P7.1): the seed resets nearshop_demo, writes the synthetic city and trains every
+  # model, so the demo accounts and the paper's figures start from the same state each day. It runs only with
+  # NEARSHOP_ENVIRONMENT=demo, never against a protected host or the production database name (the P1.1
+  # guard), and needs the demo password, which the demo accounts get. Cron jobs have no free plan; this one is
+  # billed only while it runs (a few minutes a night).
+  - type: cron
+    name: nearshop-reseed-demo
+    runtime: python
+    plan: 1c-2g # Standard: training needs more memory than Starter has
+    region: singapore
+    branch: release
+    rootDir: backend
+    schedule: "30 22 * * *" # 22:30 UTC, 04:00 IST
+    buildCommand: >-
+      pip install uv && uv sync --frozen --no-dev &&
+      uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"
+    # After a successful reseed only, the demo API is restarted through its Render deploy hook, so its in-process
+    # search index and caches are rebuilt from the new data. Blank NEARSHOP_DEMO_API_DEPLOY_HOOK_URL: no restart
+    # (restart it by hand, docs/runbooks/demo-environment.md). A failed hook call fails the job, so it shows.
+    startCommand: >-
+      uv run --no-dev python -m database.seed.seed --confirm-db "$NEARSHOP_MONGODB_DB" &&
+      { [ -z "$NEARSHOP_DEMO_API_DEPLOY_HOOK_URL" ] ||
+      curl -fsS -m 30 --retry 3 -X POST -o /dev/null "$NEARSHOP_DEMO_API_DEPLOY_HOOK_URL"; }
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: NEARSHOP_ENVIRONMENT
+        value: demo
+      # The same database as the demo API, read from that service.
+      - key: NEARSHOP_MONGODB_URI
+        fromService:
+          type: web
+          name: nearshop-api-demo
+          envVarKey: NEARSHOP_MONGODB_URI
+      - key: NEARSHOP_PROTECTED_HOSTS
+        fromService:
+          type: web
+          name: nearshop-api-demo
+          envVarKey: NEARSHOP_PROTECTED_HOSTS
+      - key: NEARSHOP_MONGODB_DB
+        value: nearshop_demo
+      - key: NEARSHOP_SEED_CITY
+        value: ballari
+      - key: NEARSHOP_DEMO_PASSWORD
+        sync: false # secret: a random value of at least 16 characters, shared privately with the team
+      - key: NEARSHOP_DEMO_API_DEPLOY_HOOK_URL
+        sync: false # secret: nearshop-api-demo's deploy hook (Dashboard > Settings > Deploy Hook); blank: no restart
 
   # Nightly off-site backup of the staging database (P1.6, backend/database/backup.py): every collection as
   # gzipped BSON plus a manifest, in the private backup bucket under staging/<set id>/, then sets older than
@@ -282,6 +409,108 @@ services:
         sync: false # Better Stack > Heartbeats > nearshop-backup-production: its URL (period 24 h, grace 2 h)
       - key: NEARSHOP_BACKUP_S3_BUCKET
         sync: false # the production backup bucket
+      - key: NEARSHOP_BACKUP_S3_ACCESS_KEY_ID
+        sync: false # secret: the production backup token, never the photo token
+      - key: NEARSHOP_BACKUP_S3_SECRET_ACCESS_KEY
+        sync: false # secret
+
+  # Sales history archiving (P8.3, backend/database/archive.py; docs/runbooks/restore.md, Archived sales history):
+  # on the 1st of each month, every sales_history month that ends 18 months or more before the current month
+  # (NEARSHOP_ARCHIVE_KEEP_MONTHS) is written as gzipped BSON with a manifest and checksums to the private
+  # backup bucket, under <prefix>/archive/sales_history/<month>/, read back and verified, and only then deleted
+  # from the database. Backup retention never touches these keys, and nothing deletes them. A run is refused
+  # unless the nightly backup of the same database succeeded in the last 26 hours, so every archived row is
+  # also in a recent backup set. Each run writes a row to archive_runs. Months are brought back by one-off
+  # jobs on this service (runbook).
+  - type: cron
+    name: nearshop-archive-staging
+    runtime: python
+    plan: 0.5c-512mb # Starter
+    region: singapore
+    branch: main
+    rootDir: backend
+    schedule: "0 23 1 * *" # 23:00 UTC on the 1st (04:30 IST on the 2nd), 90 minutes after that night's backup
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: uv run --no-dev python -m database.archive
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: NEARSHOP_ENVIRONMENT
+        value: staging
+      # The same database as the staging API, read from that service.
+      - key: NEARSHOP_MONGODB_URI
+        fromService:
+          type: web
+          name: nearshop-api-staging
+          envVarKey: NEARSHOP_MONGODB_URI
+      - key: NEARSHOP_MONGODB_DB
+        value: nearshop
+      # The same prefix as nearshop-backup-staging: archived months go under staging/archive/sales_history/.
+      - key: NEARSHOP_BACKUP_PREFIX
+        value: staging
+      # The API's photo bucket, only so the tool can refuse a NEARSHOP_BACKUP_S3_BUCKET that names it.
+      - key: NEARSHOP_MEDIA_S3_BUCKET
+        fromService:
+          type: web
+          name: nearshop-api-staging
+          envVarKey: NEARSHOP_MEDIA_S3_BUCKET
+      # The staging backup bucket and an R2 token with Object Read & Write on it: the values entered on
+      # nearshop-backup-staging. Until NEARSHOP_BACKUP_BACKEND is s3 every run is refused
+      # ("NEARSHOP_BACKUP_BACKEND is off") and nothing is deleted.
+      - key: NEARSHOP_BACKUP_BACKEND
+        sync: false # s3
+      - key: NEARSHOP_BACKUP_S3_ENDPOINT
+        sync: false # https://<account id>.r2.cloudflarestorage.com
+      - key: NEARSHOP_BACKUP_S3_BUCKET
+        sync: false # the staging backup bucket, as on nearshop-backup-staging
+      - key: NEARSHOP_BACKUP_S3_ACCESS_KEY_ID
+        sync: false # secret: the staging backup token, never the photo token
+      - key: NEARSHOP_BACKUP_S3_SECRET_ACCESS_KEY
+        sync: false # secret
+
+  - type: cron
+    name: nearshop-archive-production
+    runtime: python
+    plan: 0.5c-512mb # Starter
+    region: singapore
+    branch: release
+    rootDir: backend
+    schedule: "0 23 1 * *" # 23:00 UTC on the 1st (04:30 IST on the 2nd), 90 minutes after that night's backup
+    buildCommand: pip install uv && uv sync --frozen --no-dev
+    startCommand: uv run --no-dev python -m database.archive
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: NEARSHOP_ENVIRONMENT
+        value: production
+      # The same database as the production API, read from that service.
+      - key: NEARSHOP_MONGODB_URI
+        fromService:
+          type: web
+          name: nearshop-api
+          envVarKey: NEARSHOP_MONGODB_URI
+      - key: NEARSHOP_MONGODB_DB
+        value: nearshop
+      # The same prefix as nearshop-backup-production: archived months go under production/archive/sales_history/.
+      - key: NEARSHOP_BACKUP_PREFIX
+        value: production
+      # The API's photo bucket, only so the tool can refuse a NEARSHOP_BACKUP_S3_BUCKET that names it.
+      - key: NEARSHOP_MEDIA_S3_BUCKET
+        fromService:
+          type: web
+          name: nearshop-api
+          envVarKey: NEARSHOP_MEDIA_S3_BUCKET
+      # The production backup bucket and an R2 token with Object Read & Write on it: the values entered on
+      # nearshop-backup-production. Until NEARSHOP_BACKUP_BACKEND is s3 every run is refused
+      # ("NEARSHOP_BACKUP_BACKEND is off") and nothing is deleted.
+      - key: NEARSHOP_BACKUP_BACKEND
+        sync: false # s3
+      - key: NEARSHOP_BACKUP_S3_ENDPOINT
+        sync: false # https://<account id>.r2.cloudflarestorage.com
+      - key: NEARSHOP_BACKUP_S3_BUCKET
+        sync: false # the production backup bucket, as on nearshop-backup-production
       - key: NEARSHOP_BACKUP_S3_ACCESS_KEY_ID
         sync: false # secret: the production backup token, never the photo token
       - key: NEARSHOP_BACKUP_S3_SECRET_ACCESS_KEY

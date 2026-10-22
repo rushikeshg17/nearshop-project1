@@ -42,7 +42,8 @@ from pymongo import ASCENDING, DESCENDING, GEOSPHERE, TEXT, IndexModel, MongoCli
 from pymongo.database import Database as MongoDatabase
 from pymongo.errors import OperationFailure
 
-from app.models.core import KycType, VerificationStatus
+from app.models.billing import EVENT_KINDS, AccountType, Period, PlanCode, SubscriptionSource, SubscriptionStatus
+from app.models.core import LANGUAGES, KycType, VerificationStatus
 from app.models.enums import (
     AnomalyStatus,
     InventoryReason,
@@ -52,6 +53,9 @@ from app.models.enums import (
     SaleSource,
 )
 from app.schemas.requests import CONSENT_PURPOSES, OTP_PURPOSES
+from app.services import billing, gateway
+from app.services.demand_report import DEMAND_AUDIT_LABELS, DEMAND_BANDS
+from app.services.leads import COUNT_FIELDS, LEAD_KINDS
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +96,64 @@ RATING = {"bsonType": INT, "minimum": 1, "maximum": 5}
 RATING_N = {"oneOf": [{"bsonType": "null"}, RATING]}
 POSITIVE_INT = {"bsonType": INT, "minimum": 1}
 NON_NEGATIVE = {"bsonType": NUM, "minimum": 0}
+# Kannada, Telugu and Hindi names of a catalog item plus Latin transliterations, normalised (P5.2,
+# database/seed/data/local_terms.json). Matched token for token by search's keyword stage.
+LOCAL_TERMS = {"bsonType": "array", "maxItems": 100, "items": {"bsonType": STR, "minLength": 1, "maxLength": 100}}
+
+
+def _closed(required: list[str], **properties: dict) -> dict:
+    """A sub-document that may hold only the named properties."""
+    return {"bsonType": "object", "required": required, "additionalProperties": False, "properties": properties}
+
+
+GROUP_KEY = {"bsonType": STR, "pattern": "^[cp][0-9]{1,18}$"}  # a result group: c<catalog item id> or p<listing id>
+SEARCH_ID = {"bsonType": STR, "pattern": "^[0-9a-f]{24}$"}
+EVENT_POSITION = {"bsonType": INT, "minimum": 1, "maximum": 1000}
+EVENT_TOP = {"bsonType": "array", "maxItems": 20, "items": GROUP_KEY}
+# Search events (P5.6): see the comment on "search_events" in VALIDATORS.
+SEARCH_EVENT_VALIDATOR = {"$jsonSchema": {
+    "bsonType": "object",
+    "required": ["_id", "created_at", "query", "redacted", "language", "sort", "filters", "radius_km", "lat", "lng",
+                 "results_count", "corrected", "ranking", "impressions", "clicks", "conversions"],
+    "additionalProperties": False,
+    "properties": {
+        "_id": SEARCH_ID,
+        "created_at": {"bsonType": DATE},
+        "query": {"bsonType": STR, "maxLength": 60},
+        "redacted": {"bsonType": BOOL},
+        "language": {"bsonType": STR, "minLength": 2, "maxLength": 8},
+        "category": {"bsonType": STR_N, "maxLength": 80},
+        "sort": {"enum": ["relevance", "distance", "price_asc", "price_desc"]},
+        "filters": _closed(["min_price", "max_price", "in_stock_only", "fulfillment"],
+                           min_price={"bsonType": NUM_N}, max_price={"bsonType": NUM_N},
+                           in_stock_only={"bsonType": BOOL}, fulfillment={"enum": ["pickup", "delivery", None]}),
+        "radius_km": NON_NEGATIVE,
+        "lat": {"bsonType": NUM, "minimum": -90, "maximum": 90},
+        "lng": {"bsonType": NUM, "minimum": -180, "maximum": 180},
+        "results_count": {"bsonType": INT, "minimum": 0},
+        "corrected": {"bsonType": BOOL},
+        "ranking": {"bsonType": STR, "minLength": 1, "maxLength": 40},
+        "impressions": {"bsonType": "array", "maxItems": 60, "items": _closed(
+            ["group", "listing", "position"], group=GROUP_KEY, listing={"bsonType": INT},
+            position={"bsonType": INT, "minimum": 1, "maximum": 60})},
+        "clicks": {"bsonType": "array", "maxItems": 50, "items": _closed(
+            ["group", "listing", "position", "at"], group=GROUP_KEY, listing={"bsonType": INT},
+            position=EVENT_POSITION, at={"bsonType": DATE})},
+        "conversions": {"bsonType": "array", "maxItems": 50, "items": _closed(
+            ["kind", "group", "position", "at"], kind={"enum": ["reservation", "order"]}, group=GROUP_KEY,
+            position=EVENT_POSITION, at={"bsonType": DATE})},
+        "previous_search_id": {"oneOf": [{"bsonType": "null"}, SEARCH_ID]},
+        "shadow": {"oneOf": [{"bsonType": "null"}, _closed(
+            ["label", "ranking", "keyword", "vector", "production_label", "top", "production_top", "results_count",
+             "production_results_count", "ms", "production_ms"],
+            label={"bsonType": STR, "maxLength": 200}, ranking={"bsonType": STR, "maxLength": 40},
+            keyword={"bsonType": STR, "maxLength": 80}, vector={"bsonType": STR, "maxLength": 120},
+            production_label={"bsonType": STR, "maxLength": 200}, top=EVENT_TOP, production_top=EVENT_TOP,
+            results_count={"bsonType": INT, "minimum": 0}, production_results_count={"bsonType": INT, "minimum": 0},
+            ms=NON_NEGATIVE, production_ms=NON_NEGATIVE)]},
+    },
+}}
+PAISE_N = {"bsonType": INT_N, "minimum": 0}  # a price in paise, or null where none is offered
 
 # The shop verification actions admins take (P3.3, app/api/routes/admin.py), each one row in admin_audit.
 SHOP_AUDIT_ACTIONS = ("shop_phone_verified", "shop_verification_approve", "shop_verification_reject",
@@ -104,6 +166,24 @@ MODERATION: dict[str, dict | str | list] = dict(
     decided_by=INT_N, decision_note={"bsonType": STR_N, "maxLength": 500},
 )
 
+# Billing (P9.5): an amount in paise, a GST state code, an actor, a party on a document, a count.
+PAISE = {"bsonType": INT, "minimum": 0}
+# The demand report (P9.7): a search's demand key (64 hex characters, or null), an ISO week and one report item.
+DEMAND_KEY = {"bsonType": STR_N, "pattern": "^[0-9a-f]{64}$"}
+ISO_WEEK = {"bsonType": STR, "pattern": "^\\d{4}-W(0[1-9]|[1-4]\\d|5[0-3])$"}
+DEMAND_ITEM = _closed(
+    ["query", "band"], query={"bsonType": STR, "minLength": 2, "maxLength": 60},
+    catalog_item_id={"bsonType": INT_N}, item_name={"bsonType": STR_N}, category={"bsonType": STR_N},
+    band={"enum": list(DEMAND_BANDS)})
+COUNT = {"bsonType": INT, "minimum": 0}
+STATE_CODE = {"bsonType": STR, "pattern": "^\\d{2}$"}
+GST_MODE = enum(billing.GstMode)
+ACTOR = {"bsonType": "object", "required": ["type"], "properties": {
+    "type": {"enum": ["admin", "system", "owner"]}, "id": {"bsonType": INT_N}}}
+PARTY = {"bsonType": "object", "required": ["legal_name", "address", "state_code"], "properties": {
+    "legal_name": {"bsonType": STR, "minLength": 1}, "address": {"bsonType": STR, "minLength": 1},
+    "state_code": STATE_CODE, "gstin": {"bsonType": STR_N}}}
+
 VALIDATORS: dict[str, dict] = {
     # email is optional since P4.1 (migration 7): an account registered by phone has none, and leaves the field out.
     "users": schema(
@@ -111,6 +191,8 @@ VALIDATORS: dict[str, dict] = {
         name=STR, email={"bsonType": STR, "pattern": "^[^@\\s]+@[^@\\s]+$"}, phone=STR_N, phone_verified_at=DATE_N,
         password_hash=STR, role=enum(Role), is_active=BOOL, last_login_at=DATE_N, home_lat=NUM_N, home_lng=NUM_N,
         home_label=STR_N, created_at=DATE, updated_at=DATE,
+        # The notification language (P7.11): optional, as documents written before it have none (they read en).
+        language={"enum": list(LANGUAGES)},
         # Revocable sessions and the admin second factor (P2.4, app/core/security.py). All optional: documents
         # written before them read the model's defaults.
         token_version={"bsonType": INT, "minimum": 0},
@@ -131,6 +213,7 @@ VALIDATORS: dict[str, dict] = {
         ["slug", "name", "category_id", "specs", "tags"],
         slug=STR, name=STR, brand=STR_N, category_id=INT, subcategory=STR_N, mrp=NUM_N, typical_price=NUM_N,
         specs="object", tags={"bsonType": "array", "items": {"bsonType": STR}},
+        local_terms=LOCAL_TERMS,
     ),
     "shops": schema(
         ["owner_id", "name", "slug", "address_line", "city", "location", "offers_pickup", "offers_delivery",
@@ -160,6 +243,7 @@ VALIDATORS: dict[str, dict] = {
         quantity={"bsonType": INT, "minimum": 0},  # stock can never go negative, whatever the code does
         low_stock_threshold={"bsonType": INT, "minimum": 0}, is_active=BOOL, stock_updated_at=DATE,
         created_at=DATE, updated_at=DATE,
+        local_terms=LOCAL_TERMS,  # copied from the catalog item (migration 8); optional
     ),
     "inventory_events": schema(
         ["product_id", "shop_id", "delta", "quantity_after", "reason", "created_at"],
@@ -231,6 +315,7 @@ VALIDATORS: dict[str, dict] = {
     "search_history": schema(
         ["query", "normalized_query", "results_count", "created_at"],
         user_id=INT_N, query=STR, normalized_query=STR, results_count={"bsonType": INT, "minimum": 0},
+        in_stock_results={"bsonType": INT, "minimum": 0}, demand_key=DEMAND_KEY,
         location={"oneOf": [{"bsonType": "null"}, POINT]}, created_at=DATE,
     ),
     "sales_history": schema(
@@ -325,6 +410,56 @@ VALIDATORS: dict[str, dict] = {
         notice_version={"bsonType": STR, "minLength": 1, "maxLength": 40}, granted=BOOL, at=DATE,
         source={"enum": ["web"]},
     ),
+    # Search synonyms managed by admins (P5.4, app/services/synonyms.py; migration 9 imported the 42 that were
+    # in code). term is normalised and unique; expansions are OR'd into the keyword search. Every write bumps
+    # the shared synonyms version in cache_versions (checked every 5 seconds) and the counters document
+    # synonyms_version (checked every 30 seconds).
+    "synonyms": schema(
+        ["term", "expansions", "active", "created_at", "updated_at"],
+        term={"bsonType": STR, "minLength": 1, "maxLength": 40},
+        expansions={"bsonType": "array", "minItems": 1, "maxItems": 20,
+                    "items": {"bsonType": STR, "minLength": 1, "maxLength": 40}},
+        languages={"bsonType": "array", "maxItems": 5, "items": {"bsonType": STR, "maxLength": 8}},
+        active=BOOL, created_by=INT_N, updated_by=INT_N, created_at=DATE, updated_at=DATE,
+    ),
+    # Shared cache versions (P8.1, app/core/cache_version.py): one document per in-memory cache that every API
+    # process keeps, _id its name (listings, synonyms), version (bumped after each committed change to what it
+    # holds) and updated_at. Each process reads them all, in one query, at most once every 5 seconds.
+    "cache_versions": {"$jsonSchema": {"bsonType": "object", "required": ["_id", "version", "updated_at"],
+                                       "properties": {
+        "_id": {"enum": ["listings", "synonyms"]}, "version": POSITIVE_INT, "updated_at": {"bsonType": DATE},
+    }}},
+    # Search interaction events (P5.6, app/services/search_events.py; plan sections 8.4 and 8.6): one document per
+    # search by a signed-in customer with the search-measurement consent. _id is a random search id. Nothing in it
+    # identifies a person: additionalProperties is false, so a user id, session id, IP address, user agent, phone,
+    # email, or reservation or order id can never be written. query is the normalised query only when it is 60
+    # characters or fewer and passes the P5.5 blocklist (otherwise "" with redacted true); lat and lng are rounded
+    # to 2 decimals. The TTL index on created_at deletes an event after 90 days.
+    "search_events": SEARCH_EVENT_VALIDATOR,
+    # Atlas Search's synonym source (P5.7, app/ai/atlas_search.py): one explicit mapping per active synonyms entry
+    # (P5.4), _id the entry's id, generated by app/services/synonyms.py on every save while an Atlas keyword engine
+    # is configured or the collection holds mappings. input is the entry's term; synonyms are the term and its
+    # expansions. Atlas reads at most 10,000 documents from a synonym source; P5.4 allows 500 entries.
+    "search_synonyms": schema(
+        ["mappingType", "input", "synonyms"],
+        mappingType={"enum": ["explicit"]},
+        input={"bsonType": "array", "minItems": 1, "maxItems": 1,
+               "items": {"bsonType": STR, "minLength": 1, "maxLength": 40}},
+        synonyms={"bsonType": "array", "minItems": 2, "maxItems": 21,
+                  "items": {"bsonType": STR, "minLength": 1, "maxLength": 40}},
+    ),
+    # Listing vectors for Atlas Vector Search (P5.7, app/ai/atlas_search.py): one document per active listing, _id
+    # the listing's id, with its shop, the model and its text_embeddings key, and the vector as a BSON float32
+    # vector. app/ai/semantic_index.py (ListingVectorSync) keeps it in step before each atlas_vector query, with the
+    # in-process index's version check, watermark and nightly full pass, reusing the text_embeddings vectors, so it
+    # is written only while the vector engine or the shadow engine pair is atlas_vector.
+    "listing_vectors": schema(
+        ["product_id", "shop_id", "is_active", "model", "key", "vector", "updated_at"],
+        product_id=INT, shop_id=INT, is_active=BOOL, model={"bsonType": STR, "minLength": 1, "maxLength": 120},
+        key=STR, vector={"bsonType": "binData"}, updated_at=DATE,
+    ),
+    # No validators: `counters` ({_id: collection name, seq}; also synonyms_version) and `text_embeddings`
+    # (binary vector cache).
     # Grievances (P3.8, app/api/routes/grievances.py): acknowledged on receipt, resolution due 30 days later
     # (due_at). contact is the complainant's email (lower-cased) or 10-digit mobile number; order_code is the order
     # or reservation code they named, with order_id or reservation_id when it matched one.
@@ -380,7 +515,8 @@ VALIDATORS: dict[str, dict] = {
     # recipient opted into, written in the notification's transaction, delivered by the send_notifications job. It
     # never holds the phone number; the template's variables (params) are cleared once the row is finished. Times
     # from notify (created_at) to the Cloud API's accept (seconds_to_sent) and to delivered (seconds_to_delivered).
-    # message_id is the Cloud API's id, which the status webhook names. Kept 30 days (TTL on created_at).
+    # message_id is the Cloud API's id, which the status webhook names. delivered_inferred: delivered_at was taken
+    # from a read callback because no delivered one came. Kept 30 days (TTL on created_at); deleted with the account.
     "notification_outbox": schema(
         ["notification_id", "user_id", "channel", "kind", "template", "language", "status", "attempts", "created_at",
          "next_attempt_at"],
@@ -392,14 +528,252 @@ VALIDATORS: dict[str, dict] = {
         message_id=STR_N, created_at=DATE, next_attempt_at=DATE, claimed_at=DATE_N, sent_at=DATE_N,
         wa_sent_at=DATE_N, delivered_at=DATE_N, read_at=DATE_N, failed_at=DATE_N, finished_at=DATE_N,
         seconds_to_sent=NUM_N, seconds_to_delivered=NUM_N, cost_estimate=NUM_N,
+        delivered_inferred={"bsonType": ["bool", "null"]},
     ),
-    # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
+    # Status callbacks that came before the sender saved their message id (P4.3, app/services/whatsapp.py
+    # record_status): held here, one per message id and status, and applied once the id is saved. _id is
+    # "<message id>:<status>". No personal data: Meta's id, the status, its time and error code. The TTL index
+    # removes a row at expires_at (a callback for a message that is not a notification, such as a sign-in code,
+    # is never applied).
+    "whatsapp_status_pending": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "message_id", "status", "at", "received_at", "expires_at"],
+        "properties": {
+            "_id": {"bsonType": STR, "maxLength": 300}, "message_id": {"bsonType": STR, "maxLength": 256},
+            "status": {"enum": ["sent", "delivered", "read", "failed"]}, "at": {"bsonType": DATE},
+            "error_code": {"bsonType": STR_N, "maxLength": 40}, "received_at": {"bsonType": DATE},
+            "expires_at": {"bsonType": DATE},
+        },
+    }},
+    # Messages from phones (P4.4, app/services/whatsapp.py handle_message): one row per webhook message id (_id),
+    # claimed before the message is handled, so each is handled once. No phone number and no text: the message's
+    # type, what was done (outcome) and whether the reply went (reply). Removed at expires_at (8 days: Meta retries
+    # an unanswered call for up to 7).
+    "whatsapp_inbound": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "received_at", "expires_at"],
+        "properties": {
+            "_id": {"bsonType": STR, "maxLength": 256}, "type": {"bsonType": STR, "maxLength": 20},
+            "received_at": {"bsonType": DATE}, "expires_at": {"bsonType": DATE},
+            "outcome": {"bsonType": STR_N, "maxLength": 40},
+            "reply": {"enum": ["sent", "failed", "window_closed", None]},
+        },
+    }},
+    # One row per shop owner who messaged NearShop on WhatsApp (P4.4), _id the owner's user id: the time of their
+    # last message (last_inbound_at, the 24-hour service window) and the stock update waiting for their Yes
+    # (pending: the matched listings and counts, the ambiguous lines' candidates, a token and expires_at). Listing
+    # names and counts only, nothing about customers. The TTL index removes a row 2 days after the last message.
+    "whatsapp_sessions": schema(
+        ["last_inbound_at"],
+        last_inbound_at=DATE, updated_at=DATE_N,
+        pending={"bsonType": ["object", "null"], "required": ["token", "shop_id", "items", "queue", "expires_at"],
+                 "properties": {
+                     "token": {"bsonType": STR}, "shop_id": {"bsonType": INT}, "expires_at": {"bsonType": DATE},
+                     "items": {"bsonType": "array", "maxItems": 20, "items": {
+                         "bsonType": "object", "required": ["product_id", "quantity"],
+                         "properties": {"product_id": {"bsonType": INT}, "name": {"bsonType": STR},
+                                        "quantity": {"bsonType": INT, "minimum": 0},
+                                        "before": {"bsonType": INT, "minimum": 0}}}},
+                     "queue": {"bsonType": "array", "maxItems": 20},
+                     "skipped": {"bsonType": "array", "maxItems": 40, "items": {"bsonType": STR}}}},
+    ),
+    # The daily stock check (P4.4, cadence P9.3; app/services/whatsapp.py send_stock_checks): one row per shop and
+    # IST day it was considered, _id "<shop id>:<YYYY-MM-DD>", so each shop gets at most one a day. decision is
+    # in_window, template, fresh, unreachable, closed or waiting; route is in_window or template when a check was sent
+    # (else null); outcome is sent, fresh (nothing stale) or unreachable (owner cannot get WhatsApp), and null on a
+    # closed or waiting day. Removed at expires_at (3 days).
+    "whatsapp_stock_checks": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "shop_id", "day", "at", "expires_at"],
+        "properties": {
+            "_id": {"bsonType": STR, "maxLength": 40}, "shop_id": {"bsonType": INT},
+            "day": {"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}, "at": {"bsonType": DATE},
+            "expires_at": {"bsonType": DATE}, "outcome": {"enum": ["sent", "fresh", "unreachable", None]},
+        },
+    }},
+    # Lead events (P9.2, app/services/leads.py; plan sections 8.4 and 8.18): one row per counted Call or Directions
+    # tap, holding only the shop, the listing or none, the kind and the IST day (the day's start as a UTC time). No
+    # other field is allowed, so no user id, phone, IP address, user agent or tap time can ever be stored. The TTL
+    # index on day removes a row after 90 days.
+    "lead_events": {"$jsonSchema": {
+        **schema(["shop_id", "kind", "day"], shop_id=INT, product_id=INT_N, kind={"enum": list(LEAD_KINDS)},
+                 day=DATE)["$jsonSchema"],
+        "additionalProperties": False,
+    }},
+    # The once-per-visitor check (P9.2): _id is a hash of the client IP, the user agent and the day's salt, with the
+    # shop, kind and day. Nothing else; the TTL index removes it at expires_at, 48 hours after the tap.
+    "lead_dedupe": {"$jsonSchema": {"bsonType": "object", "required": ["_id", "expires_at"],
+                                    "additionalProperties": False, "properties": {
+        "_id": {"bsonType": STR, "pattern": "^[0-9a-f]{64}$"}, "expires_at": {"bsonType": DATE}}}},
+    # The dedupe salt of each IST day (P9.2): random, _id the day, removed by the TTL index an hour after the day ends.
+    "lead_salts": {"$jsonSchema": {"bsonType": "object", "required": ["_id", "salt", "expires_at"],
+                                   "additionalProperties": False, "properties": {
+        "_id": {"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}, "salt": {"bsonType": STR, "minLength": 32},
+        "expires_at": {"bsonType": DATE}}}},
+    # Monthly lead counts per shop (P9.2): one row per shop and IST month (YYYY-MM), written by the lead_counts job
+    # on the 1st and replaced by a re-run. Business records, kept 8 years: the TTL index removes a row at keep_until.
+    "lead_counts": schema(
+        ["shop_id", "month", *COUNT_FIELDS, "computed_at", "keep_until"],
+        shop_id=INT, month={"bsonType": STR, "pattern": "^\\d{4}-(0[1-9]|1[0-2])$"},
+        **{f: {"bsonType": INT, "minimum": 0} for f in COUNT_FIELDS}, computed_at=DATE, keep_until=DATE,
+    ),
+    # The plan catalogue (P9.4, app/services/plans.py; plan section 8.18): one row per plan code and catalogue version,
+    # never changed after it is written; a price change is a new version. Prices in paise, GST excluded.
+    "plans": schema(
+        ["code", "version", "name", "on_sale", "entitlements", "effective_from", "published_at", "reason"],
+        code=enum(PlanCode), version=POSITIVE_INT, name={"bsonType": STR, "minLength": 1, "maxLength": 60},
+        price_year_paise=PAISE_N, price_month_paise=PAISE_N, founding_year_paise=PAISE_N, on_sale=BOOL,
+        entitlements={"bsonType": "object", "required": ["demand_report", "logins", "outlets"], "properties": {
+            "demand_report": {"enum": ["teaser", "full"]}, "low_stock_alerts": {"bsonType": BOOL},
+            "logins": POSITIVE_INT, "roi_statement": {"bsonType": BOOL}, "priority_support": {"bsonType": BOOL},
+            "boost_discount_pct": {"bsonType": INT, "minimum": 0, "maximum": 100},
+            "outcome_guarantee": {"bsonType": BOOL}, "pro_insights": {"bsonType": BOOL}, "outlets": POSITIVE_INT}},
+        effective_from=DATE, published_at=DATE, published_by=INT_N, reason={"bsonType": STR, "minLength": 3},
+    ),
+    # Subscriptions (P9.4): a billing account's plan for its shops between starts_at and ends_at (exclusive). Every
+    # change also writes a subscription_events row. founding_shop_id is set only on a founding-offer subscription.
+    "subscriptions": schema(
+        ["account_type", "account_id", "shop_ids", "plan_id", "plan_code", "plan_version", "period", "price_paise",
+         "source", "status", "starts_at", "ends_at", "paid_until", "created_at", "updated_at"],
+        account_type=enum(AccountType), account_id=INT,
+        shop_ids={"bsonType": "array", "minItems": 1, "maxItems": 50, "items": {"bsonType": INT}},
+        plan_id=INT, plan_code=enum(PlanCode), plan_version=POSITIVE_INT, period=enum(Period),
+        price_paise={"bsonType": INT, "minimum": 0}, founding=BOOL, founding_slot=INT_N, founding_shop_id=INT_N,
+        source=enum(SubscriptionSource), status=enum(SubscriptionStatus), starts_at=DATE, ends_at=DATE,
+        paid_until=DATE, paid_at=DATE_N, quarters_done={"bsonType": INT, "minimum": 0},
+        paid_terms={"bsonType": "array", "items": {"bsonType": "object", "required": ["start", "end"],
+                                                   "properties": {"start": {"bsonType": DATE}, "end": {"bsonType": DATE}}}},
+        next_quarter_end=DATE_N, reminded={"bsonType": "array", "items": {"bsonType": INT}},
+        advance_alerted_at=DATE_N, created_at=DATE, updated_at=DATE,
+    ),
+    # The append-only log of every subscription change (P9.4), with the actor and the reason.
+    "subscription_events": schema(
+        ["subscription_id", "shop_ids", "kind", "actor", "reason", "status_after", "ends_at_after", "at"],
+        subscription_id=INT, shop_ids={"bsonType": "array", "items": {"bsonType": INT}},
+        kind={"enum": [*EVENT_KINDS, *billing.SUBSCRIPTION_EVENT_KINDS]},  # billing adds refunded (P9.5)
+        actor={"bsonType": "object", "required": ["type"], "properties": {
+            "type": {"enum": ["admin", "system", "owner"]}, "id": {"bsonType": INT_N}}},
+        reason={"bsonType": STR, "minLength": 3, "maxLength": 500},
+        status_before={"enum": [None, *(s.value for s in SubscriptionStatus)]}, status_after=enum(SubscriptionStatus),
+        ends_at_before=DATE_N, ends_at_after=DATE, at=DATE,
+    ),
+    # Payments to NearShop's own account (P9.5, app/services/billing.py; plan section 8.18; docs/runbooks/billing.md).
+    # Who pays: a shop owner now; distributor and lender are reserved for P10.3 and P10.10.
+    "billing_accounts": schema(
+        ["kind", "legal_name", "address", "state_code", "contact_user_id", "created_at", "updated_at"],
+        kind=enum(billing.AccountKind), legal_name={"bsonType": STR, "minLength": 1, "maxLength": 200},
+        address={"bsonType": STR, "minLength": 1, "maxLength": 500}, state_code=STATE_CODE,
+        gstin={"bsonType": STR_N, "pattern": billing.GSTIN_PATTERN.pattern}, contact_user_id=INT,
+        created_at=DATE, updated_at=DATE,
+    ),
+    # A payment request: its number is the UPI payment note. Amounts in paise; total = amount + GST.
+    "payment_requests": schema(
+        ["number", "billing_account_id", "owner_id", "shop_id", "purpose", "plan_code", "plan_version", "period",
+         "kind", "amount_paise", "gst_mode", "gst_paise", "total_paise", "status", "created_by", "created_at",
+         "updated_at"],
+        number={"bsonType": STR, "pattern": "^NSP\\d{6,9}$"}, billing_account_id=INT, owner_id=INT, shop_id=INT,
+        purpose=enum(billing.Purpose), plan_code=enum(PlanCode), plan_version=POSITIVE_INT, period=enum(Period),
+        kind=enum(billing.RequestKind), subscription_id=INT_N, founding=BOOL, amount_paise=PAISE, gst_mode=GST_MODE,
+        gst_paise=PAISE, total_paise=PAISE, status=enum(billing.RequestStatus), created_by=ACTOR, payment_id=INT_N,
+        reason={"bsonType": STR_N, "maxLength": 500},  # an admin's reason for a request made for the owner
+        created_at=DATE, updated_at=DATE,
+    ),
+    # Every credit seen on a bank statement, entered by hand or imported from the pilot ledger; one per UPI reference.
+    "bank_credits": schema(
+        ["upi_reference", "credited_at", "amount_paise", "source", "status", "created_at"],
+        upi_reference={"bsonType": STR, "minLength": 1, "maxLength": 64}, credited_at=DATE,
+        amount_paise={"bsonType": INT, "minimum": 1}, narration={"bsonType": STR, "maxLength": 600},
+        source=enum(billing.CreditSource), statement_id=INT_N, request_number=STR_N,
+        status=enum(billing.CreditStatus), note={"bsonType": STR_N, "maxLength": 300}, payment_id=INT_N,
+        alerted_at=DATE_N, returned={"bsonType": ["object", "null"]}, closed={"bsonType": ["object", "null"]},
+        created_at=DATE,
+    ),
+    # A matched payment, with its request, credit, subscription and document, and its refund.
+    "billing_payments": schema(
+        ["request_id", "request_number", "billing_account_id", "shop_id", "credit_id", "upi_reference",
+         "amount_paise", "paid_at", "matched_at", "matched_by", "match", "reason", "subscription_id", "status"],
+        request_id=INT, request_number=STR, billing_account_id=INT, shop_id=INT, credit_id=INT, upi_reference=STR,
+        amount_paise={"bsonType": INT, "minimum": 1}, paid_at=DATE, matched_at=DATE, matched_by=ACTOR,
+        match=enum(billing.CreditSource), reason={"bsonType": STR, "minLength": 3, "maxLength": 500},
+        subscription_id=INT, document_id=INT_N, status=enum(billing.PaymentStatus),
+        settled_at=DATE_N, settlement_id=STR_N,  # an Autopay debit's settlement by the gateway (P9.6)
+        refund={"oneOf": [{"bsonType": "null"}, {"bsonType": "object", "required": [
+            "at", "by", "reason", "bank_reference", "document_id"], "properties": {
+            "at": {"bsonType": DATE}, "by": ACTOR, "reason": {"bsonType": STR, "minLength": 3},
+            "bank_reference": {"bsonType": STR, "minLength": 1}, "document_id": {"bsonType": INT}}}]},
+    ),
+    # Receipts, tax invoices, refund receipts and credit notes: immutable snapshots, numbered without gaps per
+    # financial year (number: at most 16 characters, unique).
+    "billing_documents": schema(
+        ["number", "financial_year", "seq", "type", "issued_at", "payment_date", "format", "wording", "supplier",
+         "recipient", "place_of_supply", "description", "taxable_paise", "cgst_paise", "sgst_paise", "igst_paise",
+         "total_paise", "payment_id", "request_number", "upi_reference", "content_hash"],
+        number={"bsonType": STR, "minLength": 1, "maxLength": billing.MAX_NUMBER_LENGTH},
+        financial_year={"bsonType": STR, "pattern": "^\\d{4}-\\d{2}$"}, seq=POSITIVE_INT, type=enum(billing.DocType),
+        issued_at=DATE, payment_date=DATE, format={"bsonType": STR, "minLength": 1}, draft_line=STR_N,
+        wording={"bsonType": STR, "minLength": 1}, supplier=PARTY, recipient=PARTY, place_of_supply=STR,
+        description=STR, sac=STR_N, taxable_paise=PAISE, gst_rate_pct={"bsonType": INT, "minimum": 0, "maximum": 100},
+        cgst_paise=PAISE, sgst_paise=PAISE, igst_paise=PAISE, total_paise=PAISE, payment_id=INT,
+        request_number=STR, upi_reference=STR, original_document_id=INT_N, original_number=STR_N,
+        refund_reference=STR_N, content_hash={"bsonType": STR, "pattern": "^[0-9a-f]{64}$"},
+    ),
+    # One row per statement upload, with its counts.
+    "bank_statements": schema(
+        ["filename", "uploaded_by", "uploaded_at", "credits", "matched", "unmatched", "duplicates"],
+        filename=STR, uploaded_by=ACTOR, uploaded_at=DATE, credits=COUNT, matched=COUNT, unmatched=COUNT,
+        duplicates=COUNT, debits_skipped=COUNT, unreadable=COUNT,
+    ),
+    # UPI Autopay (P9.6, app/services/gateway.py): one gateway subscription with a UPI Autopay mandate per row. The
+    # gateway holds the mandate; no card or bank detail is stored.
+    "autopay_mandates": schema(
+        ["shop_id", "owner_id", "billing_account_id", "provider", "gateway_subscription_id", "plan_code",
+         "plan_version", "amount_paise", "gst_mode", "total_paise", "status", "debits", "failed_debits", "created_by",
+         "created_at", "updated_at"],
+        shop_id=INT, owner_id=INT, billing_account_id=INT, provider={"enum": ["fake", "razorpay"]},
+        gateway_subscription_id={"bsonType": STR, "minLength": 1, "maxLength": 80}, gateway_plan_id=STR_N,
+        checkout_url={"bsonType": STR_N, "maxLength": 500}, plan_code=enum(PlanCode), plan_version=POSITIVE_INT,
+        amount_paise={"bsonType": INT, "minimum": 1}, gst_mode=GST_MODE, total_paise={"bsonType": INT, "minimum": 1},
+        status=enum(gateway.MandateStatus), subscription_id=INT_N, debits=COUNT, failed_debits=COUNT,
+        created_by=ACTOR, authorised_at=DATE_N, last_debit_at=DATE_N, last_failure_at=DATE_N, halted_at=DATE_N,
+        cancelled_at=DATE_N, cancelled_by={"enum": [None, "owner", "admin", "system", "gateway", "deletion"]},
+        created_at=DATE, updated_at=DATE,
+    ),
+    # Each gateway webhook event processed, once (P9.6).
+    "gateway_events": schema(
+        ["event_id", "event", "outcome", "received_at"],
+        event_id={"bsonType": STR, "minLength": 1, "maxLength": 120}, event={"bsonType": STR, "maxLength": 80},
+        gateway_subscription_id=STR_N, payment_id=STR_N, outcome={"bsonType": STR, "minLength": 1},
+        received_at=DATE,
+    ),
+    # The "asked for near you" demand report (P9.7, app/services/demand_report.py; plan section 8.19): one row per
+    # verified live shop per ISO week. Each item is a query, the catalogue item or category it matched and a band of
+    # distinct people; never a user id, a demand key, a time or a location (additionalProperties: false).
+    "demand_reports": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "shop_id", "week", "items", "dropped"],
+        "additionalProperties": False, "properties": {
+            "_id": {"bsonType": INT}, "shop_id": {"bsonType": INT}, "week": ISO_WEEK,
+            "items": {"bsonType": "array", "maxItems": 500, "items": DEMAND_ITEM},
+            "dropped": {"bsonType": "object", "additionalProperties": {"bsonType": INT, "minimum": 0}}}}},
+    # R5's weekly audit sample (P9.7): kept items drawn city-wide, each labelled once by the demand-audit command.
+    "demand_audits": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "week", "shop_id", "query", "label"],
+        "additionalProperties": False, "properties": {
+            "_id": {"bsonType": INT}, "week": ISO_WEEK, "shop_id": {"bsonType": INT},
+            "query": {"bsonType": STR, "minLength": 2, "maxLength": 60}, "catalog_item_id": {"bsonType": INT_N},
+            "item_name": {"bsonType": STR_N}, "category": {"bsonType": STR_N}, "band": {"enum": list(DEMAND_BANDS)},
+            "label": {"enum": [None, *DEMAND_AUDIT_LABELS]}, "labelled_at": {"bsonType": DATE_N}}}},
+    # Possible search failures (P9.7): a query the report dropped because the shop itself has a matching in-stock
+    # listing that search did not find. Shown to R5 by the demand-audit command.
+    "demand_search_failures": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "week", "shop_id", "query", "product_ids"],
+        "additionalProperties": False, "properties": {
+            "_id": {"bsonType": INT}, "week": ISO_WEEK, "shop_id": {"bsonType": INT},
+            "query": {"bsonType": STR, "minLength": 2, "maxLength": 60},
+            "product_ids": {"bsonType": "array", "maxItems": 20, "items": {"bsonType": INT}}}}},
     "counters": {},
     "text_embeddings": {},
 }
 
 A, D = ASCENDING, DESCENDING
 ADMIN_AUDIT_KEEP_SECONDS = 365 * 24 * 60 * 60  # admin_audit rows are kept for one year
+SEARCH_EVENTS_KEEP_SECONDS = 90 * 24 * 60 * 60  # search_events are deleted 90 days after creation (P5.6)
 # Retention (P3.2; plan section 8.4; docs/legal/retention.md). Built on existing databases by migration 4.
 SEARCH_HISTORY_KEEP_SECONDS = 180 * 24 * 60 * 60  # search_history rows are deleted after 180 days
 NOTIFICATIONS_KEEP_SECONDS = 90 * 24 * 60 * 60  # notifications are deleted after 90 days
@@ -411,6 +785,8 @@ IS_INT = {"$type": "number"}  # partial-index filter: "this optional reference i
 OTP_CODES_KEEP_SECONDS = 10 * 60  # otp_codes: removed 10 minutes after they were created (plan section 8.4)
 OTP_SENDS_KEEP_SECONDS = 30 * 24 * 60 * 60  # otp_sends: the send log is kept 30 days
 OUTBOX_KEEP_SECONDS = 30 * 24 * 60 * 60  # notification_outbox rows are deleted 30 days after the notification (P4.3)
+WHATSAPP_SESSION_KEEP_SECONDS = 2 * 24 * 60 * 60  # whatsapp_sessions: removed 2 days after the owner's last message
+LEAD_EVENTS_KEEP_SECONDS = 90 * 24 * 60 * 60  # lead_events rows are deleted 90 days after their day (P9.2)
 # One account per email and one per phone, among the accounts that have one (migration 7 built both; uq_email_set
 # replaced uq_email, which also counted a missing email as a value). Phones are stored as their 10 digits. The
 # filter is "a string after the empty one": it leaves out a missing or null value, and, unlike a $type filter, an
@@ -436,6 +812,7 @@ INDEXES: dict[str, list[IndexModel]] = {
     "catalog_items": [
         IndexModel([("slug", A)], unique=True, name="uq_slug"),
         IndexModel([("category_id", A), ("name", A)], name="category_name"),
+        IndexModel([("local_terms", A)], name="local_terms"),  # multikey; search's local-term match (P5.2)
     ],
     "shops": [
         IndexModel([("slug", A)], unique=True, name="uq_slug"),
@@ -450,6 +827,9 @@ INDEXES: dict[str, list[IndexModel]] = {
                    partialFilterExpression={"catalog_item_id": IS_INT}),
         IndexModel([("catalog_item_id", A), ("is_active", A)], name="catalog_item_active"),
         IndexModel([("category_id", A), ("is_active", A)], name="category_active"),
+        IndexModel([("local_terms", A)], name="local_terms"),  # multikey; search's local-term match (P5.2)
+        # The semantic index's incremental refresh: the listings changed since its watermark (P8.1).
+        IndexModel([("updated_at", A)], name="updated"),
         # Keyword half of hybrid search (replaces SQLite FTS5): weighted, stemmed text index.
         IndexModel([("name", TEXT), ("brand", TEXT), ("keywords", TEXT), ("description", TEXT)],
                    weights={"name": 10, "brand": 6, "keywords": 4, "description": 1},
@@ -465,6 +845,10 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("shop_id", A), ("status", A), ("created_at", A)], name="shop_status_created"),
         IndexModel([("customer_id", A), ("status", A), ("created_at", D)], name="customer_status_created"),
         IndexModel([("status", A), ("expires_at", A)], name="status_expires"),  # the expiry sweep
+        # The monthly lead counts and the facilitated-sales export (P9.2, app/services/leads.py) read by these dates.
+        IndexModel([("created_at", A)], name="created"),
+        IndexModel([("confirmed_at", A)], name="confirmed"),
+        IndexModel([("completed_at", A)], name="completed"),
         IndexModel([("product_id", A), ("status", A)], name="product_status"),
         # A customer can hold only one active reservation per listing, guaranteed by the database.
         IndexModel([("customer_id", A), ("product_id", A)], unique=True, name="uq_active_customer_product",
@@ -475,6 +859,8 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("shop_id", A), ("status", A), ("created_at", A)], name="shop_status_created"),
         IndexModel([("customer_id", A), ("status", A), ("created_at", D)], name="customer_status_created"),
         IndexModel([("status", A), ("created_at", A)], name="status_created"),  # stale-pending sweep
+        IndexModel([("created_at", A)], name="created"),  # the monthly lead counts (P9.2)
+        IndexModel([("delivered_at", A)], name="delivered"),  # the lead counts and the facilitated-sales export
     ],
     "status_events": [
         IndexModel([("entity", A), ("entity_id", A), ("created_at", A)], name="entity_timeline"),
@@ -510,6 +896,8 @@ INDEXES: dict[str, list[IndexModel]] = {
         SEARCH_HISTORY_TTL,
         IndexModel([("user_id", A), ("created_at", D)], name="user_created"),
         IndexModel([("location", GEOSPHERE)], name="location_2dsphere"),
+        # P9.7: forgetting one user's demand key (consent withdrawn, account deleted) without a collection scan.
+        IndexModel([("demand_key", A)], name="demand_key", partialFilterExpression={"demand_key": {"$type": "string"}}),
     ],
     "sales_history": [
         IndexModel([("shop_id", A), ("sold_at", D)], name="shop_sold"),
@@ -518,6 +906,10 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("customer_id", A), ("sold_at", D)], name="customer_sold",
                    partialFilterExpression={"customer_id": IS_INT}),
         IndexModel([("catalog_item_id", A)], name="catalog_item"),
+        # P7.2: one imported row per shop, product, date and bill (basket_id carries the date and bill number), so
+        # a sales report can never be imported twice. Only imported rows: reservations and orders are left alone.
+        IndexModel([("shop_id", A), ("product_id", A), ("sold_at", A), ("basket_id", A)], name="uq_import_sale",
+                   unique=True, partialFilterExpression={"source": SaleSource.IMPORT.value}),
     ],
     "model_runs": [IndexModel([("name", A), ("created_at", D)], name="name_created")],
     "recommendations": [IndexModel([("antecedent_key", A)], name="antecedent_key")],
@@ -542,6 +934,14 @@ INDEXES: dict[str, list[IndexModel]] = {
     # MongoDB's TTL monitor deletes a counter about a minute after its window ends; the limiter never relies on
     # that, because a new window has a new _id and a cooldown is checked against expires_at.
     "rate_limits": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
+    "synonyms": [IndexModel([("term", A)], unique=True, name="uq_term")],
+    "search_events": [
+        # Expiry, and the online metrics' window reads (created_at at or after a date).
+        IndexModel([("created_at", A)], expireAfterSeconds=SEARCH_EVENTS_KEEP_SECONDS, name="created_ttl_90d"),
+        # The shadow comparison: only shadowed searches.
+        IndexModel([("shadow.label", A), ("created_at", A)], name="shadow_label_created",
+                   partialFilterExpression={"shadow.label": {"$type": "string"}}),
+    ],
     "consents": [
         IndexModel([("user_id", A), ("purpose", A), ("at", D)], name="user_purpose_at"),  # the row in force
         IndexModel([("purpose", A), ("at", D)], name="purpose_at"),
@@ -564,6 +964,100 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("sent_at", A)], name="sent_at", sparse=True),
         IndexModel([("failed_at", A)], name="failed_at", sparse=True),
         IndexModel([("created_at", A)], expireAfterSeconds=OUTBOX_KEEP_SECONDS, name="created_ttl_30d"),
+    ],
+    "whatsapp_status_pending": [
+        IndexModel([("message_id", A)], name="message_id"),  # the sender's lookup once it saves an id
+        IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl"),
+    ],
+    "whatsapp_inbound": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
+    "whatsapp_sessions": [IndexModel([("last_inbound_at", A)], expireAfterSeconds=WHATSAPP_SESSION_KEEP_SECONDS,
+                                     name="last_inbound_ttl_2d")],
+    "whatsapp_stock_checks": [
+        IndexModel([("day", A)], name="day"),  # the job's "already considered today" read
+        IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl"),
+    ],
+    # Lead events and counts (P9.2). day_ttl_90d also serves the monthly rollup's range on day.
+    "lead_events": [
+        IndexModel([("day", A)], expireAfterSeconds=LEAD_EVENTS_KEEP_SECONDS, name="day_ttl_90d"),
+        IndexModel([("shop_id", A), ("day", A)], name="shop_day"),  # one shop's month so far (month_counts)
+    ],
+    "lead_dedupe": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
+    "lead_salts": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
+    "lead_counts": [
+        IndexModel([("shop_id", A), ("month", A)], unique=True, name="uq_shop_month"),
+        IndexModel([("month", A)], name="month"),
+        IndexModel([("keep_until", A)], expireAfterSeconds=0, name="keep_until_ttl"),
+    ],
+    # Plans and subscriptions (P9.4, app/services/plans.py).
+    "plans": [
+        IndexModel([("version", A), ("code", A)], unique=True, name="uq_version_code"),  # one row per code per version
+        IndexModel([("effective_from", A), ("version", D)], name="effective_version"),  # the version in force
+    ],
+    "subscriptions": [
+        IndexModel([("shop_ids", A), ("status", A), ("ends_at", D)], name="shop_status_ends"),  # effective_plan
+        # One live (advance or active) subscription per shop, even when two grants or payments arrive at once.
+        IndexModel([("shop_ids", A)], unique=True, name="uq_live_shop",
+                   partialFilterExpression={"status": {"$in": [SubscriptionStatus.ADVANCE.value,
+                                                                SubscriptionStatus.ACTIVE.value]}}),
+        IndexModel([("status", A), ("ends_at", A)], name="status_ends"),  # lapses, reminders, the admin list
+        IndexModel([("status", A), ("next_quarter_end", A)], name="status_quarter"),  # the outcome guarantee
+        IndexModel([("status", A), ("paid_at", A)], name="status_paid"),  # the 300-day advance alert
+        IndexModel([("founding_shop_id", A)], unique=True, name="uq_founding_shop",  # one founding offer per shop
+                   partialFilterExpression={"founding_shop_id": IS_INT}),
+    ],
+    "subscription_events": [
+        IndexModel([("subscription_id", A), ("at", A)], name="subscription_at"),
+        IndexModel([("at", D)], name="at"),
+    ],
+    # Billing (P9.5, app/services/billing.py).
+    "billing_accounts": [
+        IndexModel([("kind", A), ("contact_user_id", A)], unique=True, name="uq_kind_contact"),  # one per owner
+    ],
+    "payment_requests": [
+        IndexModel([("number", A)], unique=True, name="uq_number"),  # matching by the payment note
+        IndexModel([("shop_id", A), ("status", A)], name="shop_status"),  # the owner's open requests
+        IndexModel([("status", A), ("_id", D)], name="status_id"),  # the admin list
+    ],
+    "bank_credits": [
+        IndexModel([("upi_reference", A)], unique=True, name="uq_upi_reference"),  # duplicates on upload
+        IndexModel([("status", A), ("credited_at", A)], name="status_credited"),  # the unmatched queue and alert
+    ],
+    "billing_payments": [
+        IndexModel([("shop_id", A), ("_id", D)], name="shop_id"),  # the owner's payments
+        IndexModel([("status", A), ("_id", D)], name="status_id"),  # the admin list
+        IndexModel([("upi_reference", A)], unique=True, name="uq_upi_reference"),
+        IndexModel([("match", A), ("settled_at", A), ("paid_at", A)], name="match_settled"),  # Autopay reconciliation
+    ],
+    "billing_documents": [
+        IndexModel([("number", A)], unique=True, name="uq_number"),  # no duplicate number, ever
+        IndexModel([("financial_year", A), ("seq", A)], unique=True, name="uq_year_seq"),
+        IndexModel([("payment_id", A)], name="payment"),
+    ],
+    "bank_statements": [IndexModel([("uploaded_at", D)], name="uploaded_at")],
+    # UPI Autopay (P9.6, app/services/gateway.py).
+    "autopay_mandates": [
+        IndexModel([("gateway_subscription_id", A)], unique=True, name="uq_gateway_subscription"),  # webhook events
+        # One live (created or authorised) mandate per shop, even when the owner taps twice.
+        IndexModel([("shop_id", A)], unique=True, name="uq_live_shop",
+                   partialFilterExpression={"status": {"$in": [s.value for s in gateway.LIVE]}}),
+        IndexModel([("shop_id", A), ("_id", D)], name="shop_id"),  # the owner's latest mandate
+        IndexModel([("subscription_id", A), ("status", A)], name="subscription_status"),  # plans.autopay_renews
+    ],
+    "gateway_events": [
+        IndexModel([("event_id", A)], unique=True, name="uq_event_id"),  # each event processed once
+        IndexModel([("received_at", D)], name="received_at"),
+    ],
+    # The demand report (P9.7, app/services/demand_report.py).
+    "demand_reports": [
+        IndexModel([("shop_id", A), ("week", A)], unique=True, name="uq_shop_week"),  # one row per shop per week
+        IndexModel([("week", A)], name="week"),
+    ],
+    "demand_audits": [
+        IndexModel([("week", A), ("shop_id", A), ("query", A)], unique=True, name="uq_week_shop_query"),
+        IndexModel([("label", A), ("week", A)], name="label_week"),  # the next unlabelled item
+    ],
+    "demand_search_failures": [
+        IndexModel([("week", A), ("shop_id", A), ("query", A)], unique=True, name="uq_week_shop_query"),
     ],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),

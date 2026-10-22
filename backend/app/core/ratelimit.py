@@ -189,6 +189,7 @@ REVIEW_REPORT = Rule("review_report", 10, DAY, (USER,))  # reports of reviews an
 SEARCH_IP = Rule("search_ip", 120, MINUTE, (IP,), admin_exempt=True)
 SEARCH_SESSION = Rule("search_session", 30, MINUTE, (SESSION,), admin_exempt=True)
 SUGGEST_IP = Rule("suggest_ip", 240, MINUTE, (IP,), admin_exempt=True)
+SEARCH_CLICK_IP = Rule("search_click_ip", 120, MINUTE, (IP,))  # P5.6: the result card's click report
 SEARCH_COMPARE_IP = Rule("search_compare_ip", 10, MINUTE, (IP,))
 IMAGE_UPLOAD = Rule("image_upload", 30, HOUR, (USER,))
 IMPORT_PREVIEW = Rule("import_preview", 20, HOUR, (USER,))
@@ -209,10 +210,10 @@ OTP_SEND_PHONE_DAY = Rule("otp_send_phone_day", 5, DAY, (body("phone"),), always
 OTP_SEND_IP_DAY = Rule("otp_send_ip_day", 20, DAY, (IP,), always_enforce=True)
 OTP_VERIFY_PHONE = Rule("otp_verify_phone", 10, HOUR, (body("phone"),), always_enforce=True)
 CATALOG_READ = Rule("catalog_read", 300, MINUTE, (IP,))
+LEAD_EVENT = Rule("lead_event", 30, MINUTE, (IP,))  # a Call or Directions tap (P9.2)
 DEFAULT = Rule("default", 600, MINUTE, (IP,))
 
-# Later prompts add their rows here, with the plan section 8.3 limits: search result click (P5.6) and lead event
-# (P9.2).
+# Later prompts add their rows here, with the plan section 8.3 limits.
 LIMITS: tuple[Row, ...] = (
     Row(("POST",), (LOGIN_ACCOUNT_IP, LOGIN_IP, LOGIN_ACCOUNT), route="/api/auth/login"),
     Row(("POST",), (PASSWORD_CHANGE_HOUR, PASSWORD_CHANGE_DAY), route="/api/auth/password"),
@@ -228,6 +229,7 @@ LIMITS: tuple[Row, ...] = (
     Row(("POST",), (REVIEW_REPORT,), route="/api/reviews/{review_id}/reply/report"),  # P3.6
     Row(("GET",), (SEARCH_IP, SEARCH_SESSION), route="/api/search"),
     Row(("GET",), (SUGGEST_IP,), route="/api/search/suggest"),
+    Row(("POST",), (SEARCH_CLICK_IP,), route="/api/search/click"),
     Row(("GET",), (SEARCH_COMPARE_IP,), route="/api/ai/search-compare"),
     Row(("POST",), (IMAGE_UPLOAD,), route="/api/owner/shop/image"),
     Row(("POST",), (IMAGE_UPLOAD,), route="/api/owner/products/{product_id}/image"),
@@ -236,6 +238,7 @@ LIMITS: tuple[Row, ...] = (
     Row(("GET",), (DATA_EXPORT,), route="/api/me/export"),  # the data export (P3.2)
     Row(("POST",), (GRIEVANCE_CONTACT,), route="/api/grievances"),  # P3.8
     Row(("POST",), (GRIEVANCE_LOOKUP,), route="/api/grievances/lookup"),  # P3.8
+    Row(("POST",), (LEAD_EVENT,), route="/api/leads"),  # P9.2
     Row(("GET",), (CATALOG_READ,), route="/api/meta"),
     # Product, recommendations, shop list, shop, shop products and reviews, and P2.8's sitemap endpoint.
     Row(("GET",), (CATALOG_READ,), router="app.api.routes.catalog"),

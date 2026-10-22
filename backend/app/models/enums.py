@@ -50,6 +50,7 @@ class InventoryReason(StrEnum):
     RESERVATION_RELEASE = "reservation_release"
     ORDER_HOLD = "order_hold"
     ORDER_RELEASE = "order_release"
+    WHATSAPP_UPDATE = "whatsapp_update"  # the owner set a count by replying on WhatsApp (P4.4)
 
 
 class AnomalyStatus(StrEnum):
@@ -62,3 +63,4 @@ class SaleSource(StrEnum):
     RESERVATION = "reservation"
     ORDER = "order"
     DEMO = "demo"
+    IMPORT = "import"  # a sales report uploaded from the shop's billing app (P7.2; services/importer.py)

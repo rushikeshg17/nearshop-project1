@@ -11,6 +11,7 @@ import { ProductThumb } from "@/components/common/product-thumb";
 import { ErrorState, ListSkeleton } from "@/components/common/states";
 import { StatusBadge } from "@/components/common/status";
 import { ConfirmAction } from "@/components/fulfillment/confirm-action";
+import { PayShopByUpi } from "@/components/fulfillment/pay-shop-by-upi";
 import { EventTimeline, FulfillmentProgress } from "@/components/fulfillment/progress";
 import { ReviewDialog } from "@/components/fulfillment/review-dialog";
 import { ShopMap } from "@/components/map/shop-map";
@@ -37,6 +38,12 @@ const HEADLINE: Record<string, MessageKey> = {
 // Confirmed orders not yet delivered: the customer's delivery code is shown while the order is in these states.
 const AWAITING_DELIVERY: string[] = ["SHOP_CONFIRMED", "PREPARING", "OUT_FOR_DELIVERY"];
 
+// How a paid order was paid (P6.1), in the interface language.
+const PAID_BY: Record<string, MessageKey> = {
+  cod: "transactions.order.paidCash",
+  upi_direct: "transactions.order.paidUpi",
+};
+
 export function OrderView({ id }: { id: number }) {
   const { t } = useI18n();
   const qc = useQueryClient();
@@ -58,6 +65,8 @@ export function OrderView({ id }: { id: number }) {
   const o = q.data;
   if (!o) return <div className="mx-auto max-w-3xl px-4 py-12"><ListSkeleton rows={3} /></div>;
   const moving = o.status === "OUT_FOR_DELIVERY";
+  // The shop's UPI ID is in the customer's own order (P6.1); paying is offered once the shop has confirmed.
+  const payByUpi = !!o.shop.upi_id && AWAITING_DELIVERY.includes(o.status) && o.payment_status !== "paid";
 
   return (
     <MotionConfig reducedMotion="user">
@@ -77,7 +86,10 @@ export function OrderView({ id }: { id: number }) {
               {o.close_reason && <p className="mt-1 text-muted-foreground">{t("transactions.order.reason", { reason: o.close_reason })}</p>}
               {moving && (
                 <p className="mt-1 text-muted-foreground">
-                  {t("transactions.order.keepReady", { price: formatPrice(o.total), shop: o.shop.name })}
+                  {t(o.shop.upi_id ? "transactions.order.keepReadyUpi" : "transactions.order.keepReady", {
+                    price: formatPrice(o.total),
+                    shop: o.shop.name,
+                  })}
                 </p>
               )}
               {o.delivery_code && AWAITING_DELIVERY.includes(o.status) && (
@@ -92,6 +104,11 @@ export function OrderView({ id }: { id: number }) {
               )}
               <FulfillmentProgress item={o} className="mt-8" />
             </motion.section>
+
+            {payByUpi && (
+              <PayShopByUpi upiId={o.shop.upi_id!} payeeName={o.shop.upi_payee_name || o.shop.name} amount={o.total} note={o.code}
+                cash={t("transactions.upi.cashOnDelivery")} />
+            )}
 
             <section className="rounded-3xl border bg-card p-5">
               <ul className="divide-y">
@@ -108,7 +125,7 @@ export function OrderView({ id }: { id: number }) {
               <dl className="mt-3 space-y-1.5 border-t pt-3 text-sm">
                 <div className="flex justify-between"><dt className="text-muted-foreground">{t("transactions.order.items")}</dt><dd className="tabular">{formatPrice(o.subtotal)}</dd></div>
                 <div className="flex justify-between"><dt className="text-muted-foreground">{t("transactions.order.fee", { distance: formatDistance(o.distance_km) })}</dt><dd className="tabular">{o.delivery_fee ? formatPrice(o.delivery_fee) : t("transactions.order.free")}</dd></div>
-                <div className="flex justify-between font-semibold"><dt className="inline-flex items-center gap-1.5"><Banknote className="size-4" /> {o.payment_status === "paid" ? t("transactions.order.paidOnDelivery") : t("transactions.order.payOnDelivery")}</dt><dd className="tabular">{formatPrice(o.total)}</dd></div>
+                <div className="flex justify-between font-semibold"><dt className="inline-flex items-center gap-1.5"><Banknote className="size-4" /> {o.payment_status === "paid" ? t(PAID_BY[o.payment_method] ?? "transactions.order.paidOnDelivery") : o.shop.upi_id ? t("transactions.order.payOnDeliveryUpi") : t("transactions.order.payOnDelivery")}</dt><dd className="tabular">{formatPrice(o.total)}</dd></div>
               </dl>
             </section>
 

@@ -7,13 +7,13 @@ from datetime import timedelta
 from statistics import median
 
 from app.core.database import Database, utcnow
-from app.models import InventoryReason, Shop
 from app.models import OrderStatus as OS
 from app.models import ReservationStatus as RS
+from app.models import Shop
+from app.services.inventory import OWNER_REASON_VALUES
 from app.services.reviews import RATED
 
 WINDOW_DAYS = 90
-OWNER_REASONS = [InventoryReason.INITIAL.value, InventoryReason.RESTOCK.value, InventoryReason.ADJUSTMENT.value]
 HELD = {RS.CONFIRMED.value, RS.READY_FOR_PICKUP.value}
 
 
@@ -25,7 +25,7 @@ def shop_reliability(db: Database, shop: Shop) -> dict:
         # Distinct (IST) days in the last week on which the owner touched stock.
         rows = db.inventory_events.aggregate([
             {"$match": {"shop_id": shop.id, "created_at": {"$gte": now - timedelta(days=7)},
-                        "reason": {"$in": OWNER_REASONS}}},
+                        "reason": {"$in": OWNER_REASON_VALUES}}},
             {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}}}},
             {"$count": "days"},
         ])

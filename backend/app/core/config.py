@@ -1,10 +1,11 @@
 """Application settings, loaded from environment variables / .env."""
+from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, get_args
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -14,9 +15,139 @@ ENVIRONMENTS: tuple[str, ...] = get_args(Environment)
 MediaBackend = Literal["local", "s3"]
 BackupBackend = Literal["off", "local", "s3"]
 RateLimitMode = Literal["enforce", "log_only", "off"]
+Weekday = Literal["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+WEEKDAYS: tuple[str, ...] = get_args(Weekday)
 EDGE_SECRET_MIN_LENGTH = 32
 # The deployed environments, served over https: the API refuses to start in them with cookie_secure false.
 SECURE_COOKIE_ENVIRONMENTS: tuple[str, ...] = ("staging", "production", "demo")
+# Where the AI Lab is open to everyone by default (Settings.ai_lab_public): the environments whose data is synthetic.
+AI_LAB_PUBLIC_ENVIRONMENTS: tuple[str, ...] = ("development", "test", "demo")
+
+
+@dataclass(frozen=True)
+class EmbeddingModelSpec:
+    """How one embedding model is run and calibrated (P5.3; trial results in docs/perf/embedding-models.md).
+
+    query_prefix and passage_prefix are prepended to search queries and to listing texts, for models trained
+    with them (multilingual E5: "query: " and "passage: "); empty for models that need none. sem_floor and
+    sem_ceil are the cosine range that search maps to 0..1 for this model. They are not tuned here (P5.5):
+    every candidate starts on the calibration of the current model.
+    """
+
+    query_prefix: str = ""
+    passage_prefix: str = ""
+    sem_floor: float = 0.22
+    sem_ceil: float = 0.62
+    dim: int = 384  # the vector length, which the Atlas Vector Search index declares (P5.7)
+
+
+# The cosine scale search ranks on: the calibration of all-MiniLM-L6-v2 (the sem_floor and sem_ceil of the r1
+# ranking config below). The semantic index maps another model's similarities onto this scale with that model's
+# own floor and ceiling below, so search.py stays unchanged when the model changes.
+SEARCH_SIMILARITY_SCALE = EmbeddingModelSpec()
+
+# The embedding models NEARSHOP_EMBEDDING_MODEL may name: those the installed fastembed (0.8.1) supports
+# that were considered in P5.3. A model is listed here before it can be selected, so its prefixes are
+# never missed.
+EMBEDDING_MODELS: dict[str, EmbeddingModelSpec] = {
+    # The current model (English only, 384 dimensions, 90 MB).
+    "sentence-transformers/all-MiniLM-L6-v2": EmbeddingModelSpec(),
+    # P5.3 candidates (multilingual); calibration not tuned.
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": EmbeddingModelSpec(),
+    "minishlab/potion-multilingual-128M": EmbeddingModelSpec(dim=256),
+    # Considered but not trialled (too large for the 2 GB instance; see docs/perf/embedding-models.md).
+    "sentence-transformers/paraphrase-multilingual-mpnet-base-v2": EmbeddingModelSpec(dim=768),
+    "intfloat/multilingual-e5-large": EmbeddingModelSpec(query_prefix="query: ", passage_prefix="passage: ",
+                                                         dim=1024),
+}
+# The TF-IDF fallback (app/ai/embeddings.py) has no model name of its own in the setting.
+TFIDF_MODEL_NAME = "tfidf-char-svd"
+
+
+def embedding_spec(model_name: str) -> EmbeddingModelSpec:
+    """The spec of a listed model; the TF-IDF fallback and anything unlisted get no prefixes and the default
+    calibration."""
+    return EMBEDDING_MODELS.get(model_name, EmbeddingModelSpec())
+
+
+
+@dataclass(frozen=True)
+class RankingConfig:
+    """Every constant search ranks with (P5.5; app/services/search.py, run_search). Versioned: a config is never
+    edited once it has served traffic. A tuned config is added under a new version, with its tuning report in
+    docs/search/tuning-report.md, and switched on with NEARSHOP_SEARCH_RANKING_VERSION.
+
+    Relevance of a listing: w_semantic times its similarity mapped from sem_floor..sem_ceil onto 0..1, plus
+    w_keyword times its keyword score over the best keyword score (local-term matches add w_local_term each,
+    P5.2). A listing with no keyword hit needs a similarity of sem_min_match or more, and listings below
+    relative_cutoff times the best relevance are dropped. A group of listings of one item scores
+    w_relevance x relevance + w_proximity x proximity + w_in_stock when some offer is in stock, times
+    out_of_stock_factor when none is.
+    """
+
+    version: str
+    sem_floor: float = 0.22
+    sem_ceil: float = 0.62
+    sem_min_match: float = 0.34
+    w_semantic: float = 0.6
+    w_keyword: float = 0.4
+    relative_cutoff: float = 0.42
+    w_local_term: float = 6.0
+    w_relevance: float = 0.75
+    w_proximity: float = 0.15
+    w_in_stock: float = 0.10
+    out_of_stock_factor: float = 0.6
+
+    def tunables(self) -> dict[str, float]:
+        """The numeric fields, without the version."""
+        return {k: v for k, v in self.__dict__.items() if k != "version"}
+
+
+# r1: the hand-set values search used before P5.5, never measured. Add a tuned config as r2, r3 and so on,
+# only after it passes the adoption rule on the test split (plan section 8.6; docs/search/tuning-report.md).
+RANKING_CONFIGS: dict[str, RankingConfig] = {
+    "r1": RankingConfig(version="r1"),
+}
+DEFAULT_RANKING_VERSION = "r1"
+
+# Search engines (P5.7; app/ai/atlas_search.py, docs/search/engine-decision.md). The keyword stage runs on the
+# products text index (text) or Atlas Search (atlas_search); the vector stage on the in-process NumPy index
+# (in_process) or Atlas Vector Search (atlas_vector). Fusion, grouping, filters and the ranking config stay
+# NearShop's own whichever engines run.
+KeywordEngine = Literal["text", "atlas_search"]
+VectorEngine = Literal["in_process", "atlas_vector"]
+KEYWORD_ENGINES: tuple[str, ...] = get_args(KeywordEngine)
+VECTOR_ENGINES: tuple[str, ...] = get_args(VectorEngine)
+# Where customers' results come from. Until engine-decision.md recommends a switch and a later release step
+# serves it, staging and production keep these defaults: a candidate runs there only in shadow mode (P5.6).
+DEFAULT_ENGINES_ENVIRONMENTS: tuple[str, ...] = ("staging", "production")
+
+
+@dataclass(frozen=True)
+class EnginePair:
+    """The keyword and vector engines one search runs on."""
+
+    keyword: str = "text"
+    vector: str = "in_process"
+
+    @classmethod
+    def parse(cls, value: str) -> "EnginePair":
+        """A pair written as NEARSHOP_SEARCH_SHADOW_ENGINES holds it: keyword engine, comma, vector engine."""
+        parts = [p.strip() for p in value.split(",")]
+        if len(parts) != 2 or parts[0] not in KEYWORD_ENGINES or parts[1] not in VECTOR_ENGINES:
+            raise ValueError(f"an engine pair is a keyword engine ({' or '.join(KEYWORD_ENGINES)}) and a vector "
+                             f"engine ({' or '.join(VECTOR_ENGINES)}), comma-separated; got {value!r}")
+        return cls(parts[0], parts[1])
+
+    def __str__(self) -> str:
+        return f"{self.keyword},{self.vector}"
+
+    @property
+    def uses_atlas(self) -> bool:
+        return self.keyword == "atlas_search" or self.vector == "atlas_vector"
+
+
+DEFAULT_ENGINES = EnginePair()
 # The email sign-in sunset (P4.2, NEARSHOP_EMAIL_LOGIN_SUNSET): at least 8 weeks after phone sign-in starts.
 DEFAULT_EMAIL_LOGIN_SUNSET = date(2027, 4, 10)
 # Development's default instead: there the console provider makes phone sign-in available while the seeded accounts
@@ -62,6 +193,11 @@ class Settings(BaseSettings):
     # The site runs on generated data: every site page shows a banner asking visitors not to enter
     # real personal details.
     demo_mode: bool = False
+    # The AI Lab (P7.1): whether its model cards, search evaluation and search comparison are open to everyone.
+    # Defaults to true in development, test and demo, where the data is synthetic, and false in staging and
+    # production, where /api/ai answers not found to anyone but an admin and admins see only the model cards
+    # trained on real data. NEARSHOP_AI_LAB_PUBLIC overrides the default either way.
+    ai_lab_public: bool | None = None
     # The privacy notice version that registrations consent to (P3.1): the version id of the newest
     # docs/legal/privacy-<version>.md, which the /privacy page shows. Change it when a new version is published.
     notice_version: str = "v1"
@@ -140,6 +276,28 @@ class Settings(BaseSettings):
     # each of the last 12 months, counting the current day and month. Every other set is deleted.
     backup_keep_daily: int = 30
     backup_keep_monthly: int = 12
+    # Sales history archiving (P8.3, database/archive.py; docs/runbooks/restore.md). A monthly cron job moves the
+    # sales_history months that end on or before the first of the current month less archive_keep_months months
+    # (18 or more: the models use at most the last 18) to the backup store above, under
+    # <backup_prefix>/archive/sales_history/, and deletes their rows once each upload is read back and verified.
+    # It refuses to run while backup_backend is off, and unless a backup of the same database succeeded in the
+    # last archive_backup_max_age_hours hours.
+    archive_keep_months: int = 18
+    archive_backup_max_age_hours: int = 26
+
+    @field_validator("archive_keep_months", mode="after")
+    @classmethod
+    def _check_archive_keep(cls, value: int) -> int:
+        if value < 18:
+            raise ValueError("NEARSHOP_ARCHIVE_KEEP_MONTHS must be 18 or more: the models use the last 18 months")
+        return value
+
+    @field_validator("archive_backup_max_age_hours", mode="after")
+    @classmethod
+    def _check_archive_backup_age(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_ARCHIVE_BACKUP_MAX_AGE_HOURS must be 1 or more")
+        return value
 
     # Seed / location defaults
     seed_city: str = "ballari"
@@ -150,6 +308,11 @@ class Settings(BaseSettings):
     # Fulfillment defaults
     reservation_hold_minutes: int = 30
     request_response_minutes: int = 20  # shop must respond to a reservation request within this window
+    # Public stock bands (P10.1, plan section 8.20). For a shop that has not opted in to showing its exact stock
+    # (Shop.show_exact_stock), public responses show at most this many units of a listing, and one reservation or
+    # order line may ask for at most this many (more needs a call to the shop). Owners, staff and admins always see
+    # exact counts. NEARSHOP_PUBLIC_STOCK_CAP.
+    public_stock_cap: int = Field(10, ge=1)
     # Reviews (P3.5, plan section 8.2): only from a verified phone (User.phone_verified_at). On since P4.1
     # wherever a customer can verify a phone: where phone sign-in is live (otp_live), and in development, where
     # the console provider verifies phones. A decision that departs from the prompt's "turn it on": it stays off
@@ -192,6 +355,14 @@ class Settings(BaseSettings):
     whatsapp_app_secret: SecretStr = SecretStr("")
     whatsapp_webhook_verify_token: SecretStr = SecretStr("")
     whatsapp_utility_cost_inr: float = 0.16  # per utility template outside a service window (plan section 8.7)
+    # Per marketing template, always charged (plan section 8.7): recorded when Meta's status callback reports that it
+    # priced a template as marketing (the stock check may be classed so; P9.3, docs/whatsapp-templates.md).
+    whatsapp_marketing_cost_inr: float = 0.97
+    # The stock-check cadence (P9.3, plan section 8.17; app/services/whatsapp.py send_stock_checks): a shop whose
+    # WhatsApp service window is open at its opening hour gets the check daily, as a free-form message inside the
+    # window; every other shop with a stale listing gets the template once a week, on this IST weekday (the next day
+    # when the shop is closed on it). An English weekday name, any case.
+    stock_check_weekly_day: Weekday = "Monday"
     # SMS through MSG91's flow API (B7: the DLT entity, sender header and OTP template; the flow template at MSG91
     # holds that registered text and its code variable). The auth key and template id are needed.
     sms_auth_key: SecretStr = SecretStr("")
@@ -233,6 +404,11 @@ class Settings(BaseSettings):
             raise ValueError(f"NEARSHOP_EMAIL_LOGIN_MIN_NOTICE_DAYS must be {EMAIL_LOGIN_MIN_NOTICE_DAYS} or more in "
                              "production: customers and owners get at least 8 weeks of warning")
         return self
+
+    @field_validator("stock_check_weekly_day", mode="before")
+    @classmethod
+    def _weekday_name(cls, value: object) -> object:
+        return value.strip().capitalize() if isinstance(value, str) else value
 
     @field_validator("otp_daily_cap", mode="after")
     @classmethod
@@ -276,12 +452,204 @@ class Settings(BaseSettings):
     # either way.
     completion_codes_required: bool = True
 
+    # Plans and subscriptions (P9.4, app/services/plans.py; plan section 8.18). The prices and entitlements are data
+    # (the plans collection, versioned); these are the rules around them, all assumptions under test
+    # (business/BUSINESS_MODEL.md), so they are settings, never constants in code.
+    # The IST day paid plans start: advance subscriptions become active for one year on it, and no shop-paid plan is
+    # recorded before it (until then a shop can only pay a refundable advance).
+    billing_starts_on: date = date(2027, 8, 1)
+    # The founding offer: Growth at the catalogue's founding price for the first year, for the first founding_offer_cap
+    # shops in these cities (comma-separated, compared without case), counted in order of first payment, advances
+    # included. The cap is enforced in a transaction (plans.claim_founding_slot).
+    founding_offer_cap: int = 100
+    founding_offer_cities: str = "Ballari,Bellary"
+    # The outcome guarantee: a paid quarter that ends with fewer than this many customer requests (P9.2) adds
+    # plan_guarantee_credit_months to the subscription's end date.
+    plan_guarantee_min_requests: int = 3
+    plan_guarantee_credit_months: int = 3
+    # An advance must be used within 365 days of its payment (plan section 8.18); the admins are alerted when one is
+    # still not active this many days after it.
+    advance_alert_days: int = 300
+
+    @field_validator("founding_offer_cap", "plan_guarantee_min_requests", "plan_guarantee_credit_months",
+                     "advance_alert_days", mode="after")
+    @classmethod
+    def _check_plan_numbers(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("NEARSHOP_FOUNDING_OFFER_CAP, NEARSHOP_PLAN_GUARANTEE_* and NEARSHOP_ADVANCE_ALERT_DAYS "
+                             "must be 0 or more")
+        return value
+
+    @property
+    def founding_city_list(self) -> list[str]:
+        """NEARSHOP_FOUNDING_OFFER_CITIES as lower-case names, without blanks."""
+        return [c.strip().lower() for c in self.founding_offer_cities.split(",") if c.strip()]
+
+    # Payments to NearShop's own account, receipts and invoices (P9.5, app/services/billing.py, docs/runbooks/billing.md).
+    # No account number, UPI handle or GSTIN is ever in the repository: they are these settings, set per environment.
+    # Payment requests are refused (503 billing_not_configured) until the UPI ID and the payee name are set.
+    billing_upi_id: str = ""  # NearShop's merchant UPI ID on the company's current account (B22)
+    billing_payee_name: str = ""  # the payee name the UPI app shows
+    # The supplier on every document: NearShop's legal name, address and GST state code (29 is Karnataka), and its
+    # GSTIN once registered (B5).
+    billing_legal_name: str = ""
+    billing_address: str = ""
+    billing_state_code: str = "29"
+    billing_gstin: str = ""
+    # The GST position (B5): "unregistered" (payment receipts that state no GST is charged) or "registered" (tax
+    # invoices and credit notes, GST added to the price) from billing_gst_registered_from, the IST day the CA sets.
+    billing_gst_mode: Literal["unregistered", "registered"] = "unregistered"
+    billing_gst_registered_from: date | None = None
+    billing_gst_rate_pct: int = 18
+    billing_sac: str = ""  # the SAC the CA chooses, printed on tax invoices and credit notes
+    # The document number: <prefix>/<YY-YY>/<6 digits>, one series per financial year, at most 16 characters.
+    billing_number_prefix: str = "NS"
+    # The document format the CA approved in writing (B22), as its version label, or "draft". A draft document
+    # carries "Draft format, not for use", and production refuses to issue one. The wording of each document type is
+    # the CA's approved text, copied here exactly, never written by the team; an approved format with no wording for
+    # a type refuses to issue that type.
+    billing_document_format: str = "draft"
+    billing_wording_receipt: str = ""
+    billing_wording_tax_invoice: str = ""
+    billing_wording_refund_receipt: str = ""
+    billing_wording_credit_note: str = ""
+    # The daily reconciliation alert: a bank credit still unmatched this many working days (Monday to Friday, except
+    # the bank holidays listed, comma-separated ISO dates) after the day it was credited.
+    billing_unmatched_alert_working_days: int = 3
+    billing_bank_holidays: str = ""
+
+    @field_validator("billing_gst_rate_pct", "billing_unmatched_alert_working_days", mode="after")
+    @classmethod
+    def _check_billing_numbers(cls, value: int) -> int:
+        if not 0 <= value <= 100:
+            raise ValueError("NEARSHOP_BILLING_GST_RATE_PCT and NEARSHOP_BILLING_UNMATCHED_ALERT_WORKING_DAYS must be "
+                             "between 0 and 100")
+        return value
+
+    @field_validator("billing_number_prefix", mode="after")
+    @classmethod
+    def _check_number_prefix(cls, value: str) -> str:
+        # <prefix>/YY-YY/NNNNNN stays within the 16 characters the GST rules allow.
+        if not (1 <= len(value) <= 3 and value.isascii() and value.isalnum() and value == value.upper()):
+            raise ValueError("NEARSHOP_BILLING_NUMBER_PREFIX is 1 to 3 capital letters or digits")
+        return value
+
+    @field_validator("billing_state_code", mode="after")
+    @classmethod
+    def _check_state_code(cls, value: str) -> str:
+        if not (len(value) == 2 and value.isdigit()):
+            raise ValueError("NEARSHOP_BILLING_STATE_CODE is the two-digit GST state code (29 for Karnataka)")
+        return value
+
+    @model_validator(mode="after")
+    def _check_gst_mode(self) -> "Settings":
+        if self.billing_gst_mode == "registered" and (self.billing_gst_registered_from is None
+                                                      or not self.billing_gstin.strip()):
+            raise ValueError("NEARSHOP_BILLING_GST_MODE=registered needs NEARSHOP_BILLING_GST_REGISTERED_FROM and "
+                             "NEARSHOP_BILLING_GSTIN")
+        return self
+
+    # UPI Autopay for monthly plans (P9.6, app/services/gateway.py, docs/runbooks/billing.md). Off by default: until
+    # autopay_enabled is on and the gateway is configured, POST /api/owner/billing/autopay answers 503
+    # autopay_not_configured. The gateway is an RBI-authorised one with UPI Autopay (Razorpay subscriptions; B22: an
+    # account in the company's name). autopay_provider "fake" is an in-memory stand-in for development and test only;
+    # the test suite never reaches the gateway. Keys: the key id and secret from the gateway's dashboard, and the
+    # webhook secret typed into its webhook settings, which signs every webhook call (X-Razorpay-Signature). Test-mode
+    # keys only outside production: a live key id (rzp_live_...) anywhere else stops startup. Live keys are set only in
+    # the production Render environment, never in the repository or on staging.
+    autopay_enabled: bool = False
+    autopay_provider: Literal["fake", "razorpay"] = "fake"
+    autopay_key_id: str = ""
+    autopay_key_secret: SecretStr = SecretStr("")
+    autopay_webhook_secret: SecretStr = SecretStr("")
+    autopay_api_base: str = "https://api.razorpay.com/v1"
+    # How many monthly debits one mandate allows (the gateway's total_count); the owner sets it up again after.
+    autopay_total_count: int = 60
+    # A monthly subscription under an authorised mandate does not lapse at its end date while the gateway debits and
+    # retries: it is held this many days, then lapses if no debit succeeded (confirm the retry schedule with the
+    # gateway). The gateway's final failure (subscription.halted) lapses it at once.
+    autopay_grace_days: int = 3
+    # The daily reconciliation: the gateway's settlement reports of the last autopay_reconcile_days IST days are
+    # compared with the payment rows, and a debit not settled autopay_settlement_days after it was paid is a mismatch.
+    autopay_reconcile_days: int = 3
+    autopay_settlement_days: int = 5
+
+    @field_validator("autopay_total_count", "autopay_grace_days", "autopay_reconcile_days",
+                     "autopay_settlement_days", mode="after")
+    @classmethod
+    def _check_autopay_numbers(cls, value: int) -> int:
+        if not 1 <= value <= 120:
+            raise ValueError("NEARSHOP_AUTOPAY_TOTAL_COUNT, _GRACE_DAYS, _RECONCILE_DAYS and _SETTLEMENT_DAYS must be "
+                             "between 1 and 120")
+        return value
+
+    @model_validator(mode="after")
+    def _check_autopay_keys(self) -> "Settings":
+        if self.environment != "production" and self.autopay_key_id.strip().startswith("rzp_live_"):
+            raise ValueError(f"NEARSHOP_AUTOPAY_KEY_ID is a live key; {self.environment} uses gateway test-mode keys "
+                             f"only")
+        if self.autopay_enabled and self.autopay_provider == "fake" and self.environment not in ("development",
+                                                                                                "test"):
+            raise ValueError("NEARSHOP_AUTOPAY_PROVIDER=fake is for development and test only")
+        return self
+
+    @property
+    def autopay_configured(self) -> bool:
+        """Whether Autopay mandates can be set up here: on, and the fake gateway (development and test) or the
+        gateway's key id, key secret and webhook secret."""
+        if not self.autopay_enabled:
+            return False
+        if self.autopay_provider == "fake":
+            return self.environment in ("development", "test")
+        return bool(self.autopay_key_id.strip() and self.autopay_key_secret.get_secret_value().strip()
+                    and self.autopay_webhook_secret.get_secret_value().strip())
+
+    @property
+    def billing_holiday_list(self) -> list[date]:
+        """NEARSHOP_BILLING_BANK_HOLIDAYS as dates (an entry that is not an ISO date is ignored)."""
+        days = []
+        for part in self.billing_bank_holidays.split(","):
+            try:
+                days.append(date.fromisoformat(part.strip()))
+            except ValueError:
+                continue
+        return days
+
     # AI
     embedding_provider: str = "fastembed"  # fastembed | tfidf
+    # One of EMBEDDING_MODELS, by name (P5.3). Changing it re-embeds every listing once, into
+    # text_embeddings under the new name; the old model's vectors stay until deleted.
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     model_dir: Path = BACKEND_DIR / "ml_artifacts"
     enable_scheduler: bool = True
     warm_on_startup: bool = True  # build the semantic index when the API starts (the schema version check always runs)
+
+    # Search ranking (P5.5): the version in RANKING_CONFIGS that run_search ranks with.
+    search_ranking_version: str = DEFAULT_RANKING_VERSION
+    # Suggestion hygiene (P5.5): a query is shown in search suggestions and popular searches only when at least
+    # suggestion_min_users distinct signed-in users (counted by user_id, never by session; 5 or more) searched
+    # it in the last suggestion_window_days days and got results, it is at most suggestion_max_chars characters
+    # long, and it passes the blocklist (phone numbers, email addresses, links and abusive words, plus the
+    # comma-separated suggestion_blocklist words added here; app/services/search.py).
+    suggestion_min_users: int = 5
+    suggestion_window_days: int = 30
+    suggestion_max_chars: int = 60
+    suggestion_blocklist: str = ""
+    # Shadow ranking (P5.6, app/services/search_events.py; plan section 8.6): a sampled search_shadow_share (0 to
+    # 1) of the consented page-1 searches with a query is re-ranked after the response is sent, on the same fetched
+    # listings and scores, with the ranking config search_shadow_ranking_version, and both rankings are stored on
+    # the search event. Empty (the default) or a share of 0 turns it off. Customers always get the production
+    # ranking (search_ranking_version). A config passes the plan section 8.6 shadow guardrails before it serves.
+    search_shadow_ranking_version: str = ""
+    search_shadow_share: float = 0.0
+    # Search engines (P5.7, EnginePair above). The serving engines must keep their defaults (text, in_process) in
+    # staging and production. search_shadow_engines is an engine pair for shadow mode, "keyword,vector" such as
+    # atlas_search,in_process: the sampled share (search_shadow_share) is also fetched with those engines after the
+    # response, ranked with the shadow ranking config (or the production one when that is empty), and its top 20
+    # is stored on the event. Empty (the default) turns it off.
+    search_keyword_engine: KeywordEngine = "text"
+    search_vector_engine: VectorEngine = "in_process"
+    search_shadow_engines: str = ""
 
     # Observability (app/core/observability.py). Error tracking is on only when sentry_dsn is set, from the
     # environment (Render: NEARSHOP_SENTRY_DSN, a sync: false secret), never from code. release is the git
@@ -312,6 +680,226 @@ class Settings(BaseSettings):
     # uncompressed documents plus indexes. M0 (staging, demo) 512; Flex (production after plan step 1-A) 5120.
     # The admin storage card and the daily snapshot's 70% and 85% warnings are measured against it.
     storage_limit_mb: int = 512
+
+    # Model gating (P7.3, plan section 8.9): owners see a model's output only when the data meets these
+    # thresholds, and otherwise the reason and the progress towards them (app/services/analytics.py, model
+    # gates). models_real_data_only: training and the thresholds leave out is_demo sales; defaults to true in
+    # production and false elsewhere (the demo site and development run on seeded sales, which then count).
+    models_real_data_only: bool | None = None
+    # Demand forecast: a listing is eligible with demand_min_history_days or more days since its first sale,
+    # sales on demand_min_sale_days or more distinct days and demand_min_units or more units. Forecasts are
+    # shown only when, on the last demand_backtest_days days, the eligible listings' MAE is at least
+    # demand_min_improvement_pct percent below the naive same-as-last-week forecast's.
+    demand_min_history_days: int = 56
+    demand_min_sale_days: int = 20
+    demand_min_units: int = 30
+    demand_backtest_days: int = 14
+    demand_min_improvement_pct: float = 10.0
+    # Bundles: bundles_min_baskets or more multi-item baskets city-wide in the last bundles_window_days days.
+    bundles_min_baskets: int = 1000
+    bundles_window_days: int = 90
+    # Price flags: an item is compared across price_flags_min_peers or more shops, and only once the city has
+    # price_flags_min_verified_shops or more verified live shops. Owners see flags only once admins have
+    # reviewed price_flags_min_reviewed or more and price_flags_min_precision_pct percent of those were upheld
+    # (reviewed, not dismissed); until then they stay in the admin queue.
+    price_flags_min_peers: int = 4
+    price_flags_min_verified_shops: int = 25
+    price_flags_min_reviewed: int = 50
+    price_flags_min_precision_pct: float = 70.0
+    # Owner search insights: a query is shown only when search_insights_min_users or more distinct signed-in
+    # users (5 or more) searched it within the shop's radius in the last search_insights_window_days days. The
+    # radius is the shop's delivery radius when it delivers, else search_insights_radius_km.
+    search_insights_min_users: int = 5
+    search_insights_window_days: int = 30
+    search_insights_radius_km: float = 3.0
+
+    # "Asked for near you" demand report (P9.7, app/services/demand_report.py; plan section 8.19). Search logging stores
+    # a demand key on a signed-in user's search: a keyed hash (HMAC-SHA256) of the user id with demand_key_secret, so
+    # distinct people can be counted without storing who they are. The retention job removes it after 30 days. While
+    # the secret is empty no demand key is stored, and no report can count anyone: set NEARSHOP_DEMAND_KEY_SECRET (32
+    # or more random characters, a sync: false secret) in production only once B24 confirms the privacy notice covers
+    # aggregate demand reports. demand_key_needs_consent (on until B24 says otherwise) stores the key only for users
+    # whose latest consent for demand_key_consent_purpose is granted.
+    demand_key_secret: SecretStr = SecretStr("")
+    demand_key_needs_consent: bool = True
+    demand_key_consent_purpose: str = "search_measurement"
+    # The weekly report (Monday 03:00 IST): per verified live shop, the last demand_report_window_days days of searches
+    # within demand_report_radius_km, a query kept when demand_report_min_users or more distinct demand keys searched
+    # it and found nothing in stock. Shown to owners only while demand_report_enabled (off until checks 8.2 and 8.3
+    # pass) and the last demand_report_audit_weeks weekly audits of demand_report_audit_size items average
+    # demand_report_min_precision_pct percent genuine or more. Free shops see the top demand_report_teaser_items.
+    demand_report_enabled: bool = False
+    demand_report_radius_km: float = 3.0
+    demand_report_window_days: int = 30
+    demand_report_min_users: int = 5
+    demand_report_audit_size: int = 20
+    demand_report_audit_weeks: int = 4
+    demand_report_min_precision_pct: float = 80.0
+    demand_report_teaser_items: int = 3
+
+    @field_validator("demand_key_secret", mode="after")
+    @classmethod
+    def _check_demand_key_secret(cls, value: SecretStr) -> SecretStr:
+        secret = value.get_secret_value().strip()
+        if secret and len(secret) < 32:
+            raise ValueError("NEARSHOP_DEMAND_KEY_SECRET must be 32 or more characters")
+        return SecretStr(secret)
+
+    @field_validator("demand_report_min_users", mode="after")
+    @classmethod
+    def _check_demand_min_users(cls, value: int) -> int:
+        if value < 5:  # plan section 8.19: never fewer than 5 distinct people
+            raise ValueError("NEARSHOP_DEMAND_REPORT_MIN_USERS must be 5 or more")
+        return value
+
+    @field_validator("demand_report_window_days", "demand_report_audit_size", "demand_report_audit_weeks",
+                     "demand_report_teaser_items", mode="after")
+    @classmethod
+    def _check_demand_counts(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_DEMAND_REPORT_WINDOW_DAYS, _AUDIT_SIZE, _AUDIT_WEEKS and _TEASER_ITEMS must be 1 "
+                             "or more")
+        return value
+
+    @field_validator("demand_report_radius_km", mode="after")
+    @classmethod
+    def _check_demand_radius(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("NEARSHOP_DEMAND_REPORT_RADIUS_KM must be more than 0")
+        return value
+
+    @field_validator("demand_report_min_precision_pct", mode="after")
+    @classmethod
+    def _check_demand_precision(cls, value: float) -> float:
+        if not 0 <= value <= 100:
+            raise ValueError("NEARSHOP_DEMAND_REPORT_MIN_PRECISION_PCT must be between 0 and 100")
+        return value
+
+    @field_validator("demand_min_history_days", "demand_min_sale_days", "demand_min_units", "demand_backtest_days",
+                     "bundles_min_baskets", "bundles_window_days", "price_flags_min_peers",
+                     "price_flags_min_verified_shops", "price_flags_min_reviewed", "search_insights_window_days",
+                     mode="after")
+    @classmethod
+    def _check_gate_count(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_DEMAND_MIN_*, NEARSHOP_BUNDLES_*, NEARSHOP_PRICE_FLAGS_MIN_* and "
+                             "NEARSHOP_SEARCH_INSIGHTS_WINDOW_DAYS must be 1 or more")
+        return value
+
+    @field_validator("demand_min_improvement_pct", "price_flags_min_precision_pct", mode="after")
+    @classmethod
+    def _check_gate_pct(cls, value: float) -> float:
+        if not 0 <= value <= 100:
+            raise ValueError("NEARSHOP_DEMAND_MIN_IMPROVEMENT_PCT and NEARSHOP_PRICE_FLAGS_MIN_PRECISION_PCT must be "
+                             "between 0 and 100")
+        return value
+
+    @field_validator("search_insights_min_users", mode="after")
+    @classmethod
+    def _check_search_insights_min_users(cls, value: int) -> int:
+        if value < 5:  # plan section 8.9: a few people's searches must never reach a shop owner
+            raise ValueError("NEARSHOP_SEARCH_INSIGHTS_MIN_USERS must be 5 or more")
+        return value
+
+    @field_validator("search_insights_radius_km", mode="after")
+    @classmethod
+    def _check_search_insights_radius(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("NEARSHOP_SEARCH_INSIGHTS_RADIUS_KM must be more than 0")
+        return value
+
+    @field_validator("embedding_model", mode="after")
+    @classmethod
+    def _check_embedding_model(cls, value: str) -> str:
+        if value not in EMBEDDING_MODELS:
+            raise ValueError(f"NEARSHOP_EMBEDDING_MODEL must be one of {', '.join(EMBEDDING_MODELS)}; got {value!r}"
+                             " (add a new model to EMBEDDING_MODELS in app/core/config.py, with its prefixes)")
+        return value
+
+    @field_validator("search_ranking_version", mode="after")
+    @classmethod
+    def _check_ranking_version(cls, value: str) -> str:
+        if value not in RANKING_CONFIGS:
+            raise ValueError(f"NEARSHOP_SEARCH_RANKING_VERSION must be one of {', '.join(RANKING_CONFIGS)}; "
+                             f"got {value!r}")
+        return value
+
+    @field_validator("search_shadow_ranking_version", mode="after")
+    @classmethod
+    def _check_shadow_ranking_version(cls, value: str) -> str:
+        value = value.strip()
+        if value and value not in RANKING_CONFIGS:
+            raise ValueError(f"NEARSHOP_SEARCH_SHADOW_RANKING_VERSION must be empty (off) or one of "
+                             f"{', '.join(RANKING_CONFIGS)}; got {value!r}")
+        return value
+
+    @field_validator("search_shadow_share", mode="after")
+    @classmethod
+    def _check_shadow_share(cls, value: float) -> float:
+        if not 0 <= value <= 1:
+            raise ValueError("NEARSHOP_SEARCH_SHADOW_SHARE must be between 0 and 1")
+        return value
+
+    @field_validator("search_shadow_engines", mode="after")
+    @classmethod
+    def _check_shadow_engines(cls, value: str) -> str:
+        value = value.strip()
+        if value:
+            try:
+                EnginePair.parse(value)
+            except ValueError as exc:
+                raise ValueError(f"NEARSHOP_SEARCH_SHADOW_ENGINES must be empty (off) or {exc}") from None
+        return value
+
+    @model_validator(mode="after")
+    def _check_serving_engines(self) -> "Settings":
+        if self.environment in DEFAULT_ENGINES_ENVIRONMENTS and self.search_engines != DEFAULT_ENGINES:
+            raise ValueError(f"NEARSHOP_SEARCH_KEYWORD_ENGINE and NEARSHOP_SEARCH_VECTOR_ENGINE keep their defaults "
+                             f"(text, in_process) in {self.environment}: an Atlas engine runs there only in shadow "
+                             f"mode (NEARSHOP_SEARCH_SHADOW_ENGINES), until a release step serves it "
+                             f"(docs/search/engine-decision.md)")
+        return self
+
+    @property
+    def search_engines(self) -> EnginePair:
+        """The engines customers' searches run on."""
+        return EnginePair(self.search_keyword_engine, self.search_vector_engine)
+
+    @property
+    def shadow_engines(self) -> EnginePair | None:
+        """The shadow engine pair, or None when it is not set or shadow mode is off (a share of 0)."""
+        if not self.search_shadow_engines or self.search_shadow_share <= 0:
+            return None
+        return EnginePair.parse(self.search_shadow_engines)
+
+    @property
+    def shadow_ranking(self) -> RankingConfig | None:
+        """The shadow candidate ranking config, or None when shadow mode is off. With only a shadow engine pair set,
+        the candidate ranks with the production config."""
+        if self.search_shadow_share <= 0:
+            return None
+        if not self.search_shadow_ranking_version:
+            return self.ranking if self.shadow_engines is not None else None
+        return RANKING_CONFIGS.get(self.search_shadow_ranking_version)
+
+    @field_validator("suggestion_min_users", mode="after")
+    @classmethod
+    def _check_suggestion_min_users(cls, value: int) -> int:
+        if value < 5:  # plan section 8.6: a few people must not reach everyone's suggestions
+            raise ValueError("NEARSHOP_SUGGESTION_MIN_USERS must be 5 or more")
+        return value
+
+    @field_validator("suggestion_window_days", "suggestion_max_chars", mode="after")
+    @classmethod
+    def _check_suggestion_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_SUGGESTION_WINDOW_DAYS and NEARSHOP_SUGGESTION_MAX_CHARS must be 1 or more")
+        return value
+
+    @property
+    def ranking(self) -> RankingConfig:
+        """The ranking config search uses."""
+        return RANKING_CONFIGS[self.search_ranking_version]
 
     @field_validator("storage_limit_mb", mode="after")
     @classmethod
@@ -417,6 +1005,10 @@ class Settings(BaseSettings):
     def _default_signups_open(self) -> "Settings":
         if self.signups_open is None:
             self.signups_open = self.environment != "production"
+        if self.models_real_data_only is None:
+            self.models_real_data_only = self.environment == "production"
+        if self.ai_lab_public is None:
+            self.ai_lab_public = self.environment in AI_LAB_PUBLIC_ENVIRONMENTS
         return self
 
     @field_validator("rate_limit_mode", mode="before")

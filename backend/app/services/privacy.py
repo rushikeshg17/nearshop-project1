@@ -14,11 +14,12 @@
       - orders past that point (PREPARING, OUT_FOR_DELIVERY, DELIVERY_FAILED): the deletion is scheduled; the
         process_deletions job runs it once they close, and flags it for an admin if they are still open
         DELETION_GRACE (7 days) later;
-      - owners: the same rules for their shop's open work, then the shop is hidden, its listings
-        deactivated and the owner anonymised;
+      - owners: the same rules for their shop's open work, then every UPI Autopay mandate of their shops is
+        cancelled at the payment gateway (P9.6; the deletion waits while the gateway cannot be reached), the
+        shop is hidden, its listings deactivated and the owner anonymised;
       - admins: refused; an admin is removed with the operator CLI.
-  * Retention: run_retention (the nightly retention job, app/jobs.py) removes user_id from searches older
-    than 30 days and clears the contact phone and address of orders closed more than 180 days ago, unless
+  * Retention: run_retention (the nightly retention job, app/jobs.py) removes user_id and the demand key (P9.7)
+    from searches older than 30 days and clears the contact phone and address of orders closed more than 180 days ago, unless
     an open grievance refers to the order. TTL indexes (database/schema.py, migration 4) delete
     search_history after 180 days and notifications after 90.
 """
@@ -31,7 +32,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.database import Database, utcnow
-from app.core.errors import Conflict, Forbidden
+from app.core.errors import AppError, Conflict, Forbidden
 from app.models import Order, OrderStatus, Reservation, ReservationStatus, Role, User
 from app.schemas.requests import OPTIONAL_PURPOSES, REQUIRED_PURPOSES
 from app.schemas.serializers import iso
@@ -49,6 +50,7 @@ CLOSED_ORDERS = (OS.DELIVERED, OS.CANCELLED, OS.RETURNED_TO_SHOP)
 
 DELETION_GRACE = timedelta(days=7)
 SEARCH_USER_ID_KEEP = timedelta(days=30)
+DEMAND_KEY_KEEP = timedelta(days=30)  # P9.7, plan section 8.19
 ORDER_CONTACT_KEEP = timedelta(days=180)
 DELETED_NAME = "Deleted user"
 FORMER_CUSTOMER = "Former customer"
@@ -99,9 +101,22 @@ def set_consent(db: Database, user_id: int, purpose: str, granted: bool) -> dict
                                          session=db.session)
         if purpose == "personalised_suggestions" and not granted:
             db.search_history.update_many({"user_id": user_id}, {"$set": {"user_id": None}})
+        if (purpose == settings.demand_key_consent_purpose and not granted and settings.demand_key_needs_consent):
+            forget_demand_key(db, user_id)  # P9.7: the demand key needed this consent
 
     db.transaction(write)
     return consent_state(db, user_id)
+
+
+def forget_demand_key(db: Database, user_id: int) -> int:
+    """Remove the user's demand key (P9.7) from every search that holds it: the key is recomputed from the user id,
+    as nothing stores which user a key belongs to. Nothing to do while NEARSHOP_DEMAND_KEY_SECRET is unset."""
+    from app.services.search import demand_key_of  # search imports this module
+
+    key = demand_key_of(user_id)
+    if key is None:
+        return 0
+    return db.search_history.update_many({"demand_key": key}, {"$set": {"demand_key": None}})
 
 
 # ---------------------------------------------------------------- nomination
@@ -151,6 +166,8 @@ REVIEW_INTERNAL = ("decided_by", "decision_note", "report_count", "triaged_at", 
 REPLY_INTERNAL = ("decided_by", "decision_note", "report_count", "triaged_at", "author_id")
 # Which admin resolved a grievance (P3.8) is the team's record; the export shows the status and resolution.
 GRIEVANCE_INTERNAL = ("resolved_by",)
+# A WhatsApp outbox row (P4.3) in the export: what was sent and when, without the sender's bookkeeping.
+OUTBOX_INTERNAL = ("user_id", "buttons", "claimed_at", "next_attempt_at", "cost_estimate")
 
 
 def _review_out(doc: dict) -> dict:
@@ -190,6 +207,8 @@ def export_data(db: Database, user: User) -> dict:
         "review_reports": [_clean(d, ("reporter_id",)) for d in db.mongo["review_reports"].find(
             {"reporter_id": user.id}, sort=newest_first)],
         "notifications": find("notifications", {"user_id": user.id}),
+        "whatsapp_messages": [_clean(d, OUTBOX_INTERNAL) for d in db.mongo["notification_outbox"].find(
+            {"user_id": user.id}, sort=newest_first)],
         "grievances": [_clean(d, GRIEVANCE_INTERNAL) for d in db.mongo["grievances"].find(  # filed signed in
             {"user_id": user.id}, sort=newest_first)],
         "search_history": [_clean(d, ("user_id",)) for d in db.mongo["search_history"].find(
@@ -325,10 +344,18 @@ def request_deletion(db: Database, user: User, *, cancel_open: bool, now: dateti
 def anonymise(db: Database, user_id: int, now: datetime | None = None) -> None:
     """Remove the account's personal data in one transaction (plan section 8.5): the profile becomes
     "Deleted user" with no email, phone, password, home, nominee or sessions; optional consents are
-    withdrawn by new rows; notifications and search history are deleted; reviews keep their rating and lose
+    withdrawn by new rows; notifications, their WhatsApp outbox rows and search history are deleted; reviews keep their rating and lose
     their comment; review reports the user filed keep their reason and lose their note; reservations and orders stay for the shop without phone, address or note; sales lose the
-    customer id. An owner's shops are hidden and their listings deactivated first."""
+    customer id. An owner's shops are hidden and their listings deactivated first. Before anything changes, every UPI
+    Autopay mandate of an owner's shops is cancelled at the payment gateway (P9.6, gateway.end_for_owner), so no more
+    money is taken from someone who has left; while the gateway cannot be reached this raises (GatewayError or
+    AutopayNotConfigured) and nothing is deleted."""
     now = now or utcnow()
+    found = db.users.get(user_id)
+    if found is not None and found.deleted_at is None and found.role == Role.OWNER:
+        from app.services import gateway  # imported here: gateway imports billing and plans
+
+        gateway.end_for_owner(db, user_id, now=now)
 
     def run() -> None:
         user = db.users.get(user_id)
@@ -349,7 +376,10 @@ def anonymise(db: Database, user_id: int, now: datetime | None = None) -> None:
         if withdrawn:
             db.mongo["consents"].insert_many(_consent_rows(db, user_id, withdrawn, now), session=db.session)
         db.notifications.delete_many({"user_id": user_id})
+        # Their WhatsApp outbox rows (P4.3): a queued one still holds the message text.
+        db.mongo["notification_outbox"].delete_many({"user_id": user_id}, session=db.session)
         db.search_history.delete_many({"user_id": user_id})
+        forget_demand_key(db, user_id)  # P9.7: searches kept without the user id lose the demand key too
         db.reviews.update_many({"customer_id": user_id}, {"$set": {"comment": None}})
         # Reports the user filed (P3.6) stay, so a review's distinct-reporter count holds, without their note.
         db.mongo["review_reports"].update_many({"reporter_id": user_id}, {"$set": {"note": None}},
@@ -389,9 +419,13 @@ def process_scheduled_deletions(db: Database, now: datetime | None = None) -> di
             reason = "The shop has closed" if user.role == Role.OWNER else "The customer deleted their account"
             _cancel_open(db, user, reservations, cancellable, reason)
             if not any(_open_work(db, user)):
-                anonymise(db, user.id, now)
-                deleted += 1
-                continue
+                try:
+                    anonymise(db, user.id, now)
+                except AppError as exc:  # an Autopay mandate the gateway could not cancel yet: retried next tick
+                    log.warning("deletion of user %s waits: %s", user.id, exc.message)
+                else:
+                    deleted += 1
+                    continue
         if doc["deletion_due_at"] <= now and not doc.get("deletion_flagged_at"):
             db.users.update_one({"_id": user.id}, {"$set": {"deletion_flagged_at": now}})
             for admin in db.users.find_raw({"role": Role.ADMIN.value, "is_active": True}, {"_id": 1}):
@@ -418,7 +452,7 @@ def _grievance_holds(db: Database) -> tuple[list[int], list[str]]:
 def run_retention(db: Database, now: datetime | None = None) -> dict[str, int]:
     """The nightly retention rules (plan section 8.4) as of `now`:
 
-      * search_history rows older than 30 days lose their user_id;
+      * search_history rows older than 30 days lose their user_id and their demand key (P9.7);
       * orders closed (delivered, cancelled or returned) more than 180 days ago lose their contact phone,
         address and note, unless an open grievance refers to them.
 
@@ -426,6 +460,8 @@ def run_retention(db: Database, now: datetime | None = None) -> dict[str, int]:
     now = now or utcnow()
     unlinked = db.search_history.update_many(
         {"user_id": {"$type": "number"}, "created_at": {"$lt": now - SEARCH_USER_ID_KEEP}}, {"$set": {"user_id": None}})
+    keys_removed = db.search_history.update_many(
+        {"demand_key": {"$type": "string"}, "created_at": {"$lt": now - DEMAND_KEY_KEEP}}, {"$set": {"demand_key": None}})
     cutoff = now - ORDER_CONTACT_KEEP
     held_ids, held_codes = _grievance_holds(db)
     flt = {"status": {"$in": list(CLOSED_ORDERS)}, "contact_cleared_at": {"$exists": False},
@@ -435,6 +471,8 @@ def run_retention(db: Database, now: datetime | None = None) -> dict[str, int]:
     held = db.orders.count({"status": {"$in": list(CLOSED_ORDERS)}, "contact_cleared_at": {"$exists": False},
                             "$or": [{"_id": {"$in": held_ids}}, {"code": {"$in": held_codes}}]}) \
         if held_ids or held_codes else 0
-    if unlinked or cleared:
-        log.info("retention: %d searches unlinked, %d orders' contact details cleared", unlinked, cleared)
-    return {"searches_unlinked": unlinked, "orders_cleared": cleared, "orders_held_by_grievance": held}
+    if unlinked or cleared or keys_removed:
+        log.info("retention: %d searches unlinked, %d demand keys removed, %d orders' contact details cleared",
+                 unlinked, keys_removed, cleared)
+    return {"searches_unlinked": unlinked, "demand_keys_removed": keys_removed, "orders_cleared": cleared,
+            "orders_held_by_grievance": held}

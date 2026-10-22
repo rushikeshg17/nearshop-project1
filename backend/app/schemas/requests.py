@@ -1,7 +1,11 @@
 """Validated request bodies (Pydantic). Anything a client sends is checked here first."""
+from datetime import UTC, date, datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+
+from app.models.core import Language, validate_upi_id, validate_upi_payee_name
 
 PHONE_PATTERN = r"^[6-9]\d{9}$"  # Indian mobile numbers
 
@@ -77,6 +81,8 @@ class ProfileUpdateIn(_Strict):
     home_lat: float | None = Field(default=None, ge=-90, le=90)
     home_lng: float | None = Field(default=None, ge=-180, le=180)
     home_label: str | None = Field(default=None, max_length=160)
+    # The language notifications and WhatsApp messages come in (P7.11): en or kn. Not nullable: null is refused (422).
+    language: Language = "en"
 
 
 # Phone one-time codes (P4.1, app/services/otp.py). login: sign in to the account with this verified phone;
@@ -139,7 +145,29 @@ class ShopUpdateIn(_Strict):
     delivery_fee: float | None = Field(default=None, ge=0, le=500)
     free_delivery_above: float | None = Field(default=None, ge=0)
     hold_minutes: int | None = Field(default=None, ge=10, le=240)
+    show_exact_stock: bool | None = None  # P10.1: show customers exact stock counts
     is_active: bool | None = None
+    # Direct UPI (P6.1): the shop's own UPI ID and payee name. null or an empty string removes them.
+    upi_id: str | None = Field(default=None, max_length=50)
+    upi_payee_name: str | None = Field(default=None, max_length=60)
+
+    @field_validator("upi_id")
+    @classmethod
+    def _upi_id(cls, value: str | None) -> str | None:
+        return validate_upi_id(value) if value else None
+
+    @field_validator("upi_payee_name")
+    @classmethod
+    def _upi_payee_name(cls, value: str | None) -> str | None:
+        return validate_upi_payee_name(value) if value else None
+
+    @field_validator("show_exact_stock")
+    @classmethod
+    def _show_exact_stock_not_null(cls, v: bool | None) -> bool:
+        # Leave the field out to keep it unchanged; an explicit null would be stored and break loading the Shop.
+        if v is None:
+            raise ValueError("show_exact_stock must be true or false")
+        return v
 
 
 class ProductIn(_Strict):
@@ -196,6 +224,11 @@ class TransitionIn(_Strict):
     reason: str | None = Field(default=None, max_length=300)
 
 
+# How the customer paid, which the owner chooses when delivering an order or completing a pickup (P6.1): cash, or
+# the shop's own UPI ID (app/models/activity.py, PAYMENT_METHODS).
+PaymentMethod = Literal["cod", "upi_direct"]
+
+
 class OrderItemIn(_Strict):
     product_id: int
     quantity: int = Field(ge=1, le=50)
@@ -244,3 +277,150 @@ class AnomalyReviewIn(_Strict):
 class AdminShopUpdateIn(_Strict):
     is_verified: bool | None = None
     is_active: bool | None = None
+
+
+# Plans and subscriptions (P9.4, app/services/plans.py). Every admin change carries a reason, kept on the catalogue
+# row or in subscription_events. Times may be sent with an offset; they are stored as naive UTC.
+PLAN_CODES = Literal["free", "growth", "pro", "business", "partner_seat"]
+PAISE_MAX = 10_000_000  # ₹1,00,000
+
+
+def _naive_utc(value: datetime | None) -> datetime | None:
+    if value is not None and value.tzinfo is not None:
+        value = value.astimezone(UTC).replace(tzinfo=None)
+    return value
+
+
+class PlanChangeIn(_Strict):
+    """One plan's changes in a new catalogue version: prices in paise and the on-sale flag (and the name)."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    price_year_paise: int | None = Field(default=None, ge=0, le=PAISE_MAX)
+    price_month_paise: int | None = Field(default=None, ge=0, le=PAISE_MAX)
+    founding_year_paise: int | None = Field(default=None, ge=0, le=PAISE_MAX)
+    on_sale: bool | None = None
+
+    @model_validator(mode="after")
+    def not_null(self):
+        # A price of null means "not offered"; a name and the on-sale flag always have a value, so a change leaves
+        # them out to keep them.
+        nulls = [f for f in ("name", "on_sale") if f in self.model_fields_set and getattr(self, f) is None]
+        if nulls:
+            raise ValueError(f"{', '.join(nulls)} cannot be null: leave it out to keep the current value")
+        return self
+
+
+class CataloguePublishIn(_Strict):
+    reason: str = Field(min_length=10, max_length=500)
+    effective_from: datetime | None = None  # default: now; never earlier
+    plans: dict[PLAN_CODES, PlanChangeIn] = Field(min_length=1)
+
+    @field_validator("effective_from")
+    @classmethod
+    def _utc(cls, value: datetime | None) -> datetime | None:
+        return _naive_utc(value)
+
+
+class SubscriptionGrantIn(_Strict):
+    shop_ids: list[int] = Field(min_length=1, max_length=10)
+    plan_code: Literal["growth", "pro", "business", "partner_seat"]
+    period: Literal["year", "month"] = "year"
+    source: Literal["shop_paid", "advance", "sponsored", "guarantee_credit"]
+    paid_at: datetime | None = None  # shop_paid and advance: when the payment was made (default now)
+    months: int | None = Field(default=None, ge=1, le=36)  # default: the period's length
+    reason: str = Field(min_length=10, max_length=500)
+
+    @field_validator("paid_at")
+    @classmethod
+    def _utc(cls, value: datetime | None) -> datetime | None:
+        return _naive_utc(value)
+
+
+class SubscriptionExtendIn(_Strict):
+    months: int | None = Field(default=None, ge=1, le=36)
+    ends_at: datetime | None = None
+    reason: str = Field(min_length=10, max_length=500)
+
+    @field_validator("ends_at")
+    @classmethod
+    def _utc(cls, value: datetime | None) -> datetime | None:
+        return _naive_utc(value)
+
+    @model_validator(mode="after")
+    def _one(self) -> "SubscriptionExtendIn":
+        if (self.months is None) == (self.ends_at is None):
+            raise ValueError("Give either months or ends_at")
+        return self
+
+
+class SubscriptionCancelIn(_Strict):
+    reason: str = Field(min_length=10, max_length=500)
+
+
+# ------------------------------------------------------------------ payments to NearShop (P9.5, app/services/billing.py)
+
+STATE_CODE_PATTERN = r"^\d{2}$"  # the two-digit GST state code (29 is Karnataka)
+UPI_REFERENCE = Field(min_length=6, max_length=64, pattern=r"^[A-Za-z0-9/\-]+$")
+BANK_REFERENCE = Field(min_length=4, max_length=64)
+BILLING_REASON = Field(min_length=10, max_length=500)
+
+
+class BillingAccountIn(_Strict):
+    legal_name: str = Field(min_length=2, max_length=200)
+    address: str = Field(min_length=5, max_length=500)
+    state_code: str = Field(pattern=STATE_CODE_PATTERN)
+    gstin: str | None = Field(default=None, max_length=15)  # only when the payer is registered for GST
+
+
+class PaymentRequestIn(_Strict):
+    plan_code: Literal["growth", "pro", "business"] = "growth"
+    period: Literal["year"] = "year"  # monthly plans are paid by UPI Autopay (P9.6)
+
+
+class AdminPaymentRequestIn(PaymentRequestIn):
+    shop_id: int = Field(ge=1)
+    reason: str = BILLING_REASON
+
+
+class ManualMatchIn(_Strict):
+    upi_reference: str = UPI_REFERENCE
+    request_number: str = Field(min_length=9, max_length=16)
+    reason: str = BILLING_REASON
+    # Only for a credit not on any uploaded statement yet: its amount and the day it was credited.
+    amount_paise: int | None = Field(default=None, ge=1, le=PAISE_MAX)
+    credited_on: date | None = None
+
+    @model_validator(mode="after")
+    def _both(self) -> "ManualMatchIn":
+        if (self.amount_paise is None) != (self.credited_on is None):
+            raise ValueError("Give both amount_paise and credited_on, or neither")
+        return self
+
+
+class CreditReturnIn(_Strict):
+    bank_reference: str = BANK_REFERENCE
+    reason: str = BILLING_REASON
+
+
+class RefundIn(_Strict):
+    bank_reference: str = BANK_REFERENCE  # the bank transfer that returned the money
+    reason: str = BILLING_REASON
+
+
+class PilotLedgerRow(_Strict):
+    paid_on: date
+    shop_id: int = Field(ge=1)
+    amount_paise: int = Field(ge=1, le=PAISE_MAX)
+    upi_reference: str = UPI_REFERENCE
+
+    @field_validator("paid_on")
+    @classmethod
+    def _not_future(cls, value: date) -> date:
+        if value > datetime.now(ZoneInfo("Asia/Kolkata")).date():
+            raise ValueError("paid_on is later than today (IST): a ledger row records a payment already made")
+        return value
+
+
+class PilotLedgerIn(_Strict):
+    rows: list[PilotLedgerRow] = Field(min_length=1, max_length=500)
+    reason: str = BILLING_REASON

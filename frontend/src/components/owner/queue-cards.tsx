@@ -1,8 +1,9 @@
 "use client";
 
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ban, Bike, Check, CheckCheck, Loader2, MapPin, MessageSquare, PackageCheck, Phone, RotateCcw, Timer, X } from "lucide-react";
 import { motion, MotionConfig } from "motion/react";
+import Link from "next/link";
 import { useId, useState } from "react";
 import { toast } from "sonner";
 
@@ -14,25 +15,36 @@ import { useI18n } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useNow } from "@/hooks/use-debounce";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import { formatDistance, formatNumber, formatPrice, timeAgo } from "@/lib/format";
-import type { Order, Reservation } from "@/lib/types";
+import { type MessageKey, richText } from "@/lib/i18n";
+import type { Order, OwnerShopSettings, PaymentMethod, Reservation } from "@/lib/types";
 
 type Action = "confirm" | "reject" | "ready" | "complete" | "prepare" | "dispatch" | "deliver" | "fail" | "return" | "cancel";
-type ActionInput = { id: number; action: Action; reason?: string | null; code?: string };
+type ActionInput = { id: number; action: Action; reason?: string | null; code?: string; payment_method?: PaymentMethod };
 
 function useOwnerAction<T>(kind: "reservations" | "orders", silent = false) {
   const { t } = useI18n();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, action, reason, code }: ActionInput) =>
-      api.post<T>(`/owner/${kind}/${id}/${action}`, { reason: reason ?? null, ...(code !== undefined ? { code } : {}) }),
+    mutationFn: ({ id, action, reason, code, payment_method }: ActionInput) =>
+      api.post<T>(`/owner/${kind}/${id}/${action}`, {
+        reason: reason ?? null,
+        ...(code !== undefined ? { code } : {}),
+        ...(payment_method !== undefined ? { payment_method } : {}),
+      }),
     // The code dialog shows its own errors next to the field it asks for.
     meta: silent ? { silent: true } : undefined,
     onSuccess: (_d, v) => {
       qc.invalidateQueries({ queryKey: ["owner"] });
-      toast.success(t(`owner.queue.done.${v.action}`));
+      // Completing or delivering records how the customer paid (P6.1): the toast says which.
+      if ((v.action === "complete" || v.action === "deliver") && v.payment_method) {
+        toast.success(t(`owner.queue.done.${v.action}Paid.${v.payment_method === "upi_direct" ? "upi" : "cash"}`));
+      } else {
+        toast.success(t(`owner.queue.done.${v.action}`));
+      }
     },
   });
 }
@@ -46,10 +58,24 @@ function normalizeReservationCode(input: string) {
   return `R-${raw.replace(/^R(?=[A-Z0-9]{6}$)/, "")}`;
 }
 
+/** Whether the shop has a UPI ID (P6.1): UPI is offered as a payment method only then. The owner's own settings,
+ * the same query as the settings page, so a UPI ID saved there reaches the queue straight away. Null while the
+ * settings are still loading, so the queue never claims cash only for a shop that takes UPI. */
+function useShopTakesUpi(): boolean | null {
+  const shop = useQuery({ queryKey: ["owner", "shop"], queryFn: () => api.get<OwnerShopSettings>("/owner/shop") });
+  return shop.isPending ? null : !!shop.data?.upi_id;
+}
+
+const PAYMENT_OPTIONS: { value: PaymentMethod; label: MessageKey; hint: MessageKey }[] = [
+  { value: "cod", label: "owner.queue.payment.cash", hint: "owner.queue.payment.cashHint" },
+  { value: "upi_direct", label: "owner.queue.payment.upi", hint: "owner.queue.payment.upiHint" },
+];
+
 /**
  * Asks the owner for the code the customer has (plan section 8.2): the reservation code shown on the customer's
- * screen to complete a pickup, or the 4-digit delivery code only the customer can see to deliver an order. The
- * action runs only with it; a wrong code keeps the dialog open with the reason.
+ * screen to complete a pickup, or the 4-digit delivery code only the customer can see to deliver an order, and how
+ * the customer paid, cash or UPI (P6.1, P6.2; UPI only when the shop has a UPI ID). The action runs only with both;
+ * a wrong code keeps the dialog open with the reason.
  */
 function CodeDialog({
   open,
@@ -58,6 +84,7 @@ function CodeDialog({
   title,
   confirmLabel,
   pending,
+  takesUpi,
   onSubmit,
 }: {
   open: boolean;
@@ -66,18 +93,25 @@ function CodeDialog({
   title: string;
   confirmLabel: string;
   pending: boolean;
-  onSubmit: (code: string) => Promise<unknown>;
+  takesUpi: boolean | null;
+  onSubmit: (code: string, method: PaymentMethod) => Promise<unknown>;
 }) {
   const { t } = useI18n();
   const id = useId();
   const [code, setCode] = useState("");
+  const [chosen, setChosen] = useState<PaymentMethod | null>(null);
   const [error, setError] = useState<string | null>(null);
   const delivery = kind === "delivery";
-  const ready = delivery ? /^\d{4}$/.test(code) : normalizeReservationCode(code).length >= 8;
+  const options = PAYMENT_OPTIONS.filter((o) => takesUpi === true || o.value !== "upi_direct");
+  // A UPI choice no longer offered (the UPI ID was removed meanwhile) counts as no choice.
+  const method = options.some((o) => o.value === chosen) ? chosen : null;
+  const codeReady = delivery ? /^\d{4}$/.test(code) : normalizeReservationCode(code).length >= 8;
+  const ready = codeReady && method !== null;
   const close = (o: boolean) => {
     if (pending) return;
     if (!o) {
       setCode("");
+      setChosen(null);
       setError(null);
     }
     onOpenChange(o);
@@ -86,7 +120,7 @@ function CodeDialog({
     if (!ready || pending) return;
     setError(null);
     try {
-      await onSubmit(delivery ? code : normalizeReservationCode(code));
+      await onSubmit(delivery ? code : normalizeReservationCode(code), method);
       close(false);
     } catch (e) {
       // A wrong code is said in the interface language, not with the API's English text.
@@ -111,34 +145,73 @@ function CodeDialog({
     >
       <form
         id={`${id}-form`}
-        className="space-y-1.5 pb-2"
+        className="space-y-4 pb-2"
         onSubmit={(e) => {
           e.preventDefault();
           void submit();
         }}
       >
-        <Label htmlFor={`${id}-code`}>{delivery ? t("owner.queue.code.deliveryLabel") : t("owner.queue.code.pickupLabel")}</Label>
-        <Input
-          id={`${id}-code`}
-          value={code}
-          onChange={(e) => {
-            setError(null);
-            setCode(delivery ? e.target.value.replace(/\D/g, "").slice(0, 4) : e.target.value.toUpperCase().slice(0, 12));
-          }}
-          inputMode={delivery ? "numeric" : "text"}
-          autoComplete="off"
-          autoCapitalize="characters"
-          spellCheck={false}
-          placeholder={delivery ? t("owner.queue.code.deliveryPlaceholder") : t("owner.queue.code.pickupPlaceholder")}
-          className="h-11 font-mono text-lg tracking-[0.2em]"
-          aria-invalid={error ? true : undefined}
-          aria-describedby={error ? `${id}-error` : undefined}
-        />
-        {error && (
-          <p id={`${id}-error`} role="alert" className="text-sm font-medium text-destructive">
-            {error}
-          </p>
-        )}
+        <div className="space-y-1.5">
+          <Label htmlFor={`${id}-code`}>{delivery ? t("owner.queue.code.deliveryLabel") : t("owner.queue.code.pickupLabel")}</Label>
+          <Input
+            id={`${id}-code`}
+            value={code}
+            onChange={(e) => {
+              setError(null);
+              setCode(delivery ? e.target.value.replace(/\D/g, "").slice(0, 4) : e.target.value.toUpperCase().slice(0, 12));
+            }}
+            inputMode={delivery ? "numeric" : "text"}
+            autoComplete="off"
+            autoCapitalize="characters"
+            spellCheck={false}
+            placeholder={delivery ? t("owner.queue.code.deliveryPlaceholder") : t("owner.queue.code.pickupPlaceholder")}
+            className="h-11 font-mono text-lg tracking-[0.2em]"
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? `${id}-error` : undefined}
+          />
+          {error && (
+            <p id={`${id}-error`} role="alert" className="text-sm font-medium text-destructive">
+              {error}
+            </p>
+          )}
+        </div>
+        <fieldset className="space-y-2">
+          <legend className="mb-2 text-sm font-medium">{t("owner.queue.payment.legend")}</legend>
+          <RadioGroup
+            value={method ?? ""}
+            onValueChange={(v) => {
+              setError(null);
+              setChosen(v as PaymentMethod);
+            }}
+            className="gap-2"
+          >
+            {options.map((o) => (
+              <div key={o.value} className="flex items-start gap-2.5">
+                <RadioGroupItem value={o.value} id={`${id}-${o.value}`} className="mt-0.5" />
+                <Label htmlFor={`${id}-${o.value}`} className="flex-col items-start gap-0 font-normal">
+                  <span className="font-medium">{t(o.label)}</span>
+                  <span className="text-xs text-muted-foreground">{t(o.hint)}</span>
+                </Label>
+              </div>
+            ))}
+          </RadioGroup>
+          {takesUpi === null && (
+            <p role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2 className="size-3 animate-spin" /> {t("owner.queue.payment.checkingUpi")}
+            </p>
+          )}
+          {takesUpi === false && (
+            <p className="text-xs text-muted-foreground">
+              {richText(t("owner.queue.payment.addUpi"), {
+                settings: (
+                  <Link href="/shop/settings" className="font-medium text-foreground underline underline-offset-4">
+                    {t("owner.queue.payment.settingsLink")}
+                  </Link>
+                ),
+              })}
+            </p>
+          )}
+        </fieldset>
       </form>
     </ResponsiveDialog>
   );
@@ -149,6 +222,7 @@ export function OwnerReservationCard({ r }: { r: Reservation }) {
   const now = useNow(30_000);
   const act = useOwnerAction<Reservation>("reservations");
   const complete = useOwnerAction<Reservation>("reservations", true);
+  const takesUpi = useShopTakesUpi();
   const [codeOpen, setCodeOpen] = useState(false);
   const busy = act.isPending || complete.isPending;
   const run = (action: Action, reason?: string | null) => act.mutate({ id: r.id, action, reason });
@@ -219,8 +293,8 @@ export function OwnerReservationCard({ r }: { r: Reservation }) {
           </div>
         )}
         <CodeDialog open={codeOpen} onOpenChange={setCodeOpen} kind="pickup" title={t("owner.queue.reservation.completeTitle")}
-          confirmLabel={t("owner.queue.reservation.complete")} pending={complete.isPending}
-          onSubmit={(code) => complete.mutateAsync({ id: r.id, action: "complete", code })} />
+          confirmLabel={t("owner.queue.reservation.complete")} pending={complete.isPending} takesUpi={takesUpi}
+          onSubmit={(code, payment_method) => complete.mutateAsync({ id: r.id, action: "complete", code, payment_method })} />
       </motion.li>
     </MotionConfig>
   );
@@ -231,6 +305,7 @@ export function OwnerOrderCard({ o }: { o: Order }) {
   const now = useNow(30_000);
   const act = useOwnerAction<Order>("orders");
   const deliver = useOwnerAction<Order>("orders", true);
+  const takesUpi = useShopTakesUpi();
   const [codeOpen, setCodeOpen] = useState(false);
   const busy = act.isPending || deliver.isPending;
   const run = (action: Action, reason?: string | null) => act.mutate({ id: o.id, action, reason });
@@ -243,7 +318,18 @@ export function OwnerOrderCard({ o }: { o: Order }) {
           <StatusBadge status={o.status} kind="order" />
           <span className="font-mono text-xs text-muted-foreground">{o.code}</span>
           <span className="text-xs text-muted-foreground" suppressHydrationWarning>{timeAgo(o.created_at, now, language)}</span>
-          <span className="ml-auto font-semibold tabular">{formatPrice(o.total)} <span className="text-xs font-normal text-muted-foreground">{t("owner.queue.order.cod")}</span></span>
+          <span className="ml-auto font-semibold tabular">
+            {formatPrice(o.total)}{" "}
+            <span className="text-xs font-normal text-muted-foreground">
+              {o.payment_status === "paid"
+                ? t(o.payment_method === "upi_direct" ? "owner.queue.order.paidUpi" : "owner.queue.order.paidCash")
+                : takesUpi === null
+                  ? t("owner.queue.order.payOnDelivery")
+                  : takesUpi
+                    ? t("owner.queue.order.cashOrUpi")
+                    : t("owner.queue.order.cod")}
+            </span>
+          </span>
         </div>
         <ul className="mt-3 space-y-1 text-sm">
           {o.items.map((i) => (
@@ -283,8 +369,8 @@ export function OwnerOrderCard({ o }: { o: Order }) {
           </div>
         )}
         <CodeDialog open={codeOpen} onOpenChange={setCodeOpen} kind="delivery" title={t("owner.queue.order.deliverTitle")}
-          confirmLabel={t("owner.queue.order.deliver")} pending={deliver.isPending}
-          onSubmit={(code) => deliver.mutateAsync({ id: o.id, action: "deliver", code })} />
+          confirmLabel={t("owner.queue.order.deliver")} pending={deliver.isPending} takesUpi={takesUpi}
+          onSubmit={(code, payment_method) => deliver.mutateAsync({ id: o.id, action: "deliver", code, payment_method })} />
       </motion.li>
     </MotionConfig>
   );

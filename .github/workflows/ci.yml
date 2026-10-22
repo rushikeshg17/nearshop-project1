@@ -1,6 +1,7 @@
 # Continuous integration: every pull request and every push to main runs four checks (backend,
-# frontend, secret-scan, dependency-audit). They block merging only once main's branch protection
-# requires all four, which the tech lead sets up in the repository settings. Render deploys only a
+# frontend, secret-scan, dependency-audit), plus search-eval (P5.1), which does real work only when a
+# change touches search. They block merging only once main's branch protection requires them, which
+# the tech lead sets up in the repository settings. Render deploys only a
 # commit whose checks passed (render.yaml, autoDeployTrigger: checksPass). make ci runs the same
 # checks locally, apart from GitHub's dependency review.
 #
@@ -13,7 +14,8 @@ on:
   push:
     branches: [main]
   # Every Monday on main, only the dependency audit runs, so a new advisory against unchanged code
-  # is caught. 03:30 UTC is 09:00 in India.
+  # is caught, and search-eval refreshes the main baseline so its cache never expires (GitHub drops a
+  # cache unused for 7 days). 03:30 UTC is 09:00 in India.
   schedule:
     - cron: "30 3 * * 1"
   workflow_dispatch:
@@ -71,6 +73,106 @@ jobs:
       - name: MongoDB logs (on failure)
         if: failure()
         run: docker compose logs --tail 200 mongo
+
+  # Search evaluation (P5.1, backend/eval/README.md): the dev split of the labelled queries through run_search on
+  # a freshly seeded local database. On every push to main, and every Monday, its figures are cached as the
+  # baseline; a pull request that touches search, text, embeddings, semantic-index, the harness, the labels or the
+  # seed runs it, writes the summary to the job summary and fails when dev nDCG@10 drops by more than 0.02 against
+  # the latest main run. When no main baseline can be restored, the job measures the pull request's base commit in
+  # the same job instead, so the check never silently stops comparing. Other pull requests pass this job without
+  # running it. The test split never runs in CI. The summary goes to the job summary rather than a pull request
+  # comment: a comment needs a pull-requests: write token in a job that runs the pull request's code.
+  search-eval:
+    name: search-eval
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      UV_LOCKED: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2 # a pull request checks out its merge commit; HEAD^1 is the base branch
+          persist-credentials: false
+
+      - name: Does this change touch search?
+        id: scope
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          pattern='^backend/(app/services/search\.py|app/utils/text|app/ai/(embeddings|semantic_index|search_eval)\.py|eval/|database/seed/)'
+          if git diff --name-only HEAD^1 HEAD | grep -Eq "$pattern"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Search evaluation skipped: this pull request touches no search, text, embeddings or semantic-index file." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Set up uv
+        if: steps.scope.outputs.run == 'true'
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install the locked dependencies
+        if: steps.scope.outputs.run == 'true'
+        working-directory: backend
+        run: uv sync --locked
+
+      - name: Start MongoDB (single-node replica set) and wait until it is primary
+        if: steps.scope.outputs.run == 'true'
+        run: make db-up
+
+      # The latest main run's figures (caches saved on main are readable from pull requests).
+      - name: Restore the main baseline
+        id: baseline
+        if: steps.scope.outputs.run == 'true' && github.event_name == 'pull_request'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: search-eval-baseline.json
+          key: search-eval-main-none-${{ github.run_id }}
+          restore-keys: search-eval-main-
+
+      # No cached main run (none yet, or GitHub dropped it): measure the base commit here instead.
+      - name: Measure the base commit when no main baseline was restored
+        if: steps.scope.outputs.run == 'true' && github.event_name == 'pull_request' && steps.baseline.outputs.cache-matched-key == ''
+        run: |
+          echo "::warning title=search-eval::No cached main baseline; measuring the base commit in this job instead."
+          git worktree add --detach "$RUNNER_TEMP/base" HEAD^1
+          if [ ! -f "$RUNNER_TEMP/base/backend/app/ai/search_eval.py" ]; then
+            echo "::warning title=search-eval::The base commit has no search evaluation harness, so there is nothing to compare with."
+            echo "**No baseline:** the base commit predates the search evaluation harness." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          (cd "$RUNNER_TEMP/base/backend" && uv sync --locked)
+          make -C "$RUNNER_TEMP/base" eval DB_UP= EVAL_DB=nearshop_eval_base EVAL_SPLIT=dev \
+            EVAL_MODEL_DIR="$RUNNER_TEMP/eval-models-base" \
+            EVAL_ARGS="--no-store --output $GITHUB_WORKSPACE/search-eval-baseline.json"
+
+      - name: Dev split
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          args="--output $GITHUB_WORKSPACE/search-eval.json --summary $GITHUB_STEP_SUMMARY"
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            if [ -f "$GITHUB_WORKSPACE/search-eval-baseline.json" ]; then
+              args="$args --baseline $GITHUB_WORKSPACE/search-eval-baseline.json"
+            else
+              echo "::warning title=search-eval::No baseline to compare dev nDCG@10 with; this run is not a regression check."
+            fi
+          fi
+          make eval DB_UP= EVAL_SPLIT=dev EVAL_MODEL_DIR="$RUNNER_TEMP/eval-models" EVAL_ARGS="$args"
+
+      - name: Keep this run as the main baseline
+        if: steps.scope.outputs.run == 'true' && github.event_name != 'pull_request'
+        run: cp search-eval.json search-eval-baseline.json
+
+      - name: Save the main baseline
+        if: steps.scope.outputs.run == 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: search-eval-baseline.json
+          key: search-eval-main-${{ github.sha }}-${{ github.run_id }}
 
   frontend:
     name: frontend

@@ -1,5 +1,5 @@
-.PHONY: setup db-up db-down schema migrate seed backup restore api web test retrain lint lint-backend lint-frontend \
-	build audit audit-waived-ghsas secret-scan ci smoke loadtest loadtest-steps
+.PHONY: setup db-up db-down schema migrate seed backup restore archive api web test eval retrain lint lint-backend \
+	lint-frontend build audit audit-waived-ghsas secret-scan ci smoke loadtest loadtest-steps
 
 # The local MongoDB from docker-compose.yml: a single-node replica set on localhost:27017.
 LOCAL_MONGODB_URI ?= mongodb://localhost:27017/?replicaSet=rs0
@@ -73,6 +73,20 @@ restore: db-up
 	cd backend && $(LOCAL_BACKUP_ENV) uv run python -m database.restore --target-db '$(TARGET_DB)' \
 		--set '$(BACKUP_SET)' $(RESTORE_ARGS)
 
+# Sales history archiving (P8.3, backend/database/archive.py; docs/runbooks/restore.md, Archived sales history):
+# the local database's sales_history months older than 18 months go to BACKUP_DIR, under
+# <environment>/archive/sales_history/, and their rows are deleted once each file is read back and verified.
+# It needs a backup of the local database from the last 26 hours (run make backup first). Staging and
+# production archive in their monthly Render cron jobs and bring months back in one-off jobs there.
+#   make archive                                              # archive every eligible month
+#   make archive ARCHIVE_ARGS=--plan                          # read-only: eligible months and rows
+#   make archive ARCHIVE_ARGS=--list                          # read-only: archived months in BACKUP_DIR
+#   make archive ARCHIVE_ARGS='--restore 2025-03 --target-db nearshop_sales_2025_03'
+ARCHIVE_ARGS ?=
+
+archive: db-up
+	cd backend && $(LOCAL_BACKUP_ENV) uv run python -m database.archive $(ARCHIVE_ARGS)
+
 api:
 	cd backend && uv run uvicorn app.main:app --reload --reload-dir app --port 8000
 
@@ -84,6 +98,24 @@ test: db-up
 
 retrain:
 	cd backend && uv run python -m app.ai.pipeline
+
+# Search evaluation (P5.1; backend/eval/README.md): every labelled query in backend/eval/queries.<split>.jsonl
+# through run_search, with nDCG@10, Recall@20, MRR, zero-result rate and latency p95, overall and per language.
+# Always the local MongoDB, in its own database EVAL_DB (seeded from the deterministic seed on the first run and
+# reused while the seed, schema, migrations and models are unchanged), whatever backend/.env points at; the run is stored in that database's
+# model_runs. EVAL_SPLIT=test runs the held-out split (once per tuning cycle); EVAL_SPLIT=all runs both.
+# EVAL_ARGS=--publish also writes backend/eval/published.json, the figures a deployed AI Lab shows; commit it.
+#   make eval                     make eval EVAL_SPLIT=test           make eval EVAL_ARGS=--rebuild
+EVAL_DB ?= nearshop_eval
+EVAL_SPLIT ?= dev
+EVAL_ARGS ?=
+# The seed trains the AI models into this directory, never into backend/ml_artifacts.
+EVAL_MODEL_DIR ?= $(HOME)/.nearshop/eval/models
+
+eval: db-up
+	cd backend && NEARSHOP_ENVIRONMENT=development NEARSHOP_MONGODB_URI='$(LOCAL_MONGODB_URI)' \
+		NEARSHOP_MONGODB_DB='$(EVAL_DB)' NEARSHOP_MODEL_DIR='$(EVAL_MODEL_DIR)' NEARSHOP_SENTRY_DSN= \
+		uv run python -m app.ai.search_eval --split '$(EVAL_SPLIT)' $(EVAL_ARGS)
 
 smoke:
 	cd backend && uv run python scripts/smoke.py '$(SMOKE_URL)' --mode '$(SMOKE_MODE)'

@@ -1,7 +1,8 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bike, Loader2, MapPin } from "lucide-react";
+import { Bike, Loader2, MapPin, ReceiptText } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -17,9 +18,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { useMe } from "@/hooks/use-session";
 import { useDebounce } from "@/hooks/use-debounce";
 import { api } from "@/lib/api";
-import { formatDistance, formatPrice } from "@/lib/format";
+import { formatDistance, formatNumber, formatPrice } from "@/lib/format";
 import { useLocation } from "@/lib/location";
 import type { DeliveryQuote, Order, ProductDetail } from "@/lib/types";
+import { REFUND_POLICY_HREF, UPI_REFUND_DAYS } from "@/lib/upi";
 
 export function DeliveryDialog({ product, open, onOpenChange }: { product: ProductDetail; open: boolean; onOpenChange: (o: boolean) => void }) {
   const { t } = useI18n();
@@ -147,6 +149,20 @@ export function DeliveryDialog({ product, open, onOpenChange }: { product: Produ
             />
           </div>
         </div>
+
+        {/* Shown before the order is placed (plan check 9.5). */}
+        <section aria-labelledby="delivery-policy-title" className="flex gap-2.5 rounded-xl border p-3 text-xs text-muted-foreground">
+          <ReceiptText className="mt-0.5 size-4 shrink-0" />
+          <div>
+            <h3 id="delivery-policy-title" className="text-sm font-medium text-foreground">{t("transactions.policy.title")}</h3>
+            <p className="mt-0.5">
+              {t("transactions.policy.deliveryBody", { days: formatNumber(UPI_REFUND_DAYS) })}{" "}
+              <Link href={REFUND_POLICY_HREF} target="_blank" className="font-medium text-foreground underline underline-offset-4">
+                {t("transactions.policy.link")}
+              </Link>
+            </p>
+          </div>
+        </section>
       </div>
     </ResponsiveDialog>
   );

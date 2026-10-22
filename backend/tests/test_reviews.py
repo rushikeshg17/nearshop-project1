@@ -109,7 +109,7 @@ def test_pickup_completes_only_with_the_reservation_code(db, world):
         res = owner.post(url, json=body, headers=HEADERS)
         assert res.status_code == 409 and res.json()["error"]["code"] == "wrong_code"
     assert db.reservations.get(r["id"]).status == ReservationStatus.CONFIRMED
-    done = owner.post(url, json={"code": f"  {r['code'].lower()} "}, headers=HEADERS)
+    done = owner.post(url, json={"code": f"  {r['code'].lower()} ", "payment_method": "cod"}, headers=HEADERS)
     assert done.status_code == 200 and done.json()["status"] == "COMPLETED"
 
 
@@ -139,7 +139,7 @@ def test_delivery_code_is_the_customers_alone_and_delivery_needs_it(db, world):
         res = owner.post(url, json=attempt, headers=HEADERS)
         assert res.status_code == 409 and res.json()["error"]["code"] == "wrong_code"
         owner_views.append(res.json())
-    owner_views.append(owner.post(url, json={"code": code}, headers=HEADERS).json())
+    owner_views.append(owner.post(url, json={"code": code, "payment_method": "cod"}, headers=HEADERS).json())
     assert owner_views[-1]["status"] == "DELIVERED"
     for view in owner_views:
         assert "delivery_code" not in view and code not in str(view.get("events", ""))
@@ -165,7 +165,7 @@ def test_wrong_delivery_codes_lock_the_order_for_a_while(db, world):
     locked = owner.post(url, json={"code": code}, headers=HEADERS)  # even the right code waits out the lock
     assert locked.status_code == 429 and locked.json()["error"]["code"] == "code_locked"
     db.orders.update_one({"_id": order_id}, {"$set": {"code_locked_until": utcnow() - timedelta(seconds=1)}})
-    done = owner.post(url, json={"code": code}, headers=HEADERS)
+    done = owner.post(url, json={"code": code, "payment_method": "cod"}, headers=HEADERS)
     assert done.status_code == 200 and done.json()["status"] == "DELIVERED"
 
 
@@ -181,7 +181,7 @@ def test_an_order_confirmed_without_a_code_gets_one_and_can_be_delivered(db, wor
     code = db.orders.get(order_id).delivery_code
     assert code and len(code) == 4 and code.isdigit()
     assert code in db.notifications.find_one({"user_id": customer.id, "kind": "order_delivery_code"}).body
-    assert owner.post(url, json={"code": code}, headers=HEADERS).json()["status"] == "DELIVERED"
+    assert owner.post(url, json={"code": code, "payment_method": "cod"}, headers=HEADERS).json()["status"] == "DELIVERED"
 
 
 def test_codes_are_not_asked_for_while_the_setting_is_off(db, world, monkeypatch):
@@ -192,11 +192,11 @@ def test_codes_are_not_asked_for_while_the_setting_is_off(db, world, monkeypatch
     r = client_for(customer.email).post("/api/reservations", json={"product_id": world["product"].id, "quantity": 1},
                                         headers=HEADERS).json()
     owner.post(f"/api/owner/reservations/{r['id']}/confirm", json={}, headers=HEADERS)
-    assert owner.post(f"/api/owner/reservations/{r['id']}/complete", json={},
+    assert owner.post(f"/api/owner/reservations/{r['id']}/complete", json={"payment_method": "cod"},
                       headers=HEADERS).json()["status"] == "COMPLETED"
     order_id = out_for_delivery(db, world, customer, owner)
     assert db.orders.get(order_id).delivery_code  # still created for the customer
-    assert owner.post(f"/api/owner/orders/{order_id}/deliver", json={},
+    assert owner.post(f"/api/owner/orders/{order_id}/deliver", json={"payment_method": "cod"},
                       headers=HEADERS).json()["status"] == "DELIVERED"
 
 
@@ -339,7 +339,7 @@ def test_the_owner_self_dealing_path_is_blocked_end_to_end(db, world):
         owner.post(f"/api/owner/reservations/{r['id']}/confirm", json={}, headers=HEADERS)
         refused = owner.post(f"/api/owner/reservations/{r['id']}/complete", json={}, headers=HEADERS)
         assert refused.status_code == 409  # no completing without the code
-        assert owner.post(f"/api/owner/reservations/{r['id']}/complete", json={"code": r["code"]},
+        assert owner.post(f"/api/owner/reservations/{r['id']}/complete", json={"code": r["code"], "payment_method": "cod"},
                           headers=HEADERS).json()["status"] == "COMPLETED"
         return r["id"]
 

@@ -20,7 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDebounce } from "@/hooks/use-debounce";
 import { useMeta } from "@/hooks/use-session";
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, recordLead } from "@/lib/api";
 import { formatDistance, formatNumber, formatPrice, travelTime, weekdayName } from "@/lib/format";
 import { plural, richText } from "@/lib/i18n";
 import { useLocation } from "@/lib/location";
@@ -149,8 +149,8 @@ export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail 
             {s.established_year && <div className="flex gap-2"><Calendar className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><dd>{t("discovery.shop.servingSince", { year: s.established_year })}</dd></div>}
           </dl>
           <div className="mt-5 flex flex-wrap gap-2">
-            <Button asChild variant="outline" size="sm"><a href={`https://www.openstreetmap.org/directions?to=${s.lat}%2C${s.lng}`} target="_blank" rel="noreferrer"><Navigation /> {t("discovery.shop.directions")}</a></Button>
-            {s.phone && <Button asChild variant="outline" size="sm"><a href={`tel:${s.phone}`}><Phone /> {t("discovery.shop.call")}</a></Button>}
+            <Button asChild variant="outline" size="sm"><a href={`https://www.openstreetmap.org/directions?to=${s.lat}%2C${s.lng}`} target="_blank" rel="noreferrer" onClick={() => recordLead(s.id, "directions_tap")}><Navigation /> {t("discovery.shop.directions")}</a></Button>
+            {s.phone && <Button asChild variant="outline" size="sm"><a href={`tel:${s.phone}`} onClick={() => recordLead(s.id, "call_tap")}><Phone /> {t("discovery.shop.call")}</a></Button>}
           </div>
         </div>
         <div className="h-56 overflow-hidden rounded-2xl border md:h-full md:min-h-60">

@@ -14,9 +14,61 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import { formatNumber, formatPrice, timeAgo } from "@/lib/format";
-import { plural } from "@/lib/i18n";
+import { type MessageKey, plural } from "@/lib/i18n";
 import type { ModelSummary, OwnerInsights } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+// Each module's model gate (P7.3, plan section 8.9): when shown is false, the module has no output and the
+// owner sees the reason and the progress towards the threshold instead of an empty chart.
+type GateProgress = { label: string; have: number; need: number };
+type Gate = { shown: boolean; code: string | null; reason: string | null; progress: GateProgress[] };
+type GateName = "demand" | "bundles" | "price_flags" | "area_demand" | "missed_demand";
+type GatedInsights = OwnerInsights & {
+  gates?: Partial<Record<GateName, Gate>>;
+  search_rule?: { window_days: number; min_users: number };
+};
+
+// The progress labels the API sends (backend/app/services/analytics.py), in the interface language; a label not
+// listed here shows as the API sends it. The gate's reason is the API's sentence (it carries the counts and
+// windows), so it is shown as sent until the API localises it.
+const PROGRESS_LABELS: Record<string, MessageKey> = {
+  days: "owner.insights.gate.progress.days",
+  "days with a sale": "owner.insights.gate.progress.saleDays",
+  "units sold": "owner.insights.gate.progress.unitsSold",
+  "% better than same as last week": "owner.insights.gate.progress.betterThanLastWeek",
+  "multi-item purchases": "owner.insights.gate.progress.multiItemPurchases",
+  "verified shops": "owner.insights.gate.progress.verifiedShops",
+  "flags reviewed": "owner.insights.gate.progress.flagsReviewed",
+  "% upheld": "owner.insights.gate.progress.upheld",
+  people: "owner.insights.gate.progress.people",
+};
+
+function GateNotice({ gate, className }: { gate: Gate; className?: string }) {
+  const { t } = useI18n();
+  return (
+    <div className={cn("rounded-xl bg-muted/60 p-4 text-sm", className)} role="status">
+      <p className="flex gap-2 text-muted-foreground"><Info className="mt-0.5 size-4 shrink-0" /> <span>{gate.reason}</span></p>
+      {gate.progress.length > 0 && (
+        <ul className="mt-3 space-y-2">
+          {gate.progress.map((p) => {
+            const pct = p.need > 0 ? Math.min(100, Math.round((p.have / p.need) * 100)) : 0;
+            return (
+              <li key={p.label} className="text-xs">
+                <span className="flex justify-between gap-3 text-muted-foreground">
+                  <span>{PROGRESS_LABELS[p.label] ? t(PROGRESS_LABELS[p.label]) : p.label}</span>
+                  <span className="tabular">{t("owner.insights.gate.haveOfNeed", { have: formatNumber(p.have), need: formatNumber(p.need) })}</span>
+                </span>
+                <span className="mt-1 block h-1.5 overflow-hidden rounded-full bg-background" aria-hidden="true">
+                  <span className={cn("block h-full rounded-full", pct >= 100 ? "bg-success" : "bg-brand")} style={{ width: `${pct}%` }} />
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 function ModelNote({ m, children }: { m?: ModelSummary; children: React.ReactNode }) {
   const { t, language } = useI18n();
@@ -31,12 +83,18 @@ function ModelNote({ m, children }: { m?: ModelSummary; children: React.ReactNod
 
 export default function InsightsPage() {
   const { t, language } = useI18n();
-  const q = useQuery({ queryKey: ["owner", "insights"], queryFn: () => api.get<OwnerInsights>("/owner/insights") });
+  const q = useQuery({ queryKey: ["owner", "insights"], queryFn: () => api.get<GatedInsights>("/owner/insights") });
   if (q.isError) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
   const d = q.data;
   if (!d) return <ListSkeleton rows={5} />;
   const demand = d.models.demand;
   const daysLabel = (n: number) => t(`owner.insights.restock.days.${plural(language, n)}`, { count: formatNumber(n) });
+  const gates = d.gates ?? {};
+  const closed = (name: GateName): Gate | null => {
+    const g = gates[name];
+    return g && !g.shown ? g : null;
+  };
+  const [demandGate, areaGate, missedGate, bundleGate, flagGate] = (["demand", "area_demand", "missed_demand", "bundles", "price_flags"] as const).map(closed);
   const dm = demand?.metrics as { mae_7d?: number; naive_mae_7d?: number; improvement_pct?: number } | undefined;
 
   return (
@@ -50,7 +108,9 @@ export default function InsightsPage() {
             {dm?.mae_7d !== undefined && t("owner.insights.restock.error", { mae: formatNumber(dm.mae_7d), pct: formatNumber(dm.improvement_pct ?? 0) })}
           </ModelNote>
         </div>
-        {d.restock.length ? (
+        {demandGate ? (
+          <GateNotice gate={demandGate} className="m-5" />
+        ) : d.restock.length ? (
           <Table>
             <TableHeader>
               <TableRow>
@@ -99,7 +159,13 @@ export default function InsightsPage() {
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <section className="rounded-2xl border bg-card p-5">
           <h2 className="flex items-center gap-2 font-semibold"><Users className="size-4 text-brand" /> {t("owner.insights.area.title")}</h2>
-          <p className="mt-1 text-xs text-muted-foreground">{t("owner.insights.area.hint")}</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t("owner.insights.area.hint", {
+              days: formatNumber(d.search_rule?.window_days ?? 30),
+              people: formatNumber(d.search_rule?.min_users ?? 5),
+            })}
+          </p>
+          {areaGate ? <GateNotice gate={areaGate} className="mt-4" /> : (
           <ul className="mt-4 space-y-2">
             {d.area_demand.map((a) => (
               <li key={a.query} className="flex items-center justify-between gap-3 text-sm">
@@ -112,22 +178,26 @@ export default function InsightsPage() {
             ))}
             {!d.area_demand.length && <li className="text-sm text-muted-foreground">{t("owner.insights.area.empty")}</li>}
           </ul>
+          )}
         </section>
 
         <section className="rounded-2xl border bg-card p-5">
           <h2 className="flex items-center gap-2 font-semibold"><SearchX className="size-4 text-brand" /> {t("owner.insights.missed.title")}</h2>
           <p className="mt-1 text-xs text-muted-foreground">{t("owner.insights.missed.hint")}</p>
+          {missedGate ? <GateNotice gate={missedGate} className="mt-4" /> : (
           <ul className="mt-4 flex flex-wrap gap-2">
             {d.missed_demand.map((m) => (
               <li key={m.query} className="rounded-full border px-3 py-1 text-sm capitalize">{m.query} <span className="text-muted-foreground tabular">· {formatNumber(m.searches)}</span></li>
             ))}
             {!d.missed_demand.length && <li className="text-sm text-muted-foreground">{t("owner.insights.missed.empty")}</li>}
           </ul>
+          )}
         </section>
 
         <section className="rounded-2xl border bg-card p-5">
           <h2 className="flex items-center gap-2 font-semibold"><PackagePlus className="size-4 text-brand" /> {t("owner.insights.bundles.title")}</h2>
           <ModelNote m={d.models.recommendations}>{t("owner.insights.bundles.note")}</ModelNote>
+          {bundleGate ? <GateNotice gate={bundleGate} className="mt-4" /> : (
           <ul className="mt-4 divide-y">
             {d.bundle_gaps.map((g) => (
               <li key={g.item.id} className="flex items-center gap-3 py-2.5 first:pt-0">
@@ -143,6 +213,7 @@ export default function InsightsPage() {
             ))}
             {!d.bundle_gaps.length && <li className="text-sm text-muted-foreground">{t("owner.insights.bundles.empty")}</li>}
           </ul>
+          )}
           {d.bundle_gaps.length > 0 && (
             <Button asChild variant="outline" size="sm" className="mt-3"><Link href="/shop/catalog">{t("owner.insights.bundles.addFromCatalogue")} <ArrowRight /></Link></Button>
           )}
@@ -151,6 +222,7 @@ export default function InsightsPage() {
         <section className="rounded-2xl border bg-card p-5">
           <h2 className="flex items-center gap-2 font-semibold"><Scale className="size-4 text-brand" /> {t("owner.insights.prices.title")}</h2>
           <ModelNote m={d.models.anomalies}>{t("owner.insights.prices.note")}</ModelNote>
+          {flagGate ? <GateNotice gate={flagGate} className="mt-4" /> : (
           <ul className="mt-4 divide-y">
             {d.price_flags.map((f) => (
               <li key={f.id} className="flex items-center gap-3 py-2.5 first:pt-0">
@@ -171,6 +243,7 @@ export default function InsightsPage() {
             ))}
             {!d.price_flags.length && <li className="text-sm text-muted-foreground">{t("owner.insights.prices.empty")}</li>}
           </ul>
+          )}
           <p className="mt-3 flex gap-1.5 text-xs text-muted-foreground"><Info className="mt-0.5 size-3.5 shrink-0" /> {t("owner.insights.prices.footnote")}</p>
         </section>
       </div>

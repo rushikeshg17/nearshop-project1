@@ -9,7 +9,7 @@ import { ThemeProvider } from "next-themes";
 import { createContext, Suspense, use, useEffect, useMemo, useOptimistic, useState, useTransition } from "react";
 
 import { useMe } from "@/hooks/use-session";
-import { ApiError, errorMessage, setErrorTranslator } from "@/lib/api";
+import { api, ApiError, errorMessage, setErrorTranslator } from "@/lib/api";
 import {
   createTranslator,
   type Language,
@@ -20,6 +20,7 @@ import {
   writeLanguageCookie,
 } from "@/lib/i18n";
 import { LocationProvider } from "@/lib/location";
+import type { User } from "@/lib/types";
 
 // ---------------------------------------------------------------- the interface language (P7.5, src/lib/i18n.ts)
 
@@ -50,11 +51,14 @@ function I18nProvider({
   language,
   languages,
   messages,
+  queryClient,
   children,
 }: {
   language: LanguageCode;
   languages: readonly LanguageCode[];
   messages: Partial<Messages>;
+  /** The page's query client: a signed-in visitor's choice is also saved to their account (below). */
+  queryClient: QueryClient;
   children: React.ReactNode;
 }) {
   const router = useRouter();
@@ -74,6 +78,15 @@ function I18nProvider({
       setLanguage: (code: LanguageCode) => {
         if (code === selected) return;
         writeLanguageCookie(code);
+        // A signed-in visitor's choice is also their account's language (PATCH /api/auth/me, P7.11), which their
+        // notifications and WhatsApp messages come in. Fire and forget: the cookie already holds the choice, and a
+        // failure here never blocks the switch.
+        if (queryClient.getQueryData<User | null>(["me"])) {
+          api.patch<User>("/auth/me", { language: code }).then(
+            (user) => queryClient.setQueryData(["me"], user),
+            () => undefined,
+          );
+        }
         // The refresh re-renders the root layout and every server component in the chosen language (the html lang,
         // the font and these messages included) and keeps client state: no full reload.
         startTransition(() => {
@@ -82,7 +95,7 @@ function I18nProvider({
         });
       },
     }),
-    [language, languages, selected, t, router, setSelected],
+    [language, languages, selected, t, router, setSelected, queryClient],
   );
   // API errors with a known code are shown in this language (errorMessage in src/lib/api.ts, P7.10). Their text is in
   // the common area, which these messages always include.
@@ -253,7 +266,7 @@ export function Providers({
 
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-      <I18nProvider language={language} languages={languages} messages={messages}>
+      <I18nProvider language={language} languages={languages} messages={messages} queryClient={client}>
         <QueryClientProvider client={client}>
           {/* No MotionConfig and no TooltipProvider on every page (P2.9): shared screens animate with CSS, which
               globals.css stops for the reduced-motion setting. That rule does not reach motion's JavaScript

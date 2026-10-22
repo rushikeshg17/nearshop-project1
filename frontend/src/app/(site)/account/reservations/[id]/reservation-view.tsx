@@ -11,6 +11,7 @@ import { ProductThumb } from "@/components/common/product-thumb";
 import { ErrorState, ListSkeleton } from "@/components/common/states";
 import { Countdown, StatusBadge } from "@/components/common/status";
 import { ConfirmAction } from "@/components/fulfillment/confirm-action";
+import { PayShopByUpi } from "@/components/fulfillment/pay-shop-by-upi";
 import { EventTimeline, FulfillmentProgress } from "@/components/fulfillment/progress";
 import { ReviewDialog } from "@/components/fulfillment/review-dialog";
 import { ShopMap } from "@/components/map/shop-map";
@@ -39,7 +40,12 @@ const HEADLINE: Record<string, { title: (t: Translate) => string; body: (r: Rese
   },
   COMPLETED: {
     title: (t) => t("transactions.reservation.status.COMPLETED.title"),
-    body: (_r, t) => t("transactions.reservation.status.COMPLETED.body"),
+    body: (r, t) =>
+      r.payment_method === "upi_direct"
+        ? t("transactions.reservation.status.COMPLETED.bodyUpi")
+        : r.payment_method === "cod"
+          ? t("transactions.reservation.status.COMPLETED.bodyCash")
+          : t("transactions.reservation.status.COMPLETED.body"),
   },
   REJECTED: {
     title: (t) => t("transactions.reservation.status.REJECTED.title"),
@@ -81,6 +87,8 @@ export function ReservationView({ id }: { id: number }) {
   const live = ["REQUESTED", "CONFIRMED", "READY_FOR_PICKUP"].includes(r.status);
   const held = r.status === "CONFIRMED" || r.status === "READY_FOR_PICKUP";
   const head = HEADLINE[r.status];
+  // The shop's UPI ID is in the customer's own reservation (P6.1); paying is offered once the item is held.
+  const payByUpi = !!r.shop.upi_id && held && r.payment_status !== "paid";
 
   return (
     <MotionConfig reducedMotion="user">
@@ -118,12 +126,19 @@ export function ReservationView({ id }: { id: number }) {
                     {r.code.replace(/^R-/, "")}
                   </p>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    {t("transactions.reservation.pickupCodeHint", { price: formatPrice(r.total) })}
+                    {t(r.shop.upi_id ? "transactions.reservation.pickupCodeHintUpi" : "transactions.reservation.pickupCodeHint", {
+                      price: formatPrice(r.total),
+                    })}
                   </p>
                 </section>
               )}
               <FulfillmentProgress item={r} className="mt-8" />
             </motion.section>
+
+            {payByUpi && (
+              <PayShopByUpi upiId={r.shop.upi_id!} payeeName={r.shop.upi_payee_name || r.shop.name} amount={r.total} note={r.code}
+                cash={t("transactions.upi.cashAtCounter")} />
+            )}
 
             <section className="flex items-center gap-4 rounded-3xl border bg-card p-5">
               <ProductThumb icon={r.product.icon} imageUrl={r.product.image_url} thumbnailUrl={r.product.thumbnail_url} alt="" size="lg" />

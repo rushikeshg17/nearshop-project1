@@ -397,7 +397,8 @@ def test_customer_login_is_unchanged(client):
     res = client.post("/api/auth/login", json={"email": "cust@example.com", "password": PASSWORD}, headers=HEADERS)
     assert res.status_code == 200
     assert set(res.json()) == {"id", "name", "email", "phone", "role", "home_lat", "home_lng", "home_label", "shop",
-                               "phone_verified", "email_login_sunset", "phone_migration"}  # the last three: P4.2
+                               "phone_verified", "email_login_sunset", "phone_migration",  # these three: P4.2
+                               "language"}  # P7.11
     assert res.json()["email"] == "cust@example.com"
     assert f"max-age={settings.access_token_minutes * 60}" in res.headers["set-cookie"].lower()
     assert "httponly" in res.headers["set-cookie"].lower()
@@ -554,7 +555,7 @@ def test_the_totp_key_is_asked_for_by_both_api_services_and_documented():
     root = Path(__file__).resolve().parents[2]
     blueprint = yaml.safe_load((root / "render.yaml").read_text(encoding="utf-8"))
     web = [s for s in blueprint["services"] if s["type"] == "web"]
-    assert {s["name"] for s in web} == {"nearshop-api-staging", "nearshop-api"}
+    assert {s["name"] for s in web} == {"nearshop-api-staging", "nearshop-api", "nearshop-api-demo"}
     for service in web:
         assert {"key": "NEARSHOP_TOTP_KEY", "sync": False} in service["envVars"], service["name"]
     example = (root / "backend" / ".env.example").read_text(encoding="utf-8")

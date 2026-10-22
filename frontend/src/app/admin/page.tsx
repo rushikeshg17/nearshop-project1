@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { ClipboardList, Database, IndianRupee, Info, Package, Scale, Search, Store, Users } from "lucide-react";
+import { ClipboardList, Clock3, Database, IndianRupee, Info, Package, Plus, Scale, Search, Store, Users } from "lucide-react";
 import Link from "next/link";
 import { Bar, BarChart, CartesianGrid, XAxis } from "recharts";
 
@@ -131,6 +131,108 @@ function StorageCard() {
   );
 }
 
+/** GET /api/admin/freshness: stock freshness per live shop and the city median listing age, check 10.3's metric (P7.4). */
+type FreshnessShop = {
+  id: number;
+  name: string;
+  slug: string;
+  locality: string | null;
+  city: string | null;
+  is_verified: boolean;
+  in_city_metric: boolean;
+  listings: number;
+  median_age_hours: number | null;
+  fresh_share: number | null;
+  inventory_updated_at: string | null;
+};
+type FreshnessReport = {
+  as_of: string;
+  fresh_hours: number;
+  stale_days: number;
+  city: string;
+  target_shops: number;
+  live_shops: number;
+  verified_live_shops: number;
+  listings: number;
+  city_median_age_hours: number | null;
+  city_fresh_share: number | null;
+  meets_check_10_3: boolean;
+  shops: FreshnessShop[];
+  stale_shops: FreshnessShop[];
+};
+
+const age = (hours: number | null) =>
+  hours === null ? "No listings" : hours < 48 ? `${Math.round(hours)} h` : `${(hours / 24).toFixed(1)} days`;
+const share = (value: number | null) => (value === null ? "–" : `${Math.round(value * 100)}%`);
+
+function FreshnessCard() {
+  const q = useQuery({ queryKey: ["admin", "freshness"], queryFn: () => api.get<FreshnessReport>("/admin/freshness") });
+  const f = q.data;
+  const medianMet = f && f.city_median_age_hours !== null && f.city_median_age_hours <= f.fresh_hours;
+  return (
+    <section className="mt-6 rounded-2xl border bg-card p-5" aria-labelledby="freshness-heading">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id="freshness-heading" className="flex items-center gap-2 font-semibold"><Clock3 className="size-4 text-muted-foreground" /> Stock freshness</h2>
+        {f && <span className="text-xs text-muted-foreground">{formatNumber(f.live_shops)} live shops · {formatNumber(f.verified_live_shops)} verified in {f.city} · {formatNumber(f.listings)} of their listings</span>}
+      </div>
+      {q.isError ? (
+        <p className="mt-3 text-sm text-muted-foreground">Freshness figures could not be loaded. <button type="button" className="underline" onClick={() => q.refetch()}>Retry</button></p>
+      ) : !f ? (
+        <div className="mt-4 h-24 animate-pulse rounded-xl bg-muted" />
+      ) : (
+        <div className="mt-4 grid gap-6 lg:grid-cols-3">
+          <div>
+            <p className="text-xs text-muted-foreground">{f.city} median listing age (verified live shops)</p>
+            <p className="mt-1 text-2xl font-semibold tabular">{age(f.city_median_age_hours)}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{share(f.city_fresh_share)} of listings confirmed within {f.fresh_hours} hours</p>
+            <p className={cn("mt-3 rounded-xl px-3 py-2 text-sm", f.meets_check_10_3 ? "bg-success-soft text-success-ink" : "bg-warning-soft text-warning-ink")}>
+              {f.meets_check_10_3
+                ? `Check 10.3 met: ${formatNumber(f.verified_live_shops)} verified live shops and a median within ${f.fresh_hours} hours`
+                : `Check 10.3 not met: median ${medianMet ? "within" : "above"} the ${f.fresh_hours}-hour target; ${formatNumber(f.verified_live_shops)} of ${formatNumber(f.target_shops)} verified live shops`}
+            </p>
+            <h3 className="mt-5 mb-2 text-sm font-medium">Shops beyond {f.stale_days} days</h3>
+            {f.stale_shops.length === 0 ? <p className="text-sm text-muted-foreground">None.</p> : (
+              <ul className="space-y-1.5">
+                {f.stale_shops.map((s) => (
+                  <li key={s.id} className="flex justify-between gap-3 text-sm">
+                    <Link href={`/shops/${s.slug}`} className="min-w-0 truncate hover:underline">{s.name}</Link>
+                    <span className="shrink-0 text-muted-foreground tabular">{age(s.median_age_hours)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="lg:col-span-2">
+            <h3 className="mb-2 text-sm font-medium">Per shop, stalest first</h3>
+            <div className="max-h-80 overflow-auto rounded-xl border">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-card text-xs text-muted-foreground">
+                  <tr className="border-b">
+                    <th scope="col" className="px-3 py-2 text-left font-medium">Shop</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium">Median age</th>
+                    <th scope="col" className="px-3 py-2 text-right font-medium">Within {f.fresh_hours} h</th>
+                    <th scope="col" className="hidden px-3 py-2 text-right font-medium sm:table-cell">Listings</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {f.shops.map((s) => (
+                    <tr key={s.id} className="border-b last:border-0">
+                      <td className="max-w-48 truncate px-3 py-1.5"><Link href={`/shops/${s.slug}`} className="hover:underline">{s.name}</Link></td>
+                      <td className={cn("px-3 py-1.5 text-right tabular", s.median_age_hours !== null && s.median_age_hours > f.stale_days * 24 && "text-warning-ink")}>{age(s.median_age_hours)}</td>
+                      <td className="px-3 py-1.5 text-right tabular">{share(s.fresh_share)}</td>
+                      <td className="hidden px-3 py-1.5 text-right tabular sm:table-cell">{formatNumber(s.listings)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function AdminOverviewPage() {
   const q = useQuery({ queryKey: ["admin", "overview"], queryFn: () => api.get<AdminOverview>("/admin/overview") });
   if (q.isError) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
@@ -156,6 +258,8 @@ export default function AdminOverviewPage() {
         <StatTile label="Searches, 30 days" value={formatNumber(t.searches_30d)} icon={Search} />
         <StatTile label="Prices to review" value={t.open_price_flags} icon={Scale} tone="warning" href="/admin/anomalies" />
       </div>
+
+      <FreshnessCard />
 
       <StorageCard />
 
@@ -229,10 +333,15 @@ export default function AdminOverviewPage() {
         </section>
         <section className="rounded-2xl border bg-card p-5">
           <h2 className="mb-1 font-semibold">Searches with no results</h2>
-          <p className="mb-3 text-xs text-muted-foreground">Recruit shops or categories that meet this demand.</p>
+          <p className="mb-3 text-xs text-muted-foreground">Recruit shops or categories that meet this demand, or add a synonym when the item is listed under another name.</p>
           <ul className="flex flex-wrap gap-2">
             {d.zero_result_searches.map((z) => (
-              <li key={z.query} className="rounded-full border px-3 py-1 text-sm capitalize">{z.query} <span className="text-muted-foreground tabular">· {z.count}</span></li>
+              <li key={z.query} className="flex items-center gap-1 rounded-full border py-1 pr-1 pl-3 text-sm">
+                <span className="capitalize">{z.query}</span> <span className="text-muted-foreground tabular">· {z.count}</span>
+                <Link href={`/admin/synonyms?term=${encodeURIComponent(z.query)}`} className="ml-1 inline-flex items-center gap-0.5 rounded-full bg-muted px-2 py-0.5 text-xs hover:bg-accent" aria-label={`Add synonym for ${z.query}`}>
+                  <Plus className="size-3" /> Add synonym
+                </Link>
+              </li>
             ))}
           </ul>
         </section>

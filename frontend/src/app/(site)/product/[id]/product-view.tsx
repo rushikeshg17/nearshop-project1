@@ -31,7 +31,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useMe } from "@/hooks/use-session";
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, recordLead } from "@/lib/api";
 import { formatDistance, formatNumber, formatPrice, travelTime, weekdayName } from "@/lib/format";
 import { plural } from "@/lib/i18n";
 import { useLocation } from "@/lib/location";
@@ -406,13 +406,18 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2">
               <Button asChild variant="outline" size="sm">
-                <a href={`https://www.openstreetmap.org/directions?to=${shop.lat}%2C${shop.lng}`} target="_blank" rel="noreferrer">
+                <a
+                  href={`https://www.openstreetmap.org/directions?to=${shop.lat}%2C${shop.lng}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={() => recordLead(shop.id, "directions_tap", p.id)}
+                >
                   <Navigation /> {t("discovery.product.directions")}
                 </a>
               </Button>
               {shop.phone && (
                 <Button asChild variant="outline" size="sm">
-                  <a href={`tel:${shop.phone}`}>
+                  <a href={`tel:${shop.phone}`} onClick={() => recordLead(shop.id, "call_tap", p.id)}>
                     <Phone /> {t("discovery.product.callShop")}
                   </a>
                 </Button>
