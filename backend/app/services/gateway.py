@@ -22,7 +22,11 @@ The flow
        * subscription.pending: a debit failed and the gateway will retry; the owner is told once per run of failures.
          While the gateway retries, the plan is held, not lapsed (plans.autopay_hold, NEARSHOP_AUTOPAY_GRACE_DAYS).
        * subscription.halted: the gateway's last retry failed. The mandate is halted, the plan lapses to Free at once
-         (plans.py: every free tool and the same place in search), and the owner is told how to restart.
+         (plans.py: every free tool and the same place in search), and the owner is told how to restart. The gateway
+         subscription is then cancelled (quietly: a failure is logged), so the halted mandate cannot be debited again
+         once the owner sets up a new one. A debit on a halted mandate is never applied: it goes to the unmatched
+         queue. A late authorisation event never brings a halted mandate back.
+       * a debit for a gateway subscription NearShop has no mandate for goes to the unmatched queue at once.
        * subscription.cancelled or subscription.completed: the mandate ended at the gateway (the owner cancelled it in
          their UPI app, or its debits ran out). The plan ends at the end of the paid month: it is no longer renewed
          and lapses at its end date.
@@ -32,7 +36,12 @@ The flow
   4. reconcile (the billing_reconciliation job, once per IST day) reads the gateway's settlement reports of the last
      NEARSHOP_AUTOPAY_RECONCILE_DAYS days and compares them with the payment rows: a settled payment with no payment
      row, a settled amount that differs, and a payment not settled NEARSHOP_AUTOPAY_SETTLEMENT_DAYS after it was paid
-     each become a credit in the unmatched queue (source autopay), once.
+     each become a credit in the unmatched queue, once. A settled payment with no payment row is money received
+     (source autopay: its webhook event, if it comes, applies it; an admin can match or return it). The other two are
+     information about money already recorded (source reconciliation): they can never be matched to a request or
+     returned, only closed by an admin with the gateway's reference (billing.close_credit).
+  5. Deleting an owner's account (app/services/privacy.py anonymise) first cancels every mandate of their shops at the
+     gateway (end_for_owner); the deletion waits while the gateway cannot be reached.
 
 Clients
 -------
@@ -136,7 +145,7 @@ class Mandate(Document, Timestamps):
     last_failure_at: datetime | None = None
     halted_at: datetime | None = None
     cancelled_at: datetime | None = None
-    cancelled_by: str | None = None  # owner (in NearShop) or gateway (the UPI app, or the debits ran out)
+    cancelled_by: str | None = None  # owner (in NearShop), gateway (the UPI app, or the debits ran out) or deletion
 
 
 class GatewayEvent(Document):
@@ -214,15 +223,32 @@ class RazorpayClient:
         if res.status_code >= 400:
             log.warning("gateway %s %s answered %s", method, path, res.status_code)
             raise GatewayError(f"The payment gateway refused the request ({res.status_code})")
-        return res.json()
+        try:
+            body = res.json()
+        except ValueError:
+            log.warning("gateway %s %s answered with a body that is not JSON", method, path)
+            raise GatewayError("The payment gateway sent an answer NearShop could not read") from None
+        if not isinstance(body, dict):
+            log.warning("gateway %s %s answered with a JSON %s", method, path, type(body).__name__)
+            raise GatewayError("The payment gateway sent an answer NearShop could not read")
+        return body
+
+    @staticmethod
+    def _field(body: dict[str, Any], name: str) -> str:
+        value = body.get(name)
+        if not value:
+            log.warning("gateway answer without %s", name)
+            raise GatewayError("The payment gateway sent an answer NearShop could not read")
+        return str(value)
 
     def create_subscription(self, *, amount_paise: int, name: str, total_count: int,
                             notes: dict[str, str]) -> GatewaySubscription:
         plan = self._call("POST", "/plans", json={"period": "monthly", "interval": 1, "notes": notes, "item": {
             "name": name, "amount": amount_paise, "currency": "INR"}})
-        sub = self._call("POST", "/subscriptions", json={"plan_id": plan["id"], "total_count": total_count,
+        plan_id = self._field(plan, "id")
+        sub = self._call("POST", "/subscriptions", json={"plan_id": plan_id, "total_count": total_count,
                                                          "quantity": 1, "customer_notify": 1, "notes": notes})
-        return GatewaySubscription(id=sub["id"], checkout_url=sub.get("short_url"), plan_id=plan["id"])
+        return GatewaySubscription(id=self._field(sub, "id"), checkout_url=sub.get("short_url"), plan_id=plan_id)
 
     def cancel_subscription(self, gateway_subscription_id: str) -> None:
         self._call("POST", f"/subscriptions/{gateway_subscription_id}/cancel", json={"cancel_at_cycle_end": 0})
@@ -234,14 +260,21 @@ class RazorpayClient:
             page = self._call("GET", "/settlements/recon/combined", params={
                 "year": day.year, "month": day.month, "day": day.day, "count": 1000, "skip": skip})
             items = page.get("items") or []
+            if not isinstance(items, list):
+                raise GatewayError("The payment gateway sent a settlement report NearShop could not read")
             for item in items:
-                if item.get("type") != "payment":
+                if not isinstance(item, dict) or item.get("type") != "payment":
                     continue
-                found.append(Settlement(
-                    payment_id=str(item.get("entity_id")), amount_paise=int(item.get("amount") or 0),
-                    fee_paise=int(item.get("fee") or 0), tax_paise=int(item.get("tax") or 0),
-                    settlement_id=str(item.get("settlement_id") or ""),
-                    settled_at=_from_unix(item.get("settled_at"), leads.ist_start(day))))
+                try:
+                    found.append(Settlement(
+                        payment_id=self._field(item, "entity_id"), amount_paise=int(item.get("amount") or 0),
+                        fee_paise=int(item.get("fee") or 0), tax_paise=int(item.get("tax") or 0),
+                        settlement_id=str(item.get("settlement_id") or ""),
+                        settled_at=_from_unix(item.get("settled_at"), leads.ist_start(day))))
+                except (TypeError, ValueError):
+                    log.warning("gateway settlement row with an amount that is not a number")
+                    raise GatewayError("The payment gateway sent a settlement report NearShop could not read") \
+                        from None
             if len(items) < 1000:
                 return found
             skip += len(items)
@@ -418,14 +451,18 @@ def _cancel_quietly(client: GatewayClient, gateway_subscription_id: str) -> None
                     gateway_subscription_id)
 
 
-def _end_mandate(db: Database, mandate_id: int, *, by: str, reason: str, now: datetime) -> str:
+def _end_mandate(db: Database, mandate_id: int, *, by: str, reason: str, now: datetime, quiet: bool = False) -> str:
     """Inside db's transaction: the mandate is cancelled, and its plan ends at the end of the paid month (no more
-    renewals; it lapses at its end date), with an autopay_cancelled event and a notice to the owner."""
+    renewals; it lapses at its end date), with an autopay_cancelled event and a notice to the owner (none when quiet,
+    or for a halted mandate, whose owner was already told)."""
     m = mandates(db).get(mandate_id)
     if m is None or m.status == MandateStatus.CANCELLED:
         return "unchanged"
+    was_halted = m.status == MandateStatus.HALTED
     mandates(db).set(m, status=MandateStatus.CANCELLED, cancelled_at=now, cancelled_by=by, checkout_url=None,
                      updated_at=now)
+    if was_halted:  # its plan already lapsed, or lapses at its end date, without renewals
+        return "cancelled"
     sub = plans.subscriptions(db).get(m.subscription_id) if m.subscription_id else None
     if sub is not None and sub.status == SubscriptionStatus.ACTIVE:
         plans._change(db, sub.id, "autopay_cancelled", SYSTEM if by != "owner" else Actor(type="owner", id=m.owner_id),
@@ -436,7 +473,8 @@ def _end_mandate(db: Database, mandate_id: int, *, by: str, reason: str, now: da
                 f"to keep the plan's extras.")
     else:
         body = "No more payments will be taken. Your shop keeps every stock tool and its place in search."
-    notify(db, m.owner_id, KIND_AUTOPAY, "UPI Autopay is cancelled", body, PLAN_LINK)
+    if not quiet:
+        notify(db, m.owner_id, KIND_AUTOPAY, "UPI Autopay is cancelled", body, PLAN_LINK)
     return "cancelled"
 
 
@@ -459,6 +497,29 @@ def cancel_mandate(db: Database, shop: Shop, *, actor: Actor, now: datetime | No
     return found
 
 
+def end_for_owner(db: Database, owner_id: int, *, now: datetime | None = None,
+                  client: GatewayClient | None = None) -> int:
+    """Before an owner's account is deleted (privacy.anonymise): every mandate of their shops that the gateway could
+    still debit (created, authorised or halted) is cancelled at the gateway, then here, without a notice. Raises
+    GatewayError, or AutopayNotConfigured, when one cannot be cancelled at the gateway, so the deletion waits rather
+    than leaving a mandate that keeps taking money from someone who has left. Returns how many were ended."""
+    now = now or utcnow()
+    found = mandates(db).find({"owner_id": owner_id, "status": {"$in": [
+        MandateStatus.CREATED.value, MandateStatus.AUTHORISED.value, MandateStatus.HALTED.value]}})
+    if not found:
+        return 0
+    client = client or get_client()
+    if client is None:
+        raise AutopayNotConfigured("UPI Autopay cannot be cancelled right now, so the account cannot be deleted yet; "
+                                   "try again later")
+    for m in found:
+        client.cancel_subscription(m.gateway_subscription_id)
+        db.transaction(lambda m=m: _end_mandate(db, m.id, by="deletion", reason="The owner deleted their account",
+                                                now=now, quiet=True))
+    log.info("ended %d Autopay mandate(s) of a deleted owner's shops", len(found))
+    return len(found)
+
+
 # ---------------------------------------------------------------- webhook events
 
 
@@ -470,8 +531,8 @@ def _entity(payload: dict[str, Any], name: str) -> dict[str, Any]:
 
 def _authorised(db: Database, mandate_id: int, now: datetime) -> str:
     m = mandates(db).get(mandate_id)
-    if m is None or m.status in (MandateStatus.AUTHORISED, MandateStatus.CANCELLED):
-        return "unchanged"
+    if m is None or m.status in (MandateStatus.AUTHORISED, MandateStatus.HALTED, MandateStatus.CANCELLED):
+        return "unchanged"  # a late authorisation never brings back a mandate the gateway stopped
     first = m.authorised_at is None
     mandates(db).set(m, status=MandateStatus.AUTHORISED, authorised_at=m.authorised_at or now, checkout_url=None,
                      updated_at=now)
@@ -488,19 +549,25 @@ def _charged(db: Database, mandate_id: int, payment: dict[str, Any], now: dateti
     m = mandates(db).get(mandate_id)
     if m is None:
         raise NotFound("Mandate not found")
+    if m.status == MandateStatus.HALTED:
+        # The gateway stopped this mandate (and NearShop cancelled it there); the shop may have a new one. The debit
+        # is not applied, and the mandate stays halted: an admin refunds it or grants the month by hand.
+        raise billing.BillingRefused(f"Mandate {m.id} was halted after its failed retries")
+    # Read before settle_autopay_debit, which moves the credit's date to the day the debit was paid.
+    known = billing.credits(db).get(credit_id) if credit_id else None
+    settled = SETTLED_UNRECORDED_ID.search(known.narration) if known is not None else None
+    settled_at = known.credited_at if known is not None and settled else None
     paid_at = _from_unix(payment.get("created_at"), now)
     pay = billing.settle_autopay_debit(
         db, shop_id=m.shop_id, billing_account_id=m.billing_account_id, plan_code=m.plan_code,
         subscription_id=m.subscription_id, amount_paise=m.amount_paise, total_paise=m.total_paise,
         received_paise=int(payment.get("amount") or 0), gst_mode=m.gst_mode, payment_reference=str(payment["id"]),
         paid_at=paid_at, mandate_id=m.id, now=now, credit_id=credit_id)
-    known = billing.credits(db).get(credit_id) if credit_id else None
-    settled = SETTLED_UNRECORDED_ID.search(known.narration) if known is not None else None
     if settled:  # the reconciliation already saw this payment settled
-        billing.payments(db).set(pay, settled_at=known.credited_at, settlement_id=settled.group(1))
+        billing.payments(db).set(pay, settled_at=settled_at, settlement_id=settled.group(1))
     fields: dict[str, Any] = {"subscription_id": pay.subscription_id, "debits": m.debits + 1, "failed_debits": 0,
                               "last_debit_at": now, "checkout_url": None, "updated_at": now}
-    if m.status in (MandateStatus.CREATED, MandateStatus.HALTED):  # a debit proves the mandate is in force
+    if m.status == MandateStatus.CREATED:  # a debit proves the mandate is in force
         fields.update(status=MandateStatus.AUTHORISED, authorised_at=m.authorised_at or now)
     mandates(db).set(m, **fields)
     return "paid"
@@ -567,6 +634,10 @@ def process_event(db: Database, event_id: str, payload: dict[str, Any], now: dat
         if events(db).exists({"event_id": event_id}):
             return "duplicate"
         if mandate is None:
+            if kind == CHARGED_EVENT and payment_id:
+                # Money was taken for a subscription NearShop does not know: queued at once (process_event's
+                # AppError branch), so it is not left to the reconciliation a few days later.
+                raise NotFound(f"No Autopay mandate for gateway subscription {gid}")
             outcome = "unknown_subscription"
         elif kind in AUTHORISED_EVENTS:
             outcome = _authorised(db, mandate.id, now)
@@ -606,8 +677,21 @@ def process_event(db: Database, event_id: str, payload: dict[str, Any], now: dat
         # The money was taken but cannot be applied: it goes to the unmatched queue, where admins look.
         outcome = _unapplied(db, exc, event_id=event_id, gid=gid, payment_id=payment_id, payment=payment,
                              record=record, mandate=mandate, now=now)
+    if outcome == "halted" and mandate is not None:
+        _cancel_halted(mandate.gateway_subscription_id)
     log.info("gateway event %s (%s): %s", event_id, kind, outcome)
     return {"event_id": event_id, "outcome": outcome}
+
+
+def _cancel_halted(gateway_subscription_id: str) -> None:
+    """After a halt: the gateway subscription is cancelled, so the halted mandate is not left registered in the owner's
+    UPI app. A failure is only logged (the event is already recorded); the runbook says to cancel it by hand."""
+    client = get_client()
+    if client is None:
+        log.warning("could not cancel halted gateway subscription %s: Autopay is not configured here",
+                    gateway_subscription_id)
+        return
+    _cancel_quietly(client, gateway_subscription_id)
 
 
 def _unapplied(db: Database, exc: AppError, *, event_id: str, gid: str | None, payment_id: str,
@@ -650,7 +734,8 @@ def reconcile(db: Database, now: datetime | None = None, client: GatewayClient |
             pay = billing.payments(db).find_one({"upi_reference": s.payment_id})
             if pay is None or pay.match != billing.CreditSource.AUTOPAY:
                 mismatches += _mismatch(db, s.payment_id, s.amount_paise, s.settled_at,
-                                        SETTLED_UNRECORDED.format(settlement_id=s.settlement_id), now)
+                                        SETTLED_UNRECORDED.format(settlement_id=s.settlement_id), now,
+                                        source=billing.CreditSource.AUTOPAY)  # money received: matchable
                 continue
             if s.amount_paise != pay.amount_paise:
                 mismatches += _mismatch(db, f"{s.payment_id}/amount", s.amount_paise, s.settled_at,
@@ -670,10 +755,13 @@ def reconcile(db: Database, now: datetime | None = None, client: GatewayClient |
     return {"settlements": seen, "settled": settled, "mismatches": mismatches}
 
 
-def _mismatch(db: Database, reference: str, amount_paise: int, at: datetime, what: str, now: datetime) -> int:
+def _mismatch(db: Database, reference: str, amount_paise: int, at: datetime, what: str, now: datetime,
+              source: billing.CreditSource = billing.CreditSource.RECONCILIATION) -> int:
+    """A mismatch in the unmatched queue, once per reference: money received (source autopay), or information about
+    money already recorded (source reconciliation: never matched, only closed)."""
     credit = billing.record_unmatched_autopay(db, reference=reference, amount_paise=amount_paise, at=at,
                                               narration=f"Gateway reconciliation: {what}",
-                                              note=f"Gateway reconciliation: {what}", now=now)
+                                              note=f"Gateway reconciliation: {what}", now=now, source=source)
     return 1 if credit is not None else 0
 
 

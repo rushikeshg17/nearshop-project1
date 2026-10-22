@@ -401,9 +401,10 @@ def test_the_reconciliation_finds_planted_mismatches(db, world):
     assert found["mismatches"] == 1  # the amount
     found = gateway.reconcile(db, third_at + timedelta(days=settings.autopay_settlement_days + 1))
     assert found["mismatches"] == 1  # never settled
-    queue = billing.credits(db).find({"status": "unmatched", "source": "autopay"}, sort=[("_id", 1)])
-    assert [c.upi_reference for c in queue] == ["pay_planted_unknown", f"{event[2]}/amount",
-                                                f"{unsettled[2]}/unsettled"]
+    queue = billing.credits(db).find({"status": "unmatched"}, sort=[("_id", 1)])
+    assert [(c.upi_reference, c.source) for c in queue] == [
+        ("pay_planted_unknown", "autopay"), (f"{event[2]}/amount", "reconciliation"),
+        (f"{unsettled[2]}/unsettled", "reconciliation")]
     assert all(c.note.startswith("Gateway reconciliation") for c in queue)
     # The event of a debit the reconciliation found first (a lost webhook, sent again): applied, and out of the queue.
     lost = gateway.FAKE.debit(m.gateway_subscription_id, at=sub_of(db, m).ends_at, settle_days=1)
@@ -415,6 +416,9 @@ def test_the_reconciliation_finds_planted_mismatches(db, world):
     credit = billing.credits(db).find_one({"upi_reference": lost[2]})
     applied = billing.payments(db).get(credit.payment_id)
     assert credit.status == "matched" and applied.upi_reference == lost[2] and applied.settlement_id
+    # settled_at is the day the gateway settled it (the day after it was paid), not the day it was paid.
+    assert applied.settled_at == billing.leads.ist_start(lost_day + timedelta(days=1))
+    assert applied.paid_at < applied.settled_at
     assert gateway.reconcile(db, sub_of(db, m).ends_at + timedelta(days=30))["mismatches"] == 0  # not "unsettled"
     # Each mismatch is reported once, however often the job runs.
     assert gateway.reconcile(db, ist(2027, 8, 12, 9))["mismatches"] == 0
@@ -475,3 +479,195 @@ def test_ten_mandates_with_three_debits_each_reconcile_with_no_mismatch(db, worl
     settled = [s for day in gateway.FAKE.settled.values() for s in day]
     assert {s.fee_paise + s.tax_paise for s in settled} == {298 + 54}
     assert date(2027, 8, 10) in gateway.FAKE.settled
+
+
+# ---------------------------------------------------------------- review fixes
+
+
+def test_reconciliation_mismatches_can_only_be_closed(db, world):
+    """A mismatch about money already recorded can never become a second payment, nor be "returned"."""
+    shop = world.shop(1)
+    m = authorised_with_first_debit(db, shop)
+    assert gateway.reconcile(db, START + timedelta(days=1))["mismatches"] == 0  # the first debit settles cleanly
+    at = sub_of(db, m).ends_at
+    event = gateway.FAKE.debit(m.gateway_subscription_id, at=at, settle=False)
+    assert deliver(db, event, at + timedelta(minutes=5)) == "paid"
+    gateway.FAKE.settle(event[2], MONTHLY - 100, billing.leads.ist_day(at) + timedelta(days=1))
+    assert gateway.reconcile(db, at + timedelta(days=2))["mismatches"] == 1
+    credit = billing.credits(db).find_one({"upi_reference": f"{event[2]}/amount"})
+    assert credit.source == "reconciliation" and credit.status == "unmatched"
+
+    # Matching it by hand is refused before any request is looked at, so no second payment or document is made.
+    admin = Actor(type="admin", id=0)
+    with pytest.raises(AppError, match="reconciliation mismatch"):
+        billing.match_by_hand(db, upi_reference=credit.upi_reference, request_number="NSP000001",
+                              reason="Matching a reconciliation mismatch", actor=admin, now=at + timedelta(days=3))
+    with pytest.raises(AppError, match="close it instead"):
+        billing.return_credit(db, credit.id, reason="Returning a mismatch", bank_reference="UTR0001", actor=admin)
+    assert billing.payments(db).count() == 2 and billing.documents(db).count() == 2
+
+    # Money received (source autopay) cannot be closed instead of matched or returned.
+    gateway.FAKE.settle("pay_unknown_money", MONTHLY, billing.leads.ist_day(at) + timedelta(days=1))
+    gateway.reconcile(db, at + timedelta(days=2, hours=1))
+    money = billing.credits(db).find_one({"upi_reference": "pay_unknown_money"})
+    assert money.source == "autopay"
+    with pytest.raises(AppError, match="money received"):
+        billing.close_credit(db, money.id, reason="Closing money received", reference="setl_x", actor=admin)
+
+    closed = billing.close_credit(db, credit.id, reason="Gateway confirmed the settled amount", reference="setl_ticket1",
+                                  actor=admin, now=at + timedelta(days=4))
+    assert closed.status == "closed" and closed.closed.reference == "setl_ticket1" and closed.returned is None
+    assert billing.credit_out(closed)["closed"]["reason"] == "Gateway confirmed the settled amount"
+    with pytest.raises(AppError, match="closed"):
+        billing.close_credit(db, credit.id, reason="Closing it a second time", reference="setl_x", actor=admin)
+
+
+def test_a_halt_cancels_the_gateway_subscription_and_a_later_debit_is_queued(db, world):
+    shop = world.shop(1)
+    m = authorised_with_first_debit(db, shop)
+    gid = m.gateway_subscription_id
+    end = sub_of(db, m).ends_at
+    halted_at = end + timedelta(days=2)
+    assert deliver(db, gateway.FAKE.event_body("subscription.halted", gid), halted_at) == "halted"
+    assert gateway.FAKE.subscriptions[gid]["status"] == "cancelled"  # no longer registered in the UPI app
+
+    # A late authorisation event does not bring the halted mandate (and its plan hold) back.
+    assert deliver(db, gateway.FAKE.event_body("subscription.activated", gid), halted_at + timedelta(minutes=1)) == \
+        "unchanged"
+    assert mandate_of(db, m).status == "halted"
+
+    # The owner sets up Autopay again; then a debit on the old, halted subscription arrives.
+    again = gateway.create_mandate(db, shop, actor=OWNER, now=halted_at + timedelta(hours=1))
+    assert deliver(db, gateway.FAKE.event_body("subscription.authenticated", again.gateway_subscription_id),
+                   halted_at + timedelta(hours=2)) == "authorised"
+    late = gateway.FAKE.debit(gid, at=halted_at + timedelta(hours=3), amount_paise=MONTHLY)
+    assert deliver(db, late, halted_at + timedelta(hours=3)) == "unmatched"  # no DuplicateKeyError, no 500 loop
+    assert deliver(db, late, halted_at + timedelta(hours=4)) == "duplicate"
+    credit = billing.credits(db).find_one({"upi_reference": late[2]})
+    assert credit.source == "autopay" and "halted" in credit.note
+    assert mandate_of(db, m).status == "halted" and mandate_of(db, again).status == "authorised"
+    assert billing.payments(db).count() == 1
+    # A late authorisation for the old one still changes nothing while the new one is live.
+    assert deliver(db, gateway.FAKE.event_body("subscription.authenticated", gid), halted_at + timedelta(hours=5)) == \
+        "unchanged"
+
+    # The gateway's cancellation event that follows the halt ends the mandate without another notice.
+    told = len(notices(db, shop))
+    assert deliver(db, gateway.FAKE.event_body("subscription.cancelled", gid), halted_at + timedelta(hours=6)) == \
+        "cancelled"
+    assert mandate_of(db, m).status == "cancelled" and len(notices(db, shop)) == told
+
+
+def test_a_halt_whose_gateway_cancel_fails_is_still_recorded(db, world):
+    shop = world.shop(1)
+    m = authorised_with_first_debit(db, shop)
+    gateway.FAKE.failures = 1
+    halted_at = sub_of(db, m).ends_at + timedelta(days=2)
+    assert deliver(db, gateway.FAKE.event_body("subscription.halted", m.gateway_subscription_id), halted_at) == \
+        "halted"
+    assert mandate_of(db, m).status == "halted"
+    assert gateway.FAKE.subscriptions[m.gateway_subscription_id]["status"] != "cancelled"
+
+
+def test_a_debit_for_an_unknown_subscription_is_queued_at_once(db, world):
+    at = START + timedelta(days=1)
+    event = gateway.FAKE.debit("sub_unknown_to_nearshop", at=at, amount_paise=MONTHLY, settle=False)
+    assert deliver(db, event, at) == "unmatched"
+    credit = billing.credits(db).find_one({"upi_reference": event[2]})
+    assert credit.status == "unmatched" and credit.source == "autopay"
+    assert "No Autopay mandate" in credit.note and credit.amount_paise == MONTHLY
+    assert gateway.events(db).find_one({"event_id": event[0]}).outcome == "unmatched"
+    # The reconciliation that later sees it settled adds nothing more.
+    gateway.FAKE.settle(event[2], MONTHLY, billing.leads.ist_day(at) + timedelta(days=1))
+    assert gateway.reconcile(db, at + timedelta(days=2))["mismatches"] == 0
+    assert billing.credits(db).count({"status": "unmatched"}) == 1
+
+
+def test_deleting_an_owner_cancels_their_mandates_first(db, world, monkeypatch):
+    from app.services import privacy
+
+    shop, waiting = world.shop(1), world.shop(2)
+    m = authorised_with_first_debit(db, shop)
+    pending = gateway.create_mandate(db, waiting, actor=OWNER, now=START)
+    owner = db.users.get(shop.owner_id)
+
+    # The gateway cannot be reached: nothing is deleted, and the mandate stays.
+    gateway.FAKE.failures = 1
+    with pytest.raises(gateway.GatewayError):
+        privacy.request_deletion(db, owner, cancel_open=False, now=START + timedelta(days=3))
+    assert db.users.get(owner.id).deleted_at is None and mandate_of(db, m).status == "authorised"
+    # Autopay switched off with a mandate still registered: the deletion waits too.
+    monkeypatch.setattr(settings, "autopay_enabled", False)
+    with pytest.raises(gateway.AutopayNotConfigured):
+        privacy.request_deletion(db, owner, cancel_open=False, now=START + timedelta(days=3))
+    monkeypatch.setattr(settings, "autopay_enabled", True)
+
+    assert privacy.request_deletion(db, owner, cancel_open=False, now=START + timedelta(days=3)) == \
+        {"status": "deleted"}
+    assert gateway.FAKE.subscriptions[m.gateway_subscription_id]["status"] == "cancelled"
+    ended = mandate_of(db, m)
+    assert ended.status == "cancelled" and ended.cancelled_by == "deletion"
+    assert db.users.get(owner.id).deleted_at is not None
+    # Another owner's mandate is untouched; an owner without one is deleted without the gateway.
+    assert mandate_of(db, pending).status == "created"
+    gateway.FAKE.failures = 5
+    plain = world.shop(3)
+    assert privacy.request_deletion(db, db.users.get(plain.owner_id), cancel_open=False) == {"status": "deleted"}
+    gateway.FAKE.failures = 0
+
+
+def test_a_scheduled_deletion_waits_while_the_gateway_cannot_cancel(db, world):
+    from app.services import privacy
+
+    shop = world.shop(1)
+    m = authorised_with_first_debit(db, shop)
+    now = START + timedelta(days=3)
+    db.users.update_one({"_id": shop.owner_id}, {"$set": {"deletion_requested_at": now, "deletion_due_at": now}})
+    gateway.FAKE.failures = 1
+    assert privacy.process_scheduled_deletions(db, now)["deleted"] == 0
+    assert db.users.get(shop.owner_id).deleted_at is None and mandate_of(db, m).status == "authorised"
+    assert privacy.process_scheduled_deletions(db, now + timedelta(minutes=1))["deleted"] == 1
+    assert mandate_of(db, m).status == "cancelled"
+
+
+class _Res:
+    def __init__(self, status: int, body: bytes):
+        self.status_code, self._body = status, body
+
+    def json(self):
+        return json.loads(self._body)
+
+
+@pytest.mark.parametrize("body", [b"<html>bad gateway</html>", b"[]", b'{"entity": "plan"}'])
+def test_unreadable_gateway_answers_become_gateway_errors(monkeypatch, body):
+    monkeypatch.setattr(gateway.httpx, "request", lambda *a, **kw: _Res(200, body))
+    client = gateway.RazorpayClient(Settings(_env_file=None, environment="test", autopay_key_id="rzp_test_x",
+                                             autopay_key_secret="not-a-real-secret"))
+    with pytest.raises(gateway.GatewayError):
+        client.create_subscription(amount_paise=MONTHLY, name="NearShop Growth monthly", total_count=60, notes={})
+    if body.startswith(b"{"):
+        return
+    with pytest.raises(gateway.GatewayError):
+        client.settlements(date(2027, 8, 10))
+
+
+def test_a_settlement_row_that_cannot_be_read_is_a_gateway_error(monkeypatch):
+    page = json.dumps({"items": [{"type": "payment", "entity_id": "pay_x", "amount": "not a number"}]}).encode()
+    monkeypatch.setattr(gateway.httpx, "request", lambda *a, **kw: _Res(200, page))
+    client = gateway.RazorpayClient(Settings(_env_file=None, environment="test", autopay_key_id="rzp_test_x",
+                                             autopay_key_secret="not-a-real-secret"))
+    with pytest.raises(gateway.GatewayError):
+        client.settlements(date(2027, 8, 10))
+
+
+def test_the_daily_job_still_alerts_after_an_unexpected_reconciliation_error(db, monkeypatch):
+    seen: list[str] = []
+
+    def broken(_db, now):
+        raise KeyError("id")
+
+    monkeypatch.setattr(gateway, "reconcile", broken)
+    monkeypatch.setattr(billing, "alert_unmatched", lambda _db, now: seen.append("alert") or {"alerted": 0})
+    db.mongo[jobs.LEASES].delete_many({"_id": jobs.BILLING_JOB})
+    result = jobs.billing_reconciliation(lambda: ist(2027, 9, 4, 9))
+    assert seen == ["alert"] and result["autopay"] == {"error": "unexpected"}

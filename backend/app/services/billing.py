@@ -29,7 +29,8 @@ A statement credit is matched by the request number in its narration and its amo
 total. Anything else (no number, an unknown, paid or cancelled request, another amount, a price or GST position that
 changed since the request) stays in the unmatched queue with the reason; a credit whose UPI reference was already
 seen is reported as a duplicate and not recorded again. An admin can match a credit by hand, by its UPI reference,
-with a reason, or return it to the payer by bank transfer. The payment, its subscription change (plans.py:
+with a reason, or return it to the payer by bank transfer. A reconciliation mismatch (source reconciliation, P9.6) is
+not money to match: it can only be closed, with the reason and the gateway's reference. The payment, its subscription change (plans.py:
 create_subscription, or renew for a renewal) and its document are written in one transaction: if any of them fails,
 none is written and the credit stays unmatched.
 
@@ -215,13 +216,18 @@ class CreditStatus(StrEnum):
     UNMATCHED = "unmatched"
     MATCHED = "matched"
     RETURNED = "returned"
+    CLOSED = "closed"  # a reconciliation mismatch checked and closed by an admin (P9.6); never matched
 
 
 class CreditSource(StrEnum):
     STATEMENT = "statement"
     MANUAL = "manual"
     PILOT_LEDGER = "pilot_ledger"
-    AUTOPAY = "autopay"  # a UPI Autopay debit through the gateway (P9.6), or a reconciliation mismatch
+    AUTOPAY = "autopay"  # a UPI Autopay debit through the gateway (P9.6), applied or not
+    # A mismatch the gateway reconciliation found about money already recorded or never received (P9.6): a settled
+    # amount that differs, or a payment missing from every settlement report. It is information for an admin, not
+    # money: it can never be matched to a request or returned, only closed (close_credit).
+    RECONCILIATION = "reconciliation"
 
 
 class CreditReturn(Embedded):
@@ -229,6 +235,13 @@ class CreditReturn(Embedded):
     by: Actor
     reason: str
     bank_reference: str
+
+
+class CreditClosure(Embedded):
+    at: datetime
+    by: Actor
+    reason: str
+    reference: str  # the gateway's reference: a settlement id, a support ticket or a refund id
 
 
 class BankCredit(Document):
@@ -244,6 +257,7 @@ class BankCredit(Document):
     payment_id: int | None = None
     alerted_at: datetime | None = None
     returned: CreditReturn | None = None
+    closed: CreditClosure | None = None
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -657,6 +671,8 @@ def _settle(db: Database, credit: BankCredit, req: PaymentRequest, *, actor: Act
             now: datetime) -> Payment:
     """Inside db's transaction: the payment, its subscription change and its document for a credit and a request.
     Raises AppError (the whole transaction is rolled back) when they do not fit."""
+    if credit.source == CreditSource.RECONCILIATION:
+        raise BillingRefused(f"Credit {credit.upi_reference} is a gateway reconciliation mismatch, not money received")
     if req.status != RequestStatus.OPEN:
         raise BillingRefused(f"Request {req.number} is {req.status.value}")
     if credit.amount_paise != req.total_paise:
@@ -727,6 +743,9 @@ def _match(db: Database, credit_id: int, request_number: str, *, actor: Actor, h
             raise NotFound("Credit not found")
         if credit.status != CreditStatus.UNMATCHED:
             raise BillingRefused(f"Credit {credit.upi_reference} is already {credit.status.value}")
+        if credit.source == CreditSource.RECONCILIATION:
+            raise BillingRefused(f"Credit {credit.upi_reference} is a gateway reconciliation mismatch, not money "
+                                 f"received: close it instead (docs/runbooks/billing.md)")
         req = requests(db).find_one({"number": request_number})
         if req is None:
             raise BillingRefused(f"There is no payment request {request_number}")
@@ -784,8 +803,31 @@ def return_credit(db: Database, credit_id: int, *, reason: str, bank_reference: 
             raise NotFound("Credit not found")
         if credit.status != CreditStatus.UNMATCHED:
             raise BillingRefused(f"Credit {credit.upi_reference} is {credit.status.value}")
+        if credit.source == CreditSource.RECONCILIATION:
+            raise BillingRefused(f"Credit {credit.upi_reference} is a gateway reconciliation mismatch, not money "
+                                 f"received: close it instead (docs/runbooks/billing.md)")
         return credits(db).set(credit, status=CreditStatus.RETURNED, returned=CreditReturn(
             at=now, by=actor, reason=reason, bank_reference=bank_reference))
+
+    return db.transaction(write)
+
+
+def close_credit(db: Database, credit_id: int, *, reason: str, reference: str, actor: Actor,
+                 now: datetime | None = None) -> BankCredit:
+    """A gateway reconciliation mismatch (source reconciliation) checked and closed by an admin, with the reason and
+    the gateway's reference: it leaves the unmatched queue. No payment, document or return is recorded."""
+    now = now or utcnow()
+
+    def write() -> BankCredit:
+        credit = credits(db).get(credit_id)
+        if credit is None:
+            raise NotFound("Credit not found")
+        if credit.status != CreditStatus.UNMATCHED:
+            raise BillingRefused(f"Credit {credit.upi_reference} is {credit.status.value}")
+        if credit.source != CreditSource.RECONCILIATION:
+            raise BillingRefused(f"Credit {credit.upi_reference} is money received: match it or return it")
+        return credits(db).set(credit, status=CreditStatus.CLOSED, closed=CreditClosure(
+            at=now, by=actor, reason=reason, reference=reference))
 
     return db.transaction(write)
 
@@ -1143,14 +1185,16 @@ def prepare_autopay(db: Database, now: datetime) -> None:
 
 
 def record_unmatched_autopay(db: Database, *, reference: str, amount_paise: int, at: datetime, narration: str,
-                             note: str, now: datetime) -> BankCredit | None:
-    """Put a gateway debit that could not be applied, or a reconciliation mismatch, in the unmatched queue (in db's
-    transaction, if any), once per reference: None when that reference is already recorded."""
+                             note: str, now: datetime, source: CreditSource = CreditSource.AUTOPAY
+                             ) -> BankCredit | None:
+    """Put a gateway debit that could not be applied (source autopay: money received), or a reconciliation mismatch
+    (source reconciliation: information, never matched), in the unmatched queue (in db's transaction, if any), once
+    per reference: None when that reference is already recorded."""
     if credits(db).exists({"upi_reference": reference}):
         return None
     return credits(db).insert(BankCredit(
         id=db.next_id(CREDITS), upi_reference=reference[:64], credited_at=leads.ist_start(leads.ist_day(at)),
-        amount_paise=max(1, amount_paise), narration=narration[:500], source=CreditSource.AUTOPAY, note=note[:300],
+        amount_paise=max(1, amount_paise), narration=narration[:500], source=source, note=note[:300],
         created_at=now))
 
 
@@ -1178,7 +1222,8 @@ def alert_unmatched(db: Database, now: datetime | None = None) -> dict[str, int]
             for admin_id in admins:
                 notify(db, admin_id, KIND_UNMATCHED, f"Bank credit {row.upi_reference} is still unmatched",
                        f"₹{rupees(row.amount_paise)} credited on {_day(row.credited_at)}: {row.note or 'not matched'}."
-                       f" Match it by hand or return it (docs/runbooks/billing.md).",
+                       f" {'Close it' if row.source == CreditSource.RECONCILIATION else 'Match it by hand or return it'}"
+                       f" (docs/runbooks/billing.md).",
                        "/admin/billing/credits?status=unmatched")
             credits(db).set(row, alerted_at=now)
             return True
@@ -1207,7 +1252,8 @@ def credit_out(c: BankCredit) -> dict[str, Any]:
             "amount_paise": c.amount_paise, "narration": c.narration, "source": c.source.value,
             "statement_id": c.statement_id, "request_number": c.request_number, "status": c.status.value,
             "note": c.note, "payment_id": c.payment_id, "alerted_at": _iso(c.alerted_at),
-            "returned": c.returned.model_dump(mode="json") if c.returned else None, "created_at": _iso(c.created_at)}
+            "returned": c.returned.model_dump(mode="json") if c.returned else None,
+            "closed": c.closed.model_dump(mode="json") if c.closed else None, "created_at": _iso(c.created_at)}
 
 
 def payment_out(p: Payment) -> dict[str, Any]:

@@ -14,8 +14,9 @@
       - orders past that point (PREPARING, OUT_FOR_DELIVERY, DELIVERY_FAILED): the deletion is scheduled; the
         process_deletions job runs it once they close, and flags it for an admin if they are still open
         DELETION_GRACE (7 days) later;
-      - owners: the same rules for their shop's open work, then the shop is hidden, its listings
-        deactivated and the owner anonymised;
+      - owners: the same rules for their shop's open work, then every UPI Autopay mandate of their shops is
+        cancelled at the payment gateway (P9.6; the deletion waits while the gateway cannot be reached), the
+        shop is hidden, its listings deactivated and the owner anonymised;
       - admins: refused; an admin is removed with the operator CLI.
   * Retention: run_retention (the nightly retention job, app/jobs.py) removes user_id from searches older
     than 30 days and clears the contact phone and address of orders closed more than 180 days ago, unless
@@ -31,7 +32,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.database import Database, utcnow
-from app.core.errors import Conflict, Forbidden
+from app.core.errors import AppError, Conflict, Forbidden
 from app.models import Order, OrderStatus, Reservation, ReservationStatus, Role, User
 from app.schemas.requests import OPTIONAL_PURPOSES, REQUIRED_PURPOSES
 from app.schemas.serializers import iso
@@ -327,8 +328,16 @@ def anonymise(db: Database, user_id: int, now: datetime | None = None) -> None:
     "Deleted user" with no email, phone, password, home, nominee or sessions; optional consents are
     withdrawn by new rows; notifications and search history are deleted; reviews keep their rating and lose
     their comment; review reports the user filed keep their reason and lose their note; reservations and orders stay for the shop without phone, address or note; sales lose the
-    customer id. An owner's shops are hidden and their listings deactivated first."""
+    customer id. An owner's shops are hidden and their listings deactivated first. Before anything changes, every UPI
+    Autopay mandate of an owner's shops is cancelled at the payment gateway (P9.6, gateway.end_for_owner), so no more
+    money is taken from someone who has left; while the gateway cannot be reached this raises (GatewayError or
+    AutopayNotConfigured) and nothing is deleted."""
     now = now or utcnow()
+    found = db.users.get(user_id)
+    if found is not None and found.deleted_at is None and found.role == Role.OWNER:
+        from app.services import gateway  # imported here: gateway imports billing and plans
+
+        gateway.end_for_owner(db, user_id, now=now)
 
     def run() -> None:
         user = db.users.get(user_id)
@@ -389,9 +398,13 @@ def process_scheduled_deletions(db: Database, now: datetime | None = None) -> di
             reason = "The shop has closed" if user.role == Role.OWNER else "The customer deleted their account"
             _cancel_open(db, user, reservations, cancellable, reason)
             if not any(_open_work(db, user)):
-                anonymise(db, user.id, now)
-                deleted += 1
-                continue
+                try:
+                    anonymise(db, user.id, now)
+                except AppError as exc:  # an Autopay mandate the gateway could not cancel yet: retried next tick
+                    log.warning("deletion of user %s waits: %s", user.id, exc.message)
+                else:
+                    deleted += 1
+                    continue
         if doc["deletion_due_at"] <= now and not doc.get("deletion_flagged_at"):
             db.users.update_one({"_id": user.id}, {"$set": {"deletion_flagged_at": now}})
             for admin in db.users.find_raw({"role": Role.ADMIN.value, "is_active": True}, {"_id": 1}):

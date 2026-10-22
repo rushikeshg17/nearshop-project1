@@ -502,7 +502,8 @@ VALIDATORS: dict[str, dict] = {
         amount_paise={"bsonType": INT, "minimum": 1}, narration={"bsonType": STR, "maxLength": 600},
         source=enum(billing.CreditSource), statement_id=INT_N, request_number=STR_N,
         status=enum(billing.CreditStatus), note={"bsonType": STR_N, "maxLength": 300}, payment_id=INT_N,
-        alerted_at=DATE_N, returned={"bsonType": ["object", "null"]}, created_at=DATE,
+        alerted_at=DATE_N, returned={"bsonType": ["object", "null"]}, closed={"bsonType": ["object", "null"]},
+        created_at=DATE,
     ),
     # A matched payment, with its request, credit, subscription and document, and its refund.
     "billing_payments": schema(
@@ -551,7 +552,7 @@ VALIDATORS: dict[str, dict] = {
         amount_paise={"bsonType": INT, "minimum": 1}, gst_mode=GST_MODE, total_paise={"bsonType": INT, "minimum": 1},
         status=enum(gateway.MandateStatus), subscription_id=INT_N, debits=COUNT, failed_debits=COUNT,
         created_by=ACTOR, authorised_at=DATE_N, last_debit_at=DATE_N, last_failure_at=DATE_N, halted_at=DATE_N,
-        cancelled_at=DATE_N, cancelled_by={"enum": [None, "owner", "admin", "system", "gateway"]},
+        cancelled_at=DATE_N, cancelled_by={"enum": [None, "owner", "admin", "system", "gateway", "deletion"]},
         created_at=DATE, updated_at=DATE,
     ),
     # Each gateway webhook event processed, once (P9.6).

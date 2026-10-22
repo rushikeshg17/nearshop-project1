@@ -467,6 +467,9 @@ def billing_reconciliation(clock: Clock = utcnow) -> dict[str, Any]:
     except AppError as exc:
         log.warning("Autopay reconciliation failed: %s", exc.message)
         autopay = {"error": exc.code}
+    except Exception as exc:  # noqa: BLE001 - the unmatched-credit alert below must still run today
+        log.exception("Autopay reconciliation failed unexpectedly: %s", type(exc).__name__)
+        autopay = {"error": "unexpected"}
     return {"ran_for": today, **billing.alert_unmatched(db, now), "autopay": autopay}
 
 

@@ -610,7 +610,8 @@ def upload_statement(admin: AdminUser, db: DB, file: UploadFile = File(...)):
 
 
 @router.get("/billing/credits")
-def bank_credits(_: AdminUser, db: DB, status: Literal["unmatched", "matched", "returned"] | None = "unmatched",
+def bank_credits(_: AdminUser, db: DB,
+                 status: Literal["unmatched", "matched", "returned", "closed"] | None = "unmatched",
                  limit: int = Query(200, ge=1, le=500)):
     """The credits, by default the unmatched queue, oldest first."""
     query = {"status": status} if status else {}
@@ -632,6 +633,15 @@ def return_credit(credit_id: int, body: CreditReturnIn, admin: AdminUser, db: DB
     """An unmatched credit sent back to the payer by bank transfer."""
     credit = billing.return_credit(db, credit_id, reason=body.reason, bank_reference=body.bank_reference,
                                    actor=_admin(admin))
+    return billing.credit_out(credit)
+
+
+@router.post("/billing/credits/{credit_id}/close")
+def close_credit(credit_id: int, body: CreditReturnIn, admin: AdminUser, db: DB):
+    """A gateway reconciliation mismatch (source reconciliation, P9.6) checked and closed, with the reason and the
+    gateway's reference (a settlement id, support ticket or refund id) in bank_reference. Never money received."""
+    credit = billing.close_credit(db, credit_id, reason=body.reason, reference=body.bank_reference,
+                                  actor=_admin(admin))
     return billing.credit_out(credit)
 
 

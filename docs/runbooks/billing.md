@@ -53,15 +53,20 @@ a shop.
 
 | Gateway event | What NearShop does |
 |---|---|
-| subscription.authenticated, subscription.activated | The mandate is authorised; the owner is told. |
-| subscription.charged | The debit becomes a payment, the next month of the subscription (the first month on the first debit) and a receipt or tax invoice, in one transaction, through the same code as a bank payment. The receipt says "by UPI Autopay". |
+| subscription.authenticated, subscription.activated | The mandate is authorised; the owner is told. A late one for a halted or cancelled mandate changes nothing. |
+| subscription.charged | A debit on a halted mandate, or for a gateway subscription NearShop has no mandate for, is not applied: it goes to the unmatched queue at once ("Autopay debit not applied"). Otherwise the debit becomes a payment, the next month of the subscription (the first month on the first debit) and a receipt or tax invoice, in one transaction, through the same code as a bank payment. The receipt says "by UPI Autopay". |
 | subscription.pending | A debit failed and the gateway will retry. The owner is told once. The plan is held, with its extras, for NEARSHOP_AUTOPAY_GRACE_DAYS (3) after its end date while the gateway retries; a debit in that time continues the plan without a break. |
-| subscription.halted | The gateway's last retry failed. The mandate is halted, the plan lapses to Free at once (the shop keeps every stock tool and its place in search), and the owner is told how to restart: set up Autopay again, or pay for a year. |
+| subscription.halted | The gateway's last retry failed. The mandate is halted, the plan lapses to Free at once (the shop keeps every stock tool and its place in search), and the owner is told how to restart: set up Autopay again, or pay for a year. NearShop then cancels the gateway subscription, so the halted mandate does not stay registered in the owner's UPI app; if that call fails (a warning "could not cancel gateway subscription … cancel it in the gateway's dashboard" in the logs), cancel it by hand in the gateway's dashboard. |
 | subscription.cancelled, subscription.completed | The owner cancelled the mandate in their UPI app, or its debits ran out (NEARSHOP_AUTOPAY_TOTAL_COUNT, 60). The plan ends at the end of the paid month. |
 
 3. The owner can also cancel in NearShop (Owner > Plan, or POST /api/owner/billing/autopay/cancel): the gateway
    subscription is cancelled first, then the mandate; the plan runs to the end of the paid month, then lapses to Free.
 4. No "your plan ends" reminders go out under an authorised mandate: the gateway sends the pre-debit notice.
+5. Deleting an owner's account first cancels every mandate of their shops (created, authorised or halted) at the
+   gateway, then in NearShop, with no notice. While the gateway cannot be reached, or Autopay is switched off with
+   mandates still registered, the deletion waits: the owner's request answers 502 or 503, and a scheduled deletion
+   is retried on the next process_deletions tick (warning "deletion of user N waits"). If a deletion keeps waiting,
+   cancel the subscription in the gateway's dashboard, then mark the mandate cancelled with the operator's help.
 
 ### Fee per debit
 
@@ -92,15 +97,27 @@ the gateway before switching on, and record them here:
 
 The billing_reconciliation job runs once per IST day. It reads the gateway's settlement reports for the last
 NEARSHOP_AUTOPAY_RECONCILE_DAYS (3) days and compares them with the Autopay payment rows. Every mismatch becomes a
-credit in the unmatched queue (Admin > Billing > Credits, source autopay), once, with its reason; the 3-working-day
-alert then applies as for any credit. Target: 0 mismatches.
+credit in the unmatched queue (Admin > Billing > Credits), once, with its reason; the 3-working-day alert then
+applies as for any credit. Target: 0 mismatches.
+
+Two kinds of credit come from Autopay:
+
+- source autopay: money the gateway took and settled to NearShop (a debit not applied, or a settled payment with no
+  payment row). It can be matched by hand or returned like any credit.
+- source reconciliation: information about money already recorded or never received (a settled amount that differs,
+  or a payment missing from every settlement report; its reference ends in /amount or /unsettled). It is not money:
+  it can never be matched to a request or returned. Close it once checked:
+  POST /api/admin/billing/credits/{id}/close with a reason and the gateway's reference (settlement id, support ticket
+  or refund id) in bank_reference. Closed credits are listed with ?status=closed.
 
 | Reason in the queue | What to do |
 |---|---|
 | Autopay debit not applied: … (the price or GST position changed since the mandate was set up, or the shop's plan was cancelled or refunded) | The money was taken. Look up the payment in the gateway's dashboard. Refund it through the gateway's dashboard and ask the owner to set up Autopay again at the current price, or grant the month by hand (Admin > Subscriptions) with a reason. Then return the credit (POST /api/admin/billing/credits/{id}/return) with the gateway refund's id as the reference. |
-| Gateway reconciliation: settled by the gateway, but no Autopay payment is recorded | A webhook event was lost or refused. Check the webhook's delivery log in the gateway's dashboard and resend the event: it is then applied once. If it cannot be resent, handle as above. Close the credit by returning it with the gateway payment id and the reason. |
-| Gateway reconciliation: settled ₹X, but payment N recorded ₹Y | Compare the gateway's settlement with the payment. Raise the difference with the gateway; return the credit with their reference when settled. |
-| Gateway reconciliation: payment N is in no gateway settlement report 5 days after it was paid | Look up the payment and its settlement in the gateway's dashboard. A late settlement: return the credit with the settlement id. A payment the gateway reversed: refund the NearShop payment (POST /api/admin/billing/payments/{id}/refund) and return the credit. |
+| Autopay debit not applied: Mandate N was halted after its failed retries | A debit after the gateway halted the mandate (NearShop cancels it at the gateway on halt, so this should not happen). Refund it through the gateway's dashboard, or, if the owner wants the month, grant it by hand; then return the credit with the gateway refund's id. Check that the halted subscription is cancelled in the gateway's dashboard. |
+| Autopay debit not applied: No Autopay mandate for gateway subscription sub_… | The gateway debited a subscription NearShop does not know (made by hand in the dashboard, or of a deleted test row). Cancel that subscription in the gateway's dashboard, refund the debit there and return the credit with the refund's id. Resending the event does nothing: it was already recorded. |
+| Gateway reconciliation: settled by the gateway, but no Autopay payment is recorded (source autopay) | A webhook event was lost or refused (never recorded). Check the webhook's delivery log in the gateway's dashboard and resend the event: it is then applied once. If it cannot be resent, or the gateway's log shows it was delivered, handle as "Autopay debit not applied" above. |
+| Gateway reconciliation: settled ₹X, but payment N recorded ₹Y (source reconciliation) | Compare the gateway's settlement with the payment. Raise the difference with the gateway; close the credit with their reference when it is settled. |
+| Gateway reconciliation: payment N is in no gateway settlement report 5 days after it was paid (source reconciliation) | Look up the payment and its settlement in the gateway's dashboard. A late settlement: close the credit with the settlement id. A payment the gateway reversed: refund the NearShop payment (POST /api/admin/billing/payments/{id}/refund), then close the credit with the reversal's reference. |
 
 When the monthly price or the GST position changes, existing mandates keep debiting the old amount and those debits
 go to the queue: before publishing a new monthly price, or before GST registration takes effect, plan how the
