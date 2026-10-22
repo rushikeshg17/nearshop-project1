@@ -198,8 +198,11 @@ month still in the database. Months go one at a time, oldest first:
    SHA-256 of the _ids, first and last _id, database, environment, git commit and migration number;
 4. only then are those rows (by _id) deleted from sales_history.
 
-The part id is the run's UTC start time (2026-11-01T230000Z). A failure at any step stops the run and leaves
-that month's rows in the database (exit 1, "Archive failed"); months finished before it stay archived. A run
+The part id is the run's UTC start time (2026-11-01T230000Z). A failure in steps 1-3 stops the run and
+leaves that month's rows in the database (exit 1, "Archive failed"). A failure during step 4 (the deletes go
+in batches) leaves the month partly in Atlas but fully archived: its data file and manifest are already
+complete and verified in the bucket, and the next run archives the rows still in Atlas as a new part of that
+month (a restore puts each row back once). Either way, months finished before it stay archived. A run
 is refused, with nothing written or deleted (exit 2), while NEARSHOP_BACKUP_BACKEND is off, and when the
 newest succeeded row in backup_runs is more than 26 hours old (NEARSHOP_ARCHIVE_BACKUP_MAX_AGE_HOURS), so
 every archived row is also in a recent backup set (and in the monthly sets for the next 12 months).
@@ -211,6 +214,21 @@ Rows that reach an archived month later, such as an old sales report imported af
 part of that month in the next run. A re-import of an archived period does not replace the archived rows.
 Archived rows hold shop, product, catalog item, category and customer ids, quantities and prices, never a
 name, phone, email or address.
+
+**What the app loses.** Every reader of sales_history sees only the months still in Atlas. Most use a window
+well inside 18 months (the demand forecast, the owner and admin dashboards, "sold in the last 30 days") and
+do not change. These have no date window, so after the first run their results drop the archived months:
+- the customer dashboard's `shops_visited` (backend/app/api/routes/customer.py), a count of distinct shops
+  over all of the customer's sales: a long-standing customer's count goes down;
+- the customer dashboard's recommendations (customer.py, from the customer's 10 most recent purchases): a
+  customer with no purchase in the kept months gets none;
+- Apriori bundle training (backend/app/ai/recommend.py) reads every real sale: the bundle rules lose their
+  older baskets and come from the kept months only;
+- the "popular in category" fallback on a product page (backend/app/api/routes/catalog.py) sums quantity
+  over all time: its ranking reflects the kept months only.
+P8.3 does not change these (they are outside its files). A figure that must stay all-time needs its own
+record (a counter or a summary kept in Atlas) built before the first production run; otherwise restore the
+months into a scratch database (below) to compute it.
 
 **Each run** writes a row to `archive_runs` in the database it archives: `_id` (the part id), `started_at`,
 `finished_at`, `outcome` (running, succeeded or failed), `cutoff`, `months` (per month: `documents`,
@@ -283,8 +301,14 @@ backup or restore tools.
   archived monthly (Archived sales history above); check archive_runs if it keeps growing.
 - **"Archive refused ... no backup ... has succeeded" or "more than 26 hours ago"** (exit 2): the nightly
   backup is failing; fix it first (above), then Trigger Run on the archive cron job.
-- **Exit 1, "Archive failed"**: archive_runs has a failed row with the error; the month it names still has
-  all its rows. Fix the cause (usually the bucket) and Trigger Run; finished months are not redone.
+- **Exit 1, "Archive failed"**: archive_runs has a failed row with the error. The month that failed is the
+  oldest eligible month not in the row's `months`. In `--list`, if that month has no part with the run's
+  part id (the row's `_id`), or it shows INCOMPLETE, the run failed before the manifest and the month still
+  has all its rows. If the part shows complete, the run failed while deleting: part of the month is now only
+  in the archive (complete and verified), and the rest is still in Atlas. Do not re-import those rows or
+  copy them back. Fix the cause
+  (a bucket or a database error) and Trigger Run: finished months are not redone, and the rows left in a
+  partly deleted month go in a new part of it.
 - **"is not empty"**: restore into a new database name (one that does not exist yet, so no collection in
   it, not even an empty one), or drop the target first if it is a failed attempt.
 - **"is at migration N but this code knows migrations up to M"**: the set comes from newer code. Run the

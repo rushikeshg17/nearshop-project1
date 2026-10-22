@@ -19,9 +19,12 @@ Each month is archived on its own, oldest first, in these steps:
   3. the part's manifest (month, range, documents, size, SHA-256, a SHA-256 of the _ids, first and last _id,
      the database, environment, git commit and migration) is uploaded and read back byte for byte;
   4. only then are those rows, by _id, deleted from sales_history.
-A failure at any step stops the run with the month's rows untouched (step 4 is never reached), and the run
-is recorded as failed. Rows that reach an archived month later (an old sales report imported after the run)
-are left in place and go in a new part of that month in the next run.
+A failure in steps 1-3 stops the run with the month's rows untouched (step 4 is never reached). A failure
+during step 4 (the deletes go in batches) leaves the month partly in Atlas but fully archived: its data file
+and manifest are complete and verified in the store, and the next run archives the rows still in Atlas as a
+new part of that month. Either way the run is recorded as failed. Rows that reach an archived month later
+(an old sales report imported after the run) are left in place and go in a new part of that month in the
+next run.
 
 The parts of a month live under <prefix>/archive/sales_history/<YYYY-MM>/ in the store, where the prefix is
 NEARSHOP_BACKUP_PREFIX (default: the environment name), as <part id>.bson.gz and <part id>.manifest.json,
