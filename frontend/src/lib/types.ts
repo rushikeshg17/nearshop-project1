@@ -720,3 +720,302 @@ export interface SearchCompare {
     results: { name: string; icon: string; category: string; score: number }[];
   }[];
 }
+
+// ------------------------------------------------------------------ plans and billing (P9.4 to P9.6; screens P9.10)
+
+export type PlanCode = "free" | "growth" | "pro" | "business" | "partner_seat";
+export type PlanPeriod = "year" | "month";
+export type SubscriptionStatus = "advance" | "active" | "lapsed" | "cancelled" | "refunded";
+export type SubscriptionSource = "shop_paid" | "advance" | "sponsored" | "guarantee_credit";
+
+/** What a plan allows (backend/app/models/billing.py, Entitlements). The freshness tools are never here. */
+export interface PlanEntitlements {
+  demand_report: "teaser" | "full";
+  low_stock_alerts: boolean;
+  logins: number;
+  roi_statement: boolean;
+  priority_support: boolean;
+  boost_discount_pct: number;
+  outcome_guarantee: boolean;
+  pro_insights: boolean;
+  outlets: number;
+}
+
+/** One plan in one catalogue version (plans.plan_out). Prices are in paise. */
+export interface PlanVersion {
+  id: number;
+  code: PlanCode;
+  version: number;
+  name: string;
+  price_year_paise: number | null;
+  price_month_paise: number | null;
+  founding_year_paise: number | null;
+  on_sale: boolean;
+  entitlements: PlanEntitlements;
+  effective_from: string | null;
+  published_at: string | null;
+  reason: string | null;
+}
+
+/** plans.subscription_out. */
+export interface PlanSubscription {
+  id: number;
+  account_type: string;
+  account_id: number;
+  shop_ids: number[];
+  plan_code: PlanCode;
+  plan_version: number;
+  period: PlanPeriod;
+  price_paise: number;
+  founding: boolean;
+  founding_slot: number | null;
+  source: SubscriptionSource;
+  status: SubscriptionStatus;
+  starts_at: string | null;
+  ends_at: string | null;
+  paid_until: string | null;
+  paid_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** GET /api/admin/subscriptions: a subscription with the names of the shops it covers. */
+export interface AdminSubscription extends PlanSubscription {
+  shops: { id: number; name: string | null }[];
+}
+
+export interface GuaranteeProgress {
+  applies: boolean;
+  needed: number;
+  quarter_start?: string;
+  quarter_end?: string;
+  customer_requests?: number;
+  met?: boolean;
+  credit_months?: number;
+}
+
+export interface FoundingCounter {
+  cap: number;
+  taken: number;
+  remaining: number;
+  cities: string[];
+}
+
+/** GET /api/owner/plan (plans.owner_plan). */
+export interface OwnerPlan {
+  plan: {
+    code: PlanCode;
+    name: string;
+    version: number;
+    entitlements: PlanEntitlements;
+    subscription_id: number | null;
+    /** "free" when no subscription is active (none, an advance not started yet, lapsed, cancelled or refunded). */
+    status: "free" | SubscriptionStatus;
+    source: SubscriptionSource | null;
+    starts_at: string | null;
+    ends_at: string | null;
+  };
+  subscription: PlanSubscription | null;
+  advance: PlanSubscription | null;
+  founding: {
+    eligible: boolean;
+    in_city: boolean;
+    already_claimed: boolean;
+    remaining: number;
+    cap: number;
+    price_year_paise: number | null;
+  };
+  guarantee: GuaranteeProgress;
+  /** YYYY-MM-DD: before it, a shop can only pay a refundable advance. */
+  billing_starts_on: string;
+  on_sale: PlanVersion[];
+}
+
+export interface BillingAccount {
+  id: number;
+  kind: "shop_owner" | "distributor" | "lender";
+  legal_name: string;
+  address: string;
+  state_code: string;
+  gstin: string | null;
+  contact_user_id: number;
+}
+
+export type GstMode = "unregistered" | "registered";
+
+/** A payment request (billing.request_out): pay_to is what the UPI payment carries. */
+export interface PaymentRequest {
+  id: number;
+  number: string;
+  shop_id: number;
+  purpose: "plan" | "boost";
+  plan_code: PlanCode;
+  plan_version: number;
+  period: PlanPeriod;
+  kind: "advance" | "new" | "renewal";
+  founding: boolean;
+  amount_paise: number;
+  gst_mode: GstMode;
+  gst_paise: number;
+  total_paise: number;
+  status: "open" | "paid" | "cancelled" | "refunded";
+  created_at: string | null;
+  payment_id: number | null;
+  created_by: string;
+  reason: string | null;
+  /** NearShop's UPI ID and payee name (settings), the amount in rupees with two decimals, and the request number. */
+  pay_to: { upi_id: string; payee_name: string; amount: string; note: string };
+}
+
+export type BillingDocumentType = "receipt" | "tax_invoice" | "refund_receipt" | "credit_note";
+
+export interface BillingDocumentBrief {
+  id: number;
+  number: string;
+  type: BillingDocumentType;
+  issued_at: string | null;
+  total_paise: number;
+  draft: boolean;
+}
+
+export interface BillingActor {
+  type: string;
+  id?: number | null;
+}
+
+/** billing.payment_out. */
+export interface BillingPayment {
+  id: number;
+  request_id: number;
+  request_number: string;
+  shop_id: number;
+  credit_id: number;
+  upi_reference: string;
+  amount_paise: number;
+  paid_at: string | null;
+  matched_at: string | null;
+  matched_by: BillingActor;
+  match: "statement" | "manual" | "pilot_ledger" | "autopay" | "reconciliation";
+  reason: string;
+  subscription_id: number;
+  document_id: number | null;
+  status: "matched" | "refunded";
+  refund: { at: string; by: BillingActor; reason: string; bank_reference: string; document_id: number } | null;
+  settled_at: string | null;
+  settlement_id: string | null;
+}
+
+/** The latest UPI Autopay mandate (gateway.mandate_out). checkout_url is set while it waits for approval. */
+export interface AutopayMandate {
+  id: number;
+  status: "created" | "authorised" | "halted" | "cancelled";
+  plan_code: PlanCode;
+  plan_version: number;
+  amount_paise: number;
+  gst_paise: number;
+  total_paise: number;
+  checkout_url: string | null;
+  subscription_id: number | null;
+  debits: number;
+  failed_debits: number;
+  authorised_at: string | null;
+  last_debit_at: string | null;
+  halted_at: string | null;
+  cancelled_at: string | null;
+  cancelled_by: string | null;
+  created_at: string | null;
+}
+
+/** GET /api/owner/billing. */
+export interface OwnerBilling {
+  /** Whether NearShop's UPI ID and payee name are set: until then no payment request can be made. */
+  configured: boolean;
+  account: BillingAccount | null;
+  gst_mode: GstMode;
+  requests: PaymentRequest[];
+  payments: (BillingPayment & { documents: BillingDocumentBrief[] })[];
+  autopay: { available: boolean; price_month_paise: number | null; mandate: AutopayMandate | null };
+}
+
+export interface BillingParty {
+  legal_name: string;
+  address: string;
+  state_code: string;
+  gstin: string | null;
+}
+
+/** One issued document, an immutable snapshot (billing.document_out). */
+export interface BillingDocument {
+  id: number;
+  number: string;
+  financial_year: string;
+  seq: number;
+  type: BillingDocumentType;
+  issued_at: string | null;
+  payment_date: string | null;
+  format: string;
+  /** "Draft format, not for use" until the CA approves the format (B22). */
+  draft_line: string | null;
+  wording: string;
+  supplier: BillingParty;
+  recipient: BillingParty;
+  place_of_supply: string;
+  description: string;
+  sac: string | null;
+  taxable_paise: number;
+  gst_rate_pct: number;
+  cgst_paise: number;
+  sgst_paise: number;
+  igst_paise: number;
+  total_paise: number;
+  payment_id: number;
+  request_number: string;
+  upi_reference: string;
+  original_document_id: number | null;
+  original_number: string | null;
+  refund_reference: string | null;
+  content_hash: string;
+  /** Whether the stored document is exactly as issued. */
+  intact: boolean;
+}
+
+/** billing.credit_out: a credit from a bank statement, matched by hand, from the pilot ledger or from the gateway. */
+export interface BankCredit {
+  id: number;
+  upi_reference: string;
+  credited_on: string;
+  amount_paise: number;
+  narration: string;
+  source: "statement" | "manual" | "pilot_ledger" | "autopay" | "reconciliation";
+  statement_id: number | null;
+  request_number: string | null;
+  status: "unmatched" | "matched" | "returned" | "closed";
+  note: string | null;
+  payment_id: number | null;
+  alerted_at: string | null;
+  returned: { at: string; by: BillingActor; reason: string; bank_reference: string } | null;
+  closed: { at: string; by: BillingActor; reason: string; reference: string } | null;
+  created_at: string | null;
+}
+
+/** POST /api/admin/billing/statements: what one statement upload did. */
+export interface StatementImport {
+  statement_id: number;
+  credits: number;
+  matched: number;
+  unmatched: number;
+  duplicates: number;
+  debits_skipped: number;
+  unreadable: number;
+  rows: {
+    upi_reference: string;
+    amount_paise: number;
+    credited_on: string;
+    result: "matched" | "unmatched" | "duplicate";
+    credit_id?: number | null;
+    request_number?: string;
+    reason?: string;
+    payment_id?: number;
+    status?: string | null;
+  }[];
+}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeftRight, BadgeCheck, BrainCircuit, Flag, LayoutDashboard, Loader2, MessageSquareWarning, Scale, ShieldCheck, Store, Users } from "lucide-react";
+import { ArrowLeftRight, BadgeCheck, BrainCircuit, CreditCard, Flag, LayoutDashboard, Loader2, MessageSquareWarning, Scale, ShieldCheck, Store, Users } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
@@ -47,6 +47,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     { href: "/admin/shops", label: "Shops", icon: Store },
     { href: "/admin/users", label: "Users", icon: Users },
     { href: "/admin/synonyms", label: "Synonyms", icon: ArrowLeftRight },
+    { href: "/admin/billing", label: "Billing", icon: CreditCard },
     { href: "/ai", label: "AI Lab", icon: BrainCircuit },
   ];
   return <DashboardShell title="NearShop admin" subtitle={me.email} items={items}>{children}</DashboardShell>;

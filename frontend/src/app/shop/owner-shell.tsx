@@ -7,6 +7,7 @@ import {
   CalendarClock,
   ClipboardList,
   Clock,
+  CreditCard,
   EyeOff,
   FileSpreadsheet,
   LayoutDashboard,
@@ -66,6 +67,7 @@ export function OwnerShell({ children }: { children: React.ReactNode }) {
     { href: "/shop/catalog", label: t("owner.shell.nav.catalog"), icon: Library },
     { href: "/shop/insights", label: t("owner.shell.nav.insights"), icon: BrainCircuit },
     { href: "/shop/reviews", label: t("owner.shell.nav.reviews"), icon: Star },
+    { href: "/shop/billing", label: t("owner.shell.nav.billing"), icon: CreditCard },
     { href: "/shop/settings", label: t("owner.shell.nav.settings"), icon: Settings },
   ];
   return (

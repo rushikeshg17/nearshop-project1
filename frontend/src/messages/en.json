@@ -1123,7 +1123,8 @@
         "catalog": "Add from catalogue",
         "insights": "AI insights",
         "reviews": "Reviews",
-        "settings": "Shop settings"
+        "settings": "Shop settings",
+        "billing": "Plan and billing"
       }
     },
     "verification": {
@@ -1858,6 +1859,149 @@
       "tagsReplaces": "(replaces existing)",
       "tagsPlaceholder": "switch, light switch, modular, 6 amp",
       "description": "Description"
+    },
+    "billing": {
+      "title": "Plan and billing",
+      "description": "Your NearShop plan, what it includes, and how to pay for it.",
+      "terms": "Read the {terms} before you pay.",
+      "termsLink": "plan terms",
+      "status": {
+        "free": "Free",
+        "active": "Active",
+        "advance": "Paid in advance",
+        "lapsed": "Ended",
+        "cancelled": "Cancelled",
+        "refunded": "Refunded"
+      },
+      "current": {
+        "heading": "Your plan",
+        "endsOn": "Runs until {date}",
+        "nextReminder": "We will remind you on {date}.",
+        "renewsByAutopay": "Renews each month by UPI Autopay.",
+        "freeNoEnd": "The Free plan has no end date and costs nothing.",
+        "lapsed": "Your paid plan has ended, so your shop is on the Free plan. Your listings and your place in search have not changed.",
+        "renew": "Renew Growth"
+      },
+      "includes": {
+        "heading": "What your plan includes",
+        "demandTeaser": "The top 3 things people asked for near you",
+        "demandFull": "The full weekly report of what people asked for near you",
+        "lowStock": "Low-stock alerts",
+        "logins": "Logins for you and your staff: {count}",
+        "roi": "The monthly return-on-investment statement",
+        "support": "Priority support",
+        "boost": "{pct}% off Boost",
+        "guarantee": "The outcome guarantee",
+        "proInsights": "Forecast and restock, bundles and price position",
+        "outlets": "Outlets: {count}"
+      },
+      "freeTools": {
+        "heading": "Free on every plan",
+        "body": "These never need a paid plan, even after a plan ends:",
+        "listings": "Listings and stock edits",
+        "import": "Excel and CSV import and re-import",
+        "whatsapp": "WhatsApp stock replies and the stock check",
+        "alerts": "Reservation and order alerts",
+        "standee": "The QR standee for your counter",
+        "trust": "Trust signals: verification and reviews",
+        "statement": "The monthly statement"
+      },
+      "founding": {
+        "heading": "Founding offer",
+        "eligible": "Your shop qualifies: Growth for {price} for the first year, then the list price. Places left: {remaining} of {cap}.",
+        "claimed": "Your shop has already had the founding offer.",
+        "full": "All {cap} founding places are taken.",
+        "notInCity": "The founding offer is only for shops in the first cities NearShop serves."
+      },
+      "guarantee": {
+        "heading": "Outcome guarantee",
+        "progress": "Customer requests this quarter: {count} of {needed}",
+        "quarterEnds": "This quarter ends on {date}.",
+        "met": "The guarantee is met for this quarter.",
+        "notMet": "If the quarter ends with fewer than {needed} customer requests, your plan is extended by {months} months for free.",
+        "notApplies": "The outcome guarantee comes with a paid Growth plan: if a paid quarter brings fewer than {needed} customer requests, your plan is extended for free."
+      },
+      "advance": {
+        "heading": "Paid in advance",
+        "body": "Your advance payment is recorded. Your Growth year starts on {date}."
+      },
+      "pay": {
+        "heading": "Get Growth",
+        "headingRenew": "Renew Growth",
+        "yearly": "Growth for a year",
+        "yearlyPrice": "{price} a year",
+        "foundingPrice": "{price} for the first year with the founding offer (list price {list})",
+        "requestButton": "Get the UPI payment details",
+        "advanceNote": "Paid plans start on {date}. A payment before then is a refundable advance, and your Growth year starts on that day.",
+        "notOpen": "Payments to NearShop are not open yet.",
+        "gst": "{amount} plus GST of {gst}",
+        "noGst": "No GST is charged.",
+        "monthly": "Growth by the month",
+        "monthlyPrice": "{price} a month, paid by UPI Autopay",
+        "autopayLater": "Monthly payment by UPI Autopay opens on {date}.",
+        "autopayUnavailable": "Monthly payment by UPI Autopay is not available yet.",
+        "autopayStart": "Set up UPI Autopay",
+        "autopayApprove": "Approve in your UPI app",
+        "autopayWaiting": "Approve the Autopay mandate in your UPI app to start your plan.",
+        "autopayOn": "UPI Autopay is on: {price} a month.",
+        "autopayHalted": "Your last Autopay payment failed, so Autopay has stopped. Set it up again, or pay for a year, to keep Growth.",
+        "autopayCancel": "Cancel Autopay",
+        "autopayCancelTitle": "Cancel UPI Autopay?",
+        "autopayCancelBody": "No more payments will be taken. Your plan runs to the end of the month you paid for, then your shop moves to the Free plan, with every stock tool and the same place in search.",
+        "autopayKeep": "Keep Autopay",
+        "autopayCancelled": "UPI Autopay is cancelled."
+      },
+      "block": {
+        "title": "Pay NearShop by UPI",
+        "body": "Pay {price} to {payee}. Keep the note exactly as it is, so we can match your payment.",
+        "payButton": "Pay {price} by UPI",
+        "scanHint": "Paying from another phone? Scan this code with any UPI app.",
+        "qrLabel": "UPI QR code to pay {price} to {payee}",
+        "payee": "Payee",
+        "upiId": "UPI ID",
+        "amount": "Amount",
+        "note": "Note",
+        "after": "We match your payment against our bank statement, usually within 3 working days. Your receipt then appears below."
+      },
+      "history": {
+        "heading": "Payments and documents",
+        "empty": "No payments yet.",
+        "paidOn": "Paid on {date}",
+        "refunded": "Refunded",
+        "upiReference": "UPI reference: {reference}"
+      },
+      "docTypes": {
+        "receipt": "Payment receipt",
+        "tax_invoice": "Tax invoice",
+        "refund_receipt": "Refund receipt",
+        "credit_note": "Credit note"
+      },
+      "document": {
+        "back": "Plan and billing",
+        "print": "Print",
+        "notFound": "This document was not found.",
+        "number": "Number",
+        "date": "Date",
+        "supplier": "From",
+        "recipient": "To",
+        "gstin": "GSTIN: {gstin}",
+        "placeOfSupply": "Place of supply",
+        "description": "Description",
+        "sac": "SAC",
+        "taxable": "Taxable value",
+        "amount": "Amount",
+        "cgst": "CGST at {rate}%",
+        "sgst": "SGST at {rate}%",
+        "igst": "IGST at {rate}%",
+        "total": "Total",
+        "paymentDate": "Payment date",
+        "request": "Payment request",
+        "upiReference": "UPI reference",
+        "original": "Against document",
+        "refundReference": "Refund transfer reference",
+        "altered": "This copy does not match the document as issued. Contact NearShop support.",
+        "terms": "Payments to NearShop are covered by the {terms}."
+      }
     }
   },
   "support": {
