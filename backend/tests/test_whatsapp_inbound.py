@@ -358,11 +358,13 @@ def test_a_replayed_message_id_is_ignored(shop_owner, customer, client, ids):
         assert db.status_events.count({"entity": "reservation", "entity_id": r["id"]}) == 2  # requested, confirmed
 
         start = utcnow() - timedelta(seconds=1)
+        # An earlier test's update can fall inside that second: only the events written from here on count.
+        earlier = {e["_id"] for e in tape_events(db, ids["tape"], start)}
         post(client, text("Astral PTFE thread seal tape 33"))
         yes = text("Yes", message_id="wamid.replayed.2")
         post(client, yes)
         post(client, yes)
-        assert len(tape_events(db, ids["tape"], start)) == 1
+        assert len([e for e in tape_events(db, ids["tape"], start) if e["_id"] not in earlier]) == 1
         row = db.mongo[whatsapp.INBOUND].find_one({"_id": "wamid.replayed.2"})
         assert row["outcome"] == "saved" and row["reply"] == "sent" and "from" not in row
     finally:

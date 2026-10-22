@@ -5,7 +5,7 @@
         +--reject--> REJECTED  +------cancel / expire-+--> CANCELLED / EXPIRED
 
 Stock is held when the shop confirms (so the unit is physically set aside) and returned
-to stock if the reservation is cancelled or expires.
+to stock if the reservation is cancelled or expires. Completing records how the customer paid (P6.1).
 """
 import logging
 import secrets
@@ -15,17 +15,19 @@ from pymongo.errors import DuplicateKeyError
 
 from app.core.config import settings
 from app.core.database import Database, utcnow
-from app.core.errors import Conflict, Forbidden, InvalidTransition, NotFound
+from app.core.errors import AppError, Conflict, Forbidden, InvalidTransition, NotFound
 from app.models import (
     InventoryReason,
     Reservation,
     Role,
     SaleSource,
+    Shop,
     User,
 )
 from app.models import (
     ReservationStatus as RS,
 )
+from app.models.activity import PAYMENT_METHODS
 from app.services.fulfillment_common import record_event, record_sales
 from app.services.inventory import change_stock
 from app.services.notifications import notify
@@ -52,6 +54,19 @@ TRANSITIONS: dict[tuple[RS, str], tuple[RS, set[str]]] = {
     (RS.READY_FOR_PICKUP, "cancel"): (RS.CANCELLED, {"customer", "owner"}),
     (RS.READY_FOR_PICKUP, "expire"): (RS.EXPIRED, {"system"}),
 }
+
+
+def check_payment_method(shop: Shop, method: str | None) -> str:
+    """The payment method the owner chose when completing a pickup or delivering an order (P6.1, plan section 8.8):
+    cod (cash) or upi_direct (the shop's own UPI ID, so refused while the shop has none). NearShop never holds the
+    money either way."""
+    if not method:
+        raise AppError("Choose how the customer paid: cash or UPI", code="payment_method_required", status_code=422)
+    if method not in PAYMENT_METHODS:
+        raise AppError("Choose cash or UPI as the payment method", code="invalid_payment_method", status_code=422)
+    if method == "upi_direct" and not shop.upi_id:
+        raise Conflict("Add your shop's UPI ID in shop settings before recording a UPI payment", code="upi_not_set_up")
+    return method
 
 
 def allowed_actions(reservation: Reservation, actor: str) -> list[str]:
@@ -125,11 +140,12 @@ def _actor_for(user: User | None, res: Reservation, shop_owner_id: int) -> str:
 
 
 def transition(db: Database, reservation_id: int, action: str, user: User | None,
-               reason: str | None = None, code: str | None = None) -> Reservation:
+               reason: str | None = None, code: str | None = None, payment_method: str | None = None) -> Reservation:
     """Move a reservation through its state machine. The reservation, the stock hold, the audit
     event, the sale and the notifications commit together or not at all. Completing needs the reservation
-    code the customer shows at the counter (P3.5, plan section 8.2), compared case-insensitively."""
-    return db.transaction(lambda: _transition(db, reservation_id, action, user, reason, code))
+    code the customer shows at the counter (P3.5, plan section 8.2), compared case-insensitively, and the payment
+    method, cod or upi_direct (P6.1, check_payment_method); other actions ignore payment_method."""
+    return db.transaction(lambda: _transition(db, reservation_id, action, user, reason, code, payment_method))
 
 
 def code_matches(entered: str | None, expected: str) -> bool:
@@ -138,7 +154,7 @@ def code_matches(entered: str | None, expected: str) -> bool:
 
 
 def _transition(db: Database, reservation_id: int, action: str, user: User | None, reason: str | None,
-                code: str | None = None) -> Reservation:
+                code: str | None = None, payment_method: str | None = None) -> Reservation:
     # Loaded inside the transaction: if someone else changes it first, this transaction is
     # retried and sees the new status instead of overwriting it.
     res = db.reservations.get(reservation_id)
@@ -156,6 +172,7 @@ def _transition(db: Database, reservation_id: int, action: str, user: User | Non
     if action == "complete" and settings.completion_codes_required and not code_matches(code, res.code):
         raise Conflict("Enter the reservation code the customer shows you" if not (code or "").strip()
                        else "That is not this reservation's code", code="wrong_code")
+    method = check_payment_method(shop, payment_method) if action == "complete" else None
 
     now = utcnow()
     from_status = res.status
@@ -174,7 +191,8 @@ def _transition(db: Database, reservation_id: int, action: str, user: User | Non
                f"{product.name} is packed at {shop.name}. Show code {res.code} at the counter.",
                f"/account/reservations/{res.id}")
     elif action == "complete":
-        changes.update(completed_at=now, stock_held=False)  # the held unit left the shop with the customer
+        # The held unit left the shop with the customer, who paid the shop in cash or to its own UPI ID.
+        changes.update(completed_at=now, stock_held=False, payment_method=method, payment_status="paid")
         record_sales(db, [(product, res.quantity, res.unit_price)], source=SaleSource.RESERVATION,
                      basket_id=res.code, customer_id=res.customer_id)
         notify(db, res.customer_id, "reservation_completed", "Pickup complete",

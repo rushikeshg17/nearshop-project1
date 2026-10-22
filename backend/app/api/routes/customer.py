@@ -9,7 +9,7 @@ from app.ai.recommend import bundle_for
 from app.core.database import Database, utcnow
 from app.core.deps import DB, CurrentUser, CustomerUser
 from app.core.errors import Conflict, NotFound
-from app.models import Order, OrderStatus, Reservation, ReservationStatus, Review, User
+from app.models import Order, OrderStatus, Reservation, ReservationStatus, Review, Shop, User
 from app.schemas.requests import NotificationsReadIn, OrderIn, OrderQuoteIn, ReservationIn, ReviewIn, TransitionIn
 from app.schemas.serializers import listing, notification_out, order_out, reservation_out, shop_brief
 from app.services import orders as order_service
@@ -31,11 +31,21 @@ def _reviewed_ids(db: Database, customer_id: int) -> tuple[set[int], set[int]]:
             {r["order_id"] for r in rows if r.get("order_id")})
 
 
+def _pay_to(out: dict, shop: Shop) -> dict:
+    """Add the shop's own UPI ID and payee name (P6.1, plan section 8.8) to a customer's own order or reservation,
+    for the payment link and QR code (P6.2): the customer pays the shop directly. Both None while the shop has no
+    UPI ID. Added here, and never by the serializers, so public shop responses never carry them."""
+    out["shop"] = {**out["shop"], "upi_id": shop.upi_id,
+                   "upi_payee_name": (shop.upi_payee_name or shop.name) if shop.upi_id else None}
+    return out
+
+
 def _res_json(db: Database, rows: list[Reservation], reviewed: set[int], with_events: bool = False) -> list[dict]:
     hydrate_reservations(db, rows)
     events = timelines(db, "reservation", [r.id for r in rows]) if with_events else {}
-    return [reservation_out(r, actions=reservation_service.allowed_actions(r, "customer"),
-                            events=events.get(r.id) if with_events else None, reviewed=r.id in reviewed)
+    return [_pay_to({**reservation_out(r, actions=reservation_service.allowed_actions(r, "customer"),
+                                       events=events.get(r.id) if with_events else None, reviewed=r.id in reviewed),
+                     "payment_method": r.payment_method, "payment_status": r.payment_status}, r.shop)
             for r in rows]
 
 
@@ -44,9 +54,9 @@ def _order_json(db: Database, rows: list[Order], reviewed: set[int], with_events
     events = timelines(db, "order", [o.id for o in rows]) if with_events else {}
     # The delivery code (P3.5) is the customer's alone: added here, to their own orders, and never by order_out,
     # which the owner's responses use too.
-    return [{**order_out(o, actions=order_service.allowed_actions(o, "customer"),
-                         events=events.get(o.id) if with_events else None, reviewed=o.id in reviewed),
-             "delivery_code": o.delivery_code if o.status in order_service.ACTIVE else None}
+    return [_pay_to({**order_out(o, actions=order_service.allowed_actions(o, "customer"),
+                                 events=events.get(o.id) if with_events else None, reviewed=o.id in reviewed),
+                     "delivery_code": o.delivery_code if o.status in order_service.ACTIVE else None}, o.shop)
             for o in rows]
 
 

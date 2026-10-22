@@ -22,6 +22,7 @@ from app.models.core import (
 )
 from app.schemas.requests import (
     CatalogAddIn,
+    PaymentMethod,
     ProductIn,
     ProductUpdateIn,
     ShopUpdateIn,
@@ -105,8 +106,9 @@ def verification_out(shop: Shop) -> dict:
 
 
 def _shop_settings(db: Database, shop: Shop, review_started: bool = False) -> dict:
+    # The UPI ID (P6.1) is added here, for the owner, and never by shop_detail, which public shop pages use too.
     return {**shop_detail(shop, None, shop_reliability(db, shop)), "verification": verification_out(shop),
-            "review_started": review_started}
+            "review_started": review_started, "upi_id": shop.upi_id, "upi_payee_name": shop.upi_payee_name}
 
 
 @router.get("/verification")
@@ -448,16 +450,19 @@ def add_from_catalog(body: CatalogAddIn, shop: OwnerShop, user: OwnerUser, db: D
 class ShopTransitionIn(TransitionIn):
     """An owner's action on a reservation or order. code is required to complete a pickup (the reservation code
     the customer shows) and to deliver an order (the 4-digit delivery code only the customer sees), once
-    settings.completion_codes_required is on (P3.5; on by default since P3.7, whose screens ask for it)."""
+    settings.completion_codes_required is on (P3.5; on by default since P3.7, whose screens ask for it).
+    payment_method is required to complete or deliver (P6.1): cod, or upi_direct when the shop has a UPI ID."""
 
     code: str | None = Field(default=None, max_length=20)
+    payment_method: PaymentMethod | None = None
 
 
 def _res(db: Database, rows: list[Reservation], with_events: bool = False) -> list[dict]:
     hydrate_reservations(db, rows, customers=True)
     events = timelines(db, "reservation", [r.id for r in rows]) if with_events else {}
-    return [reservation_out(r, actions=reservation_service.allowed_actions(r, "owner"), for_owner=True,
-                            events=events.get(r.id) if with_events else None) for r in rows]
+    return [{**reservation_out(r, actions=reservation_service.allowed_actions(r, "owner"), for_owner=True,
+                               events=events.get(r.id) if with_events else None),
+             "payment_method": r.payment_method, "payment_status": r.payment_status} for r in rows]
 
 
 def _ord(db: Database, rows: list[Order], with_events: bool = False) -> list[dict]:
@@ -502,7 +507,8 @@ def shop_reservation(reservation_id: int, shop: OwnerShop, db: DB):
 def act_on_reservation(reservation_id: int, action: Literal["confirm", "reject", "ready", "complete", "cancel"],
                        body: ShopTransitionIn, shop: OwnerShop, user: OwnerUser, db: DB):
     r = _shop_reservation(db, shop, reservation_id)
-    r = reservation_service.transition(db, r.id, action, user, body.reason, code=body.code)
+    r = reservation_service.transition(db, r.id, action, user, body.reason, code=body.code,
+                                       payment_method=body.payment_method)
     return _res(db, [r], with_events=True)[0]
 
 
@@ -528,7 +534,8 @@ def act_on_order(order_id: int, action: Literal["confirm", "prepare", "dispatch"
                                                  "cancel"],
                  body: ShopTransitionIn, shop: OwnerShop, user: OwnerUser, db: DB):
     o = _shop_order(db, shop, order_id)
-    o = order_service.transition(db, o.id, action, user, body.reason, code=body.code)
+    o = order_service.transition(db, o.id, action, user, body.reason, code=body.code,
+                                 payment_method=body.payment_method)
     return _ord(db, [o], with_events=True)[0]
 
 

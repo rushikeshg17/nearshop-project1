@@ -4,8 +4,9 @@
        |            |               |               |
        +------------+---cancel------+               +--fail--> DELIVERY_FAILED --return--> RETURNED_TO_SHOP
 
-Stock is held at SHOP_CONFIRMED and released on cancel or return. Payment is cash on
-delivery in V1; payment_method/payment_status keep the model open for UPI/cards later.
+Stock is held at SHOP_CONFIRMED and released on cancel or return. The customer pays the shop at
+the door, in cash or to the shop's own UPI ID; delivering records which (P6.1, plan section 8.8). NearShop
+never holds customer money.
 """
 import logging
 import secrets
@@ -30,7 +31,7 @@ from app.models import (
 from app.services.fulfillment_common import record_event, record_sales
 from app.services.inventory import change_stock
 from app.services.notifications import notify
-from app.services.reservations import SHOP_NOT_VERIFIED
+from app.services.reservations import SHOP_NOT_VERIFIED, check_payment_method
 from app.utils.geo import haversine_km
 from app.utils.text import short_code
 
@@ -166,13 +167,14 @@ def _actor_for(user: User | None, order: Order, shop_owner_id: int) -> str:
 
 
 def transition(db: Database, order_id: int, action: str, user: User | None, reason: str | None = None,
-               code: str | None = None) -> Order:
+               code: str | None = None, payment_method: str | None = None) -> Order:
     """Move an order through its state machine as one all-or-nothing transaction. Confirming creates the
-    4-digit delivery code only the customer sees; delivering needs it (P3.5, plan section 8.2)."""
+    4-digit delivery code only the customer sees; delivering needs it (P3.5, plan section 8.2) and the payment
+    method, cod or upi_direct (P6.1, reservations.check_payment_method). Other actions ignore payment_method."""
     if action in CODE_ACTIONS:
         ensure_delivery_code(db, order_id)
     try:
-        return db.transaction(lambda: _transition(db, order_id, action, user, reason, code))
+        return db.transaction(lambda: _transition(db, order_id, action, user, reason, code, payment_method))
     except Conflict as exc:
         if exc.code == "wrong_code" and (code or "").strip():
             _count_wrong_code(db, order_id)
@@ -214,7 +216,7 @@ def _count_wrong_code(db: Database, order_id: int) -> None:
 
 
 def _transition(db: Database, order_id: int, action: str, user: User | None, reason: str | None,
-                code: str | None = None) -> Order:
+                code: str | None = None, payment_method: str | None = None) -> Order:
     order = db.orders.get(order_id)  # loaded inside the transaction, see reservations._transition
     if order is None:
         raise NotFound("Order not found")
@@ -237,6 +239,7 @@ def _transition(db: Database, order_id: int, action: str, user: User | None, rea
             raise Conflict("Enter the 4-digit delivery code the customer gives you", code="wrong_code")
         if not order.delivery_code or not secrets.compare_digest(entered.encode(), order.delivery_code.encode()):
             raise Conflict("That is not this order's delivery code", code="wrong_code")
+    method = check_payment_method(shop, payment_method) if action == "deliver" else None
 
     now = utcnow()
     from_status = order.status
@@ -251,7 +254,9 @@ def _transition(db: Database, order_id: int, action: str, user: User | None, rea
             change_stock(db, products[item.product_id], -item.quantity, InventoryReason.ORDER_HOLD, actor_id)
         changes.update(stock_held=True, delivery_code=new_delivery_code())
     elif action == "deliver":
-        changes.update(delivered_at=now, payment_status="paid", stock_held=False, code_failures=0)  # COD collected at the door
+        # Paid at the door, in cash or to the shop's own UPI ID, as the owner recorded.
+        changes.update(delivered_at=now, payment_method=method, payment_status="paid", stock_held=False,
+                       code_failures=0)
         record_sales(db, [(products[i.product_id], i.quantity, i.unit_price) for i in order.items],
                      source=SaleSource.ORDER, basket_id=order.code, customer_id=order.customer_id)
     elif action in {"cancel", "return"}:

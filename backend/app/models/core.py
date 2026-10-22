@@ -187,6 +187,30 @@ def validate_kyc_number(kyc_type: KycType | str, number: str) -> str:
     return value
 
 
+# The shop's own UPI ID (P6.1, plan section 8.8): a handle, an at sign and a provider, as in shopname@okhdfcbank or
+# 9876543210@ybl. Customers pay it directly; NearShop never holds their money.
+UPI_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*@[a-z][a-z0-9]*$")
+UPI_ID_MIN, UPI_ID_MAX = 3, 50
+UPI_PAYEE_MIN, UPI_PAYEE_MAX = 2, 60
+
+
+def validate_upi_id(value: str) -> str:
+    """The UPI ID, normalised (lower case, outer spaces removed), or ValueError with a message an owner can act on."""
+    upi = (value or "").strip().lower()
+    if not (UPI_ID_MIN <= len(upi) <= UPI_ID_MAX) or not UPI_ID_PATTERN.match(upi):
+        raise ValueError(f"A UPI ID looks like yourshop@okhdfcbank: a name or number, an @ and your bank or app, "
+                         f"{UPI_ID_MIN} to {UPI_ID_MAX} characters with no spaces")
+    return upi
+
+
+def validate_upi_payee_name(value: str) -> str:
+    """The payee name UPI apps show the customer, with runs of spaces collapsed, or ValueError."""
+    name = " ".join((value or "").split())
+    if not (UPI_PAYEE_MIN <= len(name) <= UPI_PAYEE_MAX) or any(not ch.isprintable() for ch in name):
+        raise ValueError(f"The payee name has {UPI_PAYEE_MIN} to {UPI_PAYEE_MAX} characters, as your UPI app shows it")
+    return name
+
+
 def evidence_keys(evidence: dict[str, Any] | None) -> list[str]:
     """The private photo keys in a stashed set of KYC evidence (Shop.previous_kyc)."""
     return [k for k in ((evidence or {}).get("kyc_document_key"), (evidence or {}).get("kyc_storefront_key")) if k]
@@ -234,6 +258,10 @@ class Shop(Document, Timestamps):
     delivery_fee: float = 0
     free_delivery_above: float | None = None
     hold_minutes: int = 30
+    # Direct UPI (P6.1, plan section 8.8): the shop's own UPI ID and the payee name for the payment link. Shown only
+    # in the owner's settings and in a customer's own orders and reservations, never in a public shop response.
+    upi_id: str | None = None
+    upi_payee_name: str | None = None
 
     is_active: bool = True
     # Kept in step with verification_status (true only while it is verified) for older readers.

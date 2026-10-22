@@ -1,7 +1,9 @@
 """Validated request bodies (Pydantic). Anything a client sends is checked here first."""
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+
+from app.models.core import validate_upi_id, validate_upi_payee_name
 
 PHONE_PATTERN = r"^[6-9]\d{9}$"  # Indian mobile numbers
 
@@ -140,6 +142,19 @@ class ShopUpdateIn(_Strict):
     free_delivery_above: float | None = Field(default=None, ge=0)
     hold_minutes: int | None = Field(default=None, ge=10, le=240)
     is_active: bool | None = None
+    # Direct UPI (P6.1): the shop's own UPI ID and payee name. null or an empty string removes them.
+    upi_id: str | None = Field(default=None, max_length=50)
+    upi_payee_name: str | None = Field(default=None, max_length=60)
+
+    @field_validator("upi_id")
+    @classmethod
+    def _upi_id(cls, value: str | None) -> str | None:
+        return validate_upi_id(value) if value else None
+
+    @field_validator("upi_payee_name")
+    @classmethod
+    def _upi_payee_name(cls, value: str | None) -> str | None:
+        return validate_upi_payee_name(value) if value else None
 
 
 class ProductIn(_Strict):
@@ -194,6 +209,11 @@ class ReservationIn(_Strict):
 
 class TransitionIn(_Strict):
     reason: str | None = Field(default=None, max_length=300)
+
+
+# How the customer paid, which the owner chooses when delivering an order or completing a pickup (P6.1): cash, or
+# the shop's own UPI ID (app/models/activity.py, PAYMENT_METHODS).
+PaymentMethod = Literal["cod", "upi_direct"]
 
 
 class OrderItemIn(_Strict):
