@@ -7,10 +7,10 @@ import { toast } from "sonner";
 
 import { ErrorState, ListSkeleton } from "@/components/common/states";
 import { PageTitle } from "@/components/dashboard/dashboard-shell";
+import { useI18n } from "@/components/providers";
 import { ShopAvatar } from "@/components/shop/shop-card";
 import { formatDay, verificationNotice } from "@/app/shop/owner-shell";
 import {
-  KYC_TYPES,
   KycFields,
   type KycFormState,
   kycFormReady,
@@ -38,6 +38,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useMeta } from "@/hooks/use-session";
 import { api, errorMessage } from "@/lib/api";
+import type { LanguageCode, Translate } from "@/lib/i18n";
 import type { OwnerShopSettings, ShopDetail, ShopVerification } from "@/lib/types";
 
 function toForm(s: ShopDetail): ShopFormState {
@@ -84,6 +85,7 @@ export default function ShopSettingsPage() {
 
 /** initial is the latest saved shop (the query data, replaced after every save); only the form state is local. */
 function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; verification: ShopVerification }) {
+  const { t } = useI18n();
   const qc = useQueryClient();
   const { data: meta } = useMeta();
   const [form, setForm] = useState<ShopFormState>(() => toForm(initial));
@@ -98,8 +100,8 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
       qc.setQueryData(["owner", "shop"], s);
       qc.setQueryData(["owner", "verification"], s.verification);
       qc.invalidateQueries({ queryKey: ["me"] });
-      if (s.review_started) toast.warning("Saved. Your shop is hidden until an admin approves the new details.");
-      else toast.success("Shop settings saved");
+      if (s.review_started) toast.warning(t("owner.settings.toast.savedReview"));
+      else toast.success(t("owner.settings.toast.saved"));
     },
     onError: (e) => {
       setConfirming(false);
@@ -112,7 +114,7 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
     mutationFn: (f: File) => api.upload<{ image_url: string }>("/owner/shop/image", f),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["owner", "shop"] });
-      toast.success("Shop photo updated");
+      toast.success(t("owner.settings.toast.photoUpdated"));
     },
   });
 
@@ -126,22 +128,22 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
         else save.mutate();
       }}
     >
-      <PageTitle title="Shop settings" description="What customers see on your shop page and in search." />
+      <PageTitle title={t("owner.settings.title")} description={t("owner.settings.description")} />
       <div className="grid gap-6 lg:grid-cols-2">
         <section className="space-y-5 rounded-2xl border bg-card p-5">
           <div className="flex items-center gap-4">
             <ShopAvatar shop={initial} categories={meta?.categories} className="size-16" />
             <div>
               <Button type="button" variant="outline" size="sm" onClick={() => fileRef.current?.click()} disabled={upload.isPending}>
-                {upload.isPending ? <Loader2 className="animate-spin" /> : <Camera />} Shop photo
+                {upload.isPending ? <Loader2 className="animate-spin" /> : <Camera />} {t("owner.settings.shopPhoto")}
               </Button>
-              <p className="mt-1 text-xs text-muted-foreground">A clear photo of your shopfront helps customers find you.</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t("owner.settings.photoHint")}</p>
               <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={(e) => e.target.files?.[0] && upload.mutate(e.target.files[0])} />
             </div>
           </div>
           <ShopBasicsFields s={form} set={set} meta={meta} />
           <div className="space-y-1.5">
-            <Label htmlFor="desc">About your shop</Label>
+            <Label htmlFor="desc">{t("owner.settings.about")}</Label>
             <Textarea id="desc" rows={3} value={form.description} onChange={(e) => set("description", e.target.value.slice(0, 1000))} />
           </div>
         </section>
@@ -154,15 +156,15 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
         <section className="space-y-5 rounded-2xl border bg-card p-5">
           <div className="flex items-center justify-between gap-4">
             <Label htmlFor="pickup" className="flex flex-col items-start gap-0.5">
-              <span>Accept pickup reservations</span>
-              <span className="text-xs font-normal text-muted-foreground">Customers reserve and pay at your counter.</span>
+              <span>{t("owner.settings.pickupLabel")}</span>
+              <span className="text-xs font-normal text-muted-foreground">{t("owner.settings.pickupHint")}</span>
             </Label>
             <Switch id="pickup" checked={form.offers_pickup} onCheckedChange={(v) => set("offers_pickup", v)} />
           </div>
           <div className="flex items-center justify-between gap-4">
             <Label htmlFor="active" className="flex flex-col items-start gap-0.5">
-              <span>Shop visible on NearShop</span>
-              <span className="text-xs font-normal text-muted-foreground">Turn off to pause while you are away. Nothing is deleted.</span>
+              <span>{t("owner.settings.activeLabel")}</span>
+              <span className="text-xs font-normal text-muted-foreground">{t("owner.settings.activeHint")}</span>
             </Label>
             <Switch id="active" checked={active} onCheckedChange={setActive} />
           </div>
@@ -170,24 +172,24 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
       </div>
       <div className="fixed inset-x-0 bottom-0 z-40 border-t bg-background/95 p-3 backdrop-blur lg:left-[248px]">
         <div className="mx-auto flex max-w-6xl justify-end px-1 md:px-3">
-          <Button type="submit" disabled={save.isPending}>{save.isPending ? <Loader2 className="animate-spin" /> : <Save />} Save changes</Button>
+          <Button type="submit" disabled={save.isPending}>{save.isPending ? <Loader2 className="animate-spin" /> : <Save />} {t("owner.settings.save")}</Button>
         </div>
       </div>
       <Dialog open={confirming} onOpenChange={(o) => !save.isPending && setConfirming(o)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Hide your shop until it is checked again?</DialogTitle>
+            <DialogTitle>{t("owner.settings.confirm.title")}</DialogTitle>
             <DialogDescription>
-              You changed your shop&apos;s address or phone. Customers will not see your shop until an admin approves the new details,
-              usually within 2 working days.{form.phone !== (initial.phone ?? "") && " A new phone number is checked again with a call-back."}
+              {t("owner.settings.confirm.body")}
+              {form.phone !== (initial.phone ?? "") && ` ${t("owner.settings.confirm.phoneRecheck")}`}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <DialogClose asChild>
-              <Button type="button" variant="outline" disabled={save.isPending}>Keep editing</Button>
+              <Button type="button" variant="outline" disabled={save.isPending}>{t("owner.settings.confirm.keepEditing")}</Button>
             </DialogClose>
             <Button type="button" onClick={() => save.mutate()} disabled={save.isPending}>
-              {save.isPending && <Loader2 className="animate-spin" />} Save and send for review
+              {save.isPending && <Loader2 className="animate-spin" />} {t("owner.settings.confirm.saveAndSend")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -200,6 +202,7 @@ const EMPTY_KYC: KycFormState = { kyc_type: "gstin", kyc_number: "", document_ph
 
 /** "Verify your shop" (P3.4): evidence type and number, a document photo and a storefront photo. */
 function VerifySection({ v }: { v: ShopVerification }) {
+  const { t, language } = useI18n();
   const qc = useQueryClient();
   const [kyc, setKyc] = useState<KycFormState>(EMPTY_KYC);
   const [formKey, setFormKey] = useState(0); // remounts the file inputs after a submission
@@ -223,25 +226,24 @@ function VerifySection({ v }: { v: ShopVerification }) {
       setTouched(false);
       setAttempted(false);
       setFormKey((k) => k + 1);
-      toast.success("Sent for verification. An admin usually checks it within 2 working days.");
+      toast.success(t("owner.settings.toast.sentForVerification"));
     },
     onError: (e) => toast.error(errorMessage(e)),
   });
 
   const renewing = v.status === "verified";
-  const typeLabel = KYC_TYPES.find((t) => t.value === v.kyc_type)?.label;
   return (
     <section id="verify" aria-labelledby="verify-title" className="mt-6 mb-24 scroll-mt-20 space-y-5 rounded-2xl border bg-card p-5 lg:max-w-[calc(50%-0.75rem)]">
       <div className="flex items-start gap-3">
         <ShieldCheck className="mt-0.5 size-5 shrink-0 text-primary" />
         <div>
-          <h2 id="verify-title" className="text-lg font-semibold">{renewing ? "Renew your verification" : "Verify your shop"}</h2>
+          <h2 id="verify-title" className="text-lg font-semibold">{renewing ? t("owner.settings.verify.titleRenew") : t("owner.settings.verify.title")}</h2>
           <p className="text-sm text-muted-foreground">
-            Customers only see shops whose registration an admin has checked. Verification lasts 12 months.
+            {t("owner.settings.verify.intro")}
           </p>
         </div>
       </div>
-      <VerificationSummary v={v} typeLabel={typeLabel} />
+      <VerificationSummary v={v} t={t} language={language} />
       {v.can_submit ? (
         <form
           onSubmit={(e) => {
@@ -253,7 +255,7 @@ function VerifySection({ v }: { v: ShopVerification }) {
         >
           <KycFields key={formKey} s={kyc} set={set} numberTouched={touched} attempted={attempted} onBlurNumber={() => setTouched(true)} />
           <Button type="submit" disabled={submit.isPending}>
-            {submit.isPending ? <Loader2 className="animate-spin" /> : <BadgeCheck />} {renewing ? "Submit renewal" : "Submit for verification"}
+            {submit.isPending ? <Loader2 className="animate-spin" /> : <BadgeCheck />} {renewing ? t("owner.settings.verify.submitRenewal") : t("owner.settings.verify.submit")}
           </Button>
         </form>
       ) : null}
@@ -261,28 +263,33 @@ function VerifySection({ v }: { v: ShopVerification }) {
   );
 }
 
-function VerificationSummary({ v, typeLabel }: { v: ShopVerification; typeLabel?: string }) {
-  const evidence = v.kyc_number ? `${typeLabel ?? "Number"}: ${v.kyc_number}` : null;
+const KYC_TYPE_KEYS = ["gstin", "udyam", "trade_licence"] as const;
+
+function VerificationSummary({ v, t, language }: { v: ShopVerification; t: Translate; language: LanguageCode }) {
+  const kycType = KYC_TYPE_KEYS.find((k) => k === v.kyc_type);
+  const typeLabel = kycType ? t(`owner.settings.verify.kycTypes.${kycType}`) : t("owner.settings.verify.number");
+  const evidence = v.kyc_number ? t("owner.settings.verify.evidence", { type: typeLabel, number: v.kyc_number }) : null;
+  const day = (iso: string | null | undefined) => formatDay(iso, language);
   let line: string;
-  if (v.status === "verified" && v.renewal_pending) line = "Your renewal is waiting for an admin. Your shop stays visible meanwhile.";
+  if (v.status === "verified" && v.renewal_pending) line = t("owner.settings.verify.summary.renewalPending");
   else if (v.status === "verified" && verificationNotice(v)?.kind === "expired") {
-    line = `Your verification ended on ${formatDay(v.verified_until)}. Renew it to be visible again.`;
+    line = t("owner.settings.verify.summary.expired", { date: day(v.verified_until) });
   } else if (v.status === "verified") {
-    line = `Verified until ${formatDay(v.verified_until)}.`;
-    if (!v.can_submit && v.renewal_opens_at) line += ` You can renew from ${formatDay(v.renewal_opens_at)}.`;
-    if (!v.visible_to_customers) line += " Your shop is switched off in settings, so customers cannot see it.";
+    line = t("owner.settings.verify.summary.verifiedUntil", { date: day(v.verified_until) });
+    if (!v.can_submit && v.renewal_opens_at) line += ` ${t("owner.settings.verify.summary.renewFrom", { date: day(v.renewal_opens_at) })}`;
+    if (!v.visible_to_customers) line += ` ${t("owner.settings.verify.summary.switchedOff")}`;
   }
-  else if (v.status === "submitted") line = "Waiting for an admin, usually within 2 working days. Your shop is hidden until it is approved.";
-  else if (v.status === "rejected") line = "Not approved. Correct the evidence and submit again.";
-  else if (v.status === "suspended") line = "Suspended. Submit fresh evidence to be verified again.";
-  else line = "Not submitted yet. Your shop is hidden from customers until it is verified.";
+  else if (v.status === "submitted") line = t("owner.settings.verify.summary.submitted");
+  else if (v.status === "rejected") line = t("owner.settings.verify.summary.rejected");
+  else if (v.status === "suspended") line = t("owner.settings.verify.summary.suspended");
+  else line = t("owner.settings.verify.summary.draft");
   return (
     <div className="space-y-1 rounded-xl bg-muted/50 p-3 text-sm" data-testid="verification-summary">
       <p>{line}</p>
-      {v.rejection_reason && <p><span className="font-medium">Reason:</span> {v.rejection_reason}</p>}
+      {v.rejection_reason && <p><span className="font-medium">{t("owner.settings.verify.reason")}</span> {v.rejection_reason}</p>}
       {evidence && <p className="text-muted-foreground">{evidence}</p>}
       {!v.phone_verified && v.status !== "draft" && (
-        <p className="text-muted-foreground">We will call your shop phone to confirm it before approving.</p>
+        <p className="text-muted-foreground">{t("owner.settings.verify.callBack")}</p>
       )}
     </div>
   );

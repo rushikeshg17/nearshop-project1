@@ -413,6 +413,23 @@
         "one": "{count} cancelled",
         "other": "{count} cancelled"
       }
+    },
+    "shops": {
+      "title": "Shops near you",
+      "description": "Local shops that keep their stock online. Freshness shows when they last counted.",
+      "searchPlaceholder": "Shop name or area",
+      "sort": {
+        "distance": "Nearest first",
+        "rating": "Highest rated",
+        "fresh": "Freshest stock"
+      },
+      "all": "All",
+      "emptyTitle": "No shops match",
+      "emptyBody": "Try a wider radius or another category.",
+      "count": {
+        "one": "{count} shop within {km} km",
+        "other": "{count} shops within {km} km"
+      }
     }
   },
   "auth": {
@@ -829,6 +846,31 @@
       "mapYou": "You",
       "mapAddress": "Delivery address",
       "callShop": "Call shop"
+    },
+    "review": {
+      "title": "How was {shop}?",
+      "description": "Reviews are only accepted for completed purchases, one per visit.",
+      "post": "Post review",
+      "overall": "Overall experience",
+      "accuracy": "Item matched the listing",
+      "delivery": "Delivery",
+      "commentLabel": "Anything others should know? (optional)",
+      "commentPlaceholder": "Was it ready on time? Was the stock count right?",
+      "stars": {
+        "one": "{count} star",
+        "other": "{count} stars"
+      },
+      "thanks": "Thanks! Your review helps neighbours pick the right shop.",
+      "rulesIntro": "To keep ratings honest, NearShop accepts a review only when:",
+      "rules": {
+        "review_window_closed": "Reviews can be written within 14 days of the pickup or delivery.",
+        "account_too_new": "Your account must have been created at least 3 days before the purchase.",
+        "review_not_allowed": "A shop cannot be reviewed from the shop’s or its owner’s phone number.",
+        "phone_not_verified": "Your phone number must be verified.",
+        "duplicate_review": "Each pickup or delivery can be reviewed once."
+      },
+      "whyRefused": "(this is why the review was not accepted)",
+      "countsNote": "Only some reviews count toward a shop’s rating: one per customer per shop every 30 days."
     }
   },
   "owner": {
@@ -1112,6 +1154,303 @@
       "removeTitle": "Remove {name}?",
       "removeBody": "It disappears from search. Past orders and reviews keep their history.",
       "remove": "Remove"
+    },
+    "catalog": {
+      "welcomeTitle": "Your shop is live.",
+      "welcomeBody": "Tick what you have on the shelf, check the price and count, and add them all at once. It takes a couple of minutes.",
+      "title": "Add from catalogue",
+      "description": "Ready-made listings with specs and search words. Prices start at the local typical price; change them to yours.",
+      "searchPlaceholder": "Search the catalogue",
+      "myCategories": "My categories",
+      "select": "Select {name}",
+      "alreadyListed": "Already in your shop",
+      "typicalHere": "Typical here {price}",
+      "typical": "Typical {price}",
+      "mrp": "MRP {price}",
+      "rupee": "Rs",
+      "yourPrice": "Your price",
+      "qty": "Qty",
+      "quantity": "Quantity",
+      "noMatch": "Nothing in the catalogue matches. Use “New product” in Inventory to add your own.",
+      "selected": "{count} selected",
+      "clear": "Clear",
+      "add": {
+        "one": "Add {count} to my shop",
+        "other": "Add {count} to my shop"
+      },
+      "added": {
+        "one": "{count} product added. Customers nearby can find it now.",
+        "other": "{count} products added. Customers nearby can find them now."
+      }
+    },
+    "import": {
+      "actions": {
+        "update": "Update my listing",
+        "add_catalog": "Add (catalogue match)",
+        "add_new": "Add as new product",
+        "skip": "Skip"
+      },
+      "noItems": "No items found in that file",
+      "doneToast": "{added} added, {updated} updated",
+      "doneTitle": "Stock imported",
+      "doneBody": "{added} new items listed, {updated} updated. Customers nearby can find them now.",
+      "doneBodySkipped": "{added} new items listed, {updated} updated, {skipped} skipped. Customers nearby can find them now.",
+      "openInventory": "Open inventory",
+      "importAnother": "Import another file",
+      "title": "Import stock from Excel",
+      "description": "The fastest way to put your whole shelf online. Export your item list from your billing app and upload it here.",
+      "dropTitle": "Drop your .xlsx or .csv file here",
+      "dropHint": "Needs at least an item name column. Quantity and price are picked up automatically.",
+      "chooseFile": "Choose file",
+      "steps": {
+        "export": {
+          "title": "1. Export",
+          "body": "Most billing apps (Vyapar, Tally, Marg, Busy and others) can export an item or stock report to Excel. Any sheet with an item name column works."
+        },
+        "check": {
+          "title": "2. Check the matches",
+          "body": "We match every row to your listings and the NearShop catalogue. You review before anything changes."
+        },
+        "import": {
+          "title": "3. Import",
+          "body": "Upload again every evening to keep counts fresh. Fresh shops rank higher in search."
+        }
+      },
+      "template": "No billing app? {link} and fill it in Excel or Google Sheets.",
+      "templateLink": "Download the template",
+      "chooseDifferent": "Choose a different file",
+      "checkTitle": "Check before importing",
+      "checkDescription": "Found {count} items. Columns detected: {columns}.",
+      "columnPair": "{field} = “{header}”",
+      "fields": {
+        "name": "Item name",
+        "quantity": "Quantity",
+        "price": "Selling price",
+        "mrp": "MRP",
+        "brand": "Brand",
+        "category": "Category",
+        "sku": "Item code"
+      },
+      "badges": {
+        "update": "{count} update existing",
+        "add": "{count} new listings",
+        "skipped": "{count} skipped",
+        "needPrice": "{count} need a price"
+      },
+      "table": {
+        "row": "Row",
+        "item": "Item in your file",
+        "whatHappens": "What happens",
+        "qty": "Qty",
+        "price": "Price (Rs)"
+      },
+      "matched": "Matched: {name}",
+      "issues": {
+        "checkMatch": "Check the catalogue match",
+        "typicalPrice": "No price in file; using the typical local price",
+        "usingMrp": "No selling price in file; using MRP",
+        "noQuantityUpdate": "No quantity; stock will not be changed",
+        "noQuantityAdd": "No quantity; will be added as 0",
+        "priceMissing": "Price missing: enter one before importing"
+      },
+      "whatToDo": "What to do with {name}",
+      "category": "Category",
+      "categoryFor": "Category for {name}",
+      "quantityFor": "Quantity for {name}",
+      "pricePlaceholder": "Price",
+      "priceFor": "Price for {name}",
+      "needPrice": {
+        "one": "{count} row needs a price, or set it to Skip",
+        "other": "{count} rows need a price, or set them to Skip"
+      },
+      "nothingChanges": "Nothing changes until you import.",
+      "importCount": {
+        "one": "Import {count} item",
+        "other": "Import {count} items"
+      }
+    },
+    "insights": {
+      "title": "AI insights",
+      "description": "What to restock, what people nearby are looking for, and which prices customers may question.",
+      "modelNote": "{algorithm} · trained {ago}",
+      "demoData": "Demo data",
+      "restock": {
+        "title": "Restock before you run out",
+        "error": "average error {mae} units per week ({pct}% better than “same as last week”)",
+        "product": "Product",
+        "inStock": "In stock",
+        "next7": "Next 7 days",
+        "runsOut": "Runs out in",
+        "suggested": "Suggested order",
+        "trend": "Trend",
+        "outNow": "Out now",
+        "days": {
+          "one": "{count} day",
+          "other": "{count} days"
+        },
+        "trends": {
+          "rising": "rising",
+          "steady": "steady",
+          "falling": "falling"
+        },
+        "confidence": {
+          "low": "low confidence",
+          "medium": "medium confidence",
+          "high": "high confidence"
+        },
+        "trendLine": "{trend} · {confidence}",
+        "empty": "Nothing is at risk of running out in the next two weeks."
+      },
+      "area": {
+        "title": "What people within 3 km search for",
+        "hint": "Last 14 days of searches near your shop.",
+        "searches": {
+          "one": "{count} search",
+          "other": "{count} searches"
+        },
+        "youStock": "You stock it",
+        "opportunity": "Opportunity",
+        "empty": "No searches nearby yet."
+      },
+      "missed": {
+        "title": "Searched nearby, found nowhere",
+        "hint": "Demand no shop in the area is meeting. Worth stocking?",
+        "empty": "Nothing unmet right now."
+      },
+      "bundles": {
+        "title": "Bought together, but you don’t stock it",
+        "note": "market-basket rules from nearby purchases",
+        "alsoBuy": "{pct}% of people buying {item} also buy this",
+        "empty": "Your range already covers the common bundles.",
+        "addFromCatalogue": "Add from catalogue"
+      },
+      "prices": {
+        "title": "Prices customers may question",
+        "note": "compared with other shops selling the same item",
+        "line": {
+          "one": "Yours {price} · typical {reference} across {count} shop",
+          "other": "Yours {price} · typical {reference} across {count} shops"
+        },
+        "empty": "Your prices are in line with shops nearby.",
+        "footnote": "Flags are for your review only. NearShop never hides or penalises a listing automatically."
+      }
+    },
+    "settings": {
+      "title": "Shop settings",
+      "description": "What customers see on your shop page and in search.",
+      "shopPhoto": "Shop photo",
+      "photoHint": "A clear photo of your shopfront helps customers find you.",
+      "about": "About your shop",
+      "pickupLabel": "Accept pickup reservations",
+      "pickupHint": "Customers reserve and pay at your counter.",
+      "activeLabel": "Shop visible on NearShop",
+      "activeHint": "Turn off to pause while you are away. Nothing is deleted.",
+      "save": "Save changes",
+      "toast": {
+        "savedReview": "Saved. Your shop is hidden until an admin approves the new details.",
+        "saved": "Shop settings saved",
+        "photoUpdated": "Shop photo updated",
+        "sentForVerification": "Sent for verification. An admin usually checks it within 2 working days."
+      },
+      "confirm": {
+        "title": "Hide your shop until it is checked again?",
+        "body": "You changed your shop’s address or phone. Customers will not see your shop until an admin approves the new details, usually within 2 working days.",
+        "phoneRecheck": "A new phone number is checked again with a call-back.",
+        "keepEditing": "Keep editing",
+        "saveAndSend": "Save and send for review"
+      },
+      "verify": {
+        "title": "Verify your shop",
+        "titleRenew": "Renew your verification",
+        "intro": "Customers only see shops whose registration an admin has checked. Verification lasts 12 months.",
+        "submit": "Submit for verification",
+        "submitRenewal": "Submit renewal",
+        "kycTypes": {
+          "gstin": "GSTIN",
+          "udyam": "Udyam registration",
+          "trade_licence": "Trade licence"
+        },
+        "number": "Number",
+        "evidence": "{type}: {number}",
+        "reason": "Reason:",
+        "callBack": "We will call your shop phone to confirm it before approving.",
+        "summary": {
+          "renewalPending": "Your renewal is waiting for an admin. Your shop stays visible meanwhile.",
+          "expired": "Your verification ended on {date}. Renew it to be visible again.",
+          "verifiedUntil": "Verified until {date}.",
+          "renewFrom": "You can renew from {date}.",
+          "switchedOff": "Your shop is switched off in settings, so customers cannot see it.",
+          "submitted": "Waiting for an admin, usually within 2 working days. Your shop is hidden until it is approved.",
+          "rejected": "Not approved. Correct the evidence and submit again.",
+          "suspended": "Suspended. Submit fresh evidence to be verified again.",
+          "draft": "Not submitted yet. Your shop is hidden from customers until it is verified."
+        }
+      }
+    },
+    "reviews": {
+      "title": "Reviews",
+      "description": "Only customers who completed a pickup or delivery can review, once per purchase. Reply once to each review, in public.",
+      "emptyTitle": "No reviews yet",
+      "emptyBody": "After a pickup or delivery is completed, the customer is invited to rate it.",
+      "fromLatest": {
+        "one": "from the latest {count} review",
+        "other": "from the latest {count} reviews"
+      },
+      "ratingNote": "Your public rating counts one review per customer every 30 days, and shows once 5 customers have reviewed you.",
+      "toast": {
+        "updated": "Reply updated.",
+        "posted": "Reply posted. Customers see it under the review."
+      },
+      "yourReply": "Your reply",
+      "edited": "edited",
+      "reported": "Reported, waiting for an admin",
+      "hiddenByAdmin": "Hidden by an admin",
+      "removedByAdmin": "Removed by an admin",
+      "edit": "Edit",
+      "editUntil": "(until {time})",
+      "lockedReported": "A reported reply cannot be edited while an admin reviews it.",
+      "editWindow": {
+        "one": "Replies can be edited for {count} hour after they are posted.",
+        "other": "Replies can be edited for {count} hours after they are posted."
+      },
+      "replyPublicly": "Reply publicly",
+      "editLabel": "Edit your reply",
+      "newLabel": "Your public reply",
+      "placeholder": "Thank the customer, or explain what you have fixed.",
+      "hint": {
+        "one": "Shown under the review on your shop page. One reply per review, editable for {count} hour.",
+        "other": "Shown under the review on your shop page. One reply per review, editable for {count} hours."
+      },
+      "save": "Save reply",
+      "post": "Post reply",
+      "cancel": "Cancel"
+    },
+    "productForm": {
+      "toast": {
+        "updated": "Listing updated",
+        "added": "Product added and now searchable nearby"
+      },
+      "editTitle": "Edit listing",
+      "addTitle": "Add a product",
+      "addDescription": "For items not in the catalogue. Add search words so customers find it.",
+      "saveChanges": "Save changes",
+      "addProduct": "Add product",
+      "name": "Product name",
+      "namePlaceholder": "e.g. Anchor Roma 6A Switch",
+      "brand": "Brand",
+      "category": "Category",
+      "choose": "Choose",
+      "price": "Your price (Rs)",
+      "mrp": "MRP (Rs, optional)",
+      "quantity": "Quantity in stock",
+      "lowStock": "Warn me below",
+      "unit": "Pack size / unit",
+      "unitPlaceholder": "1 pc, 1 L, pair",
+      "sku": "SKU (optional)",
+      "tags": "Search words",
+      "tagsReplaces": "(replaces existing)",
+      "tagsPlaceholder": "switch, light switch, modular, 6 amp",
+      "description": "Description"
     }
   }
 }

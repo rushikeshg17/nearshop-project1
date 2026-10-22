@@ -8,6 +8,7 @@ import { useMemo, useState } from "react";
 import { AppIcon } from "@/components/common/app-icon";
 import { EmptyState, ErrorState } from "@/components/common/states";
 import { ShopMap } from "@/components/map/shop-map";
+import { useI18n } from "@/components/providers";
 import { ShopCard } from "@/components/shop/shop-card";
 import { LocationPicker } from "@/components/site/location-picker";
 import { Input } from "@/components/ui/input";
@@ -16,11 +17,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useDebounce } from "@/hooks/use-debounce";
 import { useMeta } from "@/hooks/use-session";
 import { api } from "@/lib/api";
+import { formatNumber } from "@/lib/format";
+import { plural } from "@/lib/i18n";
 import { useLocation } from "@/lib/location";
 import type { ShopBrief } from "@/lib/types";
 import { cn, revealFocused } from "@/lib/utils";
 
 export function ShopsView() {
+  const { t, language } = useI18n();
   const router = useRouter();
   const { data: meta } = useMeta();
   const { location, radiusKm, ready } = useLocation();
@@ -46,26 +50,26 @@ export function ShopsView() {
   return (
     <div className="mx-auto max-w-[1440px] lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(380px,42%)]">
       <div className="min-w-0 px-4 pt-6 pb-10 md:px-6">
-        <h1 className="text-3xl font-semibold">Shops near you</h1>
-        <p className="mt-1 text-muted-foreground">Local shops that keep their stock online. Freshness shows when they last counted.</p>
+        <h1 className="text-3xl font-semibold">{t("discovery.shops.title")}</h1>
+        <p className="mt-1 text-muted-foreground">{t("discovery.shops.description")}</p>
 
         <div className="mt-5 flex flex-wrap items-center gap-2">
           <LocationPicker />
           <div className="relative min-w-48 flex-1">
             <Search className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input value={text} onChange={(e) => setText(e.target.value)} placeholder="Shop name or area" className="h-9 rounded-full pl-9" />
+            <Input value={text} onChange={(e) => setText(e.target.value)} placeholder={t("discovery.shops.searchPlaceholder")} className="h-9 rounded-full pl-9" />
           </div>
           <Select value={sort} onValueChange={setSort}>
             <SelectTrigger className="h-9 w-44 rounded-full"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="distance">Nearest first</SelectItem>
-              <SelectItem value="rating">Highest rated</SelectItem>
-              <SelectItem value="fresh">Freshest stock</SelectItem>
+              <SelectItem value="distance">{t("discovery.shops.sort.distance")}</SelectItem>
+              <SelectItem value="rating">{t("discovery.shops.sort.rating")}</SelectItem>
+              <SelectItem value="fresh">{t("discovery.shops.sort.fresh")}</SelectItem>
             </SelectContent>
           </Select>
         </div>
         <div className="-mx-4 mt-3 flex gap-2 overflow-x-auto px-4 pb-1 scrollbar-none md:mx-0 md:px-0" onFocus={revealFocused}>
-          <button onClick={() => setCategory(null)} className={cn("shrink-0 rounded-full border px-3 py-1.5 text-sm", !category ? "border-primary bg-primary text-primary-foreground" : "bg-card hover:bg-accent")}>All</button>
+          <button onClick={() => setCategory(null)} className={cn("shrink-0 rounded-full border px-3 py-1.5 text-sm", !category ? "border-primary bg-primary text-primary-foreground" : "bg-card hover:bg-accent")}>{t("discovery.shops.all")}</button>
           {meta?.categories.map((c) => (
             <button key={c.slug} onClick={() => setCategory(category === c.slug ? null : c.slug)}
               className={cn("inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm", category === c.slug ? "border-primary bg-primary text-primary-foreground" : "bg-card hover:bg-accent")}>
@@ -80,10 +84,10 @@ export function ShopsView() {
           ) : !shops.data ? (
             <div className="grid gap-3 sm:grid-cols-2">{Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-44 rounded-2xl" />)}</div>
           ) : list.length === 0 ? (
-            <EmptyState icon={Store} title="No shops match" description="Try a wider radius or another category." />
+            <EmptyState icon={Store} title={t("discovery.shops.emptyTitle")} description={t("discovery.shops.emptyBody")} />
           ) : (
             <>
-              <p className="mb-3 text-sm text-muted-foreground">{list.length} shops within {Math.max(radiusKm, 3)} km</p>
+              <p className="mb-3 text-sm text-muted-foreground">{t(`discovery.shops.count.${plural(language, list.length)}`, { count: formatNumber(list.length), km: formatNumber(Math.max(radiusKm, 3)) })}</p>
               <div className="grid gap-3 sm:grid-cols-2">
                 {list.map((s) => (
                   <div key={s.id} onMouseEnter={() => setHover(s.id)} onMouseLeave={() => setHover(null)}>

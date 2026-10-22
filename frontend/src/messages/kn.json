@@ -413,6 +413,23 @@
         "one": "",
         "other": ""
       }
+    },
+    "shops": {
+      "title": "",
+      "description": "",
+      "searchPlaceholder": "",
+      "sort": {
+        "distance": "",
+        "rating": "",
+        "fresh": ""
+      },
+      "all": "",
+      "emptyTitle": "",
+      "emptyBody": "",
+      "count": {
+        "one": "",
+        "other": ""
+      }
     }
   },
   "auth": {
@@ -829,6 +846,31 @@
       "mapYou": "",
       "mapAddress": "",
       "callShop": ""
+    },
+    "review": {
+      "title": "",
+      "description": "",
+      "post": "",
+      "overall": "",
+      "accuracy": "",
+      "delivery": "",
+      "commentLabel": "",
+      "commentPlaceholder": "",
+      "stars": {
+        "one": "",
+        "other": ""
+      },
+      "thanks": "",
+      "rulesIntro": "",
+      "rules": {
+        "review_window_closed": "",
+        "account_too_new": "",
+        "review_not_allowed": "",
+        "phone_not_verified": "",
+        "duplicate_review": ""
+      },
+      "whyRefused": "",
+      "countsNote": ""
     }
   },
   "owner": {
@@ -1112,6 +1154,303 @@
       "removeTitle": "",
       "removeBody": "",
       "remove": ""
+    },
+    "catalog": {
+      "welcomeTitle": "",
+      "welcomeBody": "",
+      "title": "",
+      "description": "",
+      "searchPlaceholder": "",
+      "myCategories": "",
+      "select": "",
+      "alreadyListed": "",
+      "typicalHere": "",
+      "typical": "",
+      "mrp": "",
+      "rupee": "",
+      "yourPrice": "",
+      "qty": "",
+      "quantity": "",
+      "noMatch": "",
+      "selected": "",
+      "clear": "",
+      "add": {
+        "one": "",
+        "other": ""
+      },
+      "added": {
+        "one": "",
+        "other": ""
+      }
+    },
+    "import": {
+      "actions": {
+        "update": "",
+        "add_catalog": "",
+        "add_new": "",
+        "skip": ""
+      },
+      "noItems": "",
+      "doneToast": "",
+      "doneTitle": "",
+      "doneBody": "",
+      "doneBodySkipped": "",
+      "openInventory": "",
+      "importAnother": "",
+      "title": "",
+      "description": "",
+      "dropTitle": "",
+      "dropHint": "",
+      "chooseFile": "",
+      "steps": {
+        "export": {
+          "title": "",
+          "body": ""
+        },
+        "check": {
+          "title": "",
+          "body": ""
+        },
+        "import": {
+          "title": "",
+          "body": ""
+        }
+      },
+      "template": "",
+      "templateLink": "",
+      "chooseDifferent": "",
+      "checkTitle": "",
+      "checkDescription": "",
+      "columnPair": "",
+      "fields": {
+        "name": "",
+        "quantity": "",
+        "price": "",
+        "mrp": "",
+        "brand": "",
+        "category": "",
+        "sku": ""
+      },
+      "badges": {
+        "update": "",
+        "add": "",
+        "skipped": "",
+        "needPrice": ""
+      },
+      "table": {
+        "row": "",
+        "item": "",
+        "whatHappens": "",
+        "qty": "",
+        "price": ""
+      },
+      "matched": "",
+      "issues": {
+        "checkMatch": "",
+        "typicalPrice": "",
+        "usingMrp": "",
+        "noQuantityUpdate": "",
+        "noQuantityAdd": "",
+        "priceMissing": ""
+      },
+      "whatToDo": "",
+      "category": "",
+      "categoryFor": "",
+      "quantityFor": "",
+      "pricePlaceholder": "",
+      "priceFor": "",
+      "needPrice": {
+        "one": "",
+        "other": ""
+      },
+      "nothingChanges": "",
+      "importCount": {
+        "one": "",
+        "other": ""
+      }
+    },
+    "insights": {
+      "title": "",
+      "description": "",
+      "modelNote": "",
+      "demoData": "",
+      "restock": {
+        "title": "",
+        "error": "",
+        "product": "",
+        "inStock": "",
+        "next7": "",
+        "runsOut": "",
+        "suggested": "",
+        "trend": "",
+        "outNow": "",
+        "days": {
+          "one": "",
+          "other": ""
+        },
+        "trends": {
+          "rising": "",
+          "steady": "",
+          "falling": ""
+        },
+        "confidence": {
+          "low": "",
+          "medium": "",
+          "high": ""
+        },
+        "trendLine": "",
+        "empty": ""
+      },
+      "area": {
+        "title": "",
+        "hint": "",
+        "searches": {
+          "one": "",
+          "other": ""
+        },
+        "youStock": "",
+        "opportunity": "",
+        "empty": ""
+      },
+      "missed": {
+        "title": "",
+        "hint": "",
+        "empty": ""
+      },
+      "bundles": {
+        "title": "",
+        "note": "",
+        "alsoBuy": "",
+        "empty": "",
+        "addFromCatalogue": ""
+      },
+      "prices": {
+        "title": "",
+        "note": "",
+        "line": {
+          "one": "",
+          "other": ""
+        },
+        "empty": "",
+        "footnote": ""
+      }
+    },
+    "settings": {
+      "title": "",
+      "description": "",
+      "shopPhoto": "",
+      "photoHint": "",
+      "about": "",
+      "pickupLabel": "",
+      "pickupHint": "",
+      "activeLabel": "",
+      "activeHint": "",
+      "save": "",
+      "toast": {
+        "savedReview": "",
+        "saved": "",
+        "photoUpdated": "",
+        "sentForVerification": ""
+      },
+      "confirm": {
+        "title": "",
+        "body": "",
+        "phoneRecheck": "",
+        "keepEditing": "",
+        "saveAndSend": ""
+      },
+      "verify": {
+        "title": "",
+        "titleRenew": "",
+        "intro": "",
+        "submit": "",
+        "submitRenewal": "",
+        "kycTypes": {
+          "gstin": "",
+          "udyam": "",
+          "trade_licence": ""
+        },
+        "number": "",
+        "evidence": "",
+        "reason": "",
+        "callBack": "",
+        "summary": {
+          "renewalPending": "",
+          "expired": "",
+          "verifiedUntil": "",
+          "renewFrom": "",
+          "switchedOff": "",
+          "submitted": "",
+          "rejected": "",
+          "suspended": "",
+          "draft": ""
+        }
+      }
+    },
+    "reviews": {
+      "title": "",
+      "description": "",
+      "emptyTitle": "",
+      "emptyBody": "",
+      "fromLatest": {
+        "one": "",
+        "other": ""
+      },
+      "ratingNote": "",
+      "toast": {
+        "updated": "",
+        "posted": ""
+      },
+      "yourReply": "",
+      "edited": "",
+      "reported": "",
+      "hiddenByAdmin": "",
+      "removedByAdmin": "",
+      "edit": "",
+      "editUntil": "",
+      "lockedReported": "",
+      "editWindow": {
+        "one": "",
+        "other": ""
+      },
+      "replyPublicly": "",
+      "editLabel": "",
+      "newLabel": "",
+      "placeholder": "",
+      "hint": {
+        "one": "",
+        "other": ""
+      },
+      "save": "",
+      "post": "",
+      "cancel": ""
+    },
+    "productForm": {
+      "toast": {
+        "updated": "",
+        "added": ""
+      },
+      "editTitle": "",
+      "addTitle": "",
+      "addDescription": "",
+      "saveChanges": "",
+      "addProduct": "",
+      "name": "",
+      "namePlaceholder": "",
+      "brand": "",
+      "category": "",
+      "choose": "",
+      "price": "",
+      "mrp": "",
+      "quantity": "",
+      "lowStock": "",
+      "unit": "",
+      "unitPlaceholder": "",
+      "sku": "",
+      "tags": "",
+      "tagsReplaces": "",
+      "tagsPlaceholder": "",
+      "description": ""
     }
   }
 }
