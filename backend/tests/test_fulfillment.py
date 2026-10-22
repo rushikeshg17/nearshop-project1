@@ -21,17 +21,27 @@ def test_reservation_happy_path_holds_stock_and_records_sale(customer, owner_a, 
 
     r = owner_a.post(f"/api/owner/reservations/{r['id']}/ready", json={}, headers=HEADERS).json()
     assert r["status"] == "READY_FOR_PICKUP"
-    r = owner_a.post(f"/api/owner/reservations/{r['id']}/complete", json={}, headers=HEADERS).json()
+    # Completing needs the code the customer shows (P3.5; tests/test_reviews.py covers wrong codes) and how the
+    # customer paid (P6.1; tests/test_payment_direct.py).
+    r = owner_a.post(f"/api/owner/reservations/{r['id']}/complete", json={"code": r["code"], "payment_method": "cod"},
+                     headers=HEADERS).json()
     assert r["status"] == "COMPLETED"
     assert stock(ids["tape"]) == before - 2  # the held units left with the customer
 
     assert Database().sales_history.count({"basket_id": r["code"], "is_demo": False}) == 1
 
-    # One review per completed reservation.
-    ok = customer.post("/api/reviews", json={"reservation_id": r["id"], "rating": 5}, headers=HEADERS)
-    assert ok.status_code == 200
-    dup = customer.post("/api/reviews", json={"reservation_id": r["id"], "rating": 4}, headers=HEADERS)
-    assert dup.status_code == 409
+    # One review per completed reservation, from an account created at least 3 days before the purchase (P3.5).
+    # The shared customer's created_at is put back afterwards, so later tests see the account as seeded.
+    db = Database()
+    created_at = db.users.find_raw({"email": "cust@example.com"}, {"created_at": 1})[0]["created_at"]
+    db.users.update_one({"email": "cust@example.com"}, {"$set": {"created_at": utcnow() - timedelta(days=30)}})
+    try:
+        ok = customer.post("/api/reviews", json={"reservation_id": r["id"], "rating": 5}, headers=HEADERS)
+        assert ok.status_code == 200
+        dup = customer.post("/api/reviews", json={"reservation_id": r["id"], "rating": 4}, headers=HEADERS)
+        assert dup.status_code == 409
+    finally:
+        db.users.update_one({"email": "cust@example.com"}, {"$set": {"created_at": created_at}})
 
 
 def test_cannot_review_unfinished_purchase(customer, ids):
@@ -100,9 +110,12 @@ def test_delivery_order_lifecycle(customer, owner_a, ids):
     assert o["status"] == "PENDING" and o["total"] == 80 + 30
     for action, expected in [("confirm", "SHOP_CONFIRMED"), ("prepare", "PREPARING"), ("dispatch", "OUT_FOR_DELIVERY"),
                              ("deliver", "DELIVERED")]:
-        o = owner_a.post(f"/api/owner/orders/{o['id']}/{action}", json={}, headers=HEADERS).json()
+        # Delivering needs the 4-digit code only the customer sees (P3.5) and how the customer paid (P6.1).
+        body = {"code": Database().orders.get(o["id"]).delivery_code, "payment_method": "cod"} \
+            if action == "deliver" else {}
+        o = owner_a.post(f"/api/owner/orders/{o['id']}/{action}", json=body, headers=HEADERS).json()
         assert o["status"] == expected
-    assert o["payment_status"] == "paid"
+    assert (o["payment_method"], o["payment_status"]) == ("cod", "paid")
     assert stock(ids["tape"]) == before - 2
 
 

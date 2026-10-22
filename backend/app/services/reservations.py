@@ -5,26 +5,29 @@
         +--reject--> REJECTED  +------cancel / expire-+--> CANCELLED / EXPIRED
 
 Stock is held when the shop confirms (so the unit is physically set aside) and returned
-to stock if the reservation is cancelled or expires.
+to stock if the reservation is cancelled or expires. Completing records how the customer paid (P6.1).
 """
 import logging
+import secrets
 from datetime import timedelta
 
 from pymongo.errors import DuplicateKeyError
 
 from app.core.config import settings
 from app.core.database import Database, utcnow
-from app.core.errors import Conflict, Forbidden, InvalidTransition, NotFound
+from app.core.errors import AppError, Conflict, Forbidden, InvalidTransition, NotFound
 from app.models import (
     InventoryReason,
     Reservation,
     Role,
     SaleSource,
+    Shop,
     User,
 )
 from app.models import (
     ReservationStatus as RS,
 )
+from app.models.activity import PAYMENT_METHODS
 from app.services.fulfillment_common import record_event, record_sales
 from app.services.inventory import change_stock
 from app.services.notifications import notify
@@ -33,6 +36,8 @@ from app.utils.text import short_code
 log = logging.getLogger(__name__)
 
 ACTIVE = {RS.REQUESTED, RS.CONFIRMED, RS.READY_FOR_PICKUP}
+# Customers cannot see or reserve from a shop whose verification is not in force (P3.3).
+SHOP_NOT_VERIFIED = "This shop is not available on NearShop right now"
 MAX_ACTIVE_PER_CUSTOMER = 5
 
 # (from_status, action) -> (to_status, who may do it)
@@ -49,6 +54,19 @@ TRANSITIONS: dict[tuple[RS, str], tuple[RS, set[str]]] = {
     (RS.READY_FOR_PICKUP, "cancel"): (RS.CANCELLED, {"customer", "owner"}),
     (RS.READY_FOR_PICKUP, "expire"): (RS.EXPIRED, {"system"}),
 }
+
+
+def check_payment_method(shop: Shop, method: str | None) -> str:
+    """The payment method the owner chose when completing a pickup or delivering an order (P6.1, plan section 8.8):
+    cod (cash) or upi_direct (the shop's own UPI ID, so refused while the shop has none). NearShop never holds the
+    money either way."""
+    if not method:
+        raise AppError("Choose how the customer paid: cash or UPI", code="payment_method_required", status_code=422)
+    if method not in PAYMENT_METHODS:
+        raise AppError("Choose cash or UPI as the payment method", code="invalid_payment_method", status_code=422)
+    if method == "upi_direct" and not shop.upi_id:
+        raise Conflict("Add your shop's UPI ID in shop settings before recording a UPI payment", code="upi_not_set_up")
+    return method
 
 
 def allowed_actions(reservation: Reservation, actor: str) -> list[str]:
@@ -70,6 +88,8 @@ def _create_reservation(db: Database, customer: User, product_id: int, quantity:
     shop = db.shops.get(product.shop_id)
     if not shop.is_active or not shop.offers_pickup:
         raise Conflict("This shop is not accepting pickup reservations right now")
+    if not shop.is_live:  # not verified, or its approval has ended (P3.3, plan section 8.1)
+        raise Conflict(SHOP_NOT_VERIFIED, code="shop_not_verified")
     if quantity < 1 or quantity > 20:
         raise Conflict("You can reserve between 1 and 20 units")
     if product.quantity < quantity:
@@ -101,9 +121,9 @@ def _create_reservation(db: Database, customer: User, product_id: int, quantity:
     ))
     record_event(db, entity="reservation", entity_id=res.id, shop_id=shop.id, from_status=None,
                  to_status=RS.REQUESTED, actor_role="customer", actor_id=customer.id)
-    notify(db, shop.owner_id, "reservation_new", f"New reservation {res.code}",
-           f"{customer.name} wants {quantity} x {product.name}. Confirm within {settings.request_response_minutes} min.",
-           "/shop/reservations")
+    notify(db, shop.owner_id, "reservation_new", link="/shop/reservations", message="reservation_new",
+           params={"code": res.code, "customer": customer.name, "quantity": quantity, "product": product.name,
+                   "minutes": settings.request_response_minutes})
     return res
 
 
@@ -120,13 +140,21 @@ def _actor_for(user: User | None, res: Reservation, shop_owner_id: int) -> str:
 
 
 def transition(db: Database, reservation_id: int, action: str, user: User | None,
-               reason: str | None = None) -> Reservation:
+               reason: str | None = None, code: str | None = None, payment_method: str | None = None) -> Reservation:
     """Move a reservation through its state machine. The reservation, the stock hold, the audit
-    event, the sale and the notifications commit together or not at all."""
-    return db.transaction(lambda: _transition(db, reservation_id, action, user, reason))
+    event, the sale and the notifications commit together or not at all. Completing needs the reservation
+    code the customer shows at the counter (P3.5, plan section 8.2), compared case-insensitively, and the payment
+    method, cod or upi_direct (P6.1, check_payment_method); other actions ignore payment_method."""
+    return db.transaction(lambda: _transition(db, reservation_id, action, user, reason, code, payment_method))
 
 
-def _transition(db: Database, reservation_id: int, action: str, user: User | None, reason: str | None) -> Reservation:
+def code_matches(entered: str | None, expected: str) -> bool:
+    """Whether the code the shop typed is the reservation's: case and outer spaces do not matter."""
+    return bool(entered) and secrets.compare_digest(entered.strip().upper().encode(), expected.upper().encode())
+
+
+def _transition(db: Database, reservation_id: int, action: str, user: User | None, reason: str | None,
+                code: str | None = None, payment_method: str | None = None) -> Reservation:
     # Loaded inside the transaction: if someone else changes it first, this transaction is
     # retried and sees the new status instead of overwriting it.
     res = db.reservations.get(reservation_id)
@@ -141,6 +169,10 @@ def _transition(db: Database, reservation_id: int, action: str, user: User | Non
     to_status, actors = TRANSITIONS[key]
     if actor not in actors and actor != "admin":
         raise Forbidden(f"Only the {' or '.join(sorted(actors))} can {action} this reservation")
+    if action == "complete" and settings.completion_codes_required and not code_matches(code, res.code):
+        raise Conflict("Enter the reservation code the customer shows you" if not (code or "").strip()
+                       else "That is not this reservation's code", code="wrong_code")
+    method = check_payment_method(shop, payment_method) if action == "complete" else None
 
     now = utcnow()
     from_status = res.status
@@ -150,46 +182,48 @@ def _transition(db: Database, reservation_id: int, action: str, user: User | Non
     if action == "confirm":
         change_stock(db, product, -res.quantity, InventoryReason.RESERVATION_HOLD, actor_id)
         changes.update(stock_held=True, confirmed_at=now, expires_at=now + timedelta(minutes=res.hold_minutes))
-        notify(db, res.customer_id, "reservation_confirmed", f"{shop.name} confirmed your reservation",
-               f"{res.quantity} x {product.name} is held for you for {res.hold_minutes} minutes. Code {res.code}.",
-               f"/account/reservations/{res.id}")
+        notify(db, res.customer_id, "reservation_confirmed", link=f"/account/reservations/{res.id}",
+               message="reservation_confirmed", params={"shop": shop.name, "quantity": res.quantity,
+                                                        "product": product.name, "minutes": res.hold_minutes,
+                                                        "code": res.code})
     elif action == "ready":
         changes.update(ready_at=now, expires_at=max(res.expires_at, now + timedelta(minutes=res.hold_minutes)))
-        notify(db, res.customer_id, "reservation_ready", "Ready for pickup",
-               f"{product.name} is packed at {shop.name}. Show code {res.code} at the counter.",
-               f"/account/reservations/{res.id}")
+        notify(db, res.customer_id, "reservation_ready", link=f"/account/reservations/{res.id}",
+               message="reservation_ready", params={"product": product.name, "shop": shop.name, "code": res.code})
     elif action == "complete":
-        changes.update(completed_at=now, stock_held=False)  # the held unit left the shop with the customer
+        # The held unit left the shop with the customer, who paid the shop in cash or to its own UPI ID.
+        changes.update(completed_at=now, stock_held=False, payment_method=method, payment_status="paid")
         record_sales(db, [(product, res.quantity, res.unit_price)], source=SaleSource.RESERVATION,
                      basket_id=res.code, customer_id=res.customer_id)
-        notify(db, res.customer_id, "reservation_completed", "Pickup complete",
-               f"Thanks for shopping at {shop.name}. How was it? Leave a quick review.",
-               f"/account/reservations/{res.id}")
+        notify(db, res.customer_id, "reservation_completed", link=f"/account/reservations/{res.id}",
+               message="reservation_completed", params={"shop": shop.name})
     else:  # reject / cancel / expire
         if res.stock_held:
             change_stock(db, product, res.quantity, InventoryReason.RESERVATION_RELEASE, actor_id)
         close_reason = (reason or "").strip() or None
         changes.update(stock_held=False, closed_at=now, close_reason=close_reason)
         if action == "reject":
-            notify(db, res.customer_id, "reservation_rejected", f"{shop.name} could not hold your item",
-                   close_reason or "The shop was unable to confirm this reservation. Try another shop nearby.",
-                   f"/search?q={product.name}")
+            # The owner's reason, as typed, is the body when there is one.
+            notify(db, res.customer_id, "reservation_rejected", link=f"/search?q={product.name}",
+                   message="reservation_rejected_reason" if close_reason else "reservation_rejected",
+                   params={"shop": shop.name, "reason": close_reason})
         elif action == "cancel" and actor == "customer":
-            notify(db, shop.owner_id, "reservation_cancelled", f"Reservation {res.code} cancelled by customer",
-                   f"{res.quantity} x {product.name} is back in stock.", "/shop/reservations")
+            notify(db, shop.owner_id, "reservation_cancelled", link="/shop/reservations",
+                   message="reservation_cancelled_by_customer",
+                   params={"code": res.code, "quantity": res.quantity, "product": product.name})
         elif action == "cancel":
-            notify(db, res.customer_id, "reservation_cancelled", f"{shop.name} cancelled your reservation",
-                   close_reason or "The shop cancelled this reservation.", f"/account/reservations/{res.id}")
+            notify(db, res.customer_id, "reservation_cancelled", link=f"/account/reservations/{res.id}",
+                   message="reservation_cancelled_by_shop_reason" if close_reason else "reservation_cancelled_by_shop",
+                   params={"shop": shop.name, "reason": close_reason})
         elif action == "expire":
             was_request = from_status == RS.REQUESTED
-            notify(db, res.customer_id, "reservation_expired",
-                   "Reservation request timed out" if was_request else "Your reservation expired",
-                   f"{shop.name} did not respond in time." if was_request
-                   else f"The hold on {product.name} at {shop.name} has ended.",
-                   f"/account/reservations/{res.id}")
+            notify(db, res.customer_id, "reservation_expired", link=f"/account/reservations/{res.id}",
+                   message="reservation_request_expired" if was_request else "reservation_hold_expired",
+                   params={"shop": shop.name, "product": product.name})
             if not was_request:
-                notify(db, shop.owner_id, "reservation_expired", f"Reservation {res.code} expired",
-                       f"{res.quantity} x {product.name} has been returned to stock.", "/shop/reservations")
+                notify(db, shop.owner_id, "reservation_expired", link="/shop/reservations",
+                       message="reservation_expired_shop",
+                       params={"code": res.code, "quantity": res.quantity, "product": product.name})
 
     db.reservations.set(res, **changes)
     record_event(db, entity="reservation", entity_id=res.id, shop_id=res.shop_id, from_status=from_status,

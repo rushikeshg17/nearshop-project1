@@ -28,7 +28,7 @@ from app.services import synonyms
 from app.services.search import SearchParams, run_search, suggestions
 from database import admin_tasks, schema
 from tests.conftest import CENTER as TEST_CENTER
-from tests.conftest import login
+from tests.conftest import login, verified_shop_fields
 
 NOW = datetime(2026, 10, 20, 6, 0, 0)
 CENTER = (15.1394, 76.9214)
@@ -89,7 +89,8 @@ def snap_db(ids):
                                         role=Role.OWNER) for n in range(3)])
     shops = db.shops.insert_many([
         Shop(owner_id=owners[n].id, name=f"Shop {n}", slug=f"engines-shop-{n}", address_line="Road", city="Ballari",
-             lat=CENTER[0] + 0.01 * n, lng=CENTER[1], category_ids=[mobile.id, plumbing.id]) for n in range(3)])
+             lat=CENTER[0] + 0.01 * n, lng=CENTER[1], category_ids=[mobile.id, plumbing.id], **verified_shop_fields(n))
+        for n in range(3)])
 
     def listing(shop, item, price, qty, **extra):
         return Product(shop_id=shop.id, catalog_item_id=item.id, category_id=item.category_id, name=item.name,

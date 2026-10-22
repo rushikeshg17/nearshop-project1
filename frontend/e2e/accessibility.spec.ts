@@ -161,6 +161,11 @@ function describeViolation(v: Violation) {
   return `${v.id} [${v.impact}] ${v.help}: ${targets}${more}`;
 }
 
+/** A fresh Indian mobile number for a code request (the console provider sends nothing anywhere). */
+function labPhone() {
+  return `7${String(Math.floor(Math.random() * 1e9)).padStart(9, "0")}`;
+}
+
 /** Runs axe on the page as it is now. Serious or critical violations fail the test (soft, so every dialog runs). */
 async function audit(page: Page, testInfo: TestInfo, screen: string, language: string) {
   await settle(page);
@@ -235,16 +240,39 @@ test.describe("customer screens", () => {
     await audit(page, testInfo, "shop", language);
   });
 
+  // Phone first while the API reports phone sign-in available (P4.2: the lab's development API has the console
+  // provider), with the code step audited too; otherwise the email form. Each run uses its own number, so a retry
+  // is not held back by the one-code-a-minute limit.
   test("sign-in", async ({ page, language }, testInfo) => {
     await page.goto("/login");
-    await expect(page.getByLabel("Email")).toBeVisible();
+    const sendCode = page.getByRole("button", { name: "Send code" });
+    await expect(sendCode.or(page.getByLabel("Email"))).toBeVisible();
     await audit(page, testInfo, "sign-in", language);
+    if (await sendCode.isVisible()) {
+      await page.getByLabel("Mobile number").fill(labPhone());
+      await sendCode.click();
+      await expect(page.getByLabel("6-digit code")).toBeVisible();
+      await audit(page, testInfo, "sign-in, code step", language);
+      await page.getByRole("button", { name: /Use email and password|Sign in with your password/ }).click();
+      await expect(page.getByLabel("Email")).toBeVisible();
+      await audit(page, testInfo, "sign-in, email and password", language);
+    }
   });
 
   test("register", async ({ page, language }, testInfo) => {
     await page.goto("/register");
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
     await audit(page, testInfo, "register", language);
+    const sendCode = page.getByRole("button", { name: "Send code" });
+    if (await sendCode.isVisible()) {
+      await page.getByLabel("Full name").fill("Lab Person");
+      await page.getByLabel("Mobile number").fill(labPhone());
+      await page.getByRole("checkbox", { name: /I agree that NearShop/ }).click();
+      await page.getByRole("checkbox", { name: "I am 18 or older." }).click();
+      await sendCode.click();
+      await expect(page.getByLabel("6-digit code")).toBeVisible();
+      await audit(page, testInfo, "register, code step", language);
+    }
   });
 
   test.describe("signed in", () => {

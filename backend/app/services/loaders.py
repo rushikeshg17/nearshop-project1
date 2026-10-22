@@ -52,14 +52,15 @@ def with_category(db: Database, items: Iterable[Product | CatalogItem]) -> list:
 
 
 def with_shops(db: Database, products: Iterable[Product], *, active_only: bool = False) -> list[Product]:
-    """Attach category and shop. With `active_only`, listings of inactive shops are dropped."""
+    """Attach category and shop. With `active_only`, listings of shops customers may not see (inactive, or not
+    verified: Shop.is_live, P3.3) are dropped."""
     products = with_category(db, products)
     shops = db.shops.by_ids(p.shop_id for p in products)
     with_categories(db, shops.values())
     out = []
     for p in products:
         p.shop = shops.get(p.shop_id)
-        if p.shop is not None and (p.shop.is_active or not active_only):
+        if p.shop is not None and (p.shop.is_live or not active_only):
             out.append(p)
     return out
 

@@ -8,7 +8,7 @@ import pytest
 from app.services import search
 from app.services.search import SearchParams, run_search
 from app.utils.text import is_word, normalize_query, search_tokens
-from database.migrations import m0004_local_terms as m4
+from database.migrations import m0008_local_terms as m8
 from tests.conftest import CENTER
 
 CHARGER_KN = "ಚಾರ್ಜರ್"  # Kannada for charger: three fragments before P5.2
@@ -81,8 +81,8 @@ def test_underscore_now_separates_words():
 # ---------------------------------------------------------------- local_terms data and migration
 
 def test_local_terms_file_is_valid():
-    terms = m4.load_local_terms()
-    catalog = {c["slug"] for c in json.loads((m4.DATA_FILE.parent / "catalog.json").read_text())}
+    terms = m8.load_local_terms()
+    catalog = {c["slug"] for c in json.loads((m8.DATA_FILE.parent / "catalog.json").read_text())}
     assert terms and set(terms) <= catalog
     for slug, values in terms.items():
         assert all(normalize_query(v) == v for v in values), slug
@@ -94,28 +94,28 @@ def test_load_local_terms_normalises_and_rejects_bad_files(tmp_path):
     f = tmp_path / "local_terms.json"
     f.write_text(json.dumps({"items": [{"slug": "x", "kn": ["  ಮೊಬೈಲ್   ಚಾರ್ಜರ್ "], "latin": ["Charjar", "charjar"]},
                                        {"slug": "empty", "kn": []}]}), encoding="utf-8")
-    assert m4.load_local_terms(f) == {"x": ["ಮೊಬೈಲ್ ಚಾರ್ಜರ್", "charjar"]}
+    assert m8.load_local_terms(f) == {"x": ["ಮೊಬೈಲ್ ಚಾರ್ಜರ್", "charjar"]}
     f.write_text(json.dumps({"items": [{"slug": "x", "kn": "ಚಾರ್ಜರ್"}]}), encoding="utf-8")
     with pytest.raises(ValueError):
-        m4.load_local_terms(f)
+        m8.load_local_terms(f)
     f.write_text(json.dumps([]), encoding="utf-8")
     with pytest.raises(ValueError):
-        m4.load_local_terms(f)
+        m8.load_local_terms(f)
 
 
 def test_local_terms_past_the_validator_limits_are_refused(tmp_path, db, ids):
     # The migration writes before ensure_schema applies the validator, so it checks the limits itself:
     # a list past them would make every later stock or price update to the listing fail validation.
     f = tmp_path / "local_terms.json"
-    f.write_text(json.dumps({"items": [{"slug": "x", "latin": ["a" * (m4.MAX_TERM_LENGTH + 1)]}]}), encoding="utf-8")
+    f.write_text(json.dumps({"items": [{"slug": "x", "latin": ["a" * (m8.MAX_TERM_LENGTH + 1)]}]}), encoding="utf-8")
     with pytest.raises(ValueError, match="longer than"):
-        m4.load_local_terms(f)
-    f.write_text(json.dumps({"items": [{"slug": "x", "latin": [f"t{n}" for n in range(m4.MAX_TERMS + 1)]}]}),
+        m8.load_local_terms(f)
+    f.write_text(json.dumps({"items": [{"slug": "x", "latin": [f"t{n}" for n in range(m8.MAX_TERMS + 1)]}]}),
                  encoding="utf-8")
     with pytest.raises(ValueError, match="at most"):
-        m4.load_local_terms(f)
+        m8.load_local_terms(f)
     with pytest.raises(ValueError):
-        m4.apply_local_terms(db.mongo, {"samsung-25w-charger": ["x" * (m4.MAX_TERM_LENGTH + 1)]})
+        m8.apply_local_terms(db.mongo, {"samsung-25w-charger": ["x" * (m8.MAX_TERM_LENGTH + 1)]})
     assert "local_terms" not in db.mongo.catalog_items.find_one({"slug": "samsung-25w-charger"})
 
 
@@ -123,7 +123,7 @@ def test_local_terms_past_the_validator_limits_are_refused(tmp_path, db, ids):
 def charger_terms(db, ids):
     """The test catalogue's charger, named in Kannada, Telugu and Hindi on the item and its listing."""
     terms = {"samsung-25w-charger": [CHARGER_KN, "ಮೊಬೈಲ್ ಚಾರ್ಜರ್", CHARGER_TE, CHARGER_HI, "charjar"]}
-    yield m4.apply_local_terms(db.mongo, terms, batch_size=1)
+    yield m8.apply_local_terms(db.mongo, terms, batch_size=1)
     db.mongo.catalog_items.update_many({}, {"$unset": {"local_terms": ""}})
     db.mongo.products.update_many({}, {"$unset": {"local_terms": ""}})
     search.reset_vocabulary()
@@ -135,8 +135,8 @@ def test_migration_copies_terms_to_listings_and_is_idempotent(db, ids, charger_t
     assert listing["local_terms"][0] == CHARGER_KN
     assert "local_terms" not in db.mongo.products.find_one({"_id": ids["tape"]})
     terms = {"samsung-25w-charger": listing["local_terms"]}
-    assert m4.apply_local_terms(db.mongo, terms) == (0, 0)  # nothing left to do
-    m4.apply(db.mongo)  # the file's slugs are not in the test catalogue: nothing changes, nothing fails
+    assert m8.apply_local_terms(db.mongo, terms) == (0, 0)  # nothing left to do
+    m8.apply(db.mongo)  # the file's slugs are not in the test catalogue: nothing changes, nothing fails
     assert db.mongo.products.find_one({"_id": ids["charger"]})["local_terms"] == listing["local_terms"]
     for collection in ("catalog_items", "products"):
         index = db.mongo[collection].index_information()["local_terms"]

@@ -172,7 +172,7 @@ def umbrella(db, ids):
     item = db.catalog_items.insert(CatalogItem(
         slug="test-umbrella", name="Test Umbrella", category_id=category.id, subcategory="umbrellas",
         typical_price=200, icon="Umbrella"))
-    # local_terms is written by migration 4 and the seed, not through the model.
+    # local_terms is written by migration 8 and the seed, not through the model.
     db.catalog_items.raw.update_one({"_id": item.id}, {"$set": {
         "local_terms": ["ಕೊಡೆ", "ಛತ್ರಿ", "గొడుగు", "छाता", "kode", "godugu", "chhata"]}})
     se.reset_terms()

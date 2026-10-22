@@ -67,8 +67,14 @@ os.environ["NEARSHOP_MONGODB_DB"] = f"nearshop_test_{uuid.uuid4().hex[:10]}"
 os.environ["NEARSHOP_SECRET_KEY"] = secrets.token_urlsafe(32)  # never the real key from backend/.env
 os.environ["NEARSHOP_ENABLE_SCHEDULER"] = "false"
 os.environ["NEARSHOP_WARM_ON_STARTUP"] = "false"  # the fixture below creates the schema
+os.environ["NEARSHOP_COMPLETION_CODES_REQUIRED"] = "true"  # P3.5's completion codes (on by default since P3.7)
+# The email sign-in sunset (P4.2) far away, whatever the date: the seeded accounts sign in with email and have no
+# verified phone, and the background job would warn and switch them off. tests/test_phone_migration.py moves it.
+os.environ["NEARSHOP_EMAIL_LOGIN_SUNSET"] = "2100-01-01"
 os.environ["NEARSHOP_EMBEDDING_PROVIDER"] = "tfidf"  # fast and offline for tests
 os.environ["NEARSHOP_MEDIA_DIR"] = str(_tmp / "media")
+os.environ["NEARSHOP_KYC_MEDIA_DIR"] = str(_tmp / "private_media")  # KYC documents (P3.3), never the repo's
+os.environ["NEARSHOP_KYC_S3_BUCKET"] = ""
 # Photos stay on the local backend with /media URLs, whatever backend/.env says: no test reaches a bucket.
 os.environ["NEARSHOP_MEDIA_BACKEND"] = "local"
 os.environ["NEARSHOP_MEDIA_PUBLIC_BASE_URL"] = ""
@@ -81,7 +87,7 @@ os.environ["NEARSHOP_TOTP_KEY"] = base64.urlsafe_b64encode(secrets.token_bytes(3
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.ai.semantic_index import index  # noqa: E402
-from app.core.database import Database  # noqa: E402
+from app.core.database import Database, utcnow  # noqa: E402
 from app.core.database import client as mongo_client  # noqa: E402
 from app.core.security import (  # noqa: E402
     current_step,
@@ -93,6 +99,7 @@ from app.core.security import (  # noqa: E402
 )
 from app.main import app  # noqa: E402
 from app.models import CatalogItem, Category, Product, Role, Shop, User  # noqa: E402
+from app.models.core import VerificationStatus, months_after  # noqa: E402
 from database import schema  # noqa: E402
 
 PASSWORD = "test-password-1"
@@ -101,6 +108,15 @@ HEADERS = {"X-NearShop-Client": "web"}
 # The seeded admin's second factor (P2.4): its TOTP secret and recovery codes.
 ADMIN_TOTP_SECRET = new_totp_secret()
 ADMIN_RECOVERY_CODES = [f"test{n:02d}-recov" for n in range(10)]
+
+
+def verified_shop_fields(n: int = 0) -> dict:
+    """The fields of a shop an admin verified just now (P3.3), so customers' searches see it. n makes the KYC
+    number unique."""
+    decided = utcnow()
+    return {"verification_status": VerificationStatus.VERIFIED, "is_verified": True, "kyc_type": "udyam",
+            "kyc_number": f"UDYAM-KR-23-{9000000 + n:07d}", "phone_verified_at": decided, "submitted_at": decided,
+            "decided_at": decided, "verified_until": months_after(decided)}
 
 
 def admin_code(step_offset: int = 0) -> str:
@@ -137,12 +153,20 @@ def _seed() -> dict:
             "totp_recovery_hashes": [hash_recovery_code(c) for c in ADMIN_RECOVERY_CODES]}),
     ])
 
+    # Both shops are verified (P3.3): customers see only shops whose KYC an admin approved, and the tests that
+    # search, reserve and order assume they can. tests/test_verification.py covers the unverified cases.
+    decided = utcnow()
+    verified = {"verification_status": VerificationStatus.VERIFIED, "is_verified": True, "kyc_type": "udyam",
+                "phone_verified_at": decided, "submitted_at": decided, "decided_at": decided,
+                "verified_until": months_after(decided)}
     shop_a, shop_b = db.shops.insert_many([
         Shop(owner_id=owner_a.id, name="Shop A", slug="shop-a", address_line="1 Main Road", locality="Agrahara",
              city="Mysuru", lat=CENTER[0] + 0.004, lng=CENTER[1], offers_delivery=True, delivery_radius_km=3,
-             delivery_fee=30, free_delivery_above=2000, category_ids=[mobile.id, plumbing.id]),
+             delivery_fee=30, free_delivery_above=2000, category_ids=[mobile.id, plumbing.id],
+             kyc_number="UDYAM-KR-23-0000001", **verified),
         Shop(owner_id=owner_b.id, name="Shop B", slug="shop-b", address_line="2 Market Road", locality="Far Away",
-             city="Mysuru", lat=CENTER[0] + 0.2, lng=CENTER[1], category_ids=[plumbing.id]),
+             city="Mysuru", lat=CENTER[0] + 0.2, lng=CENTER[1], category_ids=[plumbing.id],
+             kyc_number="UDYAM-KR-23-0000002", **verified),
     ])
 
     def listing(shop, item, price, qty):

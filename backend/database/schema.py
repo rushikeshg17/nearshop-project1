@@ -12,8 +12,8 @@ live in the database, not only in application code:
 
   * `$jsonSchema` validators reject documents with missing fields, wrong types, unknown enum
     values, negative stock or prices, and out-of-range coordinates or ratings.
-  * unique indexes enforce one account per email, one listing per (shop, catalog item) and one
-    review per purchase.
+  * unique indexes enforce one account per email and one per phone, one listing per (shop, catalog
+    item) and one review per purchase.
   * every query the app runs is backed by an index declared here.
 
 How the relational model maps to documents
@@ -25,7 +25,8 @@ How the relational model maps to documents
   search_history.lat / lng       -> `search_history.location` GeoJSON point (2dsphere index)
   text_embeddings (model, hash)  -> `text_embeddings._id` = "<model>:<sha256>"
   autoincrement primary keys     -> integer `_id` issued from the `counters` collection
-  AVG(rating) per shop           -> `shops.rating_sum` / `rating_count`, updated with each review
+  AVG(rating) per shop           -> `shops.rating_sum` / `rating_count` / `rating_customers`, recomputed
+                                    from the counted reviews on every review change (app/services/reviews.py)
 
 Everything else stays a reference by id (products -> shops, reservations -> products, ...):
 those documents are read on their own, change independently and grow without bound, which is
@@ -41,6 +42,7 @@ from pymongo import ASCENDING, DESCENDING, GEOSPHERE, TEXT, IndexModel, MongoCli
 from pymongo.database import Database as MongoDatabase
 from pymongo.errors import OperationFailure
 
+from app.models.core import LANGUAGES, KycType, VerificationStatus
 from app.models.enums import (
     AnomalyStatus,
     InventoryReason,
@@ -49,6 +51,7 @@ from app.models.enums import (
     Role,
     SaleSource,
 )
+from app.schemas.requests import CONSENT_PURPOSES, OTP_PURPOSES
 
 log = logging.getLogger(__name__)
 
@@ -147,12 +150,26 @@ SEARCH_EVENT_VALIDATOR = {"$jsonSchema": {
     },
 }}
 
+# The shop verification actions admins take (P3.3, app/api/routes/admin.py), each one row in admin_audit.
+SHOP_AUDIT_ACTIONS = ("shop_phone_verified", "shop_verification_approve", "shop_verification_reject",
+                      "shop_verification_reject_renewal", "shop_verification_suspend")
+
+# What moderation records on a review and on a shop reply (P3.6, app/models/activity.py Moderation).
+MODERATION: dict[str, dict | str | list] = dict(
+    status={"enum": ["visible", "hidden", "removed"]}, report_count={"bsonType": INT, "minimum": 0},
+    reported_at=DATE_N, triaged_at=DATE_N, decided_at=DATE_N, decision={"enum": ["keep", "hide", "remove", None]},
+    decided_by=INT_N, decision_note={"bsonType": STR_N, "maxLength": 500},
+)
+
 VALIDATORS: dict[str, dict] = {
+    # email is optional since P4.1 (migration 7): an account registered by phone has none, and leaves the field out.
     "users": schema(
-        ["name", "email", "password_hash", "role", "is_active", "created_at", "updated_at"],
-        name=STR, email={"bsonType": STR, "pattern": "^[^@\\s]+@[^@\\s]+$"}, phone=STR_N, password_hash=STR,
-        role=enum(Role), is_active=BOOL, last_login_at=DATE_N, home_lat=NUM_N, home_lng=NUM_N, home_label=STR_N,
-        created_at=DATE, updated_at=DATE,
+        ["name", "password_hash", "role", "is_active", "created_at", "updated_at"],
+        name=STR, email={"bsonType": STR, "pattern": "^[^@\\s]+@[^@\\s]+$"}, phone=STR_N, phone_verified_at=DATE_N,
+        password_hash=STR, role=enum(Role), is_active=BOOL, last_login_at=DATE_N, home_lat=NUM_N, home_lng=NUM_N,
+        home_label=STR_N, created_at=DATE, updated_at=DATE,
+        # The notification language (P7.11): optional, as documents written before it have none (they read en).
+        language={"enum": list(LANGUAGES)},
         # Revocable sessions and the admin second factor (P2.4, app/core/security.py). All optional: documents
         # written before them read the model's defaults.
         token_version={"bsonType": INT, "minimum": 0},
@@ -165,6 +182,8 @@ VALIDATORS: dict[str, dict] = {
         totp_recovery_hashes={"bsonType": "array", "maxItems": 10, "items": {"bsonType": STR}},
         totp_last_step={"bsonType": INT, "minimum": 0}, totp_failures={"bsonType": INT, "minimum": 0},
         totp_locked_until=DATE_N,
+        # Switched off by the phone migration (P4.2, app/jobs.py): when, and why.
+        deactivated_at=DATE_N, deactivated_reason={"enum": ["phone_not_verified", None]},
     ),
     "categories": schema(["slug", "name", "icon", "sort_order"], slug=STR, name=STR, icon=STR, sort_order=INT),
     "catalog_items": schema(
@@ -183,7 +202,15 @@ VALIDATORS: dict[str, dict] = {
         hold_minutes=POSITIVE_INT, is_active=BOOL, is_verified=BOOL, inventory_updated_at=DATE_N,
         category_ids={"bsonType": "array", "items": {"bsonType": INT}},
         rating_sum={"bsonType": INT, "minimum": 0}, rating_count={"bsonType": INT, "minimum": 0},
+        rating_customers={"bsonType": INT, "minimum": 0},  # P3.5, optional: migration 6 recomputes it
         created_at=DATE, updated_at=DATE,
+        # KYC and verification (P3.3). Optional, so shops written before it pass; migration 5 backfilled them.
+        verification_status=enum(VerificationStatus),
+        kyc_type={"enum": [*enum(KycType)["enum"], None]},
+        kyc_number={"bsonType": STR_N, "maxLength": 40}, kyc_document_key=STR_N, kyc_storefront_key=STR_N,
+        phone_verified_at=DATE_N, submitted_at=DATE_N, decided_at=DATE_N, decided_by=INT_N,
+        rejection_reason={"bsonType": STR_N, "maxLength": 500}, verified_until=DATE_N,
+        previous_kyc=["object", "null"],
     ),
     "products": schema(
         ["shop_id", "category_id", "name", "keywords", "price", "quantity", "low_stock_threshold", "is_active",
@@ -193,7 +220,7 @@ VALIDATORS: dict[str, dict] = {
         quantity={"bsonType": INT, "minimum": 0},  # stock can never go negative, whatever the code does
         low_stock_threshold={"bsonType": INT, "minimum": 0}, is_active=BOOL, stock_updated_at=DATE,
         created_at=DATE, updated_at=DATE,
-        local_terms=LOCAL_TERMS,  # copied from the catalog item (migration 4); optional
+        local_terms=LOCAL_TERMS,  # copied from the catalog item (migration 8); optional
     ),
     "inventory_events": schema(
         ["product_id", "shop_id", "delta", "quantity_after", "reason", "created_at"],
@@ -224,6 +251,8 @@ VALIDATORS: dict[str, dict] = {
                                      "unit_price": NON_NEGATIVE, "quantity": POSITIVE_INT}},
         },
         delivered_at=DATE_N, closed_at=DATE_N, created_at=DATE, updated_at=DATE,
+        delivery_code={"bsonType": STR_N, "pattern": "^[0-9]{4}$"},  # P3.5, optional
+        code_failures={"bsonType": INT, "minimum": 0}, code_locked_until=DATE_N,  # P3.5, optional
     ),
     "status_events": schema(
         ["entity", "entity_id", "shop_id", "to_status", "actor_role", "created_at"],
@@ -235,6 +264,15 @@ VALIDATORS: dict[str, dict] = {
             ["customer_id", "shop_id", "reservation_id", "order_id", "rating", "created_at"],
             customer_id=INT, shop_id=INT, product_id=INT_N, rating=RATING, accuracy_rating=RATING_N,
             delivery_rating=RATING_N, comment=STR_N, created_at=DATE,
+            # Review integrity (P3.5), optional: migration 6 sets counted and held on older reviews.
+            counted=BOOL, held=BOOL, held_at=DATE_N, held_reason=STR_N,
+            # Moderation (P3.6), optional: status (visible until moderation hides or removes it, P3.5), reports,
+            # the admin's decision and the shop's one reply.
+            **MODERATION, reply={"oneOf": [{"bsonType": "null"}, {
+                "bsonType": "object", "required": ["text", "author_id", "created_at"],
+                "properties": {"text": {"bsonType": STR, "minLength": 1, "maxLength": 1000}, "author_id": {
+                    "bsonType": INT}, "created_at": {"bsonType": DATE}, "edited_at": {"bsonType": DATE_N},
+                    **{k: v if isinstance(v, dict) else {"bsonType": v} for k, v in MODERATION.items()}}}]},
         )["$jsonSchema"],
         # A review belongs to exactly one purchase: a pickup reservation or a delivery order.
         "oneOf": [
@@ -242,6 +280,13 @@ VALIDATORS: dict[str, dict] = {
             {"properties": {"reservation_id": {"bsonType": "null"}, "order_id": {"bsonType": INT}}},
         ],
     }},
+    # Review and reply reports (P3.6): one per user per review or reply, enforced by uq_reporter.
+    "review_reports": schema(
+        ["review_id", "target", "reporter_id", "reason", "created_at"],
+        review_id=INT, target={"enum": ["review", "reply"]}, reporter_id=INT,
+        reason={"enum": ["fake", "abusive", "personal_info", "off_topic", "other"]},
+        note={"bsonType": STR_N, "maxLength": 500}, created_at=DATE,
+    ),
     "notifications": schema(["user_id", "kind", "title", "created_at"],
                             user_id=INT, kind=STR, title=STR, read_at=DATE_N, created_at=DATE),
     "search_history": schema(
@@ -281,6 +326,10 @@ VALIDATORS: dict[str, dict] = {
         "_id": {"bsonType": STR}, "holder": {"bsonType": STR}, "acquired_at": {"bsonType": DATE},
         "expires_at": {"bsonType": DATE}, "last_run_at": {"bsonType": DATE_N},
         "last_result": {"bsonType": ["object", "null"]},
+        # phone_migration only (P4.2): the first IST day (YYYY-MM-DD) it saw phone sign-in available.
+        "phone_signin_since": {"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        # send_notifications only (P4.3): when the WhatsApp failure-rate warning was last reported.
+        "failure_alert_at": {"bsonType": DATE_N},
     }}},
     # Retraining requests, processed by the retrain cron job outside the API. `active` is set only while a
     # request is queued or running, and `nightly_for` (the slot's date) only on nightly runs: both unique.
@@ -317,15 +366,27 @@ VALIDATORS: dict[str, dict] = {
         "_id": {"bsonType": STR}, "rule": {"bsonType": STR}, "count": {"bsonType": INT, "minimum": 0},
         "expires_at": {"bsonType": DATE},
     }}},
-    # Admin audit trail (P2.4): one row per sensitive admin action, such as revealing a user's email
-    # (action reveal_email). Who (admin_id), when (created_at), which user (target_user_id) and why (reason).
-    # The TTL index on created_at removes a row after a year.
-    "admin_audit": schema(
-        ["admin_id", "action", "target_user_id", "reason", "created_at"],
-        admin_id=INT, action={"enum": ["reveal_email"]}, target_user_id=INT,
-        reason={"bsonType": STR, "minLength": 10, "maxLength": 500}, created_at=DATE,
+    # Admin audit trail (P2.4): one row per sensitive admin action. Who (admin_id), when (created_at), what
+    # (action), on whom (target_user_id for reveal_email; target_shop_id for the shop verification actions,
+    # P3.3) and why (reason). The TTL index on created_at removes a row after a year.
+    "admin_audit": {"$jsonSchema": {
+        **schema(["admin_id", "action", "reason", "created_at"],
+                 admin_id=INT, action={"enum": ["reveal_email", *SHOP_AUDIT_ACTIONS]}, target_user_id=INT,
+                 target_shop_id=INT, reason={"bsonType": STR, "minLength": 10, "maxLength": 500},
+                 created_at=DATE)["$jsonSchema"],
+        "oneOf": [{"properties": {"action": {"enum": ["reveal_email"]}}, "required": ["target_user_id"]},
+                  {"properties": {"action": {"enum": list(SHOP_AUDIT_ACTIONS)}}, "required": ["target_shop_id"]}],
+    }},
+    # Consent records (P3.1, plan section 8.5): append-only, one row per purpose and one for the 18-or-older
+    # declaration (purpose age_18_plus) at each registration, against the notice version then current. A later
+    # change of mind is a new row; the newest row for a (user, purpose) is the one in force. Never updated.
+    "consents": schema(
+        ["user_id", "purpose", "notice_version", "granted", "at", "source"],
+        user_id=INT, purpose={"enum": list(CONSENT_PURPOSES)},
+        notice_version={"bsonType": STR, "minLength": 1, "maxLength": 40}, granted=BOOL, at=DATE,
+        source={"enum": ["web"]},
     ),
-    # Search synonyms managed by admins (P5.4, app/services/synonyms.py; migration 5 imported the 42 that were
+    # Search synonyms managed by admins (P5.4, app/services/synonyms.py; migration 9 imported the 42 that were
     # in code). term is normalised and unique; expansions are OR'd into the keyword search. Every write bumps
     # the shared synonyms version in cache_versions (checked every 5 seconds) and the counters document
     # synonyms_version (checked every 30 seconds).
@@ -375,6 +436,132 @@ VALIDATORS: dict[str, dict] = {
     ),
     # No validators: `counters` ({_id: collection name, seq}; also synonyms_version) and `text_embeddings`
     # (binary vector cache).
+    # Grievances (P3.8, app/api/routes/grievances.py): acknowledged on receipt, resolution due 30 days later
+    # (due_at). contact is the complainant's email (lower-cased) or 10-digit mobile number; order_code is the order
+    # or reservation code they named, with order_id or reservation_id when it matched one.
+    "grievances": schema(
+        ["ticket", "category", "description", "contact", "contact_kind", "status", "source", "created_at",
+         "acknowledged_at", "due_at", "updated_at"],
+        ticket={"bsonType": STR, "pattern": r"^G-[A-HJ-NP-Z2-9]{6}$"},
+        category={"enum": ["order", "shop_conduct", "privacy", "account", "other"]},
+        description={"bsonType": STR, "minLength": 1, "maxLength": 2000},
+        contact={"bsonType": STR, "minLength": 1, "maxLength": 254}, contact_kind={"enum": ["email", "phone"]},
+        user_id=INT_N, order_code={"bsonType": STR_N, "maxLength": 20}, order_id=INT_N, reservation_id=INT_N,
+        status={"enum": ["open", "acknowledged", "in_progress", "resolved"]}, source={"enum": ["web"]},
+        created_at=DATE, acknowledged_at=DATE_N, due_at=DATE, in_progress_at=DATE_N, resolved_at=DATE_N,
+        resolved_by=INT_N, resolution={"bsonType": STR_N, "maxLength": 2000}, updated_at=DATE,
+    ),
+    # Phone one-time codes (P4.1, app/services/otp.py; plan section 8.4). One code per phone and purpose: _id is a
+    # keyed hash of the two, so a new request replaces the last code. The code itself is stored only as a keyed hash
+    # (code_hash), never the phone (phone_hash). A code is valid until expires_at (5 minutes), for at most 5
+    # attempts, and once (used_at); the TTL index removes it 10 minutes after created_at. user_id: the signed-in
+    # user a verify or delete code was sent for. channel: the one it was sent through (a resend after an unused
+    # WhatsApp code goes by SMS first).
+    "otp_codes": {"$jsonSchema": {
+        "bsonType": "object",
+        "required": ["_id", "phone_hash", "purpose", "code_hash", "attempts", "created_at", "expires_at"],
+        "properties": {
+            "_id": {"bsonType": STR}, "phone_hash": {"bsonType": STR}, "purpose": {"enum": list(OTP_PURPOSES)},
+            "code_hash": {"bsonType": STR}, "user_id": {"bsonType": INT_N}, "attempts": {"bsonType": INT, "minimum": 0},
+            "created_at": {"bsonType": DATE}, "expires_at": {"bsonType": DATE}, "used_at": {"bsonType": DATE_N},
+            "channel": {"enum": ["whatsapp", "sms", "console", None]},
+        },
+    }},
+    # Every code send (P4.1): which channel, the cost estimate in rupees and the outcome (sent, failed, or capped
+    # when the daily cap refused it), against the keyed phone hash. Kept 30 days (TTL on at).
+    "otp_sends": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "phone_hash", "purpose", "outcome", "cost_estimate", "at"],
+        "properties": {
+            "phone_hash": {"bsonType": STR}, "purpose": {"enum": list(OTP_PURPOSES)},
+            "channel": {"enum": ["whatsapp", "sms", "console", None]},
+            "outcome": {"enum": ["sent", "failed", "capped"]}, "cost_estimate": NON_NEGATIVE,
+            "error": {"bsonType": STR_N, "maxLength": 80}, "at": {"bsonType": DATE},
+        },
+    }},
+    # The global daily cap's counter (P4.1): one document per IST day, _id YYYY-MM-DD, with the sends counted and
+    # when the 80% warning was reported (once a day). The TTL index removes it after expires_at.
+    "otp_daily": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "count", "expires_at"],
+        "properties": {
+            "_id": {"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}, "count": {"bsonType": INT, "minimum": 0},
+            "warned_at": {"bsonType": DATE_N}, "expires_at": {"bsonType": DATE},
+        },
+    }},
+    # The notification outbox (P4.3, app/services/whatsapp.py): one row per notification and outbox channel the
+    # recipient opted into, written in the notification's transaction, delivered by the send_notifications job. It
+    # never holds the phone number; the template's variables (params) are cleared once the row is finished. Times
+    # from notify (created_at) to the Cloud API's accept (seconds_to_sent) and to delivered (seconds_to_delivered).
+    # message_id is the Cloud API's id, which the status webhook names. delivered_inferred: delivered_at was taken
+    # from a read callback because no delivered one came. Kept 30 days (TTL on created_at); deleted with the account.
+    "notification_outbox": schema(
+        ["notification_id", "user_id", "channel", "kind", "template", "language", "status", "attempts", "created_at",
+         "next_attempt_at"],
+        notification_id=INT, user_id=INT, channel={"enum": ["whatsapp"]}, kind=STR, template=STR, language=STR,
+        params={"bsonType": ["array", "null"], "maxItems": 10, "items": {"bsonType": STR, "maxLength": 1024}},
+        subject=STR_N, buttons={"bsonType": "array", "maxItems": 3, "items": {"bsonType": STR, "maxLength": 128}},
+        status={"enum": ["queued", "sending", "sent", "delivered", "read", "failed", "cancelled"]},
+        attempts={"bsonType": INT, "minimum": 0}, error={"bsonType": STR_N, "maxLength": 80},
+        message_id=STR_N, created_at=DATE, next_attempt_at=DATE, claimed_at=DATE_N, sent_at=DATE_N,
+        wa_sent_at=DATE_N, delivered_at=DATE_N, read_at=DATE_N, failed_at=DATE_N, finished_at=DATE_N,
+        seconds_to_sent=NUM_N, seconds_to_delivered=NUM_N, cost_estimate=NUM_N,
+        delivered_inferred={"bsonType": ["bool", "null"]},
+    ),
+    # Status callbacks that came before the sender saved their message id (P4.3, app/services/whatsapp.py
+    # record_status): held here, one per message id and status, and applied once the id is saved. _id is
+    # "<message id>:<status>". No personal data: Meta's id, the status, its time and error code. The TTL index
+    # removes a row at expires_at (a callback for a message that is not a notification, such as a sign-in code,
+    # is never applied).
+    "whatsapp_status_pending": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "message_id", "status", "at", "received_at", "expires_at"],
+        "properties": {
+            "_id": {"bsonType": STR, "maxLength": 300}, "message_id": {"bsonType": STR, "maxLength": 256},
+            "status": {"enum": ["sent", "delivered", "read", "failed"]}, "at": {"bsonType": DATE},
+            "error_code": {"bsonType": STR_N, "maxLength": 40}, "received_at": {"bsonType": DATE},
+            "expires_at": {"bsonType": DATE},
+        },
+    }},
+    # Messages from phones (P4.4, app/services/whatsapp.py handle_message): one row per webhook message id (_id),
+    # claimed before the message is handled, so each is handled once. No phone number and no text: the message's
+    # type, what was done (outcome) and whether the reply went (reply). Removed at expires_at (8 days: Meta retries
+    # an unanswered call for up to 7).
+    "whatsapp_inbound": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "received_at", "expires_at"],
+        "properties": {
+            "_id": {"bsonType": STR, "maxLength": 256}, "type": {"bsonType": STR, "maxLength": 20},
+            "received_at": {"bsonType": DATE}, "expires_at": {"bsonType": DATE},
+            "outcome": {"bsonType": STR_N, "maxLength": 40},
+            "reply": {"enum": ["sent", "failed", "window_closed", None]},
+        },
+    }},
+    # One row per shop owner who messaged NearShop on WhatsApp (P4.4), _id the owner's user id: the time of their
+    # last message (last_inbound_at, the 24-hour service window) and the stock update waiting for their Yes
+    # (pending: the matched listings and counts, the ambiguous lines' candidates, a token and expires_at). Listing
+    # names and counts only, nothing about customers. The TTL index removes a row 2 days after the last message.
+    "whatsapp_sessions": schema(
+        ["last_inbound_at"],
+        last_inbound_at=DATE, updated_at=DATE_N,
+        pending={"bsonType": ["object", "null"], "required": ["token", "shop_id", "items", "queue", "expires_at"],
+                 "properties": {
+                     "token": {"bsonType": STR}, "shop_id": {"bsonType": INT}, "expires_at": {"bsonType": DATE},
+                     "items": {"bsonType": "array", "maxItems": 20, "items": {
+                         "bsonType": "object", "required": ["product_id", "quantity"],
+                         "properties": {"product_id": {"bsonType": INT}, "name": {"bsonType": STR},
+                                        "quantity": {"bsonType": INT, "minimum": 0},
+                                        "before": {"bsonType": INT, "minimum": 0}}}},
+                     "queue": {"bsonType": "array", "maxItems": 20},
+                     "skipped": {"bsonType": "array", "maxItems": 40, "items": {"bsonType": STR}}}},
+    ),
+    # The daily stock check (P4.4, app/services/whatsapp.py send_stock_checks): one row per shop and IST day it was
+    # considered, _id "<shop id>:<YYYY-MM-DD>", so each shop gets at most one a day, with the outcome (sent, fresh
+    # when nothing was stale, unreachable when the owner cannot get the template). Removed at expires_at (3 days).
+    "whatsapp_stock_checks": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "shop_id", "day", "at", "expires_at"],
+        "properties": {
+            "_id": {"bsonType": STR, "maxLength": 40}, "shop_id": {"bsonType": INT},
+            "day": {"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}, "at": {"bsonType": DATE},
+            "expires_at": {"bsonType": DATE}, "outcome": {"enum": ["sent", "fresh", "unreachable", None]},
+        },
+    }},
     "counters": {},
     "text_embeddings": {},
 }
@@ -382,12 +569,35 @@ VALIDATORS: dict[str, dict] = {
 A, D = ASCENDING, DESCENDING
 ADMIN_AUDIT_KEEP_SECONDS = 365 * 24 * 60 * 60  # admin_audit rows are kept for one year
 SEARCH_EVENTS_KEEP_SECONDS = 90 * 24 * 60 * 60  # search_events are deleted 90 days after creation (P5.6)
+# Retention (P3.2; plan section 8.4; docs/legal/retention.md). Built on existing databases by migration 4.
+SEARCH_HISTORY_KEEP_SECONDS = 180 * 24 * 60 * 60  # search_history rows are deleted after 180 days
+NOTIFICATIONS_KEEP_SECONDS = 90 * 24 * 60 * 60  # notifications are deleted after 90 days
+SEARCH_HISTORY_TTL = IndexModel([("created_at", ASCENDING)], expireAfterSeconds=SEARCH_HISTORY_KEEP_SECONDS,
+                                name="created_ttl_180d")  # replaced the plain index "created" (migration 4)
+NOTIFICATIONS_TTL = IndexModel([("created_at", ASCENDING)], expireAfterSeconds=NOTIFICATIONS_KEEP_SECONDS,
+                               name="created_ttl_90d")
 IS_INT = {"$type": "number"}  # partial-index filter: "this optional reference is set"
+OTP_CODES_KEEP_SECONDS = 10 * 60  # otp_codes: removed 10 minutes after they were created (plan section 8.4)
+OTP_SENDS_KEEP_SECONDS = 30 * 24 * 60 * 60  # otp_sends: the send log is kept 30 days
+OUTBOX_KEEP_SECONDS = 30 * 24 * 60 * 60  # notification_outbox rows are deleted 30 days after the notification (P4.3)
+WHATSAPP_SESSION_KEEP_SECONDS = 2 * 24 * 60 * 60  # whatsapp_sessions: removed 2 days after the owner's last message
+# One account per email and one per phone, among the accounts that have one (migration 7 built both; uq_email_set
+# replaced uq_email, which also counted a missing email as a value). Phones are stored as their 10 digits. The
+# filter is "a string after the empty one": it leaves out a missing or null value, and, unlike a $type filter, an
+# equality lookup ({"email": ...}, {"phone": ...}) implies it, so sign-in lookups still use these indexes.
+IS_SET = {"$gt": ""}
+EMAIL_INDEX = IndexModel([("email", ASCENDING)], unique=True, name="uq_email_set",
+                         partialFilterExpression={"email": IS_SET})
+PHONE_INDEX = IndexModel([("phone", ASCENDING)], unique=True, name="uq_phone", partialFilterExpression={"phone": IS_SET})
 
 INDEXES: dict[str, list[IndexModel]] = {
     "users": [
-        IndexModel([("email", A)], unique=True, name="uq_email"),
+        EMAIL_INDEX,
+        PHONE_INDEX,
         IndexModel([("role", A), ("created_at", D)], name="role_created"),
+        # Deletions waiting for orders in flight (P3.2): the process_deletions job reads only these.
+        IndexModel([("deletion_due_at", A)], name="deletion_due",
+                   partialFilterExpression={"deletion_due_at": {"$type": "date"}}),
     ],
     "categories": [
         IndexModel([("slug", A)], unique=True, name="uq_slug"),
@@ -403,6 +613,7 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("owner_id", A)], name="owner"),
         IndexModel([("location", GEOSPHERE)], name="location_2dsphere"),
         IndexModel([("category_ids", A)], name="categories"),
+        IndexModel([("verification_status", A), ("submitted_at", A)], name="verification_queue"),  # P3.3
     ],
     "products": [
         IndexModel([("shop_id", A), ("is_active", A), ("quantity", A)], name="shop_active_stock"),
@@ -450,14 +661,27 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("shop_id", A), ("created_at", D)], name="shop_created"),
         IndexModel([("product_id", A), ("created_at", D)], name="product_created"),
         IndexModel([("customer_id", A)], name="customer"),
+        # The moderation queue and the monthly SLA (P3.6): reported reviews, held reviews and reported replies.
+        # The SLA's date ranges use reported, held and reply_reported; the queue uses reported, held_open
+        # (reviews held now) and reply_reported.
+        IndexModel([("reported_at", A)], name="reported", partialFilterExpression={"reported_at": {"$type": "date"}}),
+        IndexModel([("held_at", A)], name="held", partialFilterExpression={"held_at": {"$type": "date"}}),
+        IndexModel([("held", A)], name="held_open", partialFilterExpression={"held": True}),
+        IndexModel([("reply.reported_at", A)], name="reply_reported",
+                   partialFilterExpression={"reply.reported_at": {"$type": "date"}}),
+    ],
+    "review_reports": [
+        IndexModel([("review_id", A), ("target", A), ("reporter_id", A)], unique=True, name="uq_reporter"),
+        IndexModel([("reporter_id", A), ("created_at", D)], name="reporter_created"),
     ],
     "notifications": [
         IndexModel([("user_id", A), ("created_at", D)], name="user_created"),
         IndexModel([("user_id", A), ("read_at", A)], name="user_read"),
+        NOTIFICATIONS_TTL,
     ],
     "search_history": [
         IndexModel([("normalized_query", A), ("results_count", A)], name="query_results"),
-        IndexModel([("created_at", D)], name="created"),
+        SEARCH_HISTORY_TTL,
         IndexModel([("user_id", A), ("created_at", D)], name="user_created"),
         IndexModel([("location", GEOSPHERE)], name="location_2dsphere"),
     ],
@@ -503,6 +727,40 @@ INDEXES: dict[str, list[IndexModel]] = {
         # The shadow comparison: only shadowed searches.
         IndexModel([("shadow.label", A), ("created_at", A)], name="shadow_label_created",
                    partialFilterExpression={"shadow.label": {"$type": "string"}}),
+    ],
+    "consents": [
+        IndexModel([("user_id", A), ("purpose", A), ("at", D)], name="user_purpose_at"),  # the row in force
+        IndexModel([("purpose", A), ("at", D)], name="purpose_at"),
+    ],
+    "grievances": [
+        IndexModel([("ticket", A)], unique=True, name="uq_ticket"),  # the status lookup
+        IndexModel([("status", A), ("created_at", A)], name="status_created"),  # the admin queue, oldest first
+        IndexModel([("user_id", A), ("created_at", D)], name="user_created",
+                   partialFilterExpression={"user_id": IS_INT}),  # a signed-in user's own grievances
+        IndexModel([("order_id", A)], name="order", partialFilterExpression={"order_id": IS_INT}),  # retention holds
+    ],
+    "otp_codes": [IndexModel([("created_at", A)], expireAfterSeconds=OTP_CODES_KEEP_SECONDS, name="created_ttl_10m")],
+    "otp_sends": [IndexModel([("at", A)], expireAfterSeconds=OTP_SENDS_KEEP_SECONDS, name="at_ttl_30d")],
+    "otp_daily": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
+    "notification_outbox": [
+        IndexModel([("status", A), ("next_attempt_at", A)], name="status_next"),  # the sender's due rows
+        IndexModel([("message_id", A)], unique=True, name="uq_message_id",  # the status webhook's lookup
+                   partialFilterExpression={"message_id": IS_SET}),
+        # The hourly failure rate: both fields are set only when a row is sent or fails.
+        IndexModel([("sent_at", A)], name="sent_at", sparse=True),
+        IndexModel([("failed_at", A)], name="failed_at", sparse=True),
+        IndexModel([("created_at", A)], expireAfterSeconds=OUTBOX_KEEP_SECONDS, name="created_ttl_30d"),
+    ],
+    "whatsapp_status_pending": [
+        IndexModel([("message_id", A)], name="message_id"),  # the sender's lookup once it saves an id
+        IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl"),
+    ],
+    "whatsapp_inbound": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
+    "whatsapp_sessions": [IndexModel([("last_inbound_at", A)], expireAfterSeconds=WHATSAPP_SESSION_KEEP_SECONDS,
+                                     name="last_inbound_ttl_2d")],
+    "whatsapp_stock_checks": [
+        IndexModel([("day", A)], name="day"),  # the job's "already considered today" read
+        IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl"),
     ],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),

@@ -13,6 +13,41 @@ export interface User {
   home_lng: number | null;
   home_label: string | null;
   shop: { id: number; slug: string; name: string } | null;
+  /** P4.2: whether the phone is verified by a code (phone sign-in reaches only a verified phone). */
+  phone_verified: boolean;
+  /** The email sign-in sunset, an IST day (YYYY-MM-DD, NEARSHOP_EMAIL_LOGIN_SUNSET). */
+  email_login_sunset: string;
+  /** What the site asks of this account (components/providers.tsx): "warn" shows the banner with the sunset date,
+   * "required" sends every page to /verify-phone, null asks nothing (a verified phone, an admin, or phone sign-in
+   * unavailable here). */
+  phone_migration: PhoneMigration;
+}
+
+export type PhoneMigration = "warn" | "required" | null;
+
+export type OtpChannel = "whatsapp" | "sms" | "console";
+
+/** GET /api/auth/phone-signin (P4.1, P4.2): whether the phone screens are shown, the code's rules and the sunset. */
+export interface PhoneSignin {
+  available: boolean;
+  channels: OtpChannel[];
+  code_length: number;
+  /** Seconds a code stays valid. */
+  expires_in: number;
+  /** Seconds before another code may be asked for. */
+  resend_after: number;
+  email_login_sunset: string;
+  /** True from the sunset: customers and owners without a verified phone can no longer sign in with email. */
+  email_login_ended: boolean;
+}
+
+/** POST /api/auth/otp/request. */
+export interface OtpSent {
+  ok: true;
+  channel: OtpChannel;
+  code_length: number;
+  expires_in: number;
+  resend_after: number;
 }
 
 export interface Category {
@@ -108,6 +143,88 @@ export interface ShopDetail extends ShopBrief {
   listing_counts?: { total: number; in_stock: number };
 }
 
+// ---------------------------------------------------------------- shop verification (P3.3, P3.4)
+
+export type VerificationStatus = "draft" | "submitted" | "verified" | "rejected" | "suspended";
+export type KycType = "gstin" | "udyam" | "trade_licence";
+
+/** The owner's view of their shop's verification (GET /owner/verification, and inside GET /owner/shop). */
+export interface ShopVerification {
+  status: VerificationStatus;
+  visible_to_customers: boolean;
+  kyc_type: KycType | null;
+  kyc_number: string | null;
+  has_document_photo: boolean;
+  has_storefront_photo: boolean;
+  phone_verified: boolean;
+  submitted_at: string | null;
+  decided_at: string | null;
+  /** Set by a rejection or suspension, and by a rejected renewal; cleared by the next submission or approval. */
+  rejection_reason: string | null;
+  verified_until: string | null;
+  renewal_pending: boolean;
+  /** From this date the owner may submit fresh evidence (30 days before verified_until); null when not in force. */
+  renewal_opens_at: string | null;
+  can_submit: boolean;
+  /** A change of address or phone sends the shop back to review, hidden until an admin approves it again. */
+  changes_need_review: boolean;
+}
+
+/** GET and PATCH /owner/shop. review_started: this save sent the verified shop back to review. */
+export interface OwnerShopSettings extends ShopDetail {
+  verification: ShopVerification;
+  review_started: boolean;
+  /** The shop's own UPI ID and the payee name UPI apps show (P6.1). Only the owner's settings and the customer's own
+   * orders and reservations carry them, never a public shop response. */
+  upi_id: string | null;
+  upi_payee_name: string | null;
+}
+
+/** How the customer paid, recorded by the owner when completing a pickup or delivering an order (P6.1). */
+export type PaymentMethod = "cod" | "upi_direct";
+
+/** Where the customer can pay the shop directly by UPI (P6.1, P6.2): only in the customer's own order and
+ * reservation responses. Both null while the shop has no UPI ID; upi_payee_name falls back to the shop's name. */
+export interface PayTo {
+  upi_id?: string | null;
+  upi_payee_name?: string | null;
+}
+
+/** One row of GET /admin/shops. */
+export interface AdminShopRow extends ShopBrief {
+  is_active: boolean;
+  verification_status: VerificationStatus;
+  verified_until: string | null;
+  visible_to_customers: boolean;
+  owner: string;
+  owner_email: string;
+  listings: number;
+  created_at: string;
+}
+
+/** One shop in the admin verification queue (GET /admin/verification), oldest submission first. */
+export interface VerificationQueueItem {
+  id: number;
+  name: string;
+  slug: string;
+  locality: string | null;
+  address_line: string;
+  pincode: string | null;
+  phone: string | null;
+  owner: string | null;
+  kind: "new" | "renewal" | "review";
+  status: VerificationStatus;
+  kyc_type: KycType | null;
+  kyc_number: string | null;
+  submitted_at: string | null;
+  age_working_days: number | null;
+  phone_verified_at: string | null;
+  verified_until: string | null;
+  /** Signed links, valid for 5 minutes from the time the queue was loaded. */
+  document_photo_url: string | null;
+  storefront_photo_url: string | null;
+}
+
 export interface Listing {
   id: number;
   catalog_item_id: number | null;
@@ -196,6 +313,65 @@ export interface Review {
   customer_name: string;
   product_name: string | null;
   source: "pickup" | "delivery";
+  /** The shop's public reply (P3.6). Public lists carry it only while it is visible. */
+  reply: ReviewReply | null;
+  /** Moderation status: only in the owner's own list (GET /owner/reviews). */
+  status?: ModerationStatus;
+}
+
+export type ModerationStatus = "visible" | "hidden" | "removed";
+
+export interface ReviewReply {
+  text: string;
+  created_at: string;
+  edited_at: string | null;
+  /** Owner's list only: the reply's moderation status, and whether reports have it waiting for an admin. */
+  status?: ModerationStatus;
+  under_review?: boolean;
+}
+
+/** Reasons a review or a reply can be reported for (backend/app/services/reviews.py, ReportReason). */
+export type ReviewReportReason = "fake" | "abusive" | "personal_info" | "off_topic" | "other";
+
+/** One item in the admin moderation queue (GET /admin/reviews/queue, P3.6), oldest first. */
+export interface ModerationQueueItem {
+  target: "review" | "reply";
+  review_id: number;
+  shop_id: number;
+  shop: { id: number; name: string; slug: string } | null;
+  entered_at: string;
+  age_hours: number;
+  status: ModerationStatus;
+  triaged_at: string | null;
+  rating: number;
+  comment: string | null;
+  created_at: string;
+  reply_text: string | null;
+  reports: { count: number; reasons: Partial<Record<ReviewReportReason, number>>; notes: string[] };
+  flags: ("reported" | "held_self_dealing" | "hidden_by_reports")[];
+  actions: ("keep" | "hide" | "remove")[];
+}
+
+export interface ModerationQueue {
+  /** The oldest first, at most 200 (QUEUE_LIMIT in backend/app/services/reviews.py). */
+  items: ModerationQueueItem[];
+  /** Everything waiting, beyond the 200 in items too. */
+  total: number;
+  triage_hours: number;
+  decide_hours: number;
+}
+
+/** The monthly moderation SLA (GET /admin/reviews/sla). A share is null while nothing has reached its deadline. */
+export interface ReviewSla {
+  month: string;
+  items: number;
+  open: number;
+  triage_counted: number;
+  triaged_within_24h: number;
+  triaged_share: number | null;
+  decision_counted: number;
+  decided_within_72h: number;
+  decided_share: number | null;
 }
 
 export interface DeliveryQuote {
@@ -316,9 +492,12 @@ export interface Reservation {
     lat: number;
     lng: number;
     hours_label: string;
-  };
+  } & PayTo;
   actions: string[];
   reviewed: boolean;
+  /** Both null until the owner completes the pickup, then the method and "paid" (P6.1). */
+  payment_method?: PaymentMethod | null;
+  payment_status?: "paid" | null;
   customer?: Person;
   timeline?: TimelineEvent[];
 }
@@ -328,8 +507,9 @@ export interface Order {
   code: string;
   kind: "order";
   status: OrderStatus;
-  payment_method: string;
-  payment_status: string;
+  /** cod until delivery, when the owner records how the customer paid (P6.1). */
+  payment_method: PaymentMethod;
+  payment_status: "unpaid" | "paid" | "refunded";
   delivery_address: string;
   delivery_lat: number;
   delivery_lng: number;
@@ -352,9 +532,12 @@ export interface Order {
     image_url: string | null;
     thumbnail_url: string | null; // the 320 px thumbnail (P2.7), for lists and small previews
   }[];
-  shop: { id: number; slug: string; name: string; locality: string | null; phone: string | null; lat: number; lng: number };
+  shop: { id: number; slug: string; name: string; locality: string | null; phone: string | null; lat: number; lng: number } & PayTo;
   actions: string[];
   reviewed: boolean;
+  /** The 4-digit code the customer gives the shop at delivery (P3.5). Only in the customer's own responses, and
+   * only once the shop has confirmed the order; owner responses never carry it. */
+  delivery_code?: string | null;
   customer?: Person;
   timeline?: TimelineEvent[];
 }

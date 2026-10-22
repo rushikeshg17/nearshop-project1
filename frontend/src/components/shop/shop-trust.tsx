@@ -35,8 +35,8 @@ export function ShopTrust({ r, className }: { r: Reliability; className?: string
     {
       icon: Star,
       label: "Customer rating",
-      value: r.rating_avg ? `${r.rating_avg.toFixed(1)} / 5` : "No reviews",
-      sub: r.rating_count ? `${r.rating_count} verified purchases${r.accuracy_avg ? `, accuracy ${r.accuracy_avg.toFixed(1)}` : ""}` : "Reviews come from completed purchases only",
+      value: r.rating_avg ? `${r.rating_avg.toFixed(1)} / 5` : "New shop",
+      sub: !r.rating_avg ? "A rating shows once 5 customers have reviewed it" : r.rating_count ? `${r.rating_count} verified purchases${r.accuracy_avg ? `, accuracy ${r.accuracy_avg.toFixed(1)}` : ""}` : "Reviews come from completed purchases only",
       good: (r.rating_avg ?? 0) >= 4.3,
     },
   ];

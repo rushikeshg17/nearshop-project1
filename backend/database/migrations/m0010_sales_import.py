@@ -16,7 +16,7 @@ from app.models.enums import SaleSource
 from database.migrations import add_enum_values
 from database.schema import INDEXES
 
-NUMBER = 6
+NUMBER = 10
 NAME = "sales_import"
 
 COLLECTION = "sales_history"

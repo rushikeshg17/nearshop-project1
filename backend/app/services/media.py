@@ -11,13 +11,22 @@ NEARSHOP_MEDIA_BACKEND picks where the bytes go:
 - local: files under settings.media_dir, served by the API at /media (development and test);
 - s3: an S3-compatible bucket such as Cloudflare R2 (staging and production), served from the bucket's
   public domain, NEARSHOP_MEDIA_PUBLIC_BASE_URL. The API's disk on Render is lost on every redeploy.
+
+KYC documents (P3.3) go to a separate, private store with the same interface (private_storage): a directory
+nothing serves (NEARSHOP_KYC_MEDIA_DIR) or a bucket with no public access (NEARSHOP_KYC_S3_BUCKET). They pass
+the same size, pixel and decoding checks, are re-encoded the same way, and are opened only through links that
+expire after SIGNED_LINK_SECONDS: presigned bucket links, or HMAC-signed API links for the local directory.
 """
+import hashlib
+import hmac
 import io
 import logging
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import quote
 
 from fastapi import UploadFile
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -83,6 +92,14 @@ class LocalStorage:
         return path.stat().st_size if path is not None and path.is_file() else None
 
 
+class PrivateLocalStorage(LocalStorage):
+    """KYC documents on the API's own disk, outside media_dir, so the /media mount never serves them."""
+
+    def signed_url(self, key: str, seconds: int) -> str:
+        expires = int(time.time()) + seconds
+        return f"/api/admin/kyc-files/{quote(key)}?expires={expires}&signature={_sign(key, expires)}"
+
+
 class S3Storage:
     """An S3-compatible bucket (Cloudflare R2 in staging and production)."""
 
@@ -134,6 +151,18 @@ class S3Storage:
             if _missing(exc, forbidden_too=True):
                 return None
             raise
+
+
+class PrivateS3Storage(S3Storage):
+    """KYC documents in a bucket with no public access; never cached by anything in between."""
+
+    def put(self, key: str, data: bytes, content_type: str) -> None:
+        self.client.put_object(Bucket=self.bucket, Key=key, Body=data, ContentType=content_type,
+                               CacheControl="private, no-store")
+
+    def signed_url(self, key: str, seconds: int) -> str:
+        return self.client.generate_presigned_url("get_object", Params={"Bucket": self.bucket, "Key": key},
+                                                  ExpiresIn=seconds)
 
 
 def _missing(exc: Exception, forbidden_too: bool = False) -> bool:
@@ -259,3 +288,97 @@ def delete_image(key: str | None) -> None:
             get_storage().delete(k)
         except Exception as exc:
             log.warning("could not delete media %s: %s", k, type(exc).__name__)
+
+
+# ------------------------------------------------------------------ private KYC documents (P3.3)
+
+SIGNED_LINK_SECONDS = 300  # admins' links to KYC documents work for 5 minutes
+PRIVATE_PREFIX = "kyc/"
+
+
+class PrivateStorageUnavailable(AppError):
+    status_code = 503
+    code = "kyc_storage_unavailable"
+
+
+def build_private_storage(cfg: Settings):
+    """The KYC document store, or None when the environment has none: an s3 deployment without its own
+    private bucket (a bucket shared with public photos would publish the documents)."""
+    if cfg.media_backend == "s3":
+        bucket = cfg.kyc_s3_bucket.strip()
+        if not bucket or bucket == cfg.media_s3_bucket.strip():
+            return None
+        public = S3Storage.from_settings(cfg)
+        return PrivateS3Storage(bucket, public.client)
+    return PrivateLocalStorage(cfg.kyc_media_dir)
+
+
+_private_storage = None
+_private_built = False
+
+
+def private_storage():
+    """The KYC document store (built on first use), or PrivateStorageUnavailable (503)."""
+    global _private_storage, _private_built
+    if not _private_built:
+        with _storage_lock:
+            if not _private_built:
+                _private_storage, _private_built = build_private_storage(settings), True
+    if _private_storage is None:
+        raise PrivateStorageUnavailable("Document uploads are not set up yet. Please try again later.")
+    return _private_storage
+
+
+def use_private_storage(storage) -> object:
+    """Replace the KYC document store (tests use an in-memory fake with signed_url); None rebuilds it from
+    settings on next use. Returns the store that was in use."""
+    global _private_storage, _private_built
+    previous = _private_storage
+    _private_storage, _private_built = storage, storage is not None
+    return previous
+
+
+def _sign(key: str, expires: int) -> str:
+    message = f"kyc-file:{key}:{expires}".encode()
+    return hmac.new(settings.secret_key.encode(), message, hashlib.sha256).hexdigest()
+
+
+def check_signed_link(key: str, expires: int, signature: str, now: float | None = None) -> bool:
+    """Whether a local signed KYC link is genuine and unexpired (now defaults to the current time)."""
+    if not key.startswith(PRIVATE_PREFIX) or (now if now is not None else time.time()) > expires:
+        return False
+    return hmac.compare_digest(_sign(key, expires), signature or "")
+
+
+def signed_link(key: str | None, seconds: int = SIGNED_LINK_SECONDS) -> str | None:
+    """A link to a private KYC document that works for `seconds` (5 minutes by default)."""
+    return private_storage().signed_url(key, seconds) if key else None
+
+
+def read_private(key: str) -> bytes | None:
+    return private_storage().get(key) if key.startswith(PRIVATE_PREFIX) else None
+
+
+def save_private_image(upload: UploadFile, kind: str) -> str:
+    """Check and re-encode a KYC photo like any upload (size, pixel and decoding rules; metadata stripped),
+    and store it privately, without a thumbnail. Returns its key, kyc/<kind>/<uuid hex>.webp. Blocking."""
+    store = private_storage()
+    limit = settings.max_upload_mb * 1024 * 1024
+    data = upload.file.read(limit + 1)
+    if len(data) > limit:
+        raise AppError(f"Images must be under {settings.max_upload_mb} MB", code="file_too_large")
+    img = decode_image(data)
+    del data
+    key = f"{PRIVATE_PREFIX}{kind}/{uuid.uuid4().hex}.webp"
+    store.put(key, encode_webp(img, MAX_SIDE, PHOTO_QUALITY), CONTENT_TYPE)
+    return key
+
+
+def delete_private(key: str | None) -> None:
+    """Remove a KYC document; a failure is logged, never shown (as delete_image)."""
+    if not key:
+        return
+    try:
+        private_storage().delete(key)
+    except Exception as exc:
+        log.warning("could not delete private media %s: %s", key, type(exc).__name__)

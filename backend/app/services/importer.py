@@ -16,7 +16,7 @@ import io
 import re
 import zipfile
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import date, datetime, time, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -88,6 +88,27 @@ _EXCEL_EPOCH = date(1899, 12, 30)
 
 def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9. ]+", " ", str(s).lower()).strip()
+
+
+def normalize_name(s: str) -> str:
+    """An item name as the matcher compares it: lower case, letters, digits, dots and single spaces."""
+    return " ".join(_norm(s).split())
+
+
+def capped_score(name: str, score: float) -> float:
+    """token_set_ratio scores 100 when one name's words are a subset of the other's, so a bare "cable" would match
+    every cable: a name with fewer than two meaningful words (longer than 2 letters) never scores a confident match."""
+    if len([w for w in _norm(name).split() if len(w) > 2]) < 2:
+        return min(score, SUGGEST_MATCH - 1)
+    return score
+
+
+def best_matches[K](query: str, choices: Mapping[K, str], limit: int = 1) -> list[tuple[K, float]]:
+    """The matcher the import uses (and P4.4's stock replies on WhatsApp): token_set_ratio between the normalised
+    query and each normalised choice, best first, as (key, raw score). Apply capped_score to the raw score before
+    comparing it with AUTO_MATCH and SUGGEST_MATCH."""
+    found = process.extract(_norm(query), choices, scorer=fuzz.token_set_ratio, limit=limit)
+    return [(key, score) for _, score, key in found]
 
 
 # A header naming a tax or discount (GST Rate, Tax Amount, Taxable Value, Disc %) is never a price, amount,
@@ -330,21 +351,13 @@ class _Matcher:
         self.mine_by_catalog = {p.catalog_item_id: p for p in mine if p.catalog_item_id}
         self.mine_keys = {p.id: _norm(f"{p.brand or ''} {p.name}") for p in mine}
 
-    @staticmethod
-    def _cap(name: str, score: float) -> float:
-        # token_set_ratio scores 100 when one name's words are a subset of the other's, so a bare
-        # "cable" would match every cable. Require at least two meaningful words to auto-match.
-        if len([w for w in _norm(name).split() if len(w) > 2]) < 2:
-            return min(score, SUGGEST_MATCH - 1)
-        return score
-
     def catalog_match(self, name: str, brand: str = "") -> tuple[CatalogItem, float] | None:
         """The closest catalogue item and its score (0 to 100), or None for an empty catalogue."""
-        match = process.extractOne(_norm(f"{brand} {name}"), self.catalog_keys, scorer=fuzz.token_set_ratio)
+        match = best_matches(f"{brand} {name}", self.catalog_keys)
         if not match:
             return None
-        _, score, cid = match
-        return self.catalog_by_id[cid], self._cap(name, score)
+        [(cid, score)] = match
+        return self.catalog_by_id[cid], capped_score(name, score)  # at least two meaningful words to auto-match
 
     def listing_match(self, name: str) -> tuple[Product, float] | None:
         """The shop's listing a sales line is for, and the match score: an exact name scores 100; otherwise the
@@ -354,10 +367,10 @@ class _Matcher:
         if exact is not None:
             return exact, 100
         best: tuple[Product, float] | None = None
-        own = process.extractOne(_norm(name), self.mine_keys, scorer=fuzz.token_set_ratio)
+        own = best_matches(name, self.mine_keys)
         if own:
-            _, score, pid = own
-            best = (self.mine_by_id[pid], self._cap(name, score))
+            [(pid, score)] = own
+            best = (self.mine_by_id[pid], capped_score(name, score))
         cat = self.catalog_match(name)
         if cat and cat[0].id in self.mine_by_catalog and (best is None or cat[1] > best[1]):
             best = (self.mine_by_catalog[cat[0].id], cat[1])

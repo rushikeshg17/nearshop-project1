@@ -119,7 +119,7 @@ the release log (P1.3).
    Hindi terms) and never deletes. It writes no shops, users, sales or searches, and it refuses to run unless
    --confirm-db repeats the database name and the migrations have run. Its one write outside the catalogue:
    listings linked to a catalogue item get that item's local terms copied onto their local_terms field (as
-   migration m0004 does on every migrate); on the fresh database there are none. It is safe to run again later
+   migration m0008 does on every migrate); on the fresh database there are none. It is safe to run again later
    to add catalogue items; on a database with real listings, its output's local_terms_listings says how many
    listings' local terms it changed.
 3. **Switch.** One pull request changes render.yaml for production: NEARSHOP_MONGODB_DB to nearshop_prod on

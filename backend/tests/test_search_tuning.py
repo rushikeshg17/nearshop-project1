@@ -18,7 +18,7 @@ from app.services import search
 from app.services.loaders import reset_category_cache
 from app.services.search import SearchParams, run_search
 from database import schema
-from tests.conftest import HEADERS
+from tests.conftest import HEADERS, verified_shop_fields
 
 # ---------------------------------------------------------------- the default config reproduces today's ranking
 
@@ -69,7 +69,8 @@ def rank_db(ids):
     offsets = [0.004, 0.02, 0.045, 0.06]
     shops = db.shops.insert_many([
         Shop(owner_id=o.id, name=f"S{i}", slug=f"s{i}", address_line="a", locality="l", city="Mysuru",
-             lat=C[0] + offsets[i], lng=C[1], category_ids=[mob.id, plb.id]) for i, o in enumerate(owners)])
+             lat=C[0] + offsets[i], lng=C[1], category_ids=[mob.id, plb.id], **verified_shop_fields(i))
+        for i, o in enumerate(owners)])
     rows = []
     for n, item in enumerate(items):
         for k, shop in enumerate(shops):

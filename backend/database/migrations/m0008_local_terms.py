@@ -28,7 +28,7 @@ from app.utils.text import normalize_query
 from database.migrations import backfill
 from database.schema import INDEXES, LOCAL_TERMS
 
-NUMBER = 4
+NUMBER = 8
 NAME = "local_terms"
 
 DATA_FILE = Path(__file__).resolve().parents[1] / "seed" / "data" / "local_terms.json"

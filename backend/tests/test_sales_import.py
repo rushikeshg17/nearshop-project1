@@ -12,7 +12,7 @@ from app.core.database import client as mongo_client
 from app.models import SaleSource
 from app.services import importer
 from database import migrate
-from database.migrations import m0006_sales_import
+from database.migrations import m0010_sales_import
 from tests.conftest import HEADERS
 
 CHARGER = "Samsung 25W USB-C Fast Travel Charger"
@@ -313,7 +313,7 @@ def test_imported_rows_are_never_marked_demo(owner_a, db, ids):
 
 
 def test_migration_adds_the_enum_value_and_unique_key(scratch):
-    migrate.run(scratch)  # a new database: the baseline already has both, and migration 6 changes nothing
+    migrate.run(scratch)  # a new database: the baseline already has both, and migration 10 changes nothing
     info = scratch["sales_history"].index_information()
     assert info["uq_import_sale"]["unique"] is True
     assert info["uq_import_sale"]["partialFilterExpression"] == {"source": "import"}
@@ -325,7 +325,7 @@ def test_migration_adds_the_enum_value_and_unique_key(scratch):
     scratch["sales_history"].drop_index("uq_import_sale")
 
     for _ in range(2):  # idempotent
-        m0006_sales_import.apply(scratch)
+        m0010_sales_import.apply(scratch)
         validator = next(scratch.list_collections(filter={"name": "sales_history"}))["options"]["validator"]
         assert validator["$jsonSchema"]["properties"]["source"]["enum"].count("import") == 1
         assert "uq_import_sale" in scratch["sales_history"].index_information()

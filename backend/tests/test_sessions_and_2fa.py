@@ -143,7 +143,7 @@ def test_an_old_token_is_rejected_after_a_password_change(make_user):
     assert len(Database().users.get(user.id).sessions) == 1
 
 
-def test_an_old_token_is_rejected_after_a_phone_change(make_user):
+def test_profile_changes_keep_sessions_and_the_phone_needs_a_code(make_user):
     user = make_user("phone-change@example.com", phone="9876511111")
     a, token_a = device(user.email)
     _, token_b = device(user.email, IPHONE_SAFARI)
@@ -152,10 +152,10 @@ def test_an_old_token_is_rejected_after_a_phone_change(make_user):
     assert a.patch("/api/auth/me", json={"home_label": "Home"}, headers=HEADERS).status_code == 200
     assert me_with(token_b)["id"] == user.id
 
+    # Since P4.1 a new phone is set only by a verify code (tests/test_otp.py, where the change ends every session).
     res = a.patch("/api/auth/me", json={"phone": "9876522222"}, headers=HEADERS)
-    assert res.status_code == 200 and res.json()["phone"] == "9876522222"
-    assert me_with(token_a) is None and me_with(token_b) is None
-    assert a.get("/api/auth/me").json()["phone"] == "9876522222"
+    assert res.status_code == 422
+    assert me_with(token_a)["phone"] == "9876511111" and me_with(token_b)["id"] == user.id
 
 
 def test_deactivation_and_a_role_change_end_sessions(db, make_user):
@@ -396,7 +396,9 @@ def test_admin_login_reports_a_missing_key_without_signing_in(make_user, monkeyp
 def test_customer_login_is_unchanged(client):
     res = client.post("/api/auth/login", json={"email": "cust@example.com", "password": PASSWORD}, headers=HEADERS)
     assert res.status_code == 200
-    assert set(res.json()) == {"id", "name", "email", "phone", "role", "home_lat", "home_lng", "home_label", "shop"}
+    assert set(res.json()) == {"id", "name", "email", "phone", "role", "home_lat", "home_lng", "home_label", "shop",
+                               "phone_verified", "email_login_sunset", "phone_migration",  # these three: P4.2
+                               "language"}  # P7.11
     assert res.json()["email"] == "cust@example.com"
     assert f"max-age={settings.access_token_minutes * 60}" in res.headers["set-cookie"].lower()
     assert "httponly" in res.headers["set-cookie"].lower()

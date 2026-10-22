@@ -4,6 +4,7 @@ import json
 import pytest
 
 from app.api.routes import catalog
+from app.models.core import live_shop_filter
 from tests.conftest import HEADERS, PASSWORD
 
 
@@ -26,7 +27,7 @@ def hidden(db, ids):
 
 def _expected(db) -> tuple[set[str], set[int]]:
     """What customers may see right now, straight from the database (other test modules add shops too)."""
-    live = {s.id: s.slug for s in db.shops.find({"is_active": True})}
+    live = {s.id: s.slug for s in db.shops.find(live_shop_filter())}  # active and verified (P3.3)
     listings = {p.id for p in db.products.find({"is_active": True}) if p.shop_id in live}
     return set(live.values()), listings
 

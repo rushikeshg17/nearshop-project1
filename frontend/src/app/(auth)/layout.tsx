@@ -8,8 +8,11 @@ export default function AuthLayout({ children }: LayoutProps<"/">) {
       <div className="flex flex-col px-5 py-6 md:px-10">
         <Logo />
         <main className="mx-auto flex w-full max-w-sm flex-1 flex-col justify-center py-10">{children}</main>
-        <p className="text-xs text-muted-foreground">
+        <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
           <Link href="/" className="hover:text-foreground">Back to NearShop</Link>
+          <Link href="/privacy" className="hover:text-foreground">Privacy notice</Link>
+          <Link href="/terms" className="hover:text-foreground">Terms of use</Link>
+          <Link href="/grievance" className="hover:text-foreground">Grievances</Link>
         </p>
       </div>
       <aside className="relative hidden overflow-hidden bg-primary text-primary-foreground lg:block">

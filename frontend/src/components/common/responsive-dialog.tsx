@@ -67,7 +67,8 @@ export function ResponsiveDialog({
           <DrawerTitle>{title}</DrawerTitle>
           {description && <DrawerDescription>{description}</DrawerDescription>}
         </DrawerHeader>
-        <div className="px-4">{children}</div>
+        {/* Scrolls when the content is taller than the sheet (80vh), so the footer's action stays on screen. */}
+        <div className="min-h-0 overflow-y-auto px-4">{children}</div>
         {footer && <DrawerFooter className="pb-safe">{footer}</DrawerFooter>}
       </DrawerContent>
     </Drawer>

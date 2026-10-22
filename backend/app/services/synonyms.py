@@ -3,12 +3,12 @@
 The synonyms collection holds one document per term a customer may type: _id (an integer from counters),
 term (normalised with app/utils/text.py normalize_query, unique), expansions (the extra words OR'd into the
 keyword search, at most MAX_EXPANSIONS, each MAX_EXPANSION_LENGTH characters or fewer), languages (tags such
-as en or hi-Latn), active, created_by (the admin's id; null for entries imported by migration 5), created_at,
+as en or hi-Latn), active, created_by (the admin's id; null for entries imported by migration 9), created_at,
 updated_at and updated_by. Migration 5 imported the 42 entries that used to be a dictionary in code.
 
 Every write bumps two version numbers: the shared synonyms version in cache_versions (app/core/cache_version.py,
 P8.1), which every process reads at most once every 5 seconds, and the older counters document synonyms_version,
-which migration 5 also bumps and each process still checks at most once every CHECK_SECONDS. Each process keeps
+which migration 9 also bumps and each process still checks at most once every CHECK_SECONDS. Each process keeps
 the active entries in memory and re-reads them when either version changes, so an admin's change reaches every
 API process within 5 seconds, and immediately in the process that made it. When the database cannot be read,
 search keeps the entries the process already has; a process that has none yet searches without synonyms and

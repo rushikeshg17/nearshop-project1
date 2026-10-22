@@ -4,16 +4,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from app.core.database import utcnow
 from app.models.base import Document, Embedded, GeoPoint, Timestamps
 from app.models.core import Product, Shop, User
 from app.models.enums import AnomalyStatus, OrderStatus, ReservationStatus, SaleSource
 
+# How the customer paid the shop, recorded by the owner when delivering an order or completing a pickup (P6.1, plan
+# section 8.8): cash, or the shop's own UPI ID. NearShop never holds customer money.
+PAYMENT_METHODS: tuple[str, ...] = ("cod", "upi_direct")
+
 
 class Reservation(Document, Timestamps):
-    """Collection `reservations`. Unique on code."""
+    """Collection `reservations`. Unique on code. payment_method and payment_status stay None until the owner
+    completes the pickup, which records the method (PAYMENT_METHODS) and sets payment_status to paid."""
 
     code: str
     customer_id: int
@@ -31,6 +36,8 @@ class Reservation(Document, Timestamps):
     completed_at: datetime | None = None
     closed_at: datetime | None = None
     close_reason: str | None = None
+    payment_method: str | None = None
+    payment_status: str | None = None
 
     customer: User | None = Field(default=None, exclude=True)
     shop: Shop | None = Field(default=None, exclude=True)
@@ -54,7 +61,8 @@ class OrderItem(Embedded):
 
 class Order(Document, Timestamps):
     """Collection `orders`. Shop-managed delivery order with its line items embedded, so an order
-    is read and written as one document (cash on delivery in V1; payment_method keeps it modular)."""
+    is read and written as one document. payment_method is cod until delivery, when the owner records how the
+    customer paid (PAYMENT_METHODS) and payment_status becomes paid."""
 
     code: str
     customer_id: int
@@ -75,6 +83,12 @@ class Order(Document, Timestamps):
     delivered_at: datetime | None = None
     closed_at: datetime | None = None
     close_reason: str | None = None
+    # Four digits created when the shop confirms (P3.5): only the customer sees it, and the shop must enter it
+    # to mark the order delivered. Never in an owner's response.
+    delivery_code: str | None = None
+    # Wrong delivery codes in a row; the fifth locks code entry until code_locked_until (services/orders.py).
+    code_failures: int = 0
+    code_locked_until: datetime | None = None
     items: list[OrderItem] = Field(default_factory=list)
 
     customer: User | None = Field(default=None, exclude=True)
@@ -95,9 +109,41 @@ class StatusEvent(Document):
     created_at: datetime = Field(default_factory=utcnow)
 
 
-class Review(Document):
+class Moderation(BaseModel):
+    """What moderation (P3.6, app/services/reviews.py) records on a review or a shop reply. report_count is the
+    number of distinct users who reported it (review_reports); reported_at is the first report. It is in the admin
+    queue from then (or, for a review, from held_at) until an admin decides it: triaged_at when an admin first
+    picks it up and decided_at when one first decides it, both set once and kept (the SLA is measured on them).
+    An admin may decide again: status, decision, decided_by and decision_note then hold the latest decision."""
+
+    status: str = "visible"  # visible | hidden | removed
+    report_count: int = 0
+    reported_at: datetime | None = None
+    triaged_at: datetime | None = None
+    decided_at: datetime | None = None
+    decision: str | None = None  # keep | hide | remove, the latest decision
+    decided_by: int | None = None
+    decision_note: str | None = None
+
+
+class ReviewReply(Embedded, Moderation):
+    """The shop's one public reply to a review (P3.6), embedded in it. Editable for 24 hours, and reportable."""
+
+    text: str
+    author_id: int  # the owner who wrote it
+    created_at: datetime = Field(default_factory=utcnow)
+    edited_at: datetime | None = None
+
+
+class Review(Document, Moderation):
     """Collection `reviews`. Exactly one of reservation_id / order_id is set, and each is unique:
-    one review per completed reservation or delivered order."""
+    one review per completed reservation or delivered order.
+
+    Integrity (P3.5, app/services/reviews.py): status is visible until moderation hides or removes it (P3.6:
+    reports from 3 distinct users hide it until an admin decides). counted is false for a second review of the
+    same shop by the same customer within 30 days. held marks a review held out of the rating by the
+    self-dealing rule, flagged for the admin queue at held_at. The shop's rating counts only visible, counted,
+    unheld reviews. Public lists show only visible reviews, with the shop's reply when it is visible."""
 
     customer_id: int
     shop_id: int
@@ -109,8 +155,25 @@ class Review(Document):
     delivery_rating: int | None = None
     comment: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
+    counted: bool = True
+    held: bool = False
+    held_at: datetime | None = None
+    held_reason: str | None = None  # self_dealing
+    kept_held: bool = False  # an admin kept it while it was held: the self-dealing rule never holds it again
+    reply: ReviewReply | None = None
 
     customer: User | None = Field(default=None, exclude=True)
+
+
+class ReviewReport(Document):
+    """Collection `review_reports` (P3.6). One report per user per review, or per shop reply (target)."""
+
+    review_id: int
+    target: str = "review"  # review | reply
+    reporter_id: int
+    reason: str  # fake | abusive | personal_info | off_topic | other
+    note: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 class Notification(Document):
@@ -126,8 +189,9 @@ class Notification(Document):
 
 
 class SearchEvent(Document):
-    """Collection `search_history`. `location` (rounded to ~100 m) lets a shop see what people
-    nearby are searching for with a geo query."""
+    """Collection `search_history`. `location` (rounded to 2 decimals, about 1.1 km) lets a shop see what
+    people nearby are searching for with a geo query. Retention (P3.2): user_id only with the personalised-
+    suggestions consent and for 30 days; the row itself for 180 days (TTL index)."""
 
     user_id: int | None = None
     query: str

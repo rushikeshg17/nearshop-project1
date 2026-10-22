@@ -17,8 +17,24 @@ it holds the lease, so at any instance count each job runs once per tick.
     (scorecard check 4.2). /api/health/ready reports it, and an uptime monitor alerts on it
     (docs/runbooks/monitoring.md).
 
-The leased jobs are sweep_expired, every tick, and snapshot_storage (P2.2), which records each
-collection's data and index size in storage_snapshots once a day (app/services/analytics.py).
+The leased jobs are sweep_expired, every tick; snapshot_storage (P2.2), which records each
+collection's data and index size in storage_snapshots once a day (app/services/analytics.py); retention
+(P3.2), the nightly retention rules of plan section 8.4 (app/services/privacy.py, docs/legal/retention.md),
+once a day at RETENTION_AT; process_deletions (P3.2), every tick, which runs account deletions that were
+waiting for orders in flight and flags overdue ones for the admins; and phone_migration (P4.2), once per IST day,
+which moves customers and owners to phone sign-in before the email sign-in sunset (NEARSHOP_EMAIL_LOGIN_SUNSET):
+it warns those without a verified phone in the app 30, 7 and 1 days before the sunset, and switches off any still
+unverified 30 days after it (an owner's shops are hidden with the account). The sunset in force is never earlier than
+NEARSHOP_EMAIL_LOGIN_MIN_NOTICE_DAYS after the first day the job saw phone sign-in available, which it keeps on its
+lease (phone_signin_since), so a provider that goes live late moves the sunset later (sunset_in_force).
+send_notifications (P4.3), every tick, delivers the WhatsApp notification outbox (app/services/whatsapp.py): rows
+written by notify() in the reservation and order transactions, sent here, outside them, with retries after 30 s,
+2 min and 10 min. Each run also computes the hourly failure rate and, above 5%, reports the warning event the
+WhatsApp alert fires on, at most once every 15 minutes (failure_alert_at on its lease). stock_check (P4.4), every
+tick, sends each shop's daily stock check from its opening time (IST): a stock-check notification, delivered on
+WhatsApp through the outbox, listing up to 5 listings counted more than 48 hours ago (app/services/whatsapp.py
+send_stock_checks). A shop's day is recorded once considered, so each tick after that reads today's rows and the
+active shops (their id, owner, name and opening hours), and sends nothing more to that shop that day.
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -64,8 +80,9 @@ import re
 import socket
 import uuid
 from collections.abc import Callable, Mapping
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from pymongo import ReturnDocument
 from pymongo.database import Database as MongoDatabase
@@ -73,6 +90,7 @@ from pymongo.errors import DuplicateKeyError
 
 from app.core.database import Database, utcnow
 from app.core.errors import AppError, Conflict
+from app.models import Notification
 from app.services.orders import cancel_stale_pending
 from app.services.reservations import expire_due
 
@@ -84,7 +102,22 @@ LEASES = "job_leases"
 TICK_SECONDS = 30
 LEASE_TTL = timedelta(seconds=60)
 # Jobs too costly, or too loud, to repeat on every tick after a failure: retried after this long.
-RETRY_AFTER_FAILURE: dict[str, timedelta] = {"snapshot_storage": timedelta(hours=1)}
+RETRY_AFTER_FAILURE: dict[str, timedelta] = {"snapshot_storage": timedelta(hours=1), "retention": timedelta(hours=1),
+                                              "phone_migration": timedelta(hours=1),
+                                              "stock_check": timedelta(minutes=15)}
+RETENTION_AT = time(21, 30)  # UTC: 03:00 IST, the nightly retention job (P3.2)
+# The phone migration (P4.2): in-app warnings this many days before the email sign-in sunset, and accounts still
+# without a verified phone switched off this many days after it.
+SUNSET_WARN_DAYS = (30, 7, 1)
+SUNSET_DEACTIVATE_AFTER_DAYS = 30
+PHONE_MIGRATION_KIND = "phone_migration"  # the notifications' kind
+PHONE_MIGRATION_JOB = "phone_migration"
+PHONE_SIGNIN_SINCE = "phone_signin_since"  # on that job's lease: the first IST day it saw phone sign-in available
+DEACTIVATED_NO_PHONE = "phone_not_verified"  # User.deactivated_reason of an account the job switched off
+IST = ZoneInfo("Asia/Kolkata")
+SEND_NOTIFICATIONS_JOB = "send_notifications"  # the WhatsApp outbox sender (P4.3)
+FAILURE_ALERT_AT = "failure_alert_at"  # on that job's lease: when the failure-rate warning was last reported
+STOCK_CHECK_JOB = "stock_check"  # the daily WhatsApp stock check (P4.4)
 
 RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
@@ -176,8 +209,210 @@ def snapshot_storage() -> dict[str, Any]:
     return record_storage_snapshot(Database().mongo, utcnow())
 
 
+def retention_slot(now: datetime) -> datetime:
+    """The most recent retention slot (RETENTION_AT, UTC) at or before now."""
+    slot = datetime.combine(now.date(), RETENTION_AT)
+    return slot if slot <= now else slot - timedelta(days=1)
+
+
+def retention(clock: Clock = utcnow) -> dict[str, Any]:
+    """Nightly retention (P3.2; plan section 8.4; app/services/privacy.py run_retention). Runs once per slot,
+    at RETENTION_AT or on the first tick after it: the slot it ran for is kept in the lease's last_result
+    (ran_for), and every later tick of that slot only repeats the last result. A failed run is retried an
+    hour later (RETRY_AFTER_FAILURE)."""
+    from app.services.privacy import run_retention
+
+    now = clock()
+    slot = retention_slot(now).isoformat()
+    db = Database()
+    last = (db.mongo[LEASES].find_one({"_id": "retention"}, {"last_result": 1}) or {}).get("last_result") or {}
+    if last.get("ok") is True and last.get("ran_for") == slot:
+        return {k: v for k, v in last.items() if k != "ok"}
+    return {"ran_for": slot, **run_retention(db, now)}
+
+
+def process_deletions() -> dict[str, int]:
+    """Scheduled account deletions (P3.2): each runs once its orders in flight have closed, and is flagged
+    for the admins when still waiting 7 days after the request. One indexed query per tick when none wait."""
+    from app.services.privacy import process_scheduled_deletions
+
+    return process_scheduled_deletions(Database(), utcnow())
+
+
+def ist_day(at: datetime) -> date:
+    """The IST calendar day of a naive UTC time."""
+    return at.replace(tzinfo=ZoneInfo("UTC")).astimezone(IST).date()
+
+
+def ist_midnight_utc(day: date) -> datetime:
+    """The start of an IST day, as a naive UTC time."""
+    return datetime.combine(day, time(0), tzinfo=IST).astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+
+
+def phone_signin_since(mongo: MongoDatabase) -> date | None:
+    """The first IST day the phone_migration job saw phone sign-in available here, or None before it has."""
+    doc = mongo[LEASES].find_one({"_id": PHONE_MIGRATION_JOB}, {PHONE_SIGNIN_SINCE: 1}) or {}
+    value = doc.get(PHONE_SIGNIN_SINCE)
+    return date.fromisoformat(value) if isinstance(value, str) else None
+
+
+def sunset_in_force(configured: date, since: date | None, today: date, min_notice_days: int) -> date:
+    """The email sign-in sunset that applies: the configured one, or min_notice_days after phone sign-in became
+    available (since; today when not recorded yet) if that is later, so nobody loses email sign-in, or their
+    account, with less notice than that however late the providers go live. The caller checks availability."""
+    start = today if since is None else min(since, today)
+    return max(configured, start + timedelta(days=min_notice_days))
+
+
+def current_sunset(mongo: MongoDatabase, today: date) -> date:
+    """sunset_in_force for settings, reading phone_signin_since only when it could matter: when the configured date
+    is at least the minimum notice away, no start date (at the latest today) can move it."""
+    from app.core.config import settings
+
+    configured, notice = settings.email_login_sunset, settings.email_login_min_notice_days
+    if configured >= today + timedelta(days=notice):
+        return configured
+    return sunset_in_force(configured, phone_signin_since(mongo), today, notice)
+
+
+def _unverified() -> dict[str, Any]:
+    """Active customer and owner accounts without a verified phone (deleted accounts are switched off)."""
+    return {"role": {"$in": ["customer", "owner"]}, "is_active": True, "phone_verified_at": None}
+
+
+def _warning(sunset: date, days_left: int) -> tuple[str, str]:
+    when = f"{sunset.day} {sunset:%B %Y}"
+    left = "tomorrow" if days_left == 1 else f"in {days_left} days"
+    return (f"Verify your phone number: email sign-in ends {left}",
+            f"From {when} you sign in to NearShop with a code sent to your phone. Verify your phone number now so you "
+            f"can keep using your account. Accounts without a verified phone are switched off "
+            f"{SUNSET_DEACTIVATE_AFTER_DAYS} days after that.")
+
+
+def warn_before_sunset(db: Database, sunset: date, now: datetime) -> int:
+    """Warn every unverified customer and owner once per stage: the stage is the smallest of SUNSET_WARN_DAYS that is
+    at least the days left, so a day the job missed is caught up on the next run. A stage's warning goes to users
+    without a phone_migration notification since the stage began. The notifications are written as notify() writes
+    them (app/services/notifications.py), dated now. Returns the number warned."""
+    days_left = (sunset - ist_day(now)).days
+    stages = [d for d in SUNSET_WARN_DAYS if days_left <= d]
+    if days_left < 1 or not stages:
+        return 0
+    stage_start = ist_midnight_utc(sunset - timedelta(days=min(stages)))
+    title, body = _warning(sunset, days_left)
+    warned = 0
+    batch: list[int] = []
+
+    def flush() -> int:
+        done = {n["user_id"] for n in db.mongo["notifications"].find(
+            {"user_id": {"$in": batch}, "kind": PHONE_MIGRATION_KIND, "created_at": {"$gte": stage_start}},
+            {"user_id": 1})}
+        todo = [uid for uid in batch if uid not in done]
+        if todo:
+            db.notifications.insert_many([Notification(user_id=uid, kind=PHONE_MIGRATION_KIND, title=title, body=body,
+                                                        link="/verify-phone", created_at=now) for uid in todo])
+        batch.clear()
+        return len(todo)
+
+    for doc in db.mongo["users"].find(_unverified(), {"_id": 1}).sort("_id", 1):
+        batch.append(doc["_id"])
+        if len(batch) >= 500:
+            warned += flush()
+    if batch:
+        warned += flush()
+    return warned
+
+
+def deactivate_after_sunset(db: Database, sunset: date, now: datetime) -> dict[str, int]:
+    """From SUNSET_DEACTIVATE_AFTER_DAYS after the sunset, switch off every customer and owner account still without
+    a verified phone, ending its sessions and recording when and why (deactivated_at, deactivated_reason). An owner's
+    shops are hidden with the account (is_active false, so customers no longer find or reserve at them; their
+    listings are kept for the day support switches the account back on), in the same transaction. Returns the
+    numbers of accounts switched off and shops hidden."""
+    if (ist_day(now) - sunset).days < SUNSET_DEACTIVATE_AFTER_DAYS:
+        return {"deactivated": 0, "shops_hidden": 0}
+    from app.core.security import revoke_all_update
+
+    def run() -> dict[str, int]:
+        owners = [d["_id"] for d in db.users.find_raw({**_unverified(), "role": "owner"}, {"_id": 1})]
+        count = db.users.update_many(_unverified(), revoke_all_update(
+            {"is_active": False, "deactivated_at": now, "deactivated_reason": DEACTIVATED_NO_PHONE}))
+        hidden = db.shops.update_many({"owner_id": {"$in": owners}, "is_active": True},
+                                      {"$set": {"is_active": False, "updated_at": now}}) if owners else 0
+        return {"deactivated": count, "shops_hidden": hidden}
+
+    result = db.transaction(run)
+    if result["deactivated"]:
+        log.warning("phone migration: switched off %d accounts without a verified phone and hid %d of their shops",
+                    result["deactivated"], result["shops_hidden"])
+    return result
+
+
+def phone_migration(clock: Clock = utcnow) -> dict[str, Any]:
+    """The move to phone sign-in (P4.2), once per IST day: the day it ran for is kept in the lease's last_result
+    (ran_for), and every later tick that day only repeats the last result. While phone sign-in is unavailable nobody
+    can verify a phone, so it only counts. The first day it finds phone sign-in available is kept on the lease
+    (phone_signin_since), and the sunset in force is current_sunset. last_result: warned, deactivated, shops_hidden,
+    and remaining (active customer and owner accounts still without a verified phone), with the sunset in force and
+    the configured one. A failed run is retried an hour later (RETRY_AFTER_FAILURE)."""
+    from app.core.config import settings
+    from app.services import otp
+
+    now = clock()
+    today = ist_day(now)
+    db = Database()
+    lease = db.mongo[LEASES].find_one({"_id": PHONE_MIGRATION_JOB}, {"last_result": 1}) or {}
+    last = lease.get("last_result") or {}
+    if last.get("ok") is True and last.get("ran_for") == today.isoformat():
+        return {k: v for k, v in last.items() if k != "ok"}
+    available = otp.available()
+    if available:  # the lease is this process's while the job runs; $min keeps the first day
+        db.mongo[LEASES].update_one({"_id": PHONE_MIGRATION_JOB}, {"$min": {PHONE_SIGNIN_SINCE: today.isoformat()}})
+    sunset = current_sunset(db.mongo, today)
+    warned = warn_before_sunset(db, sunset, now) if available else 0
+    switched = deactivate_after_sunset(db, sunset, now) if available else {"deactivated": 0, "shops_hidden": 0}
+    remaining = db.mongo["users"].count_documents(_unverified())
+    since = phone_signin_since(db.mongo)
+    return {"ran_for": today.isoformat(), "sunset": sunset.isoformat(),
+            "configured_sunset": settings.email_login_sunset.isoformat(),
+            "phone_signin_since": since.isoformat() if since else None, "phone_signin_available": available,
+            "warned": warned, **switched, "remaining": remaining}
+
+
+def send_notifications(clock: Clock = utcnow) -> dict[str, Any]:
+    """The WhatsApp outbox sender (P4.3, app/services/whatsapp.py send_due), then the failure rate over the last hour.
+    Above 5% it reports the warning event (whatsapp.report_failure_rate) when none was reported in the last
+    FAILURE_ALERT_EVERY: the lease keeps failure_alert_at, so one incident is not an event every 30 s. last_result:
+    the sender's counts, the hour's finished and failed rows, the rate, and whether the warning went out."""
+    from app.services import whatsapp
+
+    db = Database()
+    result: dict[str, Any] = dict(whatsapp.send_due(db, clock=clock))
+    now = clock()
+    rate = whatsapp.failure_rate(db, now)
+    result.update(rate, alerted=False)
+    if whatsapp.above_threshold(rate):
+        due = {"$or": [{FAILURE_ALERT_AT: None}, {FAILURE_ALERT_AT: {"$lte": now - whatsapp.FAILURE_ALERT_EVERY}}]}
+        if db.mongo[LEASES].update_one({"_id": SEND_NOTIFICATIONS_JOB, **due},
+                                       {"$set": {FAILURE_ALERT_AT: now}}).modified_count:
+            whatsapp.report_failure_rate(rate)
+            result["alerted"] = True
+    return result
+
+
+def stock_check(clock: Clock = utcnow) -> dict[str, Any]:
+    """The daily stock check (P4.4, app/services/whatsapp.py send_stock_checks): nothing while WhatsApp is off here.
+    last_result: the IST day and the shops sent, fresh (nothing older than 48 hours) and unreachable this run. A
+    failed run is retried 15 minutes later (RETRY_AFTER_FAILURE)."""
+    from app.services import whatsapp
+
+    return whatsapp.send_stock_checks(Database(), clock())
+
+
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {
-    "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage}
+    "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage, "retention": retention,
+    "process_deletions": process_deletions, PHONE_MIGRATION_JOB: phone_migration,
+    SEND_NOTIFICATIONS_JOB: send_notifications, STOCK_CHECK_JOB: stock_check}
 
 
 class SearchIndexRefresher:

@@ -74,6 +74,10 @@ jobs:
       NEARSHOP_ENABLE_SCHEDULER: "false"
       NEARSHOP_RATE_LIMIT_MODE: "off"
       NEARSHOP_MEDIA_BACKEND: local
+      # The email sign-in sunset (P4.2) far away, whatever the date (development's default too, set here so a
+      # change to that default cannot break the lab): the console provider makes phone sign-in available, and every
+      # spec signs the seeded customer and owner, who have no verified phone, in with email.
+      NEARSHOP_EMAIL_LOGIN_SUNSET: "2100-01-01"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

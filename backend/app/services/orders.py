@@ -4,14 +4,17 @@
        |            |               |               |
        +------------+---cancel------+               +--fail--> DELIVERY_FAILED --return--> RETURNED_TO_SHOP
 
-Stock is held at SHOP_CONFIRMED and released on cancel or return. Payment is cash on
-delivery in V1; payment_method/payment_status keep the model open for UPI/cards later.
+Stock is held at SHOP_CONFIRMED and released on cancel or return. The customer pays the shop at
+the door, in cash or to the shop's own UPI ID; delivering records which (P6.1, plan section 8.8). NearShop
+never holds customer money.
 """
 import logging
+import secrets
 from datetime import timedelta
 
+from app.core.config import settings
 from app.core.database import Database, transactional, utcnow
-from app.core.errors import Conflict, Forbidden, InvalidTransition, NotFound
+from app.core.errors import AppError, Conflict, Forbidden, InvalidTransition, NotFound
 from app.models import (
     InventoryReason,
     Order,
@@ -27,7 +30,9 @@ from app.models import (
 )
 from app.services.fulfillment_common import record_event, record_sales
 from app.services.inventory import change_stock
+from app.services.notification_text import Term
 from app.services.notifications import notify
+from app.services.reservations import SHOP_NOT_VERIFIED, check_payment_method
 from app.utils.geo import haversine_km
 from app.utils.text import short_code
 
@@ -48,14 +53,18 @@ TRANSITIONS: dict[tuple[OS, str], tuple[OS, set[str]]] = {
     (OS.DELIVERY_FAILED, "return"): (OS.RETURNED_TO_SHOP, {"owner"}),
 }
 
+# The customer's notification for each status the shop (or the system) moves an order to: a message key of
+# app/services/notification_text.py, rendered in the customer's language (P7.11). A cancelled or failed order with a
+# reason uses the key's _reason variant; the hour-long timeout has its own words (NO_RESPONSE_REASON).
 CUSTOMER_MESSAGES = {
-    OS.SHOP_CONFIRMED: ("Order confirmed", "{shop} confirmed your order and set the items aside."),
-    OS.PREPARING: ("Packing your order", "{shop} is preparing your order."),
-    OS.OUT_FOR_DELIVERY: ("Out for delivery", "Your order from {shop} is on the way. Keep cash ready: Rs {total:.0f}."),
-    OS.DELIVERED: ("Delivered", "Your order from {shop} was delivered. How did it go? Leave a quick review."),
-    OS.DELIVERY_FAILED: ("Delivery attempt failed", "{shop} could not complete the delivery. They may contact you."),
-    OS.CANCELLED: ("Order cancelled", "Your order from {shop} was cancelled."),
+    OS.SHOP_CONFIRMED: "order_shop_confirmed",  # holds the delivery code: the customer's own notification
+    OS.PREPARING: "order_preparing",
+    OS.OUT_FOR_DELIVERY: "order_out_for_delivery",
+    OS.DELIVERED: "order_delivered",
+    OS.DELIVERY_FAILED: "order_delivery_failed",
+    OS.CANCELLED: "order_cancelled",
 }
+NO_RESPONSE_REASON = "The shop did not respond within an hour"  # cancel_stale_pending's close reason
 
 
 def allowed_actions(order: Order, actor: str) -> list[str]:
@@ -63,6 +72,12 @@ def allowed_actions(order: Order, actor: str) -> list[str]:
 
 
 def quote_delivery(shop: Shop, lat: float, lng: float, subtotal: float) -> dict:
+    """Delivery eligibility and fee. Refused (409) for a shop customers cannot see: paused, or not verified
+    (P3.3), so POST /orders/quote blocks it like create_order does."""
+    if not shop.is_active:
+        raise Conflict("This shop is not taking orders right now")
+    if not shop.is_live:
+        raise Conflict(SHOP_NOT_VERIFIED, code="shop_not_verified")
     distance = haversine_km(shop.lat, shop.lng, lat, lng)
     eligible = shop.offers_delivery and distance <= shop.delivery_radius_km
     fee = shop.delivery_fee
@@ -112,6 +127,8 @@ def create_order(
     shop = db.shops.get(products[0][0].shop_id)
     if not shop.is_active:
         raise Conflict("This shop is not taking orders right now")
+    if not shop.is_live:  # not verified, or its approval has ended (P3.3, plan section 8.1)
+        raise Conflict(SHOP_NOT_VERIFIED, code="shop_not_verified")
 
     subtotal = round(sum(p.price * q for p, q in products), 2)
     quote = quote_delivery(shop, lat, lng, subtotal)
@@ -137,8 +154,9 @@ def create_order(
     record_event(db, entity="order", entity_id=order.id, shop_id=shop.id, from_status=None,
                  to_status=OS.PENDING, actor_role="customer", actor_id=customer.id)
     summary = ", ".join(f"{q} x {p.name}" for p, q in products)
-    notify(db, shop.owner_id, "order_new", f"New delivery order {order.code}",
-           f"{summary} to {address[:60]} ({quote['distance_km']} km). COD Rs {order.total:.0f}.", "/shop/orders")
+    notify(db, shop.owner_id, "order_new", link="/shop/orders", message="order_new",
+           params={"code": order.code, "summary": summary, "address": address[:60],
+                   "distance_km": quote["distance_km"], "total": order.total})
     return order
 
 
@@ -154,12 +172,57 @@ def _actor_for(user: User | None, order: Order, shop_owner_id: int) -> str:
     raise Forbidden("This order belongs to someone else")
 
 
-def transition(db: Database, order_id: int, action: str, user: User | None, reason: str | None = None) -> Order:
-    """Move an order through its state machine as one all-or-nothing transaction."""
-    return db.transaction(lambda: _transition(db, order_id, action, user, reason))
+def transition(db: Database, order_id: int, action: str, user: User | None, reason: str | None = None,
+               code: str | None = None, payment_method: str | None = None) -> Order:
+    """Move an order through its state machine as one all-or-nothing transaction. Confirming creates the
+    4-digit delivery code only the customer sees; delivering needs it (P3.5, plan section 8.2) and the payment
+    method, cod or upi_direct (P6.1, reservations.check_payment_method). Other actions ignore payment_method."""
+    if action in CODE_ACTIONS:
+        ensure_delivery_code(db, order_id)
+    try:
+        return db.transaction(lambda: _transition(db, order_id, action, user, reason, code, payment_method))
+    except Conflict as exc:
+        if exc.code == "wrong_code" and (code or "").strip():
+            _count_wrong_code(db, order_id)
+        raise
 
 
-def _transition(db: Database, order_id: int, action: str, user: User | None, reason: str | None) -> Order:
+# Orders waiting to be delivered, and the actions on them that make sure the order has a delivery code.
+AWAITING_DELIVERY = [OS.SHOP_CONFIRMED.value, OS.PREPARING.value, OS.OUT_FOR_DELIVERY.value]
+CODE_ACTIONS = {"prepare", "dispatch", "deliver"}
+# Wrong delivery codes: after MAX_CODE_FAILURES in a row, the order takes no code for CODE_LOCK_MINUTES, so the
+# 10,000 codes cannot be tried at the counter.
+MAX_CODE_FAILURES = 5
+CODE_LOCK_MINUTES = 30
+
+
+def new_delivery_code() -> str:
+    return f"{secrets.randbelow(10_000):04d}"
+
+
+def ensure_delivery_code(db: Database, order_id: int) -> None:
+    """Give a confirmed order its delivery code if it has none, and send the code to the customer. An order
+    confirmed by the release before P3.5 (also while migration 6 ran) has none, and could never be delivered."""
+    order = db.orders.find_one_and_update(
+        {"_id": order_id, "status": {"$in": AWAITING_DELIVERY}, "delivery_code": {"$in": [None, ""]}},
+        {"$set": {"delivery_code": new_delivery_code()}})
+    if order is not None:
+        shop = db.shops.get(order.shop_id)
+        notify(db, order.customer_id, "order_delivery_code", link=f"/account/orders/{order.id}",
+               message="order_delivery_code",
+               params={"shop": shop.name if shop else Term("the_shop"), "delivery_code": order.delivery_code})
+
+
+def _count_wrong_code(db: Database, order_id: int) -> None:
+    """Count a wrong delivery code outside the (aborted) transaction; the MAX_CODE_FAILURES-th locks the order."""
+    order = db.orders.find_one_and_update({"_id": order_id}, {"$inc": {"code_failures": 1}})
+    if order is not None and order.code_failures >= MAX_CODE_FAILURES:
+        db.orders.update_one({"_id": order_id}, {"$set": {
+            "code_failures": 0, "code_locked_until": utcnow() + timedelta(minutes=CODE_LOCK_MINUTES)}})
+
+
+def _transition(db: Database, order_id: int, action: str, user: User | None, reason: str | None,
+                code: str | None = None, payment_method: str | None = None) -> Order:
     order = db.orders.get(order_id)  # loaded inside the transaction, see reservations._transition
     if order is None:
         raise NotFound("Order not found")
@@ -171,6 +234,18 @@ def _transition(db: Database, order_id: int, action: str, user: User | None, rea
     to_status, actors = TRANSITIONS[key]
     if actor not in actors and actor != "admin":
         raise Forbidden(f"Only the {' or '.join(sorted(actors))} can {action} this order")
+    if action == "deliver" and settings.completion_codes_required:
+        locked = order.code_locked_until
+        if locked is not None and locked > utcnow():
+            minutes = max(1, round((locked - utcnow()).total_seconds() / 60))
+            raise AppError(f"Too many wrong delivery codes. Try again in {minutes} min, or call the customer.",
+                           code="code_locked", status_code=429)
+        entered = (code or "").strip()
+        if not entered:
+            raise Conflict("Enter the 4-digit delivery code the customer gives you", code="wrong_code")
+        if not order.delivery_code or not secrets.compare_digest(entered.encode(), order.delivery_code.encode()):
+            raise Conflict("That is not this order's delivery code", code="wrong_code")
+    method = check_payment_method(shop, payment_method) if action == "deliver" else None
 
     now = utcnow()
     from_status = order.status
@@ -183,9 +258,11 @@ def _transition(db: Database, order_id: int, action: str, user: User | None, rea
         # All-or-nothing: if any item is short, change_stock raises and the whole transaction aborts.
         for item in order.items:
             change_stock(db, products[item.product_id], -item.quantity, InventoryReason.ORDER_HOLD, actor_id)
-        changes["stock_held"] = True
+        changes.update(stock_held=True, delivery_code=new_delivery_code())
     elif action == "deliver":
-        changes.update(delivered_at=now, payment_status="paid", stock_held=False)  # COD collected at the door
+        # Paid at the door, in cash or to the shop's own UPI ID, as the owner recorded.
+        changes.update(delivered_at=now, payment_method=method, payment_status="paid", stock_held=False,
+                       code_failures=0)
         record_sales(db, [(products[i.product_id], i.quantity, i.unit_price) for i in order.items],
                      source=SaleSource.ORDER, basket_id=order.code, customer_id=order.customer_id)
     elif action in {"cancel", "return"}:
@@ -199,13 +276,17 @@ def _transition(db: Database, order_id: int, action: str, user: User | None, rea
     db.orders.set(order, **changes)
 
     if actor != "customer" and to_status in CUSTOMER_MESSAGES:
-        title, body = CUSTOMER_MESSAGES[to_status]
-        body = body.format(shop=shop.name, total=order.total)
+        message = CUSTOMER_MESSAGES[to_status]
         if order.close_reason and to_status in {OS.CANCELLED, OS.DELIVERY_FAILED}:
-            body += f" Reason: {order.close_reason}"
-        notify(db, order.customer_id, f"order_{to_status.lower()}", title, body, f"/account/orders/{order.id}")
+            no_response = (to_status == OS.CANCELLED and actor == "system"
+                           and order.close_reason == NO_RESPONSE_REASON)
+            message = "order_cancelled_no_response" if no_response else f"{message}_reason"
+        notify(db, order.customer_id, f"order_{to_status.lower()}", link=f"/account/orders/{order.id}",
+               message=message, params={"shop": shop.name, "total": order.total,
+                                        "delivery_code": order.delivery_code, "reason": order.close_reason})
     if actor == "customer" and to_status == OS.CANCELLED:
-        notify(db, shop.owner_id, "order_cancelled", f"Order {order.code} cancelled by customer", None, "/shop/orders")
+        notify(db, shop.owner_id, "order_cancelled", link="/shop/orders", message="order_cancelled_by_customer",
+               params={"code": order.code})
 
     record_event(db, entity="order", entity_id=order.id, shop_id=order.shop_id, from_status=from_status,
                  to_status=to_status, actor_role=actor, actor_id=actor_id, note=reason)
@@ -217,7 +298,7 @@ def cancel_stale_pending(db: Database) -> int:
     stale = db.orders.find_raw({"status": OS.PENDING, "created_at": {"$lte": cutoff}}, {"_id": 1})
     for doc in stale:
         try:
-            transition(db, doc["_id"], "cancel", None, "The shop did not respond within an hour")
+            transition(db, doc["_id"], "cancel", None, NO_RESPONSE_REASON)
         except Exception as exc:
             log.warning("could not auto-cancel order %s: %s", doc["_id"], exc)
     return len(stale)

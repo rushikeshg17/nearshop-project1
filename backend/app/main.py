@@ -18,6 +18,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.ai.semantic_index import vector_stage_ready, warm_up
 from app.api.router import api_router
+from app.api.routes import webhooks
 from app.core import observability, ratelimit, security_headers
 from app.core.config import settings
 from app.core.database import Database, utcnow
@@ -310,5 +311,8 @@ def health_db():
 
 
 app.include_router(api_router)
+# Webhooks (P4.3): outside api_router, so its CSRF guard does not apply; every call is verified by its signature or
+# verify token instead (app/api/routes/webhooks.py).
+app.include_router(webhooks.router)
 if serves_local_media(settings.environment, settings.media_backend):
     app.mount("/media", StaticFiles(directory=settings.media_dir, check_dir=False), name="media")

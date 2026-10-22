@@ -55,8 +55,10 @@ from app.core import cache_version
 from app.core.config import SEARCH_SIMILARITY_SCALE, EnginePair, RankingConfig, settings
 from app.core.database import Database, utcnow
 from app.models import Product, SearchEvent, Shop
+from app.models.core import live_shop_filter
 from app.schemas.serializers import STALE_DAYS, freshness, listing, media_url, shop_brief, thumbnail_url
 from app.services.loaders import categories, category_by_slug, with_categories, with_category
+from app.services.privacy import consent_granted
 from app.utils.geo import haversine_km, within_km
 from app.utils.text import expand_synonyms, is_word, normalize_query, search_tokens, word_parts
 
@@ -70,6 +72,7 @@ W_LOCAL_TERM = settings.ranking.w_local_term
 # The similarity scale the semantic index returns (config.SEARCH_SIMILARITY_SCALE, the all-MiniLM-L6-v2
 # calibration); r1's sem_floor and sem_ceil equal it, and a tuned config maps from this scale with its own.
 SEM_FLOOR, SEM_CEIL = SEARCH_SIMILARITY_SCALE.sem_floor, SEARCH_SIMILARITY_SCALE.sem_ceil
+LOCATION_DECIMALS = 2  # search_history locations: about 1.1 km (plan section 8.4)
 # City scale (P8.2; module docstring). A wider radius is searched at MAX_RADIUS_KM.
 MAX_RADIUS_KM = 25.0
 # A page holds at most MAX_PAGE_SIZE groups (a larger page_size is served as MAX_PAGE_SIZE, and the response's
@@ -126,7 +129,8 @@ class SearchParams:
 
 def nearby_shops(db: Database, lat: float, lng: float, radius_km: float, fulfillment: str | None = None,
                  shop_id: int | None = None) -> dict[int, tuple[Shop, float]]:
-    query: dict = {"is_active": True, "location": within_km(lat, lng, radius_km)}
+    # Only shops customers may see (P3.3): active, and verified with the approval in force.
+    query: dict = {**live_shop_filter(), "location": within_km(lat, lng, radius_km)}
     if shop_id:
         query["_id"] = shop_id
     out = {}
@@ -190,7 +194,7 @@ def local_term_scores(db: Database, norm: str, w_local_term: float | None = None
                       shop_ids: list[int] | None = None) -> dict[int, float]:
     """Listings whose local_terms contain a word, adjacent pair or the whole of the normalised query, scored
     w_local_term (the ranking config's, by default) per matched term. Listings created from the catalogue after
-    migration 4 copied the terms are matched through their catalog item's own local_terms. With shop_ids, only
+    migration 8 copied the terms are matched through their catalog item's own local_terms. With shop_ids, only
     the listings of those shops (P8.2); the catalogue match stays city-wide, as the catalogue is shared."""
     candidates = _local_term_candidates(norm)
     if not norm or not candidates or shop_ids == []:
@@ -517,9 +521,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
 
     if log and norm:
         # Logged after the response is on its way: analytics must not make search slower.
-        event = SearchEvent(user_id=user_id, query=p.q[:200], normalized_query=norm[:200], category_slug=p.category,
-                            results_count=total, lat=round(p.lat, 3), lng=round(p.lng, 3))
-        db.background(lambda: Database(db.mongo.name).search_history.insert(event))
+        db.background(lambda: log_search(Database(db.mongo.name), user_id, p, norm, total))
 
     keyword_label, semantic_label = engine_labels(engines)
     return {
@@ -539,6 +541,18 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         "category_counts": dict(category_counts),
         "engine": {"semantic": semantic_label, "keyword": keyword_label, "ranking": cfg.version},
     }
+
+
+def log_search(db: Database, user_id: int | None, p: SearchParams, norm: str, total: int) -> None:
+    """Write one search_history row (retention: plan section 8.4, docs/legal/retention.md). The location is
+    rounded to 2 decimals (about 1.1 km), and user_id is kept only while the user's personalised-suggestions
+    consent is in force; the nightly retention job removes it after 30 days, and the TTL index deletes the
+    row after 180."""
+    if user_id is not None and not consent_granted(db, user_id, "personalised_suggestions"):
+        user_id = None
+    db.search_history.insert(SearchEvent(
+        user_id=user_id, query=p.q[:200], normalized_query=norm[:200], category_slug=p.category,
+        results_count=total, lat=round(p.lat, LOCATION_DECIMALS), lng=round(p.lng, LOCATION_DECIMALS)))
 
 
 # ---------------------------------------------------------------- "did you mean"

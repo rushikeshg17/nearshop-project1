@@ -3,6 +3,7 @@ backend/.venv/
 backend/.env
 backend/nearshop.db*
 backend/media/
+backend/private_media/
 backend/ml_artifacts/
 backend/**/__pycache__/
 backend/.pytest_cache/

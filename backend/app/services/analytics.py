@@ -15,8 +15,9 @@ from pymongo.errors import DuplicateKeyError, OperationFailure
 from app.ai.semantic_index import index
 from app.core.config import settings
 from app.core.database import Database, utcnow
-from app.models import AnomalyStatus, InventoryReason, OrderStatus, ReservationStatus, Role, Shop
+from app.models import AnomalyStatus, OrderStatus, ReservationStatus, Role, Shop
 from app.schemas.serializers import FRESH_HOURS, STALE_DAYS, iso, listing
+from app.services.inventory import OWNER_REASON_VALUES
 from app.services.loaders import categories, with_category
 from app.services.meta import city_config
 from app.services.search import keyword_scores
@@ -445,7 +446,6 @@ def owner_insights(db: Database, shop: Shop) -> dict:
 def admin_overview(db: Database) -> dict:
     since30 = ist_day_start_utc(29)
     since14 = ist_day_start_utc(13)
-    owner_reasons = [InventoryReason.RESTOCK.value, InventoryReason.ADJUSTMENT.value, InventoryReason.INITIAL.value]
 
     def by_day(collection, match: dict) -> dict:
         return {r["_id"]: r["n"] for r in collection.aggregate([
@@ -498,7 +498,7 @@ def admin_overview(db: Database) -> dict:
         top_shops,
         lambda: searches({"created_at": {"$gte": utcnow() - timedelta(days=14)}}, 10),
         lambda: searches({"results_count": 0, "created_at": {"$gte": utcnow() - timedelta(days=30)}}, 8),
-        lambda: by_day(db.inventory_events, {"created_at": {"$gte": since14}, "reason": {"$in": owner_reasons}}),
+        lambda: by_day(db.inventory_events, {"created_at": {"$gte": since14}, "reason": {"$in": OWNER_REASON_VALUES}}),
         lambda: by_day(db.search_history, {"created_at": {"$gte": since14}}),
         lambda: _count_by(db.users, "role"),
         shop_totals,

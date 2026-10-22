@@ -11,7 +11,7 @@ from app.main import app
 from app.services import synonyms
 from app.utils.text import expand_synonyms
 from database import migrate
-from database.migrations import m0005_synonyms
+from database.migrations import m0009_synonyms
 from tests.conftest import CENTER, HEADERS, login
 
 TERM = "zorbik"  # a made-up word: nothing in the catalogue matches it
@@ -27,7 +27,7 @@ def scratch():
 @pytest.fixture
 def clean(db):
     """Remove the entries a test adds (any term outside the 42 imported ones) and restore the imported ones."""
-    imported = {t: e for t, e, _ in m0005_synonyms.ENTRIES}
+    imported = {t: e for t, e, _ in m0009_synonyms.ENTRIES}
     yield
     db.mongo["synonyms"].delete_many({"term": {"$nin": list(imported)}})
     for term, expansions in imported.items():
@@ -46,17 +46,17 @@ def search(client, q):
 def test_migration_imports_exactly_the_42_entries(scratch):
     migrate.run(scratch)  # a new database: every migration, then ensure_schema
     coll = scratch["synonyms"]
-    assert coll.count_documents({}) == 42 == len(m0005_synonyms.ENTRIES)
+    assert coll.count_documents({}) == 42 == len(m0009_synonyms.ENTRIES)
     assert coll.count_documents({"active": True, "created_by": None}) == 42
     chappal = coll.find_one({"term": "chappal"})
     assert chappal["expansions"] == ["slipper", "sandal", "flip flop"] and isinstance(chappal["_id"], int)
     assert "uq_term" in coll.index_information()
     assert synonyms.read_version(scratch) >= 1
 
-    m0005_synonyms.apply(scratch)  # a rerun inserts nothing and keeps an admin's change
+    m0009_synonyms.apply(scratch)  # a rerun inserts nothing and keeps an admin's change
     assert coll.count_documents({}) == 42
     coll.update_one({"term": "tape"}, {"$set": {"active": False}})
-    m0005_synonyms.apply(scratch)
+    m0009_synonyms.apply(scratch)
     assert coll.count_documents({}) == 42 and coll.find_one({"term": "tape"})["active"] is False
 
 

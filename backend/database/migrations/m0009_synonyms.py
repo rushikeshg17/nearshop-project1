@@ -19,7 +19,7 @@ from pymongo.database import Database as MongoDatabase
 
 from database.schema import INDEXES, VALIDATORS
 
-NUMBER = 5
+NUMBER = 9
 NAME = "synonyms"
 
 COLLECTION = "synonyms"

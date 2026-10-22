@@ -2,17 +2,19 @@
 from typing import Literal
 
 from fastapi import APIRouter, Query, Request
+from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
 
 from app.ai.recommend import bundle_for
 from app.core.database import Database, utcnow
 from app.core.deps import DB, CurrentUser, CustomerUser
 from app.core.errors import Conflict, NotFound
-from app.models import Order, OrderStatus, Reservation, ReservationStatus, Review, User
+from app.models import Order, OrderStatus, Reservation, ReservationStatus, Review, Shop, User
 from app.schemas.requests import NotificationsReadIn, OrderIn, OrderQuoteIn, ReservationIn, ReviewIn, TransitionIn
 from app.schemas.serializers import listing, notification_out, order_out, reservation_out, shop_brief
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
+from app.services import reviews as review_service
 from app.services import search_events
 from app.services.loaders import hydrate_orders, hydrate_reservations, timelines, with_shops
 from app.services.search import recent_searches
@@ -30,19 +32,32 @@ def _reviewed_ids(db: Database, customer_id: int) -> tuple[set[int], set[int]]:
             {r["order_id"] for r in rows if r.get("order_id")})
 
 
+def _pay_to(out: dict, shop: Shop) -> dict:
+    """Add the shop's own UPI ID and payee name (P6.1, plan section 8.8) to a customer's own order or reservation,
+    for the payment link and QR code (P6.2): the customer pays the shop directly. Both None while the shop has no
+    UPI ID. Added here, and never by the serializers, so public shop responses never carry them."""
+    out["shop"] = {**out["shop"], "upi_id": shop.upi_id,
+                   "upi_payee_name": (shop.upi_payee_name or shop.name) if shop.upi_id else None}
+    return out
+
+
 def _res_json(db: Database, rows: list[Reservation], reviewed: set[int], with_events: bool = False) -> list[dict]:
     hydrate_reservations(db, rows)
     events = timelines(db, "reservation", [r.id for r in rows]) if with_events else {}
-    return [reservation_out(r, actions=reservation_service.allowed_actions(r, "customer"),
-                            events=events.get(r.id) if with_events else None, reviewed=r.id in reviewed)
+    return [_pay_to({**reservation_out(r, actions=reservation_service.allowed_actions(r, "customer"),
+                                       events=events.get(r.id) if with_events else None, reviewed=r.id in reviewed),
+                     "payment_method": r.payment_method, "payment_status": r.payment_status}, r.shop)
             for r in rows]
 
 
 def _order_json(db: Database, rows: list[Order], reviewed: set[int], with_events: bool = False) -> list[dict]:
     hydrate_orders(db, rows)
     events = timelines(db, "order", [o.id for o in rows]) if with_events else {}
-    return [order_out(o, actions=order_service.allowed_actions(o, "customer"),
-                      events=events.get(o.id) if with_events else None, reviewed=o.id in reviewed)
+    # The delivery code (P3.5) is the customer's alone: added here, to their own orders, and never by order_out,
+    # which the owner's responses use too.
+    return [_pay_to({**order_out(o, actions=order_service.allowed_actions(o, "customer"),
+                                 events=events.get(o.id) if with_events else None, reviewed=o.id in reviewed),
+                     "delivery_code": o.delivery_code if o.status in order_service.ACTIVE else None}, o.shop)
             for o in rows]
 
 
@@ -154,32 +169,67 @@ def cancel_order(order_id: int, body: TransitionIn, user: CustomerUser, db: DB):
 
 @router.post("/reviews")
 def create_review(body: ReviewIn, user: CustomerUser, db: DB):
+    """Review a completed pickup or a delivered order, if the review rules allow it (P3.5, plan section 8.2:
+    app/services/reviews.py). The shop's rating is then recomputed from its counted reviews in the same
+    transaction."""
     if body.reservation_id:
         r = _own_reservation(db, user, body.reservation_id)
         if r.status != ReservationStatus.COMPLETED:
             raise Conflict("You can review a pickup once it is completed")
         shop_id, product_id = r.shop_id, r.product_id
+        purchased_at, completed_at = r.created_at, r.completed_at or r.updated_at
         delivery_rating = None
     else:
         o = _own_order(db, user, body.order_id)
         if o.status != OrderStatus.DELIVERED:
             raise Conflict("You can review a delivery once it has arrived")
         shop_id, product_id = o.shop_id, o.items[0].product_id if o.items else None
+        purchased_at, completed_at = o.created_at, o.delivered_at or o.updated_at
         delivery_rating = body.delivery_rating
+    review_service.check_eligibility(db, user, db.shops.get(shop_id), purchased_at=purchased_at,
+                                     completed_at=completed_at)
     review = Review(customer_id=user.id, shop_id=shop_id, product_id=product_id, reservation_id=body.reservation_id,
                     order_id=body.order_id, rating=body.rating, accuracy_rating=body.accuracy_rating,
                     delivery_rating=delivery_rating, comment=(body.comment or "").strip() or None)
 
     def save() -> None:
-        # The review and the shop's running rating total change together.
+        # The review and the shop's recomputed rating change together; two reviews of one shop at once conflict
+        # on the shop document, so the retried one recomputes with both.
         db.reviews.insert(review)
-        db.shops.update_one({"_id": shop_id}, {"$inc": {"rating_sum": body.rating, "rating_count": 1}})
+        review_service.recompute(db, shop_id)
 
     try:
         db.transaction(save)
     except DuplicateKeyError:  # unique index: one review per reservation / order
         raise Conflict("You have already reviewed this purchase", code="duplicate_review") from None
     return {"id": review.id, "ok": True}
+
+
+class ReviewReportIn(BaseModel):
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    reason: review_service.ReportReason
+    note: str | None = Field(default=None, max_length=500)
+
+
+def _report(db: Database, user: User, review_id: int, target: str, body: ReviewReportIn) -> dict:
+    try:
+        return review_service.report(db, user, review_id, target, body.reason, body.note)
+    except DuplicateKeyError:  # the same user's report raced itself: it counts once
+        return {"ok": True, "already_reported": True}
+
+
+@router.post("/reviews/{review_id}/report")
+def report_review(review_id: int, body: ReviewReportIn, user: CurrentUser, db: DB):
+    """Report a review (P3.6, plan section 8.2): once per user, at most 10 reports a day (app/core/ratelimit.py).
+    Reports from 3 distinct users hide it until an admin decides it."""
+    return _report(db, user, review_id, review_service.REVIEW, body)
+
+
+@router.post("/reviews/{review_id}/reply/report")
+def report_reply(review_id: int, body: ReviewReportIn, user: CurrentUser, db: DB):
+    """Report the shop's reply to a review, under the same rules as reporting a review."""
+    return _report(db, user, review_id, review_service.REPLY, body)
 
 
 # ------------------------------------------------------------------ dashboard

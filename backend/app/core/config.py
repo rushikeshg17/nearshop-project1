@@ -1,5 +1,6 @@
 """Application settings, loaded from environment variables / .env."""
 from dataclasses import dataclass
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, get_args
@@ -145,6 +146,14 @@ class EnginePair:
 
 
 DEFAULT_ENGINES = EnginePair()
+# The email sign-in sunset (P4.2, NEARSHOP_EMAIL_LOGIN_SUNSET): at least 8 weeks after phone sign-in starts.
+DEFAULT_EMAIL_LOGIN_SUNSET = date(2027, 4, 10)
+# Development's default instead: there the console provider makes phone sign-in available while the seeded accounts
+# sign in with email and have no verified phone, so the real date would lock a developer's (and the CI lab's) demo
+# accounts out of email sign-in once it passed. Set NEARSHOP_EMAIL_LOGIN_SUNSET to rehearse the sunset locally.
+DEVELOPMENT_EMAIL_LOGIN_SUNSET = date(2100, 1, 1)
+# The least notice between the first day phone sign-in is available and the sunset (P4.2: at least 8 weeks).
+EMAIL_LOGIN_MIN_NOTICE_DAYS = 56
 
 
 class Settings(BaseSettings):
@@ -187,6 +196,17 @@ class Settings(BaseSettings):
     # production, where /api/ai answers not found to anyone but an admin and admins see only the model cards
     # trained on real data. NEARSHOP_AI_LAB_PUBLIC overrides the default either way.
     ai_lab_public: bool | None = None
+    # The privacy notice version that registrations consent to (P3.1): the version id of the newest
+    # docs/legal/privacy-<version>.md, which the /privacy page shows. Change it when a new version is published.
+    notice_version: str = "v1"
+    # The grievance officer (P3.8, plan check 6.4), shown on the public /grievance page. B10 appoints the officer;
+    # until all five are set, GET /api/grievances/officer answers clearly marked placeholder details instead
+    # (placeholder: true). Set all five on production (plan step 3-A).
+    grievance_officer_name: str = ""
+    grievance_officer_designation: str = ""
+    grievance_officer_email: str = ""
+    grievance_officer_phone: str = ""
+    grievance_officer_address: str = ""
 
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
@@ -202,6 +222,13 @@ class Settings(BaseSettings):
     media_s3_secret_access_key: SecretStr = SecretStr("")
     media_s3_region: str = "auto"  # R2 uses auto
     media_public_base_url: str = ""  # https://media.example.com, no trailing slash needed
+    # Private KYC documents (P3.3, app/services/media.py): shop document and storefront photos, never public.
+    # local backend: files under kyc_media_dir, which nothing serves (outside media_dir); admins open them only
+    # through 5-minute signed API links. s3 backend: kyc_s3_bucket, a separate bucket with no public access,
+    # reached with the media endpoint and key pair; admins get 5-minute presigned links. Until it is set (and
+    # different from media_s3_bucket), KYC submission answers 503 kyc_storage_unavailable.
+    kyc_media_dir: Path = BACKEND_DIR / "private_media"
+    kyc_s3_bucket: str = ""
 
     # Upload and import limits (P2.7, plan section 8.13). Every request body over max_request_body_mb is
     # refused with 413 before it is parsed, on every route (app/main.py). Photos: at most max_upload_mb,
@@ -279,6 +306,131 @@ class Settings(BaseSettings):
     # Fulfillment defaults
     reservation_hold_minutes: int = 30
     request_response_minutes: int = 20  # shop must respond to a reservation request within this window
+    # Reviews (P3.5, plan section 8.2): only from a verified phone (User.phone_verified_at). On since P4.1
+    # wherever a customer can verify a phone: where phone sign-in is live (otp_live), and in development, where
+    # the console provider verifies phones. A decision that departs from the prompt's "turn it on": it stays off
+    # in staging, production and demo until a provider is configured there (B7, B8), since no customer could
+    # verify a phone before then and every review would be refused; and off in test, whose review tests turn it
+    # on where they test it. NEARSHOP_REVIEW_REQUIRES_VERIFIED_PHONE=true or false overrides that either way.
+    review_requires_verified_phone: bool | None = None
+
+    # Phone one-time codes (P4.1, app/services/otp.py and app/services/messaging.py; plan sections 8.3 and 8.10).
+    # Phone sign-in is available only while otp_enabled holds and a provider is configured: WhatsApp (Meta's
+    # authentication template, the primary channel) and SMS through a DLT-registered sender and template (the
+    # fallback). Until then code requests answer 503 otp_unavailable and GET /api/auth/phone-signin reports it as
+    # unavailable. The console provider (codes written to the log) stands in for both, and only in development
+    # and test, where it is on by default; it can never be turned on anywhere else.
+    otp_enabled: bool = True
+    otp_console: bool | None = None
+    # The global daily cap on code sends (IST days). At 80% of it a warning event goes to the error tracker, once a
+    # day (the OTP-spend alert); beyond it code requests answer 503 otp_unavailable.
+    otp_daily_cap: int = 2000
+    # The site's domain on the SMS template's last line ("@<domain> #<code>"), which Android Chrome's WebOTP reads
+    # to fill the code in. It must match the text registered under DLT (B7) for this environment's site.
+    otp_webotp_domain: str = ""
+    # WhatsApp Cloud API (B8: Meta business verification and the approved authentication template, whose
+    # copy-code button carries the code). All three of the token, phone number id and template name are needed.
+    whatsapp_access_token: SecretStr = SecretStr("")
+    whatsapp_phone_number_id: str = ""
+    whatsapp_otp_template: str = ""
+    whatsapp_template_language: str = "en"
+    whatsapp_api_base: str = "https://graph.facebook.com"
+    whatsapp_api_version: str = "v21.0"
+    whatsapp_cost_inr: float = 0.13  # per authentication message (plan section 8.3: about ₹260 for 2,000)
+    # Outbound WhatsApp notifications (P4.3, app/services/whatsapp.py; docs/whatsapp-templates.md). Off by default:
+    # while off, notify() writes no outbox rows and the sender job sends nothing. On, rows are written for recipients
+    # who consented to WhatsApp messages and have a verified phone, and sent through the Cloud API with the access
+    # token and phone number id above and the approved utility templates (B8). In development and test a fake client
+    # stands in (messages kept in memory and logged); the test suite never reaches the Cloud API.
+    whatsapp_notifications: bool = False
+    # The Meta app's secret, which signs every webhook call (X-Hub-Signature-256), and the verify token typed into the
+    # webhook's settings in Meta's app dashboard (the GET challenge). Without them the webhook refuses every call.
+    whatsapp_app_secret: SecretStr = SecretStr("")
+    whatsapp_webhook_verify_token: SecretStr = SecretStr("")
+    whatsapp_utility_cost_inr: float = 0.16  # per utility template outside a service window (plan section 8.7)
+    # SMS through MSG91's flow API (B7: the DLT entity, sender header and OTP template; the flow template at MSG91
+    # holds that registered text and its code variable). The auth key and template id are needed.
+    sms_auth_key: SecretStr = SecretStr("")
+    sms_template_id: str = ""
+    sms_code_variable: str = "otp"
+    sms_api_url: str = "https://control.msg91.com/api/v5/flow"
+    sms_cost_inr: float = 0.295  # ₹0.25 plus 18% GST per message (plan section 8.3: about ₹590 for 2,000)
+
+    # The email sign-in sunset (P4.2): from this IST day, customers and owners without a verified phone can no longer
+    # sign in with email and password, and the site sends a signed-in one to /verify-phone on every page. Before it,
+    # from the day phone sign-in is available, they see a banner with this date. It must be at least 8 weeks after
+    # phone sign-in starts in production (10 Feb 2027 at the latest for 10 Apr 2027). The sunset takes effect only
+    # where phone sign-in is available: without a provider, nobody could verify a phone, so email sign-in stays.
+    # The daily phone_migration job (app/jobs.py) warns these users 30, 7 and 1 days before it and switches off any
+    # still unverified 30 days after it. Unset, it is DEFAULT_EMAIL_LOGIN_SUNSET, except in development
+    # (DEVELOPMENT_EMAIL_LOGIN_SUNSET). Staging sets it to yesterday, with the minimum notice below at 0, to rehearse
+    # the sunset.
+    email_login_sunset: date | None = None
+    # The guard on that date (P4.2): the sunset in force is never earlier than this many days after the first IST day
+    # the phone_migration job saw phone sign-in available here (kept on its lease, app/jobs.py), so a provider that
+    # goes live late moves the sunset, the warnings and the switch-off later instead of switching accounts off
+    # without warning. Production refuses anything under EMAIL_LOGIN_MIN_NOTICE_DAYS; staging sets 0 to rehearse.
+    email_login_min_notice_days: int = EMAIL_LOGIN_MIN_NOTICE_DAYS
+
+    @field_validator("email_login_sunset", mode="before")
+    @classmethod
+    def _blank_sunset(cls, value: object) -> object:
+        # An empty value (a Render variable left blank) means the environment's default date.
+        return None if isinstance(value, str) and not value.strip() else value
+
+    @model_validator(mode="after")
+    def _default_email_login_sunset(self) -> "Settings":
+        if self.email_login_sunset is None:
+            self.email_login_sunset = (DEVELOPMENT_EMAIL_LOGIN_SUNSET if self.environment == "development"
+                                       else DEFAULT_EMAIL_LOGIN_SUNSET)
+        if self.email_login_min_notice_days < 0:
+            raise ValueError("NEARSHOP_EMAIL_LOGIN_MIN_NOTICE_DAYS must be 0 or more")
+        if self.environment == "production" and self.email_login_min_notice_days < EMAIL_LOGIN_MIN_NOTICE_DAYS:
+            raise ValueError(f"NEARSHOP_EMAIL_LOGIN_MIN_NOTICE_DAYS must be {EMAIL_LOGIN_MIN_NOTICE_DAYS} or more in "
+                             "production: customers and owners get at least 8 weeks of warning")
+        return self
+
+    @field_validator("otp_daily_cap", mode="after")
+    @classmethod
+    def _check_otp_cap(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_OTP_DAILY_CAP must be 1 or more")
+        return value
+
+    @property
+    def whatsapp_configured(self) -> bool:
+        return bool(self.whatsapp_access_token.get_secret_value().strip() and self.whatsapp_phone_number_id.strip()
+                    and self.whatsapp_otp_template.strip())
+
+    @property
+    def whatsapp_notify_configured(self) -> bool:
+        """The Cloud API can send notification templates: the access token and phone number id are set."""
+        return bool(self.whatsapp_access_token.get_secret_value().strip() and self.whatsapp_phone_number_id.strip())
+
+    @property
+    def sms_configured(self) -> bool:
+        return bool(self.sms_auth_key.get_secret_value().strip() and self.sms_template_id.strip())
+
+    @property
+    def otp_live(self) -> bool:
+        """Phone sign-in through a real provider: on, with WhatsApp or SMS configured, and the rate limiter
+        counting (not NEARSHOP_RATE_LIMIT_MODE=off): its phone-code rules refuse even in log_only
+        (app/core/ratelimit.py), and without them a code is a few guesses away and the daily cap one caller's."""
+        return (self.otp_enabled and self.rate_limit_mode not in ("off", None)
+                and (self.whatsapp_configured or self.sms_configured))
+
+    @model_validator(mode="after")
+    def _default_otp(self) -> "Settings":
+        if self.otp_console is None:
+            self.otp_console = self.environment in ("development", "test")
+        elif self.otp_console and self.environment not in ("development", "test"):
+            raise ValueError("NEARSHOP_OTP_CONSOLE is allowed only in development and test: it writes codes to the log")
+        return self
+    # Completion codes (P3.5): completing a pickup needs the reservation code and delivering an order needs the
+    # customer's 4-digit delivery code. On since P3.7, whose owner screens ask for the code; the frontend sends it
+    # either way, so NEARSHOP_COMPLETION_CODES_REQUIRED=false is a safe switch back. Delivery codes are created
+    # either way.
+    completion_codes_required: bool = True
 
     # AI
     embedding_provider: str = "fastembed"  # fastembed | tfidf
@@ -640,6 +792,14 @@ class Settings(BaseSettings):
         if self.rate_limit_mode is None:
             self.rate_limit_mode = {"staging": "log_only", "production": "log_only", "test": "off"}.get(
                 self.environment, "enforce")
+        return self
+
+    @model_validator(mode="after")
+    def _default_review_rule(self) -> "Settings":
+        # After the rate-limit default, which otp_live reads.
+        if self.review_requires_verified_phone is None:
+            self.review_requires_verified_phone = self.otp_live or (
+                self.environment == "development" and self.otp_enabled and bool(self.otp_console))
         return self
 
 

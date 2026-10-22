@@ -11,6 +11,7 @@ import { ProductThumb } from "@/components/common/product-thumb";
 import { ErrorState, ListSkeleton } from "@/components/common/states";
 import { Countdown, StatusBadge } from "@/components/common/status";
 import { ConfirmAction } from "@/components/fulfillment/confirm-action";
+import { PayShopByUpi } from "@/components/fulfillment/pay-shop-by-upi";
 import { EventTimeline, FulfillmentProgress } from "@/components/fulfillment/progress";
 import { ReviewDialog } from "@/components/fulfillment/review-dialog";
 import { ShopMap } from "@/components/map/shop-map";
@@ -24,7 +25,10 @@ const HEADLINE: Record<string, { title: string; body: (r: Reservation) => string
   REQUESTED: { title: "Waiting for the shop", body: (r) => `${r.shop.name} is checking the shelf. You'll get a notification when it's set aside.` },
   CONFIRMED: { title: "It's held for you", body: (r) => `Walk in before the timer ends and show code ${r.code} at the counter.` },
   READY_FOR_PICKUP: { title: "Ready at the counter", body: (r) => `Packed and waiting. Show code ${r.code} and pay at the shop.` },
-  COMPLETED: { title: "Picked up", body: () => "Thanks for shopping local." },
+  COMPLETED: {
+    title: "Picked up",
+    body: (r) => `${r.payment_method === "upi_direct" ? "Paid to the shop by UPI. " : r.payment_method === "cod" ? "Paid in cash. " : ""}Thanks for shopping local.`,
+  },
   REJECTED: { title: "The shop couldn't hold it", body: (r) => r.close_reason ?? "Try another shop nearby." },
   CANCELLED: { title: "Reservation cancelled", body: (r) => r.close_reason ?? "Nothing was charged." },
   EXPIRED: { title: "Reservation expired", body: (r) => (r.confirmed_at ? "The hold time ran out and the item went back on the shelf." : "The shop didn't respond in time.") },
@@ -54,6 +58,8 @@ export function ReservationView({ id }: { id: number }) {
   const live = ["REQUESTED", "CONFIRMED", "READY_FOR_PICKUP"].includes(r.status);
   const held = r.status === "CONFIRMED" || r.status === "READY_FOR_PICKUP";
   const head = HEADLINE[r.status];
+  // The shop's UPI ID is in the customer's own reservation (P6.1); paying is offered once the item is held.
+  const payByUpi = !!r.shop.upi_id && held && r.payment_status !== "paid";
 
   return (
     <MotionConfig reducedMotion="user">
@@ -84,16 +90,24 @@ export function ReservationView({ id }: { id: number }) {
                 )}
               </div>
               {held && (
-                <div className="mt-6 flex items-center justify-between rounded-2xl border border-dashed border-brand/40 bg-card p-4">
-                  <div>
-                    <p className="text-xs text-muted-foreground">Pickup code</p>
-                    <p className="font-mono text-3xl font-semibold tracking-[0.2em]">{r.code.replace("R-", "")}</p>
-                  </div>
-                  <p className="max-w-40 text-right text-xs text-muted-foreground">Show this at the counter. Pay {formatPrice(r.total)} at the shop.</p>
-                </div>
+                // The shop types this code to complete the pickup (P3.5), so it is large enough to read across a counter.
+                <section aria-labelledby="pickup-code-label" className="mt-6 rounded-2xl border-2 border-dashed border-brand/50 bg-card p-5 text-center">
+                  <p id="pickup-code-label" className="text-sm font-semibold">Show this at the counter</p>
+                  <p className="mt-2 font-mono text-5xl font-bold tracking-[0.25em] tabular sm:text-6xl">
+                    {r.code.replace(/^R-/, "")}
+                  </p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Pickup code. The shop enters it to hand over your item. Pay {formatPrice(r.total)} at the shop{r.shop.upi_id ? ", in cash or by UPI" : ""}.
+                  </p>
+                </section>
               )}
               <FulfillmentProgress item={r} className="mt-8" />
             </motion.section>
+
+            {payByUpi && (
+              <PayShopByUpi upiId={r.shop.upi_id!} payeeName={r.shop.upi_payee_name || r.shop.name} amount={r.total} note={r.code}
+                cash="Or pay cash at the counter." />
+            )}
 
             <section className="flex items-center gap-4 rounded-3xl border bg-card p-5">
               <ProductThumb icon={r.product.icon} imageUrl={r.product.image_url} thumbnailUrl={r.product.thumbnail_url} alt="" size="lg" />

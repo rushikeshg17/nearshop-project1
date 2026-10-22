@@ -11,6 +11,7 @@ import { ProductThumb } from "@/components/common/product-thumb";
 import { ErrorState, ListSkeleton } from "@/components/common/states";
 import { StatusBadge } from "@/components/common/status";
 import { ConfirmAction } from "@/components/fulfillment/confirm-action";
+import { PayShopByUpi } from "@/components/fulfillment/pay-shop-by-upi";
 import { EventTimeline, FulfillmentProgress } from "@/components/fulfillment/progress";
 import { ReviewDialog } from "@/components/fulfillment/review-dialog";
 import { ShopMap } from "@/components/map/shop-map";
@@ -30,6 +31,11 @@ const HEADLINE: Record<string, string> = {
   DELIVERY_FAILED: "Delivery attempt failed",
   RETURNED_TO_SHOP: "Returned to the shop",
 };
+
+// Confirmed orders not yet delivered: the customer's delivery code is shown while the order is in these states.
+const AWAITING_DELIVERY: string[] = ["SHOP_CONFIRMED", "PREPARING", "OUT_FOR_DELIVERY"];
+
+const PAID_BY: Record<string, string> = { cod: "Paid in cash", upi_direct: "Paid to the shop by UPI" };
 
 export function OrderView({ id }: { id: number }) {
   const qc = useQueryClient();
@@ -51,6 +57,8 @@ export function OrderView({ id }: { id: number }) {
   const o = q.data;
   if (!o) return <div className="mx-auto max-w-3xl px-4 py-12"><ListSkeleton rows={3} /></div>;
   const moving = o.status === "OUT_FOR_DELIVERY";
+  // The shop's UPI ID is in the customer's own order (P6.1); paying is offered once the shop has confirmed.
+  const payByUpi = !!o.shop.upi_id && AWAITING_DELIVERY.includes(o.status) && o.payment_status !== "paid";
 
   return (
     <MotionConfig reducedMotion="user">
@@ -68,9 +76,24 @@ export function OrderView({ id }: { id: number }) {
               </div>
               <h1 className="mt-3 text-2xl font-semibold md:text-3xl">{HEADLINE[o.status]}</h1>
               {o.close_reason && <p className="mt-1 text-muted-foreground">Reason: {o.close_reason}</p>}
-              {moving && <p className="mt-1 text-muted-foreground">Keep {formatPrice(o.total)} ready. {o.shop.name} is delivering it themselves.</p>}
+              {moving && <p className="mt-1 text-muted-foreground">Keep {formatPrice(o.total)} ready{o.shop.upi_id ? " in cash, or pay by UPI" : ""}. {o.shop.name} is delivering it themselves.</p>}
+              {o.delivery_code && AWAITING_DELIVERY.includes(o.status) && (
+                // Only the customer sees this code (P3.5): the shop needs it to mark the order delivered.
+                <section aria-labelledby="delivery-code-label" className="mt-6 rounded-2xl border-2 border-dashed border-brand/50 bg-card p-5 text-center">
+                  <p id="delivery-code-label" className="text-sm font-semibold">Your delivery code</p>
+                  <p className="mt-2 font-mono text-5xl font-bold tracking-[0.3em] tabular sm:text-6xl">{o.delivery_code}</p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Give it to the person from {o.shop.name} only when the order is in your hands. Never share it by phone or message.
+                  </p>
+                </section>
+              )}
               <FulfillmentProgress item={o} className="mt-8" />
             </motion.section>
+
+            {payByUpi && (
+              <PayShopByUpi upiId={o.shop.upi_id!} payeeName={o.shop.upi_payee_name || o.shop.name} amount={o.total} note={o.code}
+                cash="Or pay cash when it arrives." />
+            )}
 
             <section className="rounded-3xl border bg-card p-5">
               <ul className="divide-y">
@@ -85,7 +108,7 @@ export function OrderView({ id }: { id: number }) {
               <dl className="mt-3 space-y-1.5 border-t pt-3 text-sm">
                 <div className="flex justify-between"><dt className="text-muted-foreground">Items</dt><dd className="tabular">{formatPrice(o.subtotal)}</dd></div>
                 <div className="flex justify-between"><dt className="text-muted-foreground">Delivery ({formatDistance(o.distance_km)})</dt><dd className="tabular">{o.delivery_fee ? formatPrice(o.delivery_fee) : "Free"}</dd></div>
-                <div className="flex justify-between font-semibold"><dt className="inline-flex items-center gap-1.5"><Banknote className="size-4" /> {o.payment_status === "paid" ? "Paid on delivery" : "Pay on delivery"}</dt><dd className="tabular">{formatPrice(o.total)}</dd></div>
+                <div className="flex justify-between font-semibold"><dt className="inline-flex items-center gap-1.5"><Banknote className="size-4" /> {o.payment_status === "paid" ? (PAID_BY[o.payment_method] ?? "Paid on delivery") : o.shop.upi_id ? "Pay on delivery: cash or UPI" : "Pay on delivery"}</dt><dd className="tabular">{formatPrice(o.total)}</dd></div>
               </dl>
             </section>
 

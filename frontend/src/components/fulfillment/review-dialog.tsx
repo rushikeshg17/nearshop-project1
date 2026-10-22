@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Star } from "lucide-react";
+import { CircleAlert, Loader2, Star } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -9,7 +9,7 @@ import { ResponsiveDialog } from "@/components/common/responsive-dialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { api } from "@/lib/api";
+import { api, ApiError, errorMessage } from "@/lib/api";
 import type { Order, Reservation } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -41,6 +41,47 @@ function StarInput({ value, onChange, label }: { value: number; onChange: (v: nu
   );
 }
 
+/**
+ * The review rules (plan section 8.2, backend/app/services/reviews.py), keyed by the error code the API returns
+ * when one of them refuses a review. The dialog lists them all and marks the one that applied.
+ */
+const RULES: { code: string; text: string; whenRefused?: boolean }[] = [
+  { code: "review_window_closed", text: "Reviews can be written within 14 days of the pickup or delivery." },
+  { code: "account_too_new", text: "Your account must have been created at least 3 days before the purchase." },
+  { code: "review_not_allowed", text: "A shop cannot be reviewed from the shop's or its owner's phone number." },
+  // Enforced only once phone sign-in arrives (P4.1), so listed only when it is the reason.
+  { code: "phone_not_verified", text: "Your phone number must be verified.", whenRefused: true },
+  { code: "duplicate_review", text: "Each pickup or delivery can be reviewed once." },
+];
+
+function RefusedReview({ error }: { error: unknown }) {
+  const code = error instanceof ApiError ? error.code : "";
+  const known = RULES.some((r) => r.code === code);
+  return (
+    <div role="alert" className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm">
+      <p className="flex items-start gap-2 font-medium">
+        <CircleAlert className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden /> {errorMessage(error)}
+      </p>
+      {known && (
+        <>
+          <p className="mt-2 text-muted-foreground">To keep ratings honest, NearShop accepts a review only when:</p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-5 text-muted-foreground">
+            {RULES.filter((r) => !r.whenRefused || r.code === code).map((r) => (
+              <li key={r.code} className={cn(r.code === code && "font-medium text-foreground")}>
+                {r.text}
+                {r.code === code && <span className="sr-only"> (this is why the review was not accepted)</span>}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Only some reviews count toward a shop&apos;s rating: one per customer per shop every 30 days.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function ReviewDialog({ item, open, onOpenChange }: { item: Reservation | Order; open: boolean; onOpenChange: (o: boolean) => void }) {
   const qc = useQueryClient();
   const [rating, setRating] = useState(0);
@@ -59,6 +100,8 @@ export function ReviewDialog({ item, open, onOpenChange }: { item: Reservation |
         delivery_rating: isOrder && delivery ? delivery : null,
         comment: comment.trim() || null,
       }),
+    // A refused review is explained inside the dialog, not in a toast.
+    meta: { silent: true },
     onSuccess: () => {
       toast.success("Thanks! Your review helps neighbours pick the right shop.");
       qc.invalidateQueries({ queryKey: ["dashboard"] });
@@ -80,6 +123,7 @@ export function ReviewDialog({ item, open, onOpenChange }: { item: Reservation |
       }
     >
       <div className="space-y-3 pb-2">
+        {submit.isError && <RefusedReview error={submit.error} />}
         <StarInput label="Overall experience" value={rating} onChange={setRating} />
         <StarInput label="Item matched the listing" value={accuracy} onChange={setAccuracy} />
         {isOrder && <StarInput label="Delivery" value={delivery} onChange={setDelivery} />}

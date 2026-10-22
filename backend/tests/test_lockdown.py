@@ -13,7 +13,8 @@ from tests.conftest import HEADERS
 OLD_DEFAULT = "nearshop123"
 
 SHOP_BODY = {
-    "owner": {"name": "Lock Owner", "email": "lock-owner@example.com", "password": "longenough1"},
+    "owner": {"name": "Lock Owner", "email": "lock-owner@example.com", "password": "longenough1",
+              "consent": {"account_and_orders": True, "age_18_plus": True}},
     "shop": {"name": "Lockdown Hardware", "category_slugs": ["plumbing"], "phone": "9876500001",
              "address_line": "3 Station Road", "locality": "Agrahara", "lat": 12.31, "lng": 76.65},
 }
@@ -70,13 +71,16 @@ def cleanup_signups(db):
 def test_register_works_when_signups_open(client, db, signups, cleanup_signups):
     signups(True)
     res = client.post("/api/auth/register", json={"name": "Open Person", "email": "open@example.com",
-                                                  "password": "longenough1"}, headers=HEADERS)
+                                                  "password": "longenough1",
+                                                  "consent": SHOP_BODY["owner"]["consent"]}, headers=HEADERS)
     assert res.status_code == 200, res.text
     assert res.json()["role"] == "customer"
 
 
-def test_register_shop_works_when_signups_open(client, db, signups, cleanup_signups):
+def test_register_shop_works_when_signups_open(client, db, signups, cleanup_signups, monkeypatch):
     signups(True)
+    # Without phone sign-in, so the sign-up needs no phone code (P4.2; tests/test_phone_migration.py sends one).
+    monkeypatch.setattr(settings, "otp_enabled", False)
     res = client.post("/api/auth/register-shop", json=SHOP_BODY, headers=HEADERS)
     assert res.status_code == 200, res.text
     assert res.json()["role"] == "owner"

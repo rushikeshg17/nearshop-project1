@@ -153,17 +153,18 @@ def test_index_option_change_builds_the_new_index_before_dropping_the_old(scratc
 
     watch("create_indexes")
     watch("drop_index")
-    # The code now declares the case-insensitive index in place of uq_email, and ships this migration.
-    users = [m for m in schema.INDEXES["users"] if m.document["name"] != "uq_email"]
+    # The code now declares the case-insensitive index in place of uq_email_set (which replaced uq_email in
+    # migration 7), and ships this migration.
+    users = [m for m in schema.INDEXES["users"] if m.document["name"] != "uq_email_set"]
     monkeypatch.setitem(schema.INDEXES, "users", [CI_EMAIL, *users])
     second = Migration(ALL[-1] + 1, "case_insensitive_email",
-                       lambda mongo: replace_index(mongo, "users", "uq_email", CI_EMAIL))
+                       lambda mongo: replace_index(mongo, "users", "uq_email_set", CI_EMAIL))
 
     assert migrate.run(scratch, migrations=[*discover(), second]) == [second.number]
 
     created = steps.index(("create_indexes", ["uq_email_ci"]))
-    assert steps.index(("drop_index", "uq_email")) > created
-    assert {"uq_email_ci"} <= index_names(scratch, "users") and "uq_email" not in index_names(scratch, "users")
+    assert steps.index(("drop_index", "uq_email_set")) > created
+    assert {"uq_email_ci"} <= index_names(scratch, "users") and "uq_email_set" not in index_names(scratch, "users")
     with pytest.raises(DuplicateKeyError):
         scratch["users"].insert_one(user_doc(2, "A@Example.COM"))
 
@@ -175,11 +176,12 @@ def test_index_option_change_builds_the_new_index_before_dropping_the_old(scratc
 def test_ensure_schema_conflict_names_the_index_and_drops_nothing(scratch, monkeypatch):
     migrate.run(scratch)
     before = all_indexes(scratch)
-    changed = IndexModel([("email", ASCENDING)], unique=True, name="uq_email", collation={"locale": "en", "strength": 2})
-    users = [changed if m.document["name"] == "uq_email" else m for m in schema.INDEXES["users"]]
+    changed = IndexModel([("email", ASCENDING)], unique=True, name="uq_email_set",
+                         collation={"locale": "en", "strength": 2})
+    users = [changed if m.document["name"] == "uq_email_set" else m for m in schema.INDEXES["users"]]
     monkeypatch.setitem(schema.INDEXES, "users", users)
 
-    with pytest.raises(schema.SchemaConflict, match=r"'uq_email' on collection 'users'"):
+    with pytest.raises(schema.SchemaConflict, match=r"'uq_email_set' on collection 'users'"):
         schema.ensure_schema(scratch)
     assert all_indexes(scratch) == before
     assert has_unique_email(scratch)
@@ -306,8 +308,9 @@ def test_backfill_updates_in_batches_and_reruns_as_a_no_op(scratch):
 def test_replace_index_refuses_the_same_name(scratch):
     migrate.run(scratch)
     with pytest.raises(ValueError, match="new name"):
-        replace_index(scratch, "users", "uq_email", IndexModel([("email", ASCENDING)], unique=True, name="uq_email"))
-    assert "uq_email" in index_names(scratch, "users")
+        replace_index(scratch, "users", "uq_email_set", IndexModel([("email", ASCENDING)], unique=True,
+                                                                   name="uq_email_set"))
+    assert "uq_email_set" in index_names(scratch, "users")
 
 
 def test_the_package_holds_a_contiguous_sequence_starting_with_the_baseline():

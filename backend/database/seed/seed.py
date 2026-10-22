@@ -24,7 +24,7 @@ Catalogue-bootstrap mode (--catalogue-bootstrap, P7.1) is the only mode allowed 
 writes reference data only: it upserts the categories and catalogue items (matched by slug) and their local
 terms, and never deletes, resets or creates anything else (no shops, users, sales or searches). The one write
 outside the catalogue: listings already linked to a catalogue item get that item's local_terms copied onto them
-(that field only, as migration m0004 does), so on a database with real listings a re-run can change their
+(that field only, as migration m0008 does), so on a database with real listings a re-run can change their
 local_terms. It needs
 --confirm-db repeating the database name, and a database whose schema migrations have run
 (python -m database.migrate). docs/runbooks/demo-environment.md uses it to start production's fresh database.
@@ -37,7 +37,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
+import logging
 import math
 import os
 import random
@@ -48,6 +50,7 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 import numpy as np
+from PIL import Image
 from pymongo import ReturnDocument, UpdateOne
 from pymongo.database import Database as MongoDatabase
 
@@ -78,11 +81,14 @@ from app.models import (
 from app.models import (
     ReservationStatus as RS,
 )
+from app.models.core import KycType, VerificationStatus, months_after
 from app.services.loaders import reset_category_cache
+from app.services.media import PRIVATE_PREFIX, PrivateStorageUnavailable, private_storage
+from app.services.reviews import recompute_shop
 from app.utils.geo import haversine_km
 from app.utils.text import short_code, slugify
 from database import schema
-from database.migrations.m0004_local_terms import apply_local_terms
+from database.migrations.m0008_local_terms import apply_local_terms
 
 DATA = BACKEND_DIR / "database" / "seed" / "data"
 SALES_DAYS = 150
@@ -141,6 +147,25 @@ class Ids:
     def save_counters(self, db: Database) -> None:
         db.mongo["counters"].delete_many({})
         db.mongo["counters"].insert_many([{"_id": name, "seq": seq} for name, seq in self.last.items()])
+
+
+log = logging.getLogger(__name__)
+
+
+def demo_kyc_photo(kind: str, slug: str) -> str | None:
+    """A plain placeholder photo for a queued demo shop, stored in the private KYC store (P3.3). None, with a
+    warning, where that store is not set up (an s3 deployment without NEARSHOP_KYC_S3_BUCKET): the shop then
+    waits for its owner to submit evidence."""
+    try:
+        store = private_storage()
+    except PrivateStorageUnavailable:
+        log.warning("no private KYC store: demo shop %s is queued without evidence photos", slug)
+        return None
+    buf = io.BytesIO()
+    Image.new("RGB", (640, 480), (200, 190, 170) if kind == "storefronts" else (235, 235, 225)).save(buf, "WEBP")
+    key = f"{PRIVATE_PREFIX}{kind}/demo-{slug}.webp"
+    store.put(key, buf.getvalue(), "image/webp")
+    return key
 
 
 def bulk_insert(collection, docs: list, chunk: int = 5000) -> None:
@@ -242,7 +267,7 @@ def bootstrap_catalogue(mongo: MongoDatabase, categories_data: list[dict] | None
     """Upsert the categories and catalogue items from data/categories.json and data/catalog.json (or the lists
     given) by slug, then their local terms (data/local_terms.json). Never deletes. Besides the catalogue, it
     writes one field elsewhere: apply_local_terms copies each item's local_terms onto the listings (products)
-    linked to it whose terms differ, as migration m0004 does; nothing on a fresh database, but on one with
+    linked to it whose terms differ, as migration m0008 does; nothing on a fresh database, but on one with
     listings a re-run rewrites their local_terms. Returns how many were added and updated."""
     categories_data = load("categories.json") if categories_data is None else categories_data
     catalog_data = load("catalog.json") if catalog_data is None else catalog_data
@@ -402,6 +427,24 @@ def main(argv: Sequence[str] = ()) -> None:
             category_ids=[cats[c].id for c in tpl["categories"]],
             created_at=owner.created_at, updated_at=owner.created_at,
         )
+        # About 70% of demo shops are verified (P3.3): approved some months ago, so their approvals end at
+        # different times over the next year. The rest wait in the admin queue or have not submitted yet, and
+        # customers never see them. No extra random draws, so the rest of the seed stays the same.
+        decided = max(now - timedelta(days=(i * 37) % 330 + 1), owner.created_at + timedelta(days=1))
+        for field, value in (
+            {"verification_status": VerificationStatus.VERIFIED, "kyc_type": KycType.UDYAM,
+             "kyc_number": f"UDYAM-KR-23-{1000000 + i:07d}", "phone_verified_at": decided, "submitted_at": decided,
+             "decided_at": decided, "verified_until": months_after(decided)}
+            if shop.is_verified else
+            {"verification_status": VerificationStatus.SUBMITTED, "kyc_type": KycType.TRADE_LICENCE,
+             "kyc_number": f"MCC/TL/{2024 + i % 2}/{i:05d}", "submitted_at": now - timedelta(days=i % 5, hours=i)}
+            if i % 2 else {"verification_status": VerificationStatus.DRAFT}).items():
+            setattr(shop, field, value)
+        if shop.verification_status == VerificationStatus.SUBMITTED:
+            # Placeholder evidence photos in the private KYC store, so an admin can work the queue end to end
+            # (approval needs a storefront photo; a trade licence also has a document photo).
+            shop.kyc_document_key = demo_kyc_photo("documents", slug)
+            shop.kyc_storefront_key = demo_kyc_photo("storefronts", slug)
         shops.append(shop)
     for s in shops:
         s_featured = s.owner.email == "owner@nearshop.demo"
@@ -566,9 +609,7 @@ def main(argv: Sequence[str] = ()) -> None:
                               delivery_rating=int(min(5, max(1, round(rng.gauss(q, 0.7))))) if order_id else None,
                               comment=rng.choice(REVIEW_COMMENTS[rating]) if rng.random() < 0.75 else None,
                               created_at=at + timedelta(hours=rng.randint(1, 30))))
-        # Computed pattern: the shop carries its own rating totals.
-        shop.rating_sum += rating
-        shop.rating_count += 1
+        # The shop's rating totals are recomputed from the stored reviews after the write below (P3.5).
 
     for s in shops:
         prof = shop_profile[s.id]
@@ -754,6 +795,9 @@ def main(argv: Sequence[str] = ()) -> None:
     items_named, listings_named = apply_local_terms(db.mongo)
     print(f"    local_terms: {items_named} catalog items, {listings_named} listings")
     nid.save_counters(db)
+    # Ratings under the review rules (P3.5): counted and held flags on every review, then each shop's totals.
+    for s in shops:
+        recompute_shop(db.mongo, s.id)
 
     # ------------------------------------------------------------ train AI
     print("  training AI models (first run downloads the embedding model)...")

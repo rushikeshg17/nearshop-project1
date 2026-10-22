@@ -32,6 +32,7 @@ from app.services.search import (
 )
 from app.utils.text import expand_synonyms, normalize_query
 from database import schema
+from tests.conftest import verified_shop_fields
 
 NOW = datetime(2026, 10, 20, 6, 0, 0)
 CENTER = (15.1394, 76.9214)
@@ -75,7 +76,8 @@ def city(ids):
     shops = db.shops.insert_many([
         Shop(owner_id=owner.id, name=f"Scale Shop {n}", slug=f"scale-shop-{n}", address_line="Road", city="Ballari",
              lat=CENTER[0] + dy / KM_PER_DEG_LAT, lng=CENTER[1] + dx / KM_PER_DEG_LAT, offers_delivery=n % 3 == 0,
-             delivery_radius_km=6, offers_pickup=n % 7 != 0, category_ids=[c.id for c in cats])
+             delivery_radius_km=6, offers_pickup=n % 7 != 0, category_ids=[c.id for c in cats],
+             **verified_shop_fields(n))
         for n, (dy, dx) in enumerate(places)])
     rows: list[Product] = []
     for n, shop in enumerate(shops):

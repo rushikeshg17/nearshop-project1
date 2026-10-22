@@ -12,6 +12,7 @@ from app.core.database import Database, utcnow
 from app.core.deps import DB, OptionalUser
 from app.core.errors import NotFound
 from app.models import Product, Role, Shop
+from app.models.core import live_shop_filter
 from app.schemas.serializers import iso, listing, review_out, shop_brief, shop_detail
 from app.services import reservations as reservation_service
 from app.services.loaders import (
@@ -25,15 +26,16 @@ from app.services.loaders import (
 from app.services.meta import city_config
 from app.services.orders import quote_delivery
 from app.services.reliability import shop_reliability
+from app.services.reviews import PUBLIC, RATED
 from app.services.search import SearchParams, run_search
 from app.utils.geo import haversine_km, within_km
 
 router = APIRouter(tags=["catalog"])
 
-# What customers may see: the filter every catalogue read applies (_shop_by_slug and with_shops(active_only=True)
-# check the same fields on loaded documents). The sitemap queries with these, so a rule added here (P3.3: only
-# shops whose verification an admin approved) hides the same shops and listings from search engines too.
-LIVE_SHOP = {"is_active": True}
+# What customers may see (P3.3, plan section 8.1): active shops whose verification an admin approved and which
+# is still in force, live_shop_filter (app/models/core.py). Every catalogue read applies it: queries use the
+# filter, and _shop_by_slug and with_shops(active_only=True) check Shop.is_live, the same rule, on loaded
+# documents. The sitemap queries with it too, so search engines never see a shop customers cannot.
 ACTIVE_LISTING = {"is_active": True}
 
 
@@ -97,13 +99,13 @@ def product_detail(product_id: int, db: DB, user: OptionalUser, lat: float | Non
         own_shop,
         lambda: db.catalog_items.get(p.catalog_item_id),
         same_item,
-        lambda: db.reviews.find({"product_id": p.id}, sort=[("created_at", -1)], limit=6),
+        lambda: db.reviews.find({"product_id": p.id, **PUBLIC}, sort=[("created_at", -1)], limit=6),
         lambda: _sold_last_30d(db, p.id),
         my_reservation,
     )
-    # A paused shop's listings are hidden like its shop page (_shop_by_slug) and the sitemap (LIVE_SHOP): the
+    # A paused or unverified shop's listings are hidden like its shop page (_shop_by_slug) and the sitemap: the
     # server-rendered product page answers 404 for them, so search engines never index what customers cannot see.
-    if shop is None or not shop.is_active:
+    if shop is None or not shop.is_live:
         raise NotFound("This product is no longer listed")
     distance = _dist(lat, lng, shop)
 
@@ -111,10 +113,11 @@ def product_detail(product_id: int, db: DB, user: OptionalUser, lat: float | Non
     others.sort(key=lambda o: (o["quantity"] <= 0, o["shop"]["distance_km"] if o["shop"]["distance_km"]
                                is not None else o["price"]))
 
-    # Reviews of this exact listing first, then recent reviews of the shop.
+    # Reviews of this exact listing first, then recent reviews of the shop: only those moderation has not hidden
+    # or removed (P3.6), each with the shop's reply.
     reviews = list(own_reviews)
     if len(reviews) < 6:
-        reviews += db.reviews.find({"shop_id": shop.id, "product_id": {"$ne": p.id}},
+        reviews += db.reviews.find({"shop_id": shop.id, "product_id": {"$ne": p.id}, **PUBLIC},
                                    sort=[("created_at", -1)], limit=6 - len(reviews))
     reliability, _, names = db.gather(
         lambda: shop_reliability(db, shop),
@@ -146,6 +149,8 @@ def product_recommendations(product_id: int, db: DB, lat: float | None = None, l
     if p is None:
         raise NotFound("Product not found")
     shop, catalog = db.gather(lambda: db.shops.get(p.shop_id), lambda: db.catalog_items.get(p.catalog_item_id))
+    if shop is None or not shop.is_live:
+        raise NotFound("Product not found")
     lat = lat if lat is not None else shop.lat
     lng = lng if lng is not None else shop.lng
 
@@ -205,13 +210,14 @@ def list_shops(
     if lat is None or lng is None:
         c = city_config()["center"]
         lat, lng = c["lat"], c["lng"]
-    query: dict = {"is_active": True, "location": within_km(lat, lng, radius_km)}
+    query: dict = {**live_shop_filter(), "location": within_km(lat, lng, radius_km)}
     if category:
         cat = category_by_slug(db, category)
         query["category_ids"] = cat.id if cat else -1
     if q:
         like = {"$regex": re.escape(q.strip()), "$options": "i"}
-        query["$or"] = [{"name": like}, {"locality": like}, {"tagline": like}]
+        # live_shop_filter has its own $or (the approval is in force), so this one goes under $and.
+        query["$and"] = [{"$or": [{"name": like}, {"locality": like}, {"tagline": like}]}]
     found, counts = db.gather(
         lambda: with_categories(db, db.shops.find(query)),
         lambda: {r["_id"]: r["n"] for r in db.products.aggregate([
@@ -231,7 +237,7 @@ def list_shops(
 
 def _shop_by_slug(db: Database, slug: str) -> Shop:
     shop = db.shops.find_one({"slug": slug})
-    if shop is None or not shop.is_active:
+    if shop is None or not shop.is_live:
         raise NotFound("Shop not found")
     return with_categories(db, [shop])[0]
 
@@ -273,12 +279,13 @@ def shop_products(
 
 @router.get("/shops/{slug}/reviews")
 def shop_reviews(slug: str, db: DB, page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=50)):
+    """The shop's reviews, newest first, without those moderation hid or removed (P3.6), with the shop's replies."""
     shop = _shop_by_slug(db, slug)
     rows, dist = db.gather(
-        lambda: with_customers(db, db.reviews.find({"shop_id": shop.id}, sort=[("created_at", -1)],
+        lambda: with_customers(db, db.reviews.find({"shop_id": shop.id, **PUBLIC}, sort=[("created_at", -1)],
                                                    skip=(page - 1) * page_size, limit=page_size)),
         lambda: {r["_id"]: r["n"] for r in db.reviews.aggregate([
-            {"$match": {"shop_id": shop.id}}, {"$group": {"_id": "$rating", "n": {"$sum": 1}}}])},
+            {"$match": {"shop_id": shop.id, **RATED}}, {"$group": {"_id": "$rating", "n": {"$sum": 1}}}])},
     )
     names = product_names(db, (r.product_id for r in rows))
     return {"reviews": [review_out(r, names.get(r.product_id)) for r in rows],
@@ -301,7 +308,7 @@ def _latest(*times: datetime | None) -> str | None:
 
 
 def _sitemap_entries(db: Database) -> dict:
-    shops = db.shops.find_raw(LIVE_SHOP, {"_id": 1, "slug": 1, "updated_at": 1, "inventory_updated_at": 1},
+    shops = db.shops.find_raw(live_shop_filter(), {"_id": 1, "slug": 1, "updated_at": 1, "inventory_updated_at": 1},
                               sort=[("_id", 1)])
     listings = db.products.find_raw({**ACTIVE_LISTING, "shop_id": {"$in": [s["_id"] for s in shops]}},
                                     {"_id": 1, "updated_at": 1, "stock_updated_at": 1},
@@ -317,7 +324,7 @@ def _sitemap_entries(db: Database) -> dict:
 
 @router.get("/sitemap")
 def sitemap_entries(db: DB, response: Response):
-    """The slugs of live shops and the ids of their active listings, each with its last update, for the
+    """The slugs of live (active and verified, P3.3) shops and the ids of their active listings, each with its last update, for the
     site's sitemap (frontend/src/app/sitemap.ts). Only what customers may see, and no personal data: no
     names, addresses, phone numbers or owners. Built at most once an hour per process (one query per
     collection, ids and dates only), and cacheable for an hour by anything in between."""

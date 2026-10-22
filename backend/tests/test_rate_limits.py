@@ -303,6 +303,27 @@ def test_guessing_the_current_password_with_a_held_session_is_limited(api, limit
     assert_limited(guess(), HOUR)
 
 
+def test_guessing_the_password_through_account_deletion_is_limited(api, limits):
+    """Account deletion checks the password as well, so it counts against the same per-account budget: a stolen
+    session cookie cannot guess there at the default rate, nor double its guesses by using both routes."""
+    res = api.post("/api/auth/login", json={"email": "cust@example.com", "password": PASSWORD}, headers=edge())
+    assert res.status_code == 200
+    h = edge("198.51.100.9")
+
+    def delete(password: str = "not-the-password"):
+        return api.post("/api/auth/delete", json={"password": password}, headers=h)
+
+    for _ in range(3):
+        res = delete()
+        assert res.status_code == 400 and res.json()["error"]["code"] == "wrong_password"
+    for _ in range(2):  # the password-change route draws on the same budget
+        res = api.post("/api/auth/password", json={"current_password": "nope", "new_password": "x" * 20}, headers=h)
+        assert res.status_code == 400
+    assert_limited(delete(), HOUR)
+    assert_limited(delete(PASSWORD), HOUR)  # the right password too: the account is not deleted
+    assert api.get("/api/auth/me", headers=h).json()["email"] == "cust@example.com"
+
+
 # ---------------------------------------------------------------- password login
 
 

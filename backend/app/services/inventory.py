@@ -5,7 +5,11 @@ from app.core.database import Database, transactional, utcnow
 from app.core.errors import Conflict
 from app.models import InventoryEvent, InventoryReason, Notification, Product, Shop
 
-OWNER_REASONS = {InventoryReason.INITIAL, InventoryReason.RESTOCK, InventoryReason.ADJUSTMENT}
+OWNER_REASONS = {InventoryReason.INITIAL, InventoryReason.RESTOCK, InventoryReason.ADJUSTMENT,
+                 InventoryReason.WHATSAPP_UPDATE}
+# The same reasons as stored strings, for queries that count the owner's own stock updates
+# (reliability's "frequently updated" signal, the admin overview's stock-update series).
+OWNER_REASON_VALUES = sorted(r.value for r in OWNER_REASONS)
 
 
 def _crossed_low(before: int, after: int, threshold: int) -> bool:
@@ -60,8 +64,10 @@ def change_stock(
 
 
 @transactional
-def set_stock(db: Database, product: Product, new_quantity: int, actor_id: int) -> Product:
-    """Owner sets an absolute count (e.g. after counting shelves)."""
+def set_stock(db: Database, product: Product, new_quantity: int, actor_id: int,
+              reason: InventoryReason | None = None) -> Product:
+    """Owner sets an absolute count (e.g. after counting shelves). The event's reason is restock or adjustment by the
+    direction of the change, unless the caller names one (whatsapp_update for a count sent on WhatsApp, P4.4)."""
     if new_quantity < 0:
         raise Conflict("Stock cannot be negative")
     delta = new_quantity - product.quantity
@@ -71,7 +77,7 @@ def set_stock(db: Database, product: Product, new_quantity: int, actor_id: int) 
         db.products.set(product, stock_updated_at=now)
         db.shops.update_one({"_id": product.shop_id}, {"$set": {"inventory_updated_at": now}})
         return product
-    reason = InventoryReason.RESTOCK if delta > 0 else InventoryReason.ADJUSTMENT
+    reason = reason or (InventoryReason.RESTOCK if delta > 0 else InventoryReason.ADJUSTMENT)
     return change_stock(db, product, delta, reason, actor_id)
 
 

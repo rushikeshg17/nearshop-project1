@@ -62,7 +62,7 @@ def normalize_query(q: str) -> str:
 def expand_synonyms(q: str, db: MongoDatabase | None = None) -> list[str]:
     """Extra terms to OR into keyword search. Never replaces the user's own words.
 
-    The entries live in the synonyms collection, managed by admins (app/services/synonyms.py; migration 5
+    The entries live in the synonyms collection, managed by admins (app/services/synonyms.py; migration 9
     imported the 42 that used to be written here). They are read from a per-process cache that checks the
     synonyms' version every 30 seconds; db names the database (default: the configured one)."""
     from app.services.synonyms import cache, expand  # lazy: the service imports the database layer

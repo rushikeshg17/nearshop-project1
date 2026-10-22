@@ -333,6 +333,9 @@ def test_owner_import_and_admin_changes_bump_the_listings_version(owner_a, admin
     other = Process()
     other.index.ensure(other.db)
     was_verified = db.shops.get(ids["shop_a"]).is_verified
+    # The admin switch goes through the verification rules (P3.3): turning it off suspends the shop, which
+    # changes several fields, so the whole document is restored afterwards.
+    shop_before = db.mongo["shops"].find_one({"_id": ids["shop_a"]})
     made: list[int] = []
 
     def version() -> int:
@@ -375,7 +378,7 @@ def test_owner_import_and_admin_changes_bump_the_listings_version(owner_a, admin
         assert other.index.full_builds == 1
         same_as_full_rebuild(other)
     finally:  # the session's shared data as it was: shop_a's verification, and no listing of this test's
-        db.shops.update_one({"_id": ids["shop_a"]}, {"$set": {"is_verified": was_verified}})
+        db.mongo["shops"].replace_one({"_id": ids["shop_a"]}, shop_before)
         db.mongo["products"].delete_many({"_id": {"$in": made}})
         db.mongo["inventory_events"].delete_many({"product_id": {"$in": made}})
         cache_version.bump(db.mongo, cache_version.LISTINGS)
