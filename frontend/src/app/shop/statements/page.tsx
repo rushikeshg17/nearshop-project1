@@ -45,9 +45,9 @@ export default function StatementsPage() {
         <EmptyState icon={FileText} title={t("owner.statements.emptyTitle")} description={t("owner.statements.emptyBody")} className="mt-6" />
       ) : (
         <ul className="mt-6 space-y-4">
-          {d.statements.map((s) => (
+          {d.statements.map((s, i) => (
             <li key={s.id}>
-              <StatementCard s={s} />
+              <StatementCard s={s} latest={i === 0} />
             </li>
           ))}
         </ul>
@@ -56,7 +56,17 @@ export default function StatementsPage() {
   );
 }
 
-function StatementCard({ s }: { s: OwnerStatement }) {
+// A WhatsApp reply answers only the shop's latest statement, and only while it is at most this old (backend
+// statements.REPLY_WINDOW); a statement that never went out on WhatsApp cannot be answered there at all.
+const REPLY_WINDOW_DAYS = 35;
+const ON_WHATSAPP = new Set<OwnerStatement["delivery"]>(["queued", "sent", "delivered"]);
+
+function canReplyOnWhatsApp(s: OwnerStatement, latest: boolean) {
+  if (!latest || !ON_WHATSAPP.has(s.delivery) || !s.built_at) return false;
+  return Date.now() - new Date(s.built_at).getTime() <= REPLY_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+}
+
+function StatementCard({ s, latest }: { s: OwnerStatement; latest: boolean }) {
   const { t, language } = useI18n();
   const titleId = `statement-${s.id}-title`;
   return (
@@ -106,7 +116,7 @@ function StatementCard({ s }: { s: OwnerStatement }) {
             ))}
           </ul>
         ) : (
-          <p className="mt-1 text-muted-foreground">{t("owner.statements.reply.none")}</p>
+          <p className="mt-1 text-muted-foreground">{t(canReplyOnWhatsApp(s, latest) ? "owner.statements.reply.noneCanReply" : "owner.statements.reply.none")}</p>
         )}
       </div>
     </article>

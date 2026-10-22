@@ -728,8 +728,8 @@ class Settings(BaseSettings):
     # it and found nothing in stock. Shown to owners only while demand_report_enabled (off until checks 8.2 and 8.3
     # pass) and the last demand_report_audit_weeks weekly audits of demand_report_audit_size items average
     # demand_report_min_precision_pct percent genuine or more. Free shops see the top demand_report_teaser_items.
-    # Switch-on prerequisite: the insights screen (P9.11) must render the {query, item, category, band} items first;
-    # frontend/src/lib/types.ts still types missed_demand as {query, searches}[] and would show "undefined".
+    # The insights screen (P9.11) renders the {query, item, category, band} items, the week and the teaser as
+    # owner_module returns them, and shows a held or disabled report's reason.
     demand_report_enabled: bool = False
     demand_report_radius_km: float = 3.0
     demand_report_window_days: int = 30

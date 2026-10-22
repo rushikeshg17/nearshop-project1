@@ -104,8 +104,14 @@ test("demand items show a band and never a number below 5", async ({ page, langu
     await expect(row).toContainText(message(language, `owner.insights.missed.band.${BAND_KEYS[item.band]}`));
     for (const n of numbersIn(await row.innerText())) expect(n, `a number in "${await row.innerText()}"`).toBeGreaterThanOrEqual(5);
   }
-  // The week the report covers: the Monday of ISO week 23 of 2027 is 7 June 2027.
-  await expect(card.getByTestId("missed-week")).toBeVisible();
+  // The week the report covers: the Monday of ISO week 23 of 2027 is 7 June 2027, shown as the page's language writes
+  // that date.
+  const week = card.getByTestId("missed-week");
+  await expect(week).toHaveAttribute("data-start", "2027-06-07");
+  const weekStart = await page.evaluate(() =>
+    new Date(Date.UTC(2027, 5, 7)).toLocaleDateString(document.documentElement.lang, { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" }),
+  );
+  await expect(week).toHaveText(message(language, "owner.insights.missed.week", { date: weekStart }));
   await expect(card.getByTestId("missed-teaser")).toHaveCount(0);
 
   const results = await new AxeBuilder({ page }).include("[data-testid='missed-demand']").withTags(WCAG_TAGS).analyze();
@@ -147,7 +153,9 @@ test("a held report shows its reason", async ({ page, language }) => {
   await expect(card.getByTestId("gate-notice")).toContainText(message(language, "owner.insights.missed.gate.disabled"));
 });
 
-function statement(id: number, month: string, kind: "shadow_bill" | "roi", counts: Partial<Counts>, replies: unknown[]) {
+type Delivery = "not_sent" | "queued" | "sent" | "delivered" | "failed" | "cancelled";
+
+function statement(id: number, month: string, kind: "shadow_bill" | "roi", counts: Partial<Counts>, replies: unknown[], delivery: Delivery = "delivered", builtAt = `${month}-01T04:30:00Z`) {
   const full = { call_taps: 0, directions_taps: 0, reservation_requests: 0, reservations_confirmed: 0, pickups_completed: 0, delivery_orders: 0, deliveries_completed: 0, customer_requests: 0, ...counts };
   return {
     id,
@@ -160,8 +168,8 @@ function statement(id: number, month: string, kind: "shadow_bill" | "roi", count
     pay_link: null,
     plan: kind === "roi" ? { code: "growth", name: "Growth", ends_at: "2028-07-31T18:30:00Z" } : null,
     guarantee: kind === "roi" ? { applies: true, customer_requests: 7, needed: 3, met: true, credit_months: 3 } : null,
-    delivery: "delivered",
-    built_at: `${month}-01T04:30:00Z`,
+    delivery,
+    built_at: builtAt,
     text: kind === "roi"
       ? { month_shop: month, counts: "", plan: "Growth, paid until 31 Jul 2028", guarantee: "7 customer requests this quarter, 3 needed: met." }
       : { month_shop: month, counts: "", amount_due: "Amount due: ₹0. You are on the Free plan, and every stock tool stays free.", price: "Growth would cost ₹83 a month at the founding price (₹999 for the first year)." },
@@ -171,11 +179,15 @@ function statement(id: number, month: string, kind: "shadow_bill" | "roi", count
 
 test("a statement card's counts match the API, and the month so far is the API's", async ({ page, language }) => {
   await signInOwner(page.request);
+  // The newest statement went out on WhatsApp two days ago, so it can still be answered there (backend REPLY_WINDOW,
+  // 35 days); the oldest was never sent on WhatsApp, so the screen must not offer a WhatsApp reply to it.
+  const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
   const statements = [
-    statement(2, "2027-09", "roi", { reservation_requests: 14, pickups_completed: 11, delivery_orders: 6, call_taps: 23, directions_taps: 17 }, []),
-    statement(1, "2027-08", "shadow_bill", { reservation_requests: 9, pickups_completed: 7, delivery_orders: 2, call_taps: 31, directions_taps: 12 }, [
+    statement(3, "2027-09", "roi", { reservation_requests: 14, pickups_completed: 11, delivery_orders: 6, call_taps: 23, directions_taps: 17 }, [], "delivered", twoDaysAgo),
+    statement(2, "2027-08", "shadow_bill", { reservation_requests: 9, pickups_completed: 7, delivery_orders: 2, call_taps: 31, directions_taps: 12 }, [
       { kind: "accurate", at: "2027-09-01T06:00:00Z", reason: null },
     ]),
+    statement(1, "2027-07", "shadow_bill", { reservation_requests: 4, pickups_completed: 3, delivery_orders: 1, call_taps: 8, directions_taps: 5 }, [], "failed"),
   ];
   const seen: { current?: Counts } = {};
   await page.route("**/api/owner/statements", async (route) => {
@@ -200,7 +212,11 @@ test("a statement card's counts match the API, and the month so far is the API's
   await expect(cards.nth(1).getByTestId("statement-price")).toContainText("₹0");
   await expect(cards.nth(0).getByTestId("statement-price")).toContainText("Growth, paid until 31 Jul 2028");
   await expect(cards.nth(1).getByTestId("statement-reply")).toContainText(message(language, "owner.statements.reply.kinds.accurate"));
-  await expect(cards.nth(0).getByTestId("statement-reply")).toContainText(message(language, "owner.statements.reply.none"));
+  await expect(cards.nth(0).getByTestId("statement-reply")).toContainText(message(language, "owner.statements.reply.noneCanReply"));
+  // No WhatsApp reply is offered for a statement that never went out on WhatsApp, or that is not the latest one.
+  const unsent = cards.nth(2).getByTestId("statement-reply");
+  await expect(unsent).toContainText(message(language, "owner.statements.reply.none"));
+  await expect(unsent).not.toContainText(message(language, "owner.statements.reply.noneCanReply"));
 
   // This month so far: the API's current counts, on the statements page and on the overview.
   const current = seen.current;

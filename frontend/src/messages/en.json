@@ -1701,7 +1701,7 @@
       },
       "missed": {
         "title": "Asked for near you, not in stock",
-        "hint": "What people within 3 km searched for in the last 30 days and found in stock nowhere. An item shows only when 5 or more people asked, in bands, never as an exact number.",
+        "hint": "What people near your shop searched for recently and found in stock nowhere. An item shows only when enough people asked, in bands, never as an exact number.",
         "empty": "Nothing unmet right now.",
         "week": "Week of {date}",
         "band": {
@@ -1709,7 +1709,7 @@
           "mid": "10 to 19 people",
           "high": "20 or more people"
         },
-        "teaser": "On the Free plan you see your top 3. Growth shows every item, every week.",
+        "teaser": "On the Free plan you see your top items. Growth shows every item, every week.",
         "hidden": {
           "one": "{count} more item with Growth.",
           "other": "{count} more items with Growth."
@@ -1904,7 +1904,8 @@
       },
       "reply": {
         "label": "Your reply",
-        "none": "No reply recorded yet. You can reply to the statement on WhatsApp.",
+        "none": "No reply recorded.",
+        "noneCanReply": "No reply recorded yet. You can reply to the statement on WhatsApp.",
         "on": "{reply}, {date}",
         "reason": "Your reason: {reason}",
         "kinds": {

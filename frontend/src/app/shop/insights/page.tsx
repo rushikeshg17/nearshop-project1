@@ -81,7 +81,6 @@ const BAND_KEYS: Record<DemandBand, MessageKey> = {
   "10-19": "owner.insights.missed.band.mid",
   "20+": "owner.insights.missed.band.high",
 };
-const TEASER_ITEMS = 3; // backend settings.demand_report_teaser_items: what a Free shop sees
 
 /** The Monday that starts an ISO week (2027-W23), as a UTC date. */
 function isoWeekMonday(week: string): Date | null {
@@ -116,18 +115,19 @@ function missedReason(gate: Gate, t: ReturnType<typeof useI18n>["t"]): string {
 function MissedDemand({ items, report, gate }: { items: DemandItem[]; report: OwnerInsights["missed_demand_report"]; gate: Gate | null }) {
   const { t, language } = useI18n();
   if (gate) return <GateNotice gate={gate} reason={missedReason(gate, t)} className="mt-4" />;
+  // The API already cuts a Free shop's list to its teaser (settings.demand_report_teaser_items) and counts the rest in
+  // report.hidden, so every item it sends is shown.
   const teaser = report?.plan === "teaser";
-  const shown = teaser ? items.slice(0, TEASER_ITEMS) : items;
   const monday = report?.week ? isoWeekMonday(report.week) : null;
   return (
     <>
       {monday && (
-        <p className="mt-2 text-xs font-medium" data-testid="missed-week">
+        <p className="mt-2 text-xs font-medium" data-testid="missed-week" data-start={monday.toISOString().slice(0, 10)}>
           {t("owner.insights.missed.week", { date: formatDay(monday.toISOString(), language) })}
         </p>
       )}
       <ul className="mt-4 divide-y" data-testid="missed-items">
-        {shown.map((m) => (
+        {items.map((m) => (
           <li key={m.query} className="flex items-center justify-between gap-3 py-2 first:pt-0">
             <span className="min-w-0">
               <span className="block truncate text-sm font-medium capitalize">{m.query}</span>
@@ -138,7 +138,7 @@ function MissedDemand({ items, report, gate }: { items: DemandItem[]; report: Ow
             <Badge variant="secondary" className="shrink-0" data-band={m.band}>{t(BAND_KEYS[m.band])}</Badge>
           </li>
         ))}
-        {!shown.length && <li className="text-sm text-muted-foreground">{t("owner.insights.missed.empty")}</li>}
+        {!items.length && <li className="text-sm text-muted-foreground">{t("owner.insights.missed.empty")}</li>}
       </ul>
       {teaser && (
         <p className="mt-3 flex gap-1.5 text-xs text-muted-foreground" data-testid="missed-teaser">
