@@ -1021,7 +1021,15 @@
       "cancelReasonPlaceholder": "e.g. Found it elsewhere",
       "rate": "Rate this pickup",
       "findElsewhere": "Find it at another shop",
-      "pickupCodeHintUpi": "Pickup code. The shop enters it to hand over your item. Pay {price} at the shop, in cash or by UPI."
+      "pickupCodeHintUpi": "Pickup code. The shop enters it to hand over your item. Pay {price} at the shop, in cash or by UPI.",
+      "notAvailable": {
+        "action": "Not available when I arrived",
+        "title": "Item not at the shop?",
+        "body": "Tell us the shop did not have the item when you arrived. Your reservation will be closed, the shop will be told, and the listing will show “stock not confirmed recently” until the shop updates its count. You can report this only once.",
+        "confirm": "Report not available",
+        "done": "Thanks for telling us. The shop has been notified.",
+        "closedBody": "You reported that the item was not available when you arrived. The shop has been told."
+      }
     },
     "order": {
       "status": {

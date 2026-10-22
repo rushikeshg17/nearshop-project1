@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Navigation, Phone, Search, Star, X } from "lucide-react";
+import { ArrowLeft, Navigation, PackageX, Phone, Search, Star, X } from "lucide-react";
 import { motion, MotionConfig } from "motion/react";
 import Link from "next/link";
 import { useState } from "react";
@@ -22,6 +22,9 @@ import { formatNumber, formatPrice } from "@/lib/format";
 import type { Translate } from "@/lib/i18n";
 import type { Reservation } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+// The close_reason of a "Not available when I arrived" report (P9.1): a code, shown in the interface language.
+const NOT_AVAILABLE_ON_ARRIVAL = "not_available_on_arrival";
 
 // The headline and line for each state, in the interface language (transactions.reservation.status). The shop's or
 // customer's own reason, when there is one, is shown as written.
@@ -53,7 +56,10 @@ const HEADLINE: Record<string, { title: (t: Translate) => string; body: (r: Rese
   },
   CANCELLED: {
     title: (t) => t("transactions.reservation.status.CANCELLED.title"),
-    body: (r, t) => r.close_reason ?? t("transactions.reservation.status.CANCELLED.body"),
+    body: (r, t) =>
+      r.close_reason === NOT_AVAILABLE_ON_ARRIVAL
+        ? t("transactions.reservation.notAvailable.closedBody")
+        : (r.close_reason ?? t("transactions.reservation.status.CANCELLED.body")),
   },
   EXPIRED: {
     title: (t) => t("transactions.reservation.status.EXPIRED.title"),
@@ -77,6 +83,16 @@ export function ReservationView({ id }: { id: number }) {
       qc.setQueryData(["reservation", id], r);
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       toast.success(t("transactions.reservation.cancelled"));
+    },
+  });
+  // "Not available when I arrived" (P9.1): once, on a held reservation. The shop is told and the listing stops
+  // claiming the stock until the shop counts it again.
+  const notAvailable = useMutation({
+    mutationFn: () => api.post<Reservation>(`/reservations/${id}/not-available`),
+    onSuccess: (r) => {
+      qc.setQueryData(["reservation", id], r);
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      toast.success(t("transactions.reservation.notAvailable.done"));
     },
   });
 
@@ -165,6 +181,18 @@ export function ReservationView({ id }: { id: number }) {
                   onConfirm={(reason) => cancel.mutate(reason)}
                   trigger={(open) => (
                     <Button variant="outline" onClick={open}><X /> {t("transactions.reservation.cancel")}</Button>
+                  )}
+                />
+              )}
+              {r.actions.includes("not_available") && (
+                <ConfirmAction
+                  title={t("transactions.reservation.notAvailable.title")}
+                  description={t("transactions.reservation.notAvailable.body")}
+                  confirmLabel={t("transactions.reservation.notAvailable.confirm")}
+                  pending={notAvailable.isPending}
+                  onConfirm={() => notAvailable.mutate()}
+                  trigger={(open) => (
+                    <Button variant="outline" onClick={open}><PackageX /> {t("transactions.reservation.notAvailable.action")}</Button>
                   )}
                 />
               )}

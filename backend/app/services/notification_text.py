@@ -100,6 +100,11 @@ MESSAGES: dict[str, dict[str, tuple[str, str | None]]] = {
         "en": ("Reservation {code} expired", "{quantity} x {product} has been returned to stock."),
         "kn": ("ಕಾಯ್ದಿರಿಸುವಿಕೆ {code} ಅವಧಿ ಮುಗಿದಿದೆ", "{quantity} x {product} ಅನ್ನು ಮತ್ತೆ ಸ್ಟಾಕ್‌ಗೆ ಸೇರಿಸಲಾಗಿದೆ."),
     },
+    "arrival_failure": {  # to the shop's owner: a customer found a held item missing (P9.1, plan section 8.17)
+        # English only until the team supplies the Kannada (AWAITING_KANNADA below).
+        "en": ("Item not available for reservation {code}",
+               "The customer found {product} missing. NearShop showed {quantity} in stock."),
+    },
     # ------------------------------------------------------------ delivery orders (app/services/orders.py)
     "order_new": {  # to the shop's owner
         "en": ("New delivery order {code}", "{summary} to {address} ({distance_km} km). COD Rs {total:.0f}."),
@@ -169,6 +174,12 @@ MESSAGES: dict[str, dict[str, tuple[str, str | None]]] = {
         "kn": ("{shop} ಸ್ಟಾಕ್ ಪರಿಶೀಲನೆ", "ಈ ಸಂಖ್ಯೆಗಳು ಇನ್ನೂ ಸರಿಯಾಗಿವೆಯೇ? {items}"),
     },
 }
+
+# Messages whose Kannada text the team has not supplied yet. From P9.1 on, only Kannada written or approved by the
+# team is added here, never an implementer's draft; until then a Kannada-preference recipient gets the English text
+# (render falls back), and the WhatsApp template of the same kind waits for its kn approval
+# (docs/whatsapp-templates.md, "Kannada still to write"). Remove a key once its kn entry is added.
+AWAITING_KANNADA: frozenset[str] = frozenset({"arrival_failure"})
 
 # key -> language -> text: the WhatsApp bot's replies to shops (P4.4) and the fragments messages are built from.
 TEXTS: dict[str, dict[str, str]] = {

@@ -17,11 +17,19 @@ def iso(dt: datetime | None) -> str | None:
 # Stock freshness (P7.4): how long ago a listing's stock was confirmed. Up to FRESH_HOURS it is fresh (no label,
 # no change). Beyond that and up to STALE_DAYS it is labelled "updated N days ago" and its search group ranks with
 # FRESHNESS_MULTIPLIERS["aging"]; beyond STALE_DAYS it is labelled "stock not confirmed recently", ranks with
-# FRESHNESS_MULTIPLIERS["stale"] and is left out of the in-stock-only filter (app/services/search.py).
+# FRESHNESS_MULTIPLIERS["stale"] and is left out of the in-stock-only filter (app/services/search.py). A listing a
+# customer reported missing on arrival (Product.stock_unconfirmed_at, P9.1, plan section 8.17) is treated the same as
+# one beyond STALE_DAYS until the shop next counts it, whenever its stock_updated_at was (confirmed_at).
 FRESH_HOURS = 48
 STALE_DAYS = 7
 FRESHNESS_MULTIPLIERS = {"fresh": 1.0, "aging": 0.85, "stale": 0.6}
 STALE_LABEL = "stock not confirmed recently"
+
+
+def confirmed_at(stock_updated_at: datetime | None, stock_unconfirmed_at: datetime | None) -> datetime | None:
+    """When a listing's stock was last confirmed, for its freshness band: None while an arrival report has unconfirmed
+    it (P9.1), which bands it as stale."""
+    return None if stock_unconfirmed_at is not None else stock_updated_at
 
 
 def freshness(updated_at: datetime | None, now: datetime) -> dict:
@@ -110,7 +118,7 @@ def shop_detail(s: Shop, distance_km: float | None, reliability: dict) -> dict:
 def listing(p: Product, shop: dict | None = None, now: datetime | None = None) -> dict:
     """A product as sold by one shop (an 'offer'). `now` is the clock its freshness is judged at (search passes
     its own, so the evaluation harness can fix it)."""
-    fresh = freshness(p.stock_updated_at, now or utcnow())
+    fresh = freshness(confirmed_at(p.stock_updated_at, p.stock_unconfirmed_at), now or utcnow())
     return {
         "id": p.id,
         "catalog_item_id": p.catalog_item_id,
