@@ -16,14 +16,14 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { lazy, Suspense, useMemo, useState } from "react";
+import { Fragment, lazy, Suspense, useMemo, useState } from "react";
 
 import { AppIcon } from "@/components/common/app-icon";
 import { Distance, Rating } from "@/components/common/indicators";
 import { EmptyState, ErrorState, ListSkeleton } from "@/components/common/states";
 import { ShopMap } from "@/components/map/shop-map";
 import { useI18n } from "@/components/providers";
-import { ResultCard } from "@/components/search/result-card";
+import { ResultCard, SponsoredResultCard } from "@/components/search/result-card";
 import { LocationPicker } from "@/components/site/location-picker";
 import { SearchBox } from "@/components/site/search-box";
 import { Button } from "@/components/ui/button";
@@ -103,6 +103,11 @@ export function SearchView() {
   const first = query.data?.pages[0];
   const groups = useMemo(() => query.data?.pages.flatMap((p) => p.groups) ?? [], [query.data]);
   const pins: MapPin[] = useMemo(() => first?.shops ?? [], [first]);
+  // Boost (P10.13): the one sponsored card comes with the first page only (later pages never carry one, and any that
+  // did would be ignored), and goes in front of the organic card now at its 1-based position, or after the last one
+  // of a shorter list. Organic cards keep their own order and positions (the click positions count them only).
+  const sponsored = first?.sponsored;
+  const slot = sponsored ? Math.max(0, sponsored.position - 1) : -1;
   const points = useMemo(
     () =>
       pins.map((s) => ({
@@ -282,14 +287,17 @@ export function SearchView() {
           ) : (
             <div className={cn("space-y-3 transition-opacity", query.isFetching && !query.isFetchingNextPage && "opacity-60")}>
               {groups.map((g, i) => (
-                <ResultCard
-                  key={g.key}
-                  group={g}
-                  index={i}
-                  highlighted={!!selectedShop && g.offers.some((o) => o.shop.id === selectedShop)}
-                  onHover={setHoverShops}
-                />
+                <Fragment key={g.key}>
+                  {sponsored && slot === i && <SponsoredResultCard card={sponsored} onHover={setHoverShops} />}
+                  <ResultCard
+                    group={g}
+                    index={i}
+                    highlighted={!!selectedShop && g.offers.some((o) => o.shop.id === selectedShop)}
+                    onHover={setHoverShops}
+                  />
+                </Fragment>
               ))}
+              {sponsored && slot >= groups.length && <SponsoredResultCard card={sponsored} onHover={setHoverShops} />}
               {query.hasNextPage && (
                 <Button variant="outline" className="w-full" onClick={() => query.fetchNextPage()} disabled={query.isFetchingNextPage}>
                   {query.isFetchingNextPage ? <Loader2 className="animate-spin" /> : null} {t("discovery.search.showMore")}

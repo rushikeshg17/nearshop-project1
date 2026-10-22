@@ -11,6 +11,7 @@ import {
   FileSpreadsheet,
   LayoutDashboard,
   Library,
+  Megaphone,
   Package,
   Settings,
   ShieldAlert,
@@ -27,7 +28,7 @@ import { Button } from "@/components/ui/button";
 import { useMe } from "@/hooks/use-session";
 import { api } from "@/lib/api";
 import { DEFAULT_LANGUAGE, type LanguageCode, languageInfo } from "@/lib/i18n";
-import type { OwnerOverview, ShopVerification } from "@/lib/types";
+import type { BoostEligibility, OwnerOverview, ShopVerification } from "@/lib/types";
 
 export function OwnerShell({ children }: { children: React.ReactNode }) {
   const { t } = useI18n();
@@ -43,6 +44,16 @@ export function OwnerShell({ children }: { children: React.ReactNode }) {
     queryFn: () => api.get<OwnerOverview>("/owner/overview"),
     enabled: me?.role === "owner",
     refetchInterval: 15_000,
+  });
+
+  // Boost (P10.13): the menu item shows only while the shop's city is eligible (plan section 8.22) and sales are on
+  // (B31). The daily check moves slowly, so the answer is kept for 10 minutes; any error leaves the item hidden.
+  const boost = useQuery({
+    queryKey: ["owner", "boost", "eligibility"],
+    queryFn: () => api.get<BoostEligibility>("/owner/boost/eligibility"),
+    enabled: me?.role === "owner" && !!me.shop,
+    staleTime: 600_000,
+    retry: false,
   });
 
   if (isLoading) return <div className="p-10"><ListSkeleton /><LegalFooter className="mt-16" /></div>;
@@ -66,6 +77,7 @@ export function OwnerShell({ children }: { children: React.ReactNode }) {
     { href: "/shop/catalog", label: t("owner.shell.nav.catalog"), icon: Library },
     { href: "/shop/insights", label: t("owner.shell.nav.insights"), icon: BrainCircuit },
     { href: "/shop/reviews", label: t("owner.shell.nav.reviews"), icon: Star },
+    ...(boostShown(boost.data) ? [{ href: "/shop/boost", label: t("owner.shell.nav.boost"), icon: Megaphone }] : []),
     { href: "/shop/settings", label: t("owner.shell.nav.settings"), icon: Settings },
   ];
   return (
@@ -74,6 +86,11 @@ export function OwnerShell({ children }: { children: React.ReactNode }) {
       {children}
     </DashboardShell>
   );
+}
+
+/** Whether the owner menu offers Boost: only when the shop's city meets every threshold and sales are switched on. */
+export function boostShown(e: BoostEligibility | undefined) {
+  return !!e && e.sales_enabled && e.city.eligible;
 }
 
 /** A date such as "21 Oct 2027", in India time, with the month named in the interface language (English when not
