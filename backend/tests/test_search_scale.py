@@ -36,7 +36,8 @@ from database import schema
 NOW = datetime(2026, 10, 20, 6, 0, 0)
 CENTER = (15.1394, 76.9214)
 KM_PER_DEG_LAT = 111.2
-NEAR_SHOPS = 110  # 110 shops x 20 listings: more listings in radius than MAX_CANDIDATES
+NEAR_SHOPS = 110  # 110 shops x 20 listings: more listings in radius than the prompt's 2,000-candidate figure
+SPEC_CANDIDATES = 2000  # P8.2 item 5's figure; search.py's docstring records why there is no cut before grouping
 FAR_KM = (27.0, 30.0, 34.0)  # beyond the 25 km cap, inside the 50 km the route still accepts
 BACKEND = Path(__file__).resolve().parents[1]
 
@@ -218,7 +219,7 @@ def test_the_top_20_equal_the_uncapped_version(city, q, extra):
 def test_the_test_database_holds_more_listings_in_radius_than_the_cap(city):
     shops = nearby_shops(city, CENTER[0], CENTER[1], MAX_RADIUS_KM)
     in_radius = city.products.count({"is_active": True, "shop_id": {"$in": list(shops)}})
-    assert in_radius > search_module.MAX_CANDIDATES
+    assert in_radius > SPEC_CANDIDATES
     browse = run_search(city, SearchParams(lat=CENTER[0], lng=CENTER[1], radius_km=MAX_RADIUS_KM), log=False, now=NOW)
     assert sum(pin["match_count"] for pin in browse["shops"]) == in_radius  # counted, though not read in full
 
@@ -235,9 +236,13 @@ def test_the_radius_is_capped_at_25_km(city, client):
     assert not far & {pin["id"] for pin in capped["shops"]}
     # Without the cap, 50 km would reach the shop 27 km away (and 30 and 34): the cap is what leaves them out.
     assert len(nearby_shops(city, CENTER[0], CENTER[1], 50)) == NEAR_SHOPS + len(FAR_KM)
-    # The route still accepts up to 50 km (links from before P8.2) and searches 25.
+    # The route still accepts up to 50 km (links from before P8.2), searches 25 and tells the client.
+    assert capped["radius_km"] == MAX_RADIUS_KM
     res = client.get("/api/search", params={"q": "charger", "lat": CENTER[0], "lng": CENTER[1], "radius_km": 50})
-    assert res.status_code == 200
+    assert res.status_code == 200 and res.json()["radius_km"] == MAX_RADIUS_KM
+    near = client.get("/api/search", params={"q": "charger", "lat": CENTER[0], "lng": CENTER[1], "radius_km": 3})
+    assert near.json()["radius_km"] == 3
+    assert client.get("/api/search", params={"q": "x", "page_size": 51}).status_code == 422
     assert client.get("/api/search", params={"q": "x", "radius_km": 51}).status_code == 422
 
 
@@ -262,7 +267,7 @@ def test_every_stage_scores_only_the_listings_in_radius(city):
     assert search_module._candidates(city, replace(p, lat=0.0, lng=0.0), norm, [], NOW).kw == {}  # no shop, no score
 
 
-# ---------------------------------------------------------------- 4 and 5. narrow reads, at most MAX_CANDIDATES in full
+# ---------------------------------------------------------------- 4 and 5. narrow reads, at most MAX_FULL_READS in full
 
 
 @pytest.fixture
@@ -303,17 +308,25 @@ def test_listings_are_read_with_the_fields_ranking_and_display_need(city, produc
     assert set(shown) == offers and len(shown) <= 20 * 7  # only what the page shows
 
 
-def test_at_most_max_candidates_listings_are_read_in_full(city, monkeypatch, product_reads):
+def test_at_most_max_full_reads_listings_are_read_in_full_and_paging_loses_nothing(city, product_reads):
+    assert search_module.MAX_FULL_READS == search_module.MAX_PAGE_SIZE * 7 == 350
     p = SearchParams(lat=CENTER[0], lng=CENTER[1], radius_km=25, page_size=200)
-    full = run_search(city, p, log=False, now=NOW)
-    monkeypatch.setattr(search_module, "MAX_CANDIDATES", 30)
-    product_reads.clear()
-    capped = run_search(city, p, log=False, now=NOW)
-    [shown] = [f["_id"]["$in"] for f, proj in product_reads if proj == search_module.DISPLAY_FIELDS]
-    assert len(shown) <= 30
-    assert 0 < len(capped["groups"]) < len(full["groups"])
-    assert capped["groups"] == full["groups"][:len(capped["groups"])]  # the best ranked, unchanged
-    assert capped["total"] == full["total"] and capped["has_more"]
+    want = uncapped(city, replace(p, page_size=10_000))["groups"]
+    assert len(want) > 2 * search_module.MAX_PAGE_SIZE
+    seen: list[dict] = []
+    page = 1
+    while True:
+        product_reads.clear()
+        res = run_search(city, replace(p, page=page), log=False, now=NOW)
+        [shown] = [f["_id"]["$in"] for f, proj in product_reads if proj == search_module.DISPLAY_FIELDS]
+        assert len(shown) <= search_module.MAX_FULL_READS
+        assert res["page_size"] == search_module.MAX_PAGE_SIZE  # a larger page is served at the cap, and says so
+        assert len(res["groups"]) == min(search_module.MAX_PAGE_SIZE, len(want) - len(seen))
+        seen += res["groups"]
+        if not res["has_more"]:
+            break
+        page += 1
+    assert seen == want  # every group on exactly one page, in rank order
 
 
 def test_a_cached_re_ranking_reads_only_the_listings_it_has_not_shown(city, product_reads):

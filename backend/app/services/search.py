@@ -15,16 +15,26 @@ Cost at city scale (P8.2; docs/perf/baseline.md)
 ------------------------------------------------
 A search reads the city in proportion to its radius, never more:
 
-  - the radius is capped at MAX_RADIUS_KM (25 km); a wider one is searched at 25 km;
+  - the radius is capped at MAX_RADIUS_KM (25 km); a wider one is searched at 25 km, and the response's
+    radius_km says so;
   - the keyword query (the text index, and the local-term match) asks only about the listings of the shops in
     radius, and the in-process semantic index scores only the listings in radius. The Atlas stages (P5.7) already
     filter by those shops;
   - every listing in radius that passes the filters is read with RANK_FIELDS only: what relevance, grouping,
     the group scores, the counts and the map pins need. Ranking, grouping and counting run on those rows, so every
     group, its rank and the totals are exactly what they would be with whole documents;
-  - only the listings a page shows (each group's best offer and up to six offers) are then read in full, with
-    DISPLAY_FIELDS, at most MAX_CANDIDATES (2,000) of them, the best ranked first. A candidate listing is never
-    built into a model or serialised unless it is shown.
+  - only the listings a page shows (each group's best offer and up to OFFERS_SHOWN offers) are then read in full,
+    with DISPLAY_FIELDS. A page holds at most MAX_PAGE_SIZE (50) groups, so one search reads at most
+    MAX_FULL_READS (50 x 7 = 350) listings in full. A candidate listing is never built into a model or serialised
+    unless it is shown.
+
+Deviation from P8.2 item 5 ("cap candidates at 2,000 by relevance before grouping"): there is no cut of the
+candidate rows before grouping. On the 50,000-listing load-test database 5 of the 50 load-test queries pass the
+relevance cutoff with more than 2,000 listings ("sports shoes": 3,219 listings in 19 groups), and a cut there drops
+whole groups from the top 20 or shrinks their shop counts and price ranges, which the prompt's own test (the top
+20 equal the uncapped version) forbids. Every listing in radius is grouped from its RANK_FIELDS row instead, so the
+grouping cost still grows with the listings in radius; the bound above is on the full reads. docs/perf/baseline.md
+records this for sign-off.
 """
 from __future__ import annotations
 
@@ -62,8 +72,12 @@ W_LOCAL_TERM = settings.ranking.w_local_term
 SEM_FLOOR, SEM_CEIL = SEARCH_SIMILARITY_SCALE.sem_floor, SEARCH_SIMILARITY_SCALE.sem_ceil
 # City scale (P8.2; module docstring). A wider radius is searched at MAX_RADIUS_KM.
 MAX_RADIUS_KM = 25.0
-# The most listings one search reads in full (DISPLAY_FIELDS), best ranked first.
-MAX_CANDIDATES = 2000
+# A page holds at most MAX_PAGE_SIZE groups (a larger page_size is served as MAX_PAGE_SIZE, and the response's
+# page_size says so); each shows its best offer and up to OFFERS_SHOWN offers. So one search reads at most
+# MAX_FULL_READS listings in full (DISPLAY_FIELDS), and paging is never cut short by that bound.
+MAX_PAGE_SIZE = 50
+OFFERS_SHOWN = 6
+MAX_FULL_READS = MAX_PAGE_SIZE * (1 + OFFERS_SHOWN)
 # Read for every listing in radius that passes the filters: relevance, grouping, group scores (stock, distance,
 # freshness), prices, category counts, map pins and the group's photo.
 RANK_FIELDS = {"shop_id": 1, "catalog_item_id": 1, "category_id": 1, "price": 1, "quantity": 1,
@@ -349,11 +363,14 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
     (search_now() by default), so the shadow ranking re-ranks exactly the listings and scores the customer's
     search fetched. `engines` overrides the configured engines (P5.7: the evaluation harness and the shadow engine
     pair); the cache keeps each engine pair's fetch apart, with the time it took (fetch_ms). A radius above
-    MAX_RADIUS_KM is searched at MAX_RADIUS_KM (P8.2)."""
+    MAX_RADIUS_KM is searched at MAX_RADIUS_KM, and a page_size above MAX_PAGE_SIZE is served as MAX_PAGE_SIZE
+    (P8.2); the response's radius_km and page_size are the values searched."""
     cfg = ranking or settings.ranking
     engines = engines or settings.search_engines
     if p.radius_km > MAX_RADIUS_KM:
         p = replace(p, radius_km=MAX_RADIUS_KM)
+    if p.page_size > MAX_PAGE_SIZE:
+        p = replace(p, page_size=MAX_PAGE_SIZE)
     norm = normalize_query(p.q) if p.q else ""
     expanded = expand_synonyms(norm) if norm else []
     now = now or search_now()
@@ -423,7 +440,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         lo, hi = min(prices), max(prices)
         best = min(pool, key=lambda x: ((float(x["price"]) - lo) / (hi - lo) if hi > lo else 0)
                    + km(x) / max(p.radius_km, 1))
-        offers = sorted(items, key=lambda x: (x["quantity"] <= 0, km(x)))[:6]
+        offers = sorted(items, key=lambda x: (x["quantity"] <= 0, km(x)))[:OFFERS_SHOWN]
         category_counts[cats[best["category_id"]].slug] += 1
         group_rows.append({
             "key": key, "relevance": round(rel, 3), "score": round(score, 4), "nearest_km": round(nearest, 2),
@@ -448,14 +465,8 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
     start = (max(p.page, 1) - 1) * p.page_size
     page_rows = group_rows[start : start + p.page_size]
 
-    # Only the page's offers are read in full: at most MAX_CANDIDATES listings, in rank order.
-    to_show: dict[int, dict] = {}
-    for n, g in enumerate(page_rows):
-        offers = {x["_id"]: x for x in [g["best"], *g["offers"]] if x["_id"] not in to_show}
-        if len(to_show) + len(offers) > MAX_CANDIDATES:
-            page_rows = page_rows[:n]
-            break
-        to_show.update(offers)
+    # Only the page's offers are read in full: at most MAX_FULL_READS listings (page_size <= MAX_PAGE_SIZE).
+    to_show = {x["_id"]: x for g in page_rows for x in [g["best"], *g["offers"]]}
     shown = _shown(db, fetched, list(to_show.values()))
     page_groups = []
     for g in page_rows:
@@ -520,6 +531,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         "total": total,
         "page": p.page,
         "page_size": p.page_size,
+        "radius_km": p.radius_km,
         "has_more": start + p.page_size < total,
         "shops_in_radius": len(shops),
         "groups": page_groups,

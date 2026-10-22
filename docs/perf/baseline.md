@@ -190,7 +190,8 @@ happened.** The five numbers below stay "not measured" until it has.
 ### What changed in search (backend/app/services/search.py)
 
 - **Radius cap.** Search covers at most 25 km (MAX_RADIUS_KM). GET /api/search still accepts up to 50 km, so
-  older links keep working, but searches 25. The site's radius slider stops at 15 km.
+  older links keep working, but searches 25, and the response's radius_km is the radius searched, so a client can
+  tell. Proximity scoring uses the searched radius. The site's radius slider stops at 15 km.
 - **Only the shops in radius.** The text-index query and the local-term match filter by the ids of the shops in
   radius. The in-process semantic index scores only the listings fetched in radius, with the same similarities
   as before. P5.7 kept both engines, so both stages needed this. The Atlas candidates already filter by shop.
@@ -199,14 +200,19 @@ happened.** The five numbers below stay "not measured" until it has.
   grouping, the counts and the map pins all work from these. Name, brand, unit, icon, MRP, low-stock
   threshold and the active flag (DISPLAY_FIELDS) are read only for the offers the page shows. Description,
   specs, keywords and local terms are never read.
-- **Candidate cap.** One search reads at most 2,000 listings in full (MAX_CANDIDATES), best ranked first. A page
-  of 50 groups needs at most 350.
+- **Full-read bound.** A page holds at most 50 groups (MAX_PAGE_SIZE; the route rejects more, and run_search
+  serves a larger internal page_size at 50), each showing its best offer and up to 6 offers, so one search reads
+  at most 350 listings in full (MAX_FULL_READS). Paging never drops a group: every group appears on exactly one
+  page.
 - **Same ranking.** Groups, scores, totals, pins and category counts are exactly what the uncapped version
   gives. backend/tests/test_search_scale.py checks this on a test database with 2,198 active listings in radius,
   more than the cap: the top 20 match field for field in 20 cases, covering queries, filters, sorts, browsing and
   a second page.
 
-Why the cap is applied after grouping and not before: in the 50,000-listing database, 5 of the 50 load-test
+**Deviation from the prompt, for sign-off.** P8.2 item 5 asks to "cap candidates at 2,000 by relevance before
+grouping". That is not built: there is no cut of the candidate rows, so the rows grouped, scored and pinned still
+grow with the listings in radius (as RANK_FIELDS rows; about 60 ms for 50,000 rows locally, below). The bound is on
+full reads only, 350 per search. Why there is no cut before grouping: in the 50,000-listing database, 5 of the 50 load-test
 queries pass the relevance cutoff with more than 2,000 listings. For example, "sports shoes" has 3,219 listings
 in 19 groups, because many shops list the same catalogue item. Cutting at 2,000 listings before grouping would
 drop whole groups from the top 20, or shrink their shop counts and price ranges. So every candidate goes into

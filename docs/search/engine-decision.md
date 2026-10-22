@@ -220,16 +220,19 @@ while an Atlas engine is configured, and migrate creates them as empty collectio
 no search or vector index on staging or production. If any index has been created by then, search-index drop
 removes the indexes and empties both collections.
 
-## Stages P8.2 must still scope to nearby shops
+## Stages scoped to nearby shops (P8.2, done)
 
-With keep, every stage except the listing fetch works city-wide today:
+With keep, P8.2 (backend/app/services/search.py) scoped the stages that worked city-wide:
 
-- **The keyword stage.** The text index scores every listing in the city that matches the terms. Only an Atlas
-  Search candidate filters by shop_id inside the query.
-- **The vector stage.** The in-process index scores every active listing. Only an Atlas Vector Search candidate
-  filters by shop_id.
-- **The local-term stage.** local_term_scores matches catalogue items and listings city-wide in every
-  candidate. It stays NearShop's own, so P8.2 scopes it either way.
+- **The keyword stage.** The text-index query filters by the ids of the shops in radius. An Atlas Search
+  candidate filters by shop_id inside the query.
+- **The vector stage.** The in-process index scores only the listings fetched in radius, with the same
+  similarities. An Atlas Vector Search candidate filters by shop_id.
+- **The local-term stage.** local_term_scores matches only the listings of the shops in radius, in every
+  candidate.
+
+These stay city-wide:
+
 - **The spelling vocabulary and the did-you-mean correction.** These are per process and city-wide, unchanged
   by any candidate.
 - **Suggestions.** The catalogue match is city-wide by design, since the catalogue is shared, and so is the

@@ -21,7 +21,8 @@ def search(
     lat: float | None = Query(None, ge=-90, le=90),
     lng: float | None = Query(None, ge=-180, le=180),
     # Up to 50 km is still accepted (links and clients from before P8.2); run_search searches at most
-    # MAX_RADIUS_KM, 25 km. The requested radius stays in the search's filters (P5.6 interaction logging).
+    # MAX_RADIUS_KM, 25 km, and the response's radius_km is the radius searched. The requested radius stays in
+    # the search's filters (P5.6 interaction logging).
     radius_km: float = Query(5, gt=0, le=50),
     category: str | None = None,
     min_price: float | None = Query(None, ge=0),
@@ -30,7 +31,7 @@ def search(
     fulfillment: Literal["pickup", "delivery"] | None = None,
     sort: Literal["relevance", "distance", "price_asc", "price_desc"] = "relevance",
     page: int = Query(1, ge=1, le=50),
-    page_size: int = Query(20, ge=1, le=50),
+    page_size: int = Query(20, ge=1, le=search_service.MAX_PAGE_SIZE),
 ):
     if lat is None or lng is None:
         center = city_config()["center"]
