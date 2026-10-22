@@ -513,6 +513,15 @@ def fy_label(start_year: int) -> str:
     return f"{start_year}-{(start_year + 1) % 100:02d}"
 
 
+CSV_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_text(value: str) -> str:
+    """A text cell safe to open in a spreadsheet: text that a spreadsheet would run as a formula (it starts with =, +,
+    -, @, a tab or a carriage return) gets a leading apostrophe, so shop owners' own names cannot inject formulas."""
+    return f"'{value}" if value.startswith(CSV_FORMULA_START) else value
+
+
 def facilitated_sales(db: Database, start_year: int, path: Path | None = None, *, force: bool = False,
                       out: Out = print) -> int:
     """Write the financial year's facilitated sales per shop as a CSV (module docstring). Read-only on the database;
@@ -527,7 +536,7 @@ def facilitated_sales(db: Database, start_year: int, path: Path | None = None, *
         writer = csv.DictWriter(f, fieldnames=leads.FACILITATED_COLUMNS)
         writer.writeheader()
         for row in rows:
-            writer.writerow({**row, "total_value": f"{row['total_value']:.2f}"})
+            writer.writerow({**row, "shop_name": csv_text(row["shop_name"]), "total_value": f"{row['total_value']:.2f}"})
     out(f"{path}")
     out(f"{len(rows)} row(s)")
     return 0

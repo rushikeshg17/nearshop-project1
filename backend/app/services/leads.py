@@ -40,7 +40,9 @@ the CA): keep_until is 8 years after the month ends, and the TTL index removes a
 keep_until; the index need not change.
 
 month_counts is the one function later prompts use (statements P9.9, the outcome guarantee P9.4, the KPI report
-P9.12): a shop's counts for a month, the current month so far included.
+P9.12): a shop's counts for a month, the current month so far included. A finished month the job never rolled up is
+computed from the events while they last; once its first day is EVENTS_KEEP old, month_counts raises MonthNotRolledUp
+rather than report taps the TTL index has removed.
 
 Facilitated sales
 -----------------
@@ -278,10 +280,17 @@ def rollup_month(db: Database, year: int, month: int, now: datetime | None = Non
     return {"month": key, "shops": len(shop_ids), **totals}
 
 
+class MonthNotRolledUp(LookupError):
+    """A finished month with no stored lead_counts row whose lead events may already have expired (EVENTS_KEEP), so
+    its call and directions taps can no longer be counted. Run rollup_month only while the events are still there."""
+
+
 def month_counts(db: Database, shop_id: int, year: int, month: int, now: datetime | None = None) -> dict[str, Any]:
     """A shop's counts for an IST month: the stored lead_counts row of a finished month, else computed now (the
     current month so far, or a finished month the job has not rolled up yet). complete is false for the current
-    month. A month that has not begun raises ValueError."""
+    month. A month that has not begun raises ValueError. A finished month with no stored row that began EVENTS_KEEP
+    or more ago raises MonthNotRolledUp: the TTL index may have removed some of its lead events, and recomputing it
+    would report too few taps."""
     now = now or utcnow()
     start, end = month_bounds(year, month)
     if start > now:
@@ -292,6 +301,9 @@ def month_counts(db: Database, shop_id: int, year: int, month: int, now: datetim
         if stored is not None:
             return {"shop_id": shop_id, "month": month_key(year, month), "complete": True,
                     **{f: int(stored.get(f, 0)) for f in COUNT_FIELDS}}
+        if now >= start + EVENTS_KEEP:
+            raise MonthNotRolledUp(f"{month_key(year, month)} has no lead_counts row and its lead events may have "
+                                   f"expired; its counts cannot be given")
     row = compute_counts(db, start, min(end, now), [shop_id]).get(shop_id) or dict.fromkeys(COUNT_FIELDS, 0)
     return {"shop_id": shop_id, "month": month_key(year, month), "complete": complete, **row}
 

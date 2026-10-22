@@ -319,6 +319,12 @@ def test_month_counts_gives_a_stored_month_and_the_current_month_so_far(town, cl
     assert leads.month_counts(db, town["shop"].id, 2031, 5, now=ist(2031, 7, 1))["call_taps"] == 7  # the stored row
     with pytest.raises(ValueError):
         leads.month_counts(db, town["shop"].id, 2031, 7, now=ist(2031, 6, 30))
+    # A finished month never rolled up is recomputed only while its lead events can still all be there.
+    db.mongo[leads.COUNTS].delete_many({"shop_id": town["shop"].id, "month": "2031-05"})
+    late = leads.month_counts(db, town["shop"].id, 2031, 5, now=ist(2031, 5, 1) + leads.EVENTS_KEEP - timedelta(1))
+    assert {f: late[f] for f in leads.COUNT_FIELDS} == MAY_2031
+    with pytest.raises(leads.MonthNotRolledUp):
+        leads.month_counts(db, town["shop"].id, 2031, 5, now=ist(2031, 5, 1) + leads.EVENTS_KEEP)
 
 
 def test_the_job_runs_on_the_first_at_0200_ist_for_the_previous_month(town, clean, monkeypatch):
@@ -382,6 +388,15 @@ def test_facilitated_sales_split_at_the_31_march_to_1_april_boundary(town, clean
     assert {"shop_id": str(town["shop"].id), "shop_name": "Lead Test Shop", "completed_pickups": "1",
             "completed_deliveries": "1", "total_value": "1070.00"} in rows
     assert printed == [str(path), f"{len(rows)} row(s)"]  # only the path and the row count
+    # A shop name a spreadsheet would run as a formula is written as text.
+    db.mongo["shops"].update_one({"_id": town["shop"].id}, {"$set": {"name": "=HYPERLINK(\"http://x\",\"y\")"}})
+    assert admin_tasks.main(["facilitated-sales", "--fy", "2031-32", "--out", str(path), "--force"],
+                            out=printed.append) == 0
+    mine_row = next(r for r in csv.DictReader(path.open()) if r["shop_id"] == str(town["shop"].id))
+    assert mine_row["shop_name"] == "'=HYPERLINK(\"http://x\",\"y\")"
+    for name in ("+1", "-1", "@SUM(A1)", "\tx", "\rx"):
+        assert admin_tasks.csv_text(name) == "'" + name
+    assert admin_tasks.csv_text("Lead Test Shop") == "Lead Test Shop" and admin_tasks.csv_text("") == ""
     # An existing file is never replaced without --force.
     assert admin_tasks.main(["facilitated-sales", "--fy", "2031-32", "--out", str(path)], out=printed.append) == 1
     assert admin_tasks.main(["facilitated-sales", "--fy", "2031-32", "--out", str(path), "--force"],
