@@ -3,7 +3,7 @@ import re
 from datetime import date, timedelta
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, File, Form, Query, UploadFile
+from fastapi import APIRouter, File, Form, Path, Query, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Discriminator, Field, Tag
 
@@ -42,7 +42,7 @@ from app.schemas.serializers import (
     shop_detail,
     thumbnail_url,
 )
-from app.services import analytics, billing, gateway, importer, plans
+from app.services import analytics, billing, gateway, importer, plans, statements
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
 from app.services import reviews as review_service
@@ -283,6 +283,23 @@ def cancel_autopay(shop: OwnerShop, user: OwnerUser, db: DB):
 def billing_document(document_id: int, shop: OwnerShop, db: DB):
     """One receipt, tax invoice, refund receipt or credit note, as issued."""
     return billing.owner_document(db, shop, document_id)
+
+
+# ------------------------------------------------------------------ monthly statements (P9.9, app/services/statements.py)
+
+
+@router.get("/statements")
+def my_statements(shop: OwnerShop, user: OwnerUser, db: DB):
+    """The shop's monthly statements, newest first, with their counts, price or plan lines and replies, and the
+    current month's counts so far (current). Free on every plan."""
+    return statements.owner_statements(db, shop, user.language)
+
+
+@router.get("/statements/{month}")
+def my_statement(shop: OwnerShop, user: OwnerUser, db: DB,
+                 month: str = Path(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")):
+    """One month's statement (YYYY-MM), or for the current month its counts so far."""
+    return statements.owner_statement(db, shop, month, user.language)
 
 
 @router.get("/insights")

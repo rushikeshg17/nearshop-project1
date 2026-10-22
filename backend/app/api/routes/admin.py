@@ -28,7 +28,7 @@ from app.schemas.requests import (
     SubscriptionGrantIn,
 )
 from app.schemas.serializers import iso, listing, shop_brief
-from app.services import analytics, billing, plans
+from app.services import analytics, billing, plans, statements
 from app.services import reviews as review_service
 from app.services import synonyms as synonym_service
 from app.services.loaders import with_categories, with_category
@@ -736,3 +736,17 @@ def import_pilot_ledger(body: PilotLedgerIn, admin: AdminUser, db: DB):
     receipt showing the original payment date. A repeated UPI reference refuses the whole import."""
     return billing.import_pilot_ledger(db, [r.model_dump() for r in body.rows], reason=body.reason,
                                        actor=_admin(admin))
+
+
+# ------------------------------------------------------------------ monthly statements (P9.9, app/services/statements.py)
+
+
+@router.get("/statements")
+def statement_summary(_: AdminUser, db: DB,
+                      month: str | None = Query(None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$")):
+    """For a month (default: the latest stated): statements built, sent, delivered and failed, replies by kind, and
+    the share of active shops that answered Accurate (the B25 readout needs 60% or more)."""
+    month = month or statements.latest_month(db)
+    if month is None:
+        raise NotFound("No statements yet")
+    return statements.admin_summary(db, month)
