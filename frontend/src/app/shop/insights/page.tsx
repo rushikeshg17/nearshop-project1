@@ -15,8 +15,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { api } from "@/lib/api";
 import { formatNumber, formatPrice, timeAgo } from "@/lib/format";
 import { type MessageKey, plural } from "@/lib/i18n";
-import type { ModelSummary, OwnerInsights } from "@/lib/types";
+import type { DemandBand, DemandItem, ModelSummary, OwnerInsights } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+import { formatDay } from "../owner-shell";
 
 // Each module's model gate (P7.3, plan section 8.9): when shown is false, the module has no output and the
 // owner sees the reason and the progress towards the threshold instead of an empty chart.
@@ -41,13 +43,15 @@ const PROGRESS_LABELS: Record<string, MessageKey> = {
   "flags reviewed": "owner.insights.gate.progress.flagsReviewed",
   "% upheld": "owner.insights.gate.progress.upheld",
   people: "owner.insights.gate.progress.people",
+  "weekly checks": "owner.insights.gate.progress.weeklyChecks",
+  "% genuine": "owner.insights.gate.progress.genuine",
 };
 
-function GateNotice({ gate, className }: { gate: Gate; className?: string }) {
+function GateNotice({ gate, reason, className }: { gate: Gate; reason?: string; className?: string }) {
   const { t } = useI18n();
   return (
-    <div className={cn("rounded-xl bg-muted/60 p-4 text-sm", className)} role="status">
-      <p className="flex gap-2 text-muted-foreground"><Info className="mt-0.5 size-4 shrink-0" /> <span>{gate.reason}</span></p>
+    <div className={cn("rounded-xl bg-muted/60 p-4 text-sm", className)} role="status" data-testid="gate-notice" data-code={gate.code ?? undefined}>
+      <p className="flex gap-2 text-muted-foreground"><Info className="mt-0.5 size-4 shrink-0" /> <span>{reason ?? gate.reason}</span></p>
       {gate.progress.length > 0 && (
         <ul className="mt-3 space-y-2">
           {gate.progress.map((p) => {
@@ -67,6 +71,85 @@ function GateNotice({ gate, className }: { gate: Gate; className?: string }) {
         </ul>
       )}
     </div>
+  );
+}
+
+// The "asked for near you" report (P9.7, plan section 8.19): an item shows the band of distinct people who asked, never a
+// count, so nothing on the card can point at a customer.
+const BAND_KEYS: Record<DemandBand, MessageKey> = {
+  "5-9": "owner.insights.missed.band.low",
+  "10-19": "owner.insights.missed.band.mid",
+  "20+": "owner.insights.missed.band.high",
+};
+const TEASER_ITEMS = 3; // backend settings.demand_report_teaser_items: what a Free shop sees
+
+/** The Monday that starts an ISO week (2027-W23), as a UTC date. */
+function isoWeekMonday(week: string): Date | null {
+  const m = /^(\d{4})-W(\d{2})$/.exec(week);
+  if (!m) return null;
+  const year = Number(m[1]);
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const monday = new Date(jan4);
+  monday.setUTCDate(jan4.getUTCDate() - ((jan4.getUTCDay() + 6) % 7) + (Number(m[2]) - 1) * 7);
+  return monday;
+}
+
+/** The held, disabled or missing report's reason in the interface language, from its code; the API's sentence for a
+ * code not listed here. */
+function missedReason(gate: Gate, t: ReturnType<typeof useI18n>["t"]): string {
+  const progress = gate.progress[0];
+  const values = progress ? { have: formatNumber(progress.have), need: formatNumber(progress.need) } : null;
+  switch (gate.code) {
+    case "disabled":
+      return t("owner.insights.missed.gate.disabled");
+    case "no_report":
+      return t("owner.insights.missed.gate.noReport");
+    case "audit_pending":
+      return values ? t("owner.insights.missed.gate.auditPending", values) : (gate.reason ?? "");
+    case "precision":
+      return values ? t("owner.insights.missed.gate.precision", values) : (gate.reason ?? "");
+    default:
+      return gate.reason ?? "";
+  }
+}
+
+function MissedDemand({ items, report, gate }: { items: DemandItem[]; report: OwnerInsights["missed_demand_report"]; gate: Gate | null }) {
+  const { t, language } = useI18n();
+  if (gate) return <GateNotice gate={gate} reason={missedReason(gate, t)} className="mt-4" />;
+  const teaser = report?.plan === "teaser";
+  const shown = teaser ? items.slice(0, TEASER_ITEMS) : items;
+  const monday = report?.week ? isoWeekMonday(report.week) : null;
+  return (
+    <>
+      {monday && (
+        <p className="mt-2 text-xs font-medium" data-testid="missed-week">
+          {t("owner.insights.missed.week", { date: formatDay(monday.toISOString(), language) })}
+        </p>
+      )}
+      <ul className="mt-4 divide-y" data-testid="missed-items">
+        {shown.map((m) => (
+          <li key={m.query} className="flex items-center justify-between gap-3 py-2 first:pt-0">
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-medium capitalize">{m.query}</span>
+              {m.item?.name && m.item.name.toLowerCase() !== m.query.toLowerCase() && (
+                <span className="block truncate text-xs text-muted-foreground">{m.item.name}</span>
+              )}
+            </span>
+            <Badge variant="secondary" className="shrink-0" data-band={m.band}>{t(BAND_KEYS[m.band])}</Badge>
+          </li>
+        ))}
+        {!shown.length && <li className="text-sm text-muted-foreground">{t("owner.insights.missed.empty")}</li>}
+      </ul>
+      {teaser && (
+        <p className="mt-3 flex gap-1.5 text-xs text-muted-foreground" data-testid="missed-teaser">
+          <Info className="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            {t("owner.insights.missed.teaser")}
+            {report.hidden > 0 && <> {t(`owner.insights.missed.hidden.${plural(language, report.hidden)}`, { count: formatNumber(report.hidden) })}</>}
+          </span>
+        </p>
+      )}
+    </>
   );
 }
 
@@ -181,17 +264,10 @@ export default function InsightsPage() {
           )}
         </section>
 
-        <section className="rounded-2xl border bg-card p-5">
-          <h2 className="flex items-center gap-2 font-semibold"><SearchX className="size-4 text-brand" /> {t("owner.insights.missed.title")}</h2>
+        <section className="rounded-2xl border bg-card p-5" aria-labelledby="missed-demand-title" data-testid="missed-demand">
+          <h2 id="missed-demand-title" className="flex items-center gap-2 font-semibold"><SearchX className="size-4 text-brand" /> {t("owner.insights.missed.title")}</h2>
           <p className="mt-1 text-xs text-muted-foreground">{t("owner.insights.missed.hint")}</p>
-          {missedGate ? <GateNotice gate={missedGate} className="mt-4" /> : (
-          <ul className="mt-4 flex flex-wrap gap-2">
-            {d.missed_demand.map((m) => (
-              <li key={m.query} className="rounded-full border px-3 py-1 text-sm capitalize">{m.query} <span className="text-muted-foreground tabular">· {formatNumber(m.searches)}</span></li>
-            ))}
-            {!d.missed_demand.length && <li className="text-sm text-muted-foreground">{t("owner.insights.missed.empty")}</li>}
-          </ul>
-          )}
+          <MissedDemand items={d.missed_demand} report={d.missed_demand_report} gate={missedGate} />
         </section>
 
         <section className="rounded-2xl border bg-card p-5">

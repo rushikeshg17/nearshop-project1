@@ -623,7 +623,10 @@ export interface OwnerInsights {
     peer_count: number;
   }[];
   area_demand: { query: string; searches: number; you_stock_it: boolean }[];
-  missed_demand: { query: string; searches: number }[];
+  /** "Asked for near you, not in stock" (P9.7, plan section 8.19): each item with its band of distinct people, never
+   * a count. Empty while the report is held, disabled or not built for the shop yet (gates.missed_demand says why). */
+  missed_demand: DemandItem[];
+  missed_demand_report?: DemandReportInfo;
   bundle_gaps: {
     item: { id: number; name: string; icon: string; typical_price: number | null };
     because_of: string;
@@ -631,6 +634,69 @@ export interface OwnerInsights {
     lift: number;
   }[];
   models: Record<string, ModelSummary>;
+}
+
+/** The bands of distinct people in the demand report (backend/app/services/demand_report.py, DEMAND_BANDS). */
+export type DemandBand = "5-9" | "10-19" | "20+";
+
+export interface DemandItem {
+  query: string;
+  item: { id: number; name: string | null } | null;
+  category: string | null;
+  band: DemandBand;
+}
+
+export interface DemandReportInfo {
+  /** The ISO week the report covers, such as 2027-W23; null when no report is shown. */
+  week: string | null;
+  /** full: every item (Growth and above); teaser: the top 3 (Free); null when no report is shown. */
+  plan: "full" | "teaser" | null;
+  /** How many items the teaser leaves out. */
+  hidden: number;
+}
+
+// ------------------------------------------------------------------ monthly statements (P9.9, plan section 8.18)
+
+/** A shop's lead counts for a month (backend/app/services/leads.py, COUNT_FIELDS): counts of customer actions on
+ * NearShop, never a value of the shop's sales. */
+export interface LeadCounts {
+  call_taps: number;
+  directions_taps: number;
+  reservation_requests: number;
+  reservations_confirmed: number;
+  pickups_completed: number;
+  delivery_orders: number;
+  deliveries_completed: number;
+  customer_requests: number;
+}
+
+export type StatementReplyKind = "accurate" | "not_accurate" | "would_pay" | "not_now";
+
+export interface OwnerStatement {
+  id: number;
+  /** YYYY-MM */
+  month: string;
+  /** shadow_bill: ₹0 due and what Growth would cost (Free); roi: the plan and the outcome guarantee (Growth and above). */
+  kind: "shadow_bill" | "roi";
+  counts: LeadCounts;
+  asked_for: string[];
+  plan_code: string | null;
+  price: { advance_paid: boolean; starts_on?: string; founding?: boolean; year_paise?: number; month_paise?: number } | null;
+  pay_link: string | null;
+  plan: { code: string; name: string; ends_at: string | null } | null;
+  guarantee: { applies: boolean; customer_requests?: number; needed?: number; met?: boolean; credit_months?: number } | null;
+  delivery: "not_sent" | "queued" | "sent" | "delivered" | "failed" | "cancelled" | null;
+  built_at: string | null;
+  /** The statement's lines as sent, in the owner's language: month_shop and counts, and amount_due and price
+   * (shadow bill) or plan and guarantee (ROI). */
+  text: { month_shop: string; counts: string; amount_due?: string; price?: string; plan?: string; guarantee?: string };
+  replies: { kind: StatementReplyKind; at: string | null; reason: string | null }[];
+}
+
+export interface OwnerStatements {
+  statements: OwnerStatement[];
+  /** The current month so far. */
+  current: LeadCounts & { shop_id: number; month: string; complete: boolean };
 }
 
 export interface CatalogEntry {

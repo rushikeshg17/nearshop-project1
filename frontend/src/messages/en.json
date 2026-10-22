@@ -1123,7 +1123,8 @@
         "catalog": "Add from catalogue",
         "insights": "AI insights",
         "reviews": "Reviews",
-        "settings": "Shop settings"
+        "settings": "Shop settings",
+        "statements": "Statements"
       }
     },
     "verification": {
@@ -1227,7 +1228,12 @@
       "topSellers": "Top sellers, 30 days",
       "sold": "{count} sold",
       "noSales": "No sales yet.",
-      "autoRefresh": "Refreshes automatically every 15 seconds."
+      "autoRefresh": "Refreshes automatically every 15 seconds.",
+      "monthSoFar": {
+        "title": "This month so far",
+        "hint": "What customers did on NearShop this month, counted up to now. Your statement arrives on the 1st.",
+        "statements": "Your statements"
+      }
     },
     "reservations": {
       "title": "Reservations",
@@ -1694,9 +1700,26 @@
         "empty": "No searches nearby yet."
       },
       "missed": {
-        "title": "Searched nearby, found nowhere",
-        "hint": "Demand no shop in the area is meeting. Worth stocking?",
-        "empty": "Nothing unmet right now."
+        "title": "Asked for near you, not in stock",
+        "hint": "What people within 3 km searched for in the last 30 days and found in stock nowhere. An item shows only when 5 or more people asked, in bands, never as an exact number.",
+        "empty": "Nothing unmet right now.",
+        "week": "Week of {date}",
+        "band": {
+          "low": "5 to 9 people",
+          "mid": "10 to 19 people",
+          "high": "20 or more people"
+        },
+        "teaser": "On the Free plan you see your top 3. Growth shows every item, every week.",
+        "hidden": {
+          "one": "{count} more item with Growth.",
+          "other": "{count} more items with Growth."
+        },
+        "gate": {
+          "disabled": "This report is not switched on yet: NearShop is still checking that its search finds what shops stock.",
+          "auditPending": "This report is on hold while NearShop checks it: {have} of {need} weekly checks done.",
+          "precision": "This report is on hold while NearShop improves it: recent checks found {have}% of items genuine, and {need}% is needed.",
+          "noReport": "No report for your shop yet: reports are made every Monday morning."
+        }
       },
       "bundles": {
         "title": "Bought together, but you don’t stock it",
@@ -1726,7 +1749,9 @@
           "verifiedShops": "verified shops",
           "flagsReviewed": "flags reviewed",
           "upheld": "% upheld",
-          "people": "people"
+          "people": "people",
+          "weeklyChecks": "Weekly checks",
+          "genuine": "% genuine"
         }
       }
     },
@@ -1858,6 +1883,45 @@
       "tagsReplaces": "(replaces existing)",
       "tagsPlaceholder": "switch, light switch, modular, 6 amp",
       "description": "Description"
+    },
+    "statements": {
+      "title": "Monthly statements",
+      "description": "What NearShop did for your shop each month, as we sent it to you.",
+      "note": "NearShop counts what customers do on NearShop: calls, directions, reservations and orders. It cannot see your shop's sales, so a statement never states what you sold.",
+      "emptyTitle": "No statements yet",
+      "emptyBody": "Your first statement arrives on the 1st of next month, on WhatsApp and here.",
+      "soFarHint": "Counted up to now. This month's statement comes on the 1st of next month.",
+      "cardTitle": "Statement for {month}",
+      "askedFor": "Asked for near you",
+      "yourPlan": "Your plan",
+      "guarantee": "Outcome guarantee",
+      "counts": {
+        "reservation_requests": "Reservation requests",
+        "pickups_completed": "Pickups collected",
+        "delivery_orders": "Delivery orders",
+        "call_taps": "Call taps",
+        "directions_taps": "Directions taps"
+      },
+      "reply": {
+        "label": "Your reply",
+        "none": "No reply recorded yet. You can reply to the statement on WhatsApp.",
+        "on": "{reply}, {date}",
+        "reason": "Your reason: {reason}",
+        "kinds": {
+          "accurate": "Accurate",
+          "not_accurate": "Not accurate",
+          "would_pay": "I'd pay",
+          "not_now": "Not now"
+        }
+      },
+      "delivery": {
+        "not_sent": "Shown in the app only",
+        "queued": "Waiting to go on WhatsApp",
+        "sent": "Sent on WhatsApp",
+        "delivered": "Delivered on WhatsApp",
+        "failed": "Could not be sent on WhatsApp",
+        "cancelled": "Not sent on WhatsApp"
+      }
     }
   },
   "support": {

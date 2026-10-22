@@ -1123,7 +1123,8 @@
         "catalog": "",
         "insights": "",
         "reviews": "",
-        "settings": ""
+        "settings": "",
+        "statements": ""
       }
     },
     "verification": {
@@ -1227,7 +1228,12 @@
       "topSellers": "",
       "sold": "",
       "noSales": "",
-      "autoRefresh": ""
+      "autoRefresh": "",
+      "monthSoFar": {
+        "title": "",
+        "hint": "",
+        "statements": ""
+      }
     },
     "reservations": {
       "title": "",
@@ -1696,7 +1702,24 @@
       "missed": {
         "title": "",
         "hint": "",
-        "empty": ""
+        "empty": "",
+        "week": "",
+        "band": {
+          "low": "",
+          "mid": "",
+          "high": ""
+        },
+        "teaser": "",
+        "hidden": {
+          "one": "",
+          "other": ""
+        },
+        "gate": {
+          "disabled": "",
+          "auditPending": "",
+          "precision": "",
+          "noReport": ""
+        }
       },
       "bundles": {
         "title": "",
@@ -1726,7 +1749,9 @@
           "verifiedShops": "",
           "flagsReviewed": "",
           "upheld": "",
-          "people": ""
+          "people": "",
+          "weeklyChecks": "",
+          "genuine": ""
         }
       }
     },
@@ -1858,6 +1883,45 @@
       "tagsReplaces": "",
       "tagsPlaceholder": "",
       "description": ""
+    },
+    "statements": {
+      "title": "",
+      "description": "",
+      "note": "",
+      "emptyTitle": "",
+      "emptyBody": "",
+      "soFarHint": "",
+      "cardTitle": "",
+      "askedFor": "",
+      "yourPlan": "",
+      "guarantee": "",
+      "counts": {
+        "reservation_requests": "",
+        "pickups_completed": "",
+        "delivery_orders": "",
+        "call_taps": "",
+        "directions_taps": ""
+      },
+      "reply": {
+        "label": "",
+        "none": "",
+        "on": "",
+        "reason": "",
+        "kinds": {
+          "accurate": "",
+          "not_accurate": "",
+          "would_pay": "",
+          "not_now": ""
+        }
+      },
+      "delivery": {
+        "not_sent": "",
+        "queued": "",
+        "sent": "",
+        "delivered": "",
+        "failed": "",
+        "cancelled": ""
+      }
     }
   },
   "support": {

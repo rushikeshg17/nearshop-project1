@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, ArrowRight, Bike, ClipboardList, Info, PackageCheck, RefreshCw, Star, TrendingDown, TrendingUp } from "lucide-react";
+import { AlertTriangle, ArrowRight, Bike, CalendarDays, ClipboardList, Info, PackageCheck, RefreshCw, Star, TrendingDown, TrendingUp } from "lucide-react";
 import { AnimatePresence } from "motion/react";
 import Link from "next/link";
 
@@ -16,12 +16,16 @@ import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { formatNumber, formatPrice } from "@/lib/format";
 import { plural } from "@/lib/i18n";
-import type { OwnerOverview } from "@/lib/types";
+import type { OwnerOverview, OwnerStatements } from "@/lib/types";
+
+import { formatMonth, LeadCountList } from "./owner-shell";
 
 export default function OwnerOverviewPage() {
   const { t, language } = useI18n();
   const count = (n: number) => ({ count: formatNumber(n) });
   const q = useQuery({ queryKey: ["owner", "overview"], queryFn: () => api.get<OwnerOverview>("/owner/overview"), refetchInterval: 15_000 });
+  // This month so far (P9.9 lead counts): the same counts the statement on the 1st will state.
+  const statements = useQuery({ queryKey: ["owner", "statements"], queryFn: () => api.get<OwnerStatements>("/owner/statements") });
   if (q.isError) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
   const d = q.data;
   if (!d) return <ListSkeleton rows={4} />;
@@ -67,6 +71,20 @@ export default function OwnerOverviewPage() {
           hint={t(`owner.overview.ofListings.${plural(language, d.inventory.listings)}`, count(d.inventory.listings))}
           icon={AlertTriangle} tone="warning" href="/shop/inventory?stock=low_stock" />
       </div>
+
+      {statements.data && (
+        <section className="mt-8 rounded-2xl border bg-card p-5" aria-labelledby="month-so-far-title" data-testid="month-so-far">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 id="month-so-far-title" className="flex items-center gap-2 text-lg font-semibold">
+              <CalendarDays className="size-5 text-brand" /> {t("owner.overview.monthSoFar.title")}
+              <span className="text-sm font-normal text-muted-foreground">· {formatMonth(statements.data.current.month, language)}</span>
+            </h2>
+            <Link href="/shop/statements" className="text-sm text-muted-foreground hover:text-foreground">{t("owner.overview.monthSoFar.statements")}</Link>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">{t("owner.overview.monthSoFar.hint")}</p>
+          <LeadCountList counts={statements.data.current} className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5" />
+        </section>
+      )}
 
       <div className="mt-8 grid grid-cols-1 gap-8 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
         <section>

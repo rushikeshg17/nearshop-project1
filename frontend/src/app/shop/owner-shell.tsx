@@ -9,6 +9,7 @@ import {
   Clock,
   EyeOff,
   FileSpreadsheet,
+  FileText,
   LayoutDashboard,
   Library,
   Package,
@@ -27,7 +28,8 @@ import { Button } from "@/components/ui/button";
 import { useMe } from "@/hooks/use-session";
 import { api } from "@/lib/api";
 import { DEFAULT_LANGUAGE, type LanguageCode, languageInfo } from "@/lib/i18n";
-import type { OwnerOverview, ShopVerification } from "@/lib/types";
+import { formatNumber } from "@/lib/format";
+import type { LeadCounts, OwnerOverview, ShopVerification } from "@/lib/types";
 
 export function OwnerShell({ children }: { children: React.ReactNode }) {
   const { t } = useI18n();
@@ -65,6 +67,7 @@ export function OwnerShell({ children }: { children: React.ReactNode }) {
     { href: "/shop/import", label: t("owner.shell.nav.import"), icon: FileSpreadsheet },
     { href: "/shop/catalog", label: t("owner.shell.nav.catalog"), icon: Library },
     { href: "/shop/insights", label: t("owner.shell.nav.insights"), icon: BrainCircuit },
+    { href: "/shop/statements", label: t("owner.shell.nav.statements"), icon: FileText },
     { href: "/shop/reviews", label: t("owner.shell.nav.reviews"), icon: Star },
     { href: "/shop/settings", label: t("owner.shell.nav.settings"), icon: Settings },
   ];
@@ -81,6 +84,32 @@ export function OwnerShell({ children }: { children: React.ReactNode }) {
 export function formatDay(iso: string | null | undefined, language: LanguageCode = DEFAULT_LANGUAGE) {
   if (!iso) return "";
   return new Date(iso).toLocaleDateString(languageInfo(language).htmlLang, { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
+}
+
+/** A statement month (YYYY-MM) such as "May 2027", with the month named in the interface language. */
+export function formatMonth(month: string, language: LanguageCode = DEFAULT_LANGUAGE) {
+  const [year, number] = month.split("-").map(Number);
+  if (!year || !number) return month;
+  return new Date(Date.UTC(year, number - 1, 1)).toLocaleDateString(languageInfo(language).htmlLang, { month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+/** The counts a monthly statement states (P9.9, plan section 8.18), in the order it states them: customer actions on
+ * NearShop, never a value of the shop's sales. */
+export const STATEMENT_COUNTS = ["reservation_requests", "pickups_completed", "delivery_orders", "call_taps", "directions_taps"] as const;
+
+/** A statement's counts, or the current month's so far, as labelled numbers (the statements page and the overview). */
+export function LeadCountList({ counts, className, testId }: { counts: LeadCounts; className?: string; testId?: string }) {
+  const { t } = useI18n();
+  return (
+    <dl className={className ?? "grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5"} data-testid={testId}>
+      {STATEMENT_COUNTS.map((field) => (
+        <div key={field} className="rounded-xl bg-muted/50 p-3" data-count={field}>
+          <dt className="text-xs text-muted-foreground">{t(`owner.statements.counts.${field}`)}</dt>
+          <dd className="mt-1 text-xl font-semibold tabular" data-value={counts[field]}>{formatNumber(counts[field])}</dd>
+        </div>
+      ))}
+    </dl>
+  );
 }
 
 const VERIFY_HREF = "/shop/settings#verify";
