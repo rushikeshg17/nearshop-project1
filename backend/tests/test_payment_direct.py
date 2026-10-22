@@ -5,7 +5,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.database import Database
+from app.core.errors import AppError
 from app.main import app
+from app.services.reservations import check_payment_method
 from tests.conftest import CENTER, HEADERS, login
 
 UPI = "shopa.test@okhdfcbank"
@@ -114,6 +116,18 @@ def test_deliver_requires_a_payment_method_and_a_missing_one_is_not_a_wrong_code
     assert res.status_code == 422 and res.json()["error"]["field"] == "payment_method"
     done = owner_a.post(url, json={"code": code, "payment_method": "cod"}, headers=HEADERS)
     assert done.status_code == 200 and done.json()["status"] == "DELIVERED"
+
+
+def test_the_service_check_refuses_a_missing_or_unknown_method(ids):
+    """Through the API an unknown method is refused by request validation (field payment_method, as above); a caller
+    of the service itself gets payment_method_required or invalid_payment_method."""
+    shop = Database().shops.get(ids["shop_a"])
+    for method, code in [(None, "payment_method_required"), ("", "payment_method_required"),
+                         ("card", "invalid_payment_method"), ("UPI_DIRECT", "invalid_payment_method")]:
+        with pytest.raises(AppError) as err:
+            check_payment_method(shop, method)
+        assert err.value.code == code and err.value.status_code == 422
+    assert check_payment_method(shop, "cod") == "cod"
 
 
 def test_upi_direct_is_refused_when_the_shop_has_no_upi_id(customer, owner_a, ids):
