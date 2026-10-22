@@ -164,7 +164,7 @@ def test_blocklist_length_and_failed_normalisation_are_dropped(world):
 
 def test_the_recheck_drops_what_is_now_in_stock_and_a_match_in_the_shops_own_stock_is_a_search_failure(world):
     world.listing("copper kettle", quantity=4)  # in stock and fresh: search finds it now
-    stale = world.listing("brass lantern", quantity=6, stock_age_days=30)  # in stock, but not confirmed for 30 days
+    world.listing("brass lantern", quantity=6, stock_age_days=30)  # in stock, but not confirmed for 30 days
     world.listing("steel tiffin", quantity=0)  # out of stock: the item is kept, matched to this category
     world.searches("copper kettle", keys(5))
     world.searches("brass lantern", keys(6))
@@ -173,15 +173,64 @@ def test_the_recheck_drops_what_is_now_in_stock_and_a_match_in_the_shops_own_sto
     assert queries(items) == ["steel tiffin"]
     assert items[0]["category"] == world.category.slug and items[0]["band"] == "5-9"
     assert dropped["recheck"] == 1 and dropped["shop_stocks"] == 1
-    assert failures == [{"query": "brass lantern", "product_ids": [stale.id]}]
+    # The shop's only match is stock not confirmed for 30 days: out-of-date stock, not a search failure.
+    assert failures == []
 
-    # The weekly build records the failure for R5, and the demand-audit command shows it.
+
+def _search_misses(monkeypatch, misses: set[str]) -> None:
+    """Make the build-time re-check miss the queries in `misses` (read at each call), as a search failure would."""
+    real = demand_report._search
+
+    def fake(db, shop, q, in_stock_only):
+        found = real(db, shop, q, in_stock_only)
+        return {**found, "total": 0, "groups": []} if in_stock_only and q in misses else found
+
+    monkeypatch.setattr(demand_report, "_search", fake)
+
+
+def test_a_fresh_match_the_recheck_missed_is_a_search_failure_and_a_rebuild_replaces_the_list(world, monkeypatch):
+    fresh = world.listing("brass lantern", quantity=6)
+    world.listing("copper kettle", quantity=4)
+    world.searches("brass lantern", keys(6))
+    world.searches("copper kettle", keys(5))
+    misses = {"brass lantern", "copper kettle"}
+    _search_misses(monkeypatch, misses)
+    items, dropped, failures = build(world)
+    assert items == [] and dropped["shop_stocks"] == 2
+    assert sorted(f["query"] for f in failures) == ["brass lantern", "copper kettle"]
+    assert next(f for f in failures if f["query"] == "brass lantern")["product_ids"] == [fresh.id]
+
+    # The weekly build records the failures for R5, and the demand-audit command shows them.
     result = demand_report.build_week(world.db, rng=random.Random(1))
-    assert result["search_failures"] >= 1
+    assert result["search_failures"] == 2
     lines: list[str] = []
     assert admin_tasks.demand_audit_failures(world.db, out=lines.append) == 0
-    assert any(f"shop {world.shop.id}" in line and "brass lantern" in line and str(stale.id) in line
+    assert any(f"shop {world.shop.id}" in line and "brass lantern" in line and str(fresh.id) in line
                for line in lines)
+
+    # Search now finds the kettle: a rebuild of the same week leaves only the lantern on the list.
+    misses.discard("copper kettle")
+    demand_report.build_week(world.db, rng=random.Random(1))
+    left = list(world.db.mongo[demand_report.FAILURES].find({"shop_id": world.shop.id}, {"query": 1}))
+    assert [r["query"] for r in left] == ["brass lantern"]
+
+
+def test_a_report_holds_at_most_the_validators_500_items(world, monkeypatch):
+    monkeypatch.setattr(demand_report, "MAX_ITEMS", 3)
+    t = world.tag
+    for n in (5, 6, 7, 8, 9):
+        world.searches(f"cap {n} {t}", keys(n))
+    items, _, _ = build(world)
+    assert queries(items) == [f"cap 9 {t}", f"cap 8 {t}", f"cap 7 {t}"]  # most people first
+    assert demand_report.MAX_ITEMS <= 500
+
+
+def test_the_users_export_never_holds_the_demand_key(world):
+    user = world.user(Role.CUSTOMER)
+    world.db.search_history.insert(SearchEvent(user_id=user.id, query=f"{world.tag} tape", normalized_query="tape",
+                                               demand_key=search.demand_key_of(user.id)))
+    rows = privacy.export_data(world.db, user)["search_history"]
+    assert len(rows) == 1 and "demand_key" not in rows[0] and "user_id" not in rows[0]
 
 
 # ---------------------------------------------------------------- the demand key

@@ -61,6 +61,13 @@ paused days added back; the day the daily part ran for is kept in the lease's la
 demand_report (P9.7), once a week, on Monday at 03:00 IST or on the first tick after it, builds the "asked for near you"
 report of every verified live shop and draws R5's weekly audit sample (app/services/demand_report.py build_week); the
 ISO week it ran for is kept in the lease's last_result (ran_for), like lead_counts. Counts only, never a query.
+statements (P9.9), every tick: once a month, on the 1st at 10:00 IST or on the first tick after it, it builds and
+sends the previous IST month's statement to every active shop (app/services/statements.py build_month: a shadow bill
+before billing starts and for Free shops, an ROI statement for paying shops, through notify and the WhatsApp outbox);
+the month it ran for is kept in the lease's last_result (ran_for), like lead_counts, and a re-run skips every shop
+that has its statement, so none is sent twice. Every tick it also copies the outbox rows' delivery statuses onto
+the statements still queued or sent, built in the last 40 days (sync_delivery), and sends again by template a
+statement the sender cancelled before sending it: one indexed query when there are none.
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -133,7 +140,8 @@ RETRY_AFTER_FAILURE: dict[str, timedelta] = {"snapshot_storage": timedelta(hours
                                               "stock_check": timedelta(minutes=15), "lead_counts": timedelta(hours=1),
                                               "billing_reconciliation": timedelta(hours=1),
                                               "boost": timedelta(minutes=15),
-                                              "demand_report": timedelta(hours=1)}
+                                              "demand_report": timedelta(hours=1),
+                                              "statements": timedelta(minutes=15)}
 RETENTION_AT = time(21, 30)  # UTC: 03:00 IST, the nightly retention job (P3.2)
 # The phone migration (P4.2): in-app warnings this many days before the email sign-in sunset, and accounts still
 # without a verified phone switched off this many days after it.
@@ -153,6 +161,7 @@ SUBSCRIPTIONS_JOB = "subscriptions"  # plans and subscriptions (P9.4)
 BILLING_JOB = "billing_reconciliation"  # the daily unmatched-credit alert (P9.5)
 BOOST_JOB = "boost"  # Boost periods every tick, city eligibility once per IST day (P10.12)
 DEMAND_REPORT_JOB = "demand_report"  # the weekly "asked for near you" report (P9.7)
+STATEMENTS_JOB = "statements"  # the monthly statements (P9.9)
 
 RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
@@ -535,12 +544,31 @@ def demand_report(clock: Clock = utcnow) -> dict[str, Any]:
     return {"ran_for": week, **{k: v for k, v in built.items() if k != "week"}}
 
 
+def statements(clock: Clock = utcnow) -> dict[str, Any]:
+    """The monthly statements (P9.9, app/services/statements.py), every tick: the previous month's statements once per
+    month from the 1st at 10:00 IST (build_month), the month it ran for kept in the lease's last_result (ran_for), and
+    the delivery statuses synced from the outbox (sync_delivery, synced). A failed run is retried 15 minutes later
+    (RETRY_AFTER_FAILURE); the retry builds only the statements still missing."""
+    from app.services import statements as service
+
+    now = clock()
+    year, month = service.statement_month(now)
+    key = f"{year:04d}-{month:02d}"
+    db = Database()
+    synced = service.sync_delivery(db, now=now)
+    last = (db.mongo[LEASES].find_one({"_id": STATEMENTS_JOB}, {"last_result": 1}) or {}).get("last_result") or {}
+    if last.get("ok") is True and last.get("ran_for") == key:
+        return {**{k: v for k, v in last.items() if k not in ("ok", "synced")}, "synced": synced}
+    built = service.build_month(db, year, month, now)
+    return {"ran_for": key, **{k: v for k, v in built.items() if k != "month"}, "synced": synced}
+
+
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {
     "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage, "retention": retention,
     "process_deletions": process_deletions, PHONE_MIGRATION_JOB: phone_migration,
     SEND_NOTIFICATIONS_JOB: send_notifications, STOCK_CHECK_JOB: stock_check, LEAD_COUNTS_JOB: lead_counts,
     SUBSCRIPTIONS_JOB: subscriptions, BILLING_JOB: billing_reconciliation, BOOST_JOB: boost,
-    DEMAND_REPORT_JOB: demand_report}
+    DEMAND_REPORT_JOB: demand_report, STATEMENTS_JOB: statements}
 
 
 class SearchIndexRefresher:

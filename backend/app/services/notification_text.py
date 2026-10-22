@@ -12,6 +12,10 @@ text, which is the source and always present, and a text per other language. A l
 text that cannot be formatted with the parameters given, falls back to English, so a gap in a translation never
 loses a message.
 
+STATEMENTS holds the words of the monthly statement (P9.9, app/services/statements.py): its parts, which are the
+WhatsApp template's variables, the in-app notification, the free-form message sent inside the owner's service
+window, and the bot's answers to the statement's quick replies.
+
 Parameters are formatted with str.format: names in braces, with a format spec where a number needs one ({total:.0f}).
 A Term parameter is a word from TEXTS rendered in the recipient's language. What a person typed (a reason, a
 listing's name, a shop's name) is passed as it is and never translated.
@@ -251,6 +255,97 @@ TEXTS: dict[str, dict[str, str]] = {
 }
 
 
+# key -> language -> text: the monthly statement (P9.9, app/services/statements.py; docs/whatsapp-templates.md
+# nearshop_shop_statement_free and nearshop_shop_statement_roi). Kept apart from TEXTS because its parameters are the
+# statement's own (counts, prices, dates); tests/test_statements.py checks every entry in both languages as
+# tests/test_notification_text.py checks TEXTS. A statement states counts only: the one rupee amounts in it are the
+# price lines (amount_due, price_founding, price_standard) and the payment request in reply_would_pay, never a value
+# of the shop's sales. The *_text entries are the free-form WhatsApp message sent inside the owner's open service window,
+# with the template's words; replies to it are the words in REPLY_WORDS (app/services/statements.py).
+STATEMENTS: dict[str, dict[str, str]] = {
+    # ------------------------------------------------------------ the statement's parts (the template variables)
+    "month_shop": {"en": "{month}, {shop}", "kn": "{month}, {shop}"},
+    "counts": {
+        "en": "{reservation_requests} reservation requests ({pickups_completed} collected), {delivery_orders} delivery "
+              "orders, {call_taps} call taps and {directions_taps} directions taps.",
+        "kn": "{reservation_requests} ಕಾಯ್ದಿರಿಸುವಿಕೆ ವಿನಂತಿಗಳು ({pickups_completed} ಪಡೆಯಲಾಗಿದೆ), {delivery_orders} ಡೆಲಿವರಿ "
+              "ಆರ್ಡರ್‌ಗಳು, {call_taps} ಕರೆ ಟ್ಯಾಪ್‌ಗಳು ಮತ್ತು {directions_taps} ದಾರಿ ಟ್ಯಾಪ್‌ಗಳು.",
+    },
+    "asked_for": {"en": " Asked for near you: {items}.", "kn": " ನಿಮ್ಮ ಹತ್ತಿರ ಜನರು ಕೇಳಿದವು: {items}."},
+    "quarter_requests": {"en": " Customer requests this quarter: {requests}.",
+                         "kn": " ಈ ತ್ರೈಮಾಸಿಕದ ಗ್ರಾಹಕರ ವಿನಂತಿಗಳು: {requests}."},
+    "amount_due": {"en": "Amount due: ₹0. You are on the Free plan, and every stock tool stays free.",
+                   "kn": "ಪಾವತಿಸಬೇಕಾದ ಮೊತ್ತ: ₹0. ನೀವು ಉಚಿತ ಯೋಜನೆಯಲ್ಲಿದ್ದೀರಿ, ಮತ್ತು ಎಲ್ಲಾ ಸ್ಟಾಕ್ ಸಾಧನಗಳು ಉಚಿತವಾಗಿಯೇ "
+                         "ಇರುತ್ತವೆ."},
+    "price_founding": {
+        "en": "Growth would cost ₹{month_price} a month at the founding price (₹{year_price} for the first year).",
+        "kn": "ಸಂಸ್ಥಾಪಕ ಬೆಲೆಯಲ್ಲಿ Growth ಗೆ ತಿಂಗಳಿಗೆ ₹{month_price} ಆಗುತ್ತದೆ (ಮೊದಲ ವರ್ಷಕ್ಕೆ ₹{year_price}).",
+    },
+    "price_standard": {
+        "en": "Growth would cost ₹{month_price} a month at the yearly price (₹{year_price} a year).",
+        "kn": "ವಾರ್ಷಿಕ ಬೆಲೆಯಲ್ಲಿ Growth ಗೆ ತಿಂಗಳಿಗೆ ₹{month_price} ಆಗುತ್ತದೆ (ವರ್ಷಕ್ಕೆ ₹{year_price}).",
+    },
+    "price_advance_paid": {"en": "You have paid for Growth in advance: it starts on {date}.",
+                           "kn": "ನೀವು Growth ಗೆ ಮುಂಗಡ ಪಾವತಿಸಿದ್ದೀರಿ: ಅದು {date} ರಂದು ಆರಂಭವಾಗುತ್ತದೆ."},
+    "plan_line": {"en": "{plan}, paid until {date}", "kn": "{plan}, {date} ವರೆಗೆ ಪಾವತಿಸಲಾಗಿದೆ"},
+    "guarantee_line": {
+        "en": "{requests} customer requests this quarter, {needed} needed: {met}. A paid quarter that ends with fewer "
+              "than {needed} adds {months} months free.",
+        "kn": "ಈ ತ್ರೈಮಾಸಿಕದಲ್ಲಿ {requests} ಗ್ರಾಹಕರ ವಿನಂತಿಗಳು, {needed} ಬೇಕು: {met}. {needed} ಕ್ಕಿಂತ ಕಡಿಮೆ ವಿನಂತಿಗಳೊಂದಿಗೆ "
+              "ಮುಗಿಯುವ ಪಾವತಿಸಿದ ತ್ರೈಮಾಸಿಕಕ್ಕೆ {months} ತಿಂಗಳು ಉಚಿತವಾಗಿ ಸೇರುತ್ತದೆ.",
+    },
+    "guarantee_met": {"en": "met", "kn": "ಪೂರೈಸಲಾಗಿದೆ"},
+    "guarantee_not_met": {"en": "not met yet", "kn": "ಇನ್ನೂ ಪೂರೈಸಿಲ್ಲ"},
+    "guarantee_none": {"en": "not part of this plan", "kn": "ಈ ಯೋಜನೆಯ ಭಾಗವಲ್ಲ"},
+    # ------------------------------------------------------------ the in-app notification
+    "title": {"en": "Your NearShop statement for {month}", "kn": "{month} ರ ನಿಮ್ಮ NearShop ಹೇಳಿಕೆ"},
+    "free_body": {"en": "{counts}\n\n{amount_due}\n{price}", "kn": "{counts}\n\n{amount_due}\n{price}"},
+    "roi_body": {"en": "{counts}\n\nYour plan: {plan}\nOutcome guarantee: {guarantee}",
+                 "kn": "{counts}\n\nನಿಮ್ಮ ಯೋಜನೆ: {plan}\nಫಲಿತಾಂಶ ಖಾತರಿ: {guarantee}"},
+    # ------------------------------------------------------------ the free-form message inside the service window
+    "free_text": {
+        "en": "NearShop: your statement for {month_shop}.\n\n{counts}\n\n{amount_due}\n{price}\n\nIs this statement "
+              "accurate? Would you pay for Growth? Reply Accurate, Not accurate, I'd pay or Not now.",
+        "kn": "NearShop: {month_shop} ರ ನಿಮ್ಮ ಹೇಳಿಕೆ.\n\n{counts}\n\n{amount_due}\n{price}\n\nಈ ಹೇಳಿಕೆ ನಿಖರವಾಗಿದೆಯೇ? "
+              "Growth ಗೆ ಪಾವತಿಸುತ್ತೀರಾ? ನಿಖರ, ನಿಖರವಾಗಿಲ್ಲ, ಪಾವತಿಸುತ್ತೇನೆ ಅಥವಾ ಈಗ ಬೇಡ ಎಂದು ಉತ್ತರಿಸಿ.",
+    },
+    "roi_text": {
+        "en": "NearShop: your statement for {month_shop}.\n\n{counts}\n\nYour plan: {plan}\nOutcome guarantee: "
+              "{guarantee}\n\nIs this statement accurate? Reply Accurate or Not accurate.",
+        "kn": "NearShop: {month_shop} ರ ನಿಮ್ಮ ಹೇಳಿಕೆ.\n\n{counts}\n\nನಿಮ್ಮ ಯೋಜನೆ: {plan}\nಫಲಿತಾಂಶ ಖಾತರಿ: "
+              "{guarantee}\n\nಈ ಹೇಳಿಕೆ ನಿಖರವಾಗಿದೆಯೇ? ನಿಖರ ಅಥವಾ ನಿಖರವಾಗಿಲ್ಲ ಎಂದು ಉತ್ತರಿಸಿ.",
+    },
+    # ------------------------------------------------------------ the bot's answers to the quick replies
+    "reply_accurate": {"en": "Thank you. We have recorded that your statement is accurate.",
+                       "kn": "ಧನ್ಯವಾದಗಳು. ನಿಮ್ಮ ಹೇಳಿಕೆ ನಿಖರವಾಗಿದೆ ಎಂದು ದಾಖಲಿಸಿದ್ದೇವೆ."},
+    "reply_not_accurate": {
+        "en": "Thank you for telling us. What is not right? Please send a short reason in your next message.",
+        "kn": "ತಿಳಿಸಿದ್ದಕ್ಕೆ ಧನ್ಯವಾದಗಳು. ಯಾವುದು ಸರಿಯಿಲ್ಲ? ದಯವಿಟ್ಟು ನಿಮ್ಮ ಮುಂದಿನ ಸಂದೇಶದಲ್ಲಿ ಚಿಕ್ಕ ಕಾರಣ ಕಳುಹಿಸಿ.",
+    },
+    "reply_reason": {"en": "Thank you. We have recorded your reason and will look into it.",
+                     "kn": "ಧನ್ಯವಾದಗಳು. ನಿಮ್ಮ ಕಾರಣವನ್ನು ದಾಖಲಿಸಿದ್ದೇವೆ ಮತ್ತು ಅದನ್ನು ಪರಿಶೀಲಿಸುತ್ತೇವೆ."},
+    "reply_would_pay": {
+        "en": "Thank you. To pay for Growth ({plan_price}), pay ₹{amount} by UPI to {upi_id} ({payee}) with the note "
+              "{number}. You can also pay from {link}.",
+        "kn": "ಧನ್ಯವಾದಗಳು. Growth ಗೆ ({plan_price}) ಪಾವತಿಸಲು, {number} ಎಂಬ ಟಿಪ್ಪಣಿಯೊಂದಿಗೆ UPI ಮೂಲಕ {upi_id} ({payee}) ಗೆ "
+              "₹{amount} ಪಾವತಿಸಿ. {link} ನಿಂದಲೂ ಪಾವತಿಸಬಹುದು.",
+    },
+    "reply_would_pay_link": {"en": "Thank you. To pay for Growth, open {link}.",
+                             "kn": "ಧನ್ಯವಾದಗಳು. Growth ಗೆ ಪಾವತಿಸಲು {link} ತೆರೆಯಿರಿ."},
+    "reply_not_now": {"en": "Thank you. You stay on the Free plan, and every stock tool stays free.",
+                      "kn": "ಧನ್ಯವಾದಗಳು. ನೀವು ಉಚಿತ ಯೋಜನೆಯಲ್ಲೇ ಇರುತ್ತೀರಿ, ಮತ್ತು ಎಲ್ಲಾ ಸ್ಟಾಕ್ ಸಾಧನಗಳು ಉಚಿತವಾಗಿಯೇ ಇರುತ್ತವೆ."},
+    "reply_duplicate": {"en": "We have already recorded this answer for your statement.",
+                        "kn": "ನಿಮ್ಮ ಹೇಳಿಕೆಗೆ ಈ ಉತ್ತರವನ್ನು ಈಗಾಗಲೇ ದಾಖಲಿಸಿದ್ದೇವೆ."},
+    "reply_not_found": {"en": "We could not find that statement for your shop.",
+                        "kn": "ನಿಮ್ಮ ಅಂಗಡಿಗೆ ಆ ಹೇಳಿಕೆ ಸಿಗಲಿಲ್ಲ."},
+    # ------------------------------------------------------------ month names
+    **{f"month_{n:02d}": {"en": en, "kn": kn} for n, (en, kn) in enumerate((
+        ("January", "ಜನವರಿ"), ("February", "ಫೆಬ್ರವರಿ"), ("March", "ಮಾರ್ಚ್"), ("April", "ಏಪ್ರಿಲ್"), ("May", "ಮೇ"),
+        ("June", "ಜೂನ್"), ("July", "ಜುಲೈ"), ("August", "ಆಗಸ್ಟ್"), ("September", "ಸೆಪ್ಟೆಂಬರ್"),
+        ("October", "ಅಕ್ಟೋಬರ್"), ("November", "ನವೆಂಬರ್"), ("December", "ಡಿಸೆಂಬರ್")), start=1)},
+}
+
+
 def language_of(value: Any) -> str:
     """A supported language code for a stored or requested value: anything else (None, a language not offered yet)
     reads as the default, English."""
@@ -291,7 +386,22 @@ def render(key: str, language: str, params: Mapping[str, Any] | None = None) -> 
 
 def text(key: str, language: str, params: Mapping[str, Any] | None = None) -> str:
     """One text from TEXTS in the language, with its parameters, falling back to English like render."""
-    entry = TEXTS[key]
+    return _text(TEXTS, key, language, params)
+
+
+def statement_text(key: str, language: str, params: Mapping[str, Any] | None = None) -> str:
+    """One text from STATEMENTS (P9.9) in the language, with its parameters, falling back to English like render."""
+    return _text(STATEMENTS, key, language, params)
+
+
+def month_name(year: int, month: int, language: str) -> str:
+    """May 2027, in the language."""
+    return f"{statement_text(f'month_{month:02d}', language)} {year}"
+
+
+def _text(catalogue: Mapping[str, Mapping[str, str]], key: str, language: str,
+          params: Mapping[str, Any] | None) -> str:
+    entry = catalogue[key]
     language = language_of(language)
     if language != DEFAULT_LANGUAGE and language in entry:
         try:

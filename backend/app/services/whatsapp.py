@@ -65,8 +65,10 @@ whatsapp_update) when the owner replies Yes; an ambiguous line offers up to 3 ca
 support reply. Replies are free-form texts, sent only inside the sender's 24-hour service window. send_stock_checks,
 run by the stock_check job, sends each shop's stock check from its opening time (P9.3 cadence below).
 docs/whatsapp-templates.md
-describes the conversation. The replies and the stock check are in the owner's language (P7.11: the catalogue in
-app/services/notification_text.py); a number that is not a shop's gets the English support reply.
+describes the conversation. A statement's quick reply (payload statement:<id>:<reply>), or its reply typed inside the
+window, and the reason asked for after Not accurate, go to app/services/statements.py first (P9.9). The replies and
+the stock check are in the owner's language (P7.11: the catalogue in app/services/notification_text.py); a number
+that is not a shop's gets the English support reply.
 
 The stock-check cadence and its cost (P9.3; plan section 8.17)
 ---------------------------------------------------------------
@@ -81,6 +83,13 @@ from the shop's call-back-verified number opens that number's window, not the ow
 route and the category it was sent under; Meta's status callbacks add the category, billable flag and pricing type
 Meta reports (meta_category, billable, pricing_type) and the cost those imply (cost_estimate), so the plan's section
 11 cost can be checked against what was actually charged.
+
+The monthly statement (P9.9)
+----------------------------
+app/services/statements.py sends each active shop's monthly statement through notify, as statement_free (the shadow
+bill) or statement_roi. Their outbox rows carry the template's own variables (STATEMENT_VARIABLES) instead of the
+notification's title and text, and buttons whose payloads name the statement; inside the owner's open window the row
+goes as a free-form text instead (in_window_text), which asks for the reply in words.
 
 Message text is never logged: it can hold a customer's name or a delivery code. Phone numbers are logged masked.
 """
@@ -163,6 +172,11 @@ TEMPLATES: dict[str, Template] = {
     "reservation_new": Template("nearshop_shop_new_reservation", Role.OWNER, ("confirm", "decline")),
     "order_new": Template("nearshop_shop_new_order", Role.OWNER),
     "stock_check": Template("nearshop_shop_stock_check", Role.OWNER),  # the daily stock check (P4.4)
+    # The monthly statement (P9.9, app/services/statements.py): a shadow bill to a shop on Free (and to every shop
+    # before billing starts), an ROI statement to a paying shop. Their buttons' payloads are statement:<id>:<reply>.
+    "statement_free": Template("nearshop_shop_statement_free", Role.OWNER,
+                               ("accurate", "not_accurate", "would_pay", "not_now")),
+    "statement_roi": Template("nearshop_shop_statement_roi", Role.OWNER, ("accurate", "not_accurate")),
     "reservation_confirmed": Template("nearshop_reservation_confirmed", Role.CUSTOMER),
     "reservation_ready": Template("nearshop_reservation_ready", Role.CUSTOMER),
     "reservation_expired": Template("nearshop_reservation_closed", Role.CUSTOMER),
@@ -171,6 +185,15 @@ TEMPLATES: dict[str, Template] = {
         OrderStatus.SHOP_CONFIRMED, OrderStatus.PREPARING, OrderStatus.OUT_FOR_DELIVERY, OrderStatus.DELIVERED,
         OrderStatus.DELIVERY_FAILED, OrderStatus.CANCELLED)},
 }
+
+# The statement templates' body variables, in order (docs/whatsapp-templates.md): an outbox row of these kinds holds
+# them as its params instead of the notification's title and text, and inside the window they fill the free-form text
+# (STATEMENTS free_text and roi_text in app/services/notification_text.py).
+STATEMENT_VARIABLES: dict[str, tuple[str, ...]] = {
+    "statement_free": ("month_shop", "counts", "price"),
+    "statement_roi": ("month_shop", "counts", "plan", "guarantee"),
+}
+STATEMENT_TEXT_KEYS = {"statement_free": "free_text", "statement_roi": "roi_text"}
 
 # The Meta language code of the notification templates for each language a user can choose (P7.11). English keeps the
 # code in NEARSHOP_WHATSAPP_TEMPLATE_LANGUAGE. Precondition before Kannada is offered to users: every template in
@@ -799,16 +822,26 @@ def _respond(db: Database, message: dict[str, Any], at: datetime, now: datetime)
         upsert=True, return_document=ReturnDocument.AFTER)
     last_inbound = session.get("last_inbound_at") or at
     kind = message.get("type")
-    if kind == "button":
-        button = message.get("button") if isinstance(message.get("button"), dict) else {}
-        outcome, reply = answer_button(db, owner, shop, str(button.get("payload") or ""))
-    elif kind == "interactive":
-        interactive = message.get("interactive") if isinstance(message.get("interactive"), dict) else {}
-        chosen = interactive.get("button_reply") or interactive.get("list_reply") or {}
-        outcome, reply = answer_button(db, owner, shop, str(chosen.get("id") or "") if isinstance(chosen, dict) else "")
+    from app.services import statements  # statements -> notifications -> this module
+
+    if kind in ("button", "interactive"):
+        if kind == "button":
+            button = message.get("button") if isinstance(message.get("button"), dict) else {}
+            payload = str(button.get("payload") or "")
+        else:
+            interactive = message.get("interactive") if isinstance(message.get("interactive"), dict) else {}
+            chosen = interactive.get("button_reply") or interactive.get("list_reply") or {}
+            payload = str(chosen.get("id") or "") if isinstance(chosen, dict) else ""
+        if payload.startswith(statements.PAYLOAD_PREFIX):  # a statement's quick reply (P9.9)
+            outcome, reply = statements.answer_button(db, owner, shop, payload, now)
+        else:
+            outcome, reply = answer_button(db, owner, shop, payload)
     elif kind == "text":
         text = message.get("text") if isinstance(message.get("text"), dict) else {}
-        outcome, reply = answer_text(db, owner, shop, str(text.get("body") or ""), now)
+        body = str(text.get("body") or "")
+        # A statement reply typed inside the window, or the reason asked for after Not accurate (P9.9); else stock.
+        answered = statements.answer_text(db, owner, shop, body, now)
+        outcome, reply = answered if answered is not None else answer_text(db, owner, shop, body, now)
     else:
         outcome, reply = "unsupported", help_text(language)
     return outcome, reply, last_inbound
@@ -1136,9 +1169,15 @@ def window_open(db: Database, owner_id: int, now: datetime, margin: timedelta = 
 
 def in_window_text(row: dict[str, Any]) -> str:
     """The free-form text of an outbox row sent inside the window (P9.3): its title and text, as the template shows
-    them, then how to reply, in the recipient's language."""
-    title, body = ([*(row.get("params") or []), "-", "-"])[:2]
+    them, then how to reply, in the recipient's language. A statement (P9.9) is its template's words with its
+    variables, ending with the words to reply with (its buttons cannot be sent with a free-form text)."""
     language = words.language_of(row.get("language"))
+    if (names := STATEMENT_VARIABLES.get(row.get("kind") or "")) is not None:
+        values = [*(row.get("params") or []), *["-"] * len(names)][:len(names)]
+        params = dict(zip(names, values, strict=True))
+        params["amount_due"] = words.statement_text("amount_due", language)
+        return words.statement_text(STATEMENT_TEXT_KEYS[row["kind"]], language, params)[:TEXT_MAX]
+    title, body = ([*(row.get("params") or []), "-", "-"])[:2]
     return f"NearShop: {title}.\n{body}\n\n{help_text(language)}"[:TEXT_MAX]
 
 

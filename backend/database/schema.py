@@ -53,7 +53,7 @@ from app.models.enums import (
     SaleSource,
 )
 from app.schemas.requests import CONSENT_PURPOSES, OTP_PURPOSES
-from app.services import billing, boost, gateway
+from app.services import billing, boost, gateway, statements
 from app.services.demand_report import DEMAND_AUDIT_LABELS, DEMAND_BANDS
 from app.services.leads import COUNT_FIELDS, LEAD_KINDS
 
@@ -517,12 +517,13 @@ VALIDATORS: dict[str, dict] = {
     # from notify (created_at) to the Cloud API's accept (seconds_to_sent) and to delivered (seconds_to_delivered).
     # message_id is the Cloud API's id, which the status webhook names. delivered_inferred: delivered_at was taken
     # from a read callback because no delivered one came. Kept 30 days (TTL on created_at); deleted with the account.
+    # buttons: up to 4 quick replies (the shadow bill's, P9.9).
     "notification_outbox": schema(
         ["notification_id", "user_id", "channel", "kind", "template", "language", "status", "attempts", "created_at",
          "next_attempt_at"],
         notification_id=INT, user_id=INT, channel={"enum": ["whatsapp"]}, kind=STR, template=STR, language=STR,
         params={"bsonType": ["array", "null"], "maxItems": 10, "items": {"bsonType": STR, "maxLength": 1024}},
-        subject=STR_N, buttons={"bsonType": "array", "maxItems": 3, "items": {"bsonType": STR, "maxLength": 128}},
+        subject=STR_N, buttons={"bsonType": "array", "maxItems": 4, "items": {"bsonType": STR, "maxLength": 128}},
         status={"enum": ["queued", "sending", "sent", "delivered", "read", "failed", "cancelled"]},
         attempts={"bsonType": INT, "minimum": 0}, error={"bsonType": STR_N, "maxLength": 80},
         message_id=STR_N, created_at=DATE, next_attempt_at=DATE, claimed_at=DATE_N, sent_at=DATE_N,
@@ -574,6 +575,10 @@ VALIDATORS: dict[str, dict] = {
                                         "before": {"bsonType": INT, "minimum": 0}}}},
                      "queue": {"bsonType": "array", "maxItems": 20},
                      "skipped": {"bsonType": "array", "maxItems": 40, "items": {"bsonType": STR}}}},
+        # P9.9: the statement reply whose reason the owner's next message gives (after Not accurate), until expires_at.
+        statement_reason={"bsonType": ["object", "null"], "required": ["statement_id", "reply_id", "expires_at"],
+                          "properties": {"statement_id": {"bsonType": INT}, "reply_id": {"bsonType": INT},
+                                         "expires_at": {"bsonType": DATE}}},
     ),
     # The daily stock check (P4.4, cadence P9.3; app/services/whatsapp.py send_stock_checks): one row per shop and
     # IST day it was considered, _id "<shop id>:<YYYY-MM-DD>", so each shop gets at most one a day. decision is
@@ -807,6 +812,35 @@ VALIDATORS: dict[str, dict] = {
             "_id": {"bsonType": INT}, "week": ISO_WEEK, "shop_id": {"bsonType": INT},
             "query": {"bsonType": STR, "minLength": 2, "maxLength": 60},
             "product_ids": {"bsonType": "array", "maxItems": 20, "items": {"bsonType": INT}}}}},
+    # Monthly statements (P9.9, app/services/statements.py; plan section 8.18): one row per shop and IST month, the
+    # counts it stated and its shadow-bill price or ROI plan lines; counts only, never a rupee value of the shop's sales.
+    # delivery mirrors its WhatsApp outbox row (resends: rows sent again by template after the sender cancelled one
+    # unsent; delivery_final: the row is gone, so the status no longer changes). Business records, kept 8 years like
+    # lead_counts (keep_until).
+    "statements": schema(
+        ["shop_id", "owner_id", "month", "kind", "counts", "language", "delivery", "built_at", "keep_until"],
+        shop_id=INT, owner_id=INT, month={"bsonType": STR, "pattern": "^\\d{4}-(0[1-9]|1[0-2])$"},
+        kind={"enum": list(statements.KINDS)},
+        counts={"bsonType": "object", "required": list(COUNT_FIELDS),
+                "properties": {f: {"bsonType": INT, "minimum": 0} for f in COUNT_FIELDS}},
+        asked_for={"bsonType": "array", "maxItems": statements.TOP_ASKED,
+                   "items": {"bsonType": STR, "maxLength": 60}},
+        plan_code=enum(PlanCode), price={"bsonType": ["object", "null"]}, pay_link=STR_N,
+        plan={"bsonType": ["object", "null"]}, guarantee={"bsonType": ["object", "null"]},
+        language={"enum": list(LANGUAGES)}, notification_id=INT_N, outbox_id=INT_N,
+        route={"enum": ["template", "in_window", None]}, delivery={"enum": list(statements.DELIVERY)},
+        delivery_error=STR_N, sent_at=DATE_N, delivered_at=DATE_N, failed_at=DATE_N, built_at=DATE, keep_until=DATE,
+        resends={"bsonType": INT, "minimum": 0}, delivery_final={"bsonType": [BOOL, "null"]},
+    ),
+    # The shops' replies to their statements (P9.9): each reply kind at most once per statement; a Not accurate reply
+    # carries the reason the owner's next message gave, and an I'd pay reply the payment request it made.
+    "statement_replies": schema(
+        ["statement_id", "shop_id", "month", "kind", "at", "keep_until"],
+        statement_id=INT, shop_id=INT, month={"bsonType": STR, "pattern": "^\\d{4}-(0[1-9]|1[0-2])$"},
+        kind={"enum": list(statements.REPLY_KINDS)}, at=DATE,
+        reason={"bsonType": STR_N, "maxLength": statements.REASON_MAX}, reason_at=DATE_N, payment_request_id=INT_N,
+        keep_until=DATE,
+    ),
     "counters": {},
     "text_embeddings": {},
 }
@@ -1106,6 +1140,18 @@ INDEXES: dict[str, list[IndexModel]] = {
     ],
     "demand_search_failures": [
         IndexModel([("week", A), ("shop_id", A), ("query", A)], unique=True, name="uq_week_shop_query"),
+    ],
+    # Monthly statements (P9.9, app/services/statements.py).
+    "statements": [
+        IndexModel([("shop_id", A), ("month", A)], unique=True, name="uq_shop_month"),  # once per shop per month
+        IndexModel([("month", A), ("kind", A)], name="month_kind"),  # the admin summary
+        IndexModel([("delivery", A)], name="delivery"),  # the statuses still to sync from the outbox
+        IndexModel([("keep_until", A)], expireAfterSeconds=0, name="keep_until_ttl"),
+    ],
+    "statement_replies": [
+        IndexModel([("statement_id", A), ("kind", A)], unique=True, name="uq_statement_kind"),  # each reply once
+        IndexModel([("month", A), ("kind", A)], name="month_kind"),  # the admin summary
+        IndexModel([("keep_until", A)], expireAfterSeconds=0, name="keep_until_ttl"),
     ],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),
