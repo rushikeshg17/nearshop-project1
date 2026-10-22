@@ -43,6 +43,13 @@
       "themeDark": "",
       "themeSystem": "",
       "signOut": ""
+    },
+    "dashboard": {
+      "navLabel": "",
+      "openMenu": "",
+      "menu": "",
+      "customerView": "",
+      "viewPublicPage": ""
     }
   },
   "common": {
@@ -126,6 +133,9 @@
         "admin": ""
       },
       "note": ""
+    },
+    "confirm": {
+      "keep": ""
     }
   },
   "discovery": {
@@ -994,7 +1004,8 @@
         "cancel": ""
       },
       "code": {
-        "wrong": "",
+        "wrongPickup": "",
+        "wrongDelivery": "",
         "deliveryDescription": "",
         "pickupDescription": "",
         "notYet": "",

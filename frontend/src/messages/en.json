@@ -43,6 +43,13 @@
       "themeDark": "Dark",
       "themeSystem": "System",
       "signOut": "Sign out"
+    },
+    "dashboard": {
+      "navLabel": "Dashboard",
+      "openMenu": "Open menu",
+      "menu": "Menu",
+      "customerView": "Customer view",
+      "viewPublicPage": "View public page"
     }
   },
   "common": {
@@ -126,6 +133,9 @@
         "admin": "Admin"
       },
       "note": "“{note}”"
+    },
+    "confirm": {
+      "keep": "Keep it"
     }
   },
   "discovery": {
@@ -994,7 +1004,8 @@
         "cancel": "Cancelled. Stock returned to the shelf."
       },
       "code": {
-        "wrong": "{message}. Check the code with the customer and try again.",
+        "wrongPickup": "That is not this reservation's code. Check the code with the customer and try again.",
+        "wrongDelivery": "That is not this order's delivery code. Check the code with the customer and try again.",
         "deliveryDescription": "Ask the customer for the 4-digit delivery code on their order screen. Hand over the order only after it is accepted.",
         "pickupDescription": "Ask the customer to show the pickup code on their reservation screen, and type it here.",
         "notYet": "Not yet",

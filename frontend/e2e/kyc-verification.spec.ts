@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import zlib from "node:zlib";
 
 import { type APIRequestContext, type Browser, expect, type Page, test as base } from "@playwright/test";
@@ -39,6 +41,29 @@ const CLIENT_HEADER = { "X-NearShop-Client": "web" };
 const VALID_GSTIN = "27AAPFU0939F1ZV";
 const BAD_GSTIN = "27AAPFU0939F1ZX"; // the same with a wrong check character
 const DAY = 86_400_000;
+
+/** The interface text for a message key in the project's language, as the site shows it: a key that is absent or
+ * empty in that language's file falls back to the English text (src/lib/i18n.ts), and {name} placeholders are
+ * filled in. So the assertions hold in every language on the CI list, before and after its text arrives. */
+function message(language: string, key: string, values: Record<string, string> = {}) {
+  const lookup = (code: string) => {
+    let node: unknown = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "src", "messages", `${code}.json`), "utf8"));
+    for (const part of key.split(".")) node = (node as Record<string, unknown> | undefined)?.[part];
+    return typeof node === "string" && node ? node : null;
+  };
+  const text = lookup(language) ?? lookup("en");
+  if (text === null) throw new Error(`No message ${key}`);
+  return text.replace(/\{(\w+)\}/g, (whole, name: string) => values[name] ?? whole);
+}
+
+/** A date as the owner shell's formatDay writes it, in the project's language. It is formatted in the page, so the
+ * browser's own locale data writes it exactly as the site does (Node's can differ for Kannada). */
+function formatDay(page: Page, ms: number, language: string) {
+  return page.evaluate(
+    ([at, locale]) => new Date(at).toLocaleDateString(locale, { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" }),
+    [ms, `${language}-IN`] as const,
+  );
+}
 
 type Verification = {
   status: string;
@@ -245,23 +270,26 @@ async function withVerificationDates(page: Page, verifiedUntil: number) {
   });
 }
 
-test("a shop within 30 days of verified_until shows the renewal banner", async ({ page }) => {
+test("a shop within 30 days of verified_until shows the renewal banner", async ({ page, language }) => {
   await signInOwner(page.request);
   const until = Date.now() + 20 * DAY;
   await withVerificationDates(page, until);
   await page.goto("/shop");
   const banner = page.getByTestId("verification-banner");
   await expect(banner).toHaveAttribute("data-status", "renew");
-  const date = new Date(until).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
-  await expect(banner).toContainText(`Renew your verification by ${date}`);
-  await expect(banner.getByRole("link", { name: "Renew" })).toHaveAttribute("href", "/shop/settings#verify");
+  await expect(banner).toContainText(message(language, "owner.verification.renew.title", { date: await formatDay(page, until, language) }));
+  await expect(banner.getByRole("link", { name: message(language, "owner.verification.renew.action") })).toHaveAttribute(
+    "href",
+    "/shop/settings#verify",
+  );
 });
 
-test("a shop past verified_until is told it is hidden until renewed", async ({ page }) => {
+test("a shop past verified_until is told it is hidden until renewed", async ({ page, language }) => {
   await signInOwner(page.request);
-  await withVerificationDates(page, Date.now() - 2 * DAY);
+  const until = Date.now() - 2 * DAY;
+  await withVerificationDates(page, until);
   await page.goto("/shop");
   const banner = page.getByTestId("verification-banner");
   await expect(banner).toHaveAttribute("data-status", "expired");
-  await expect(banner).toContainText("hidden from customers until it is renewed");
+  await expect(banner).toContainText(message(language, "owner.verification.expired.body", { date: await formatDay(page, until, language) }));
 });

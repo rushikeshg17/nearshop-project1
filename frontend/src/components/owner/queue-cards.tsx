@@ -89,8 +89,9 @@ function CodeDialog({
       await onSubmit(delivery ? code : normalizeReservationCode(code));
       close(false);
     } catch (e) {
+      // A wrong code is said in the interface language, not with the API's English text.
       const wrong = e instanceof ApiError && e.code === "wrong_code";
-      setError(wrong ? t("owner.queue.code.wrong", { message: errorMessage(e) }) : errorMessage(e));
+      setError(wrong ? t(delivery ? "owner.queue.code.wrongDelivery" : "owner.queue.code.wrongPickup") : errorMessage(e));
     }
   };
   return (
