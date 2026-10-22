@@ -20,6 +20,7 @@ from app.models.billing import Actor
 from app.models.core import VerificationStatus, months_after
 from app.services import billing, boost, plans
 from app.services import search as search_module
+from app.services import search_events as se
 from app.services.loaders import reset_category_cache
 from app.services.search import SearchParams, run_search
 from database.migrations import m0011_plan_catalogue
@@ -129,7 +130,8 @@ def params(**kw) -> SearchParams:
 
 
 def search(db: Database, now: datetime, **kw) -> dict:
-    return run_search(db, params(**kw), log=False, now=now)
+    """The customer-facing search's response, without its logging (sponsored=True: the card is chosen)."""
+    return run_search(db, params(**kw), log=False, now=now, sponsored=True)
 
 
 def plant_pack(db: Database, shop: Shop, groups: list[tuple[str, int]], *, status: str = "active",
@@ -294,9 +296,45 @@ def test_a_search_that_logs_counts_an_impression(world):
     pack = plant_pack(db, shop, [("item", world.cable.id)])
     run_search(db, params(), log=True, now=now)
     assert wait_for(lambda: stats(db, pack)["impressions"] == 1)
-    search(db, now)  # the evaluation harness and other unlogged searches count nothing
+    search(db, now)  # a search with log off counts nothing, even when it shows the card
+    run_search(db, params(), log=False, now=now)  # the evaluation harness: no card, no count
     time.sleep(0.2)
     assert stats(db, pack)["impressions"] == 1
+
+
+def test_unlogged_searches_choose_no_card_and_leave_the_rotation_alone(world, market, monkeypatch):
+    """The P5.6 shadow ranking re-runs every sampled search twice with log off: those runs must not move the
+    rotation, or with search_shadow_share 1 every customer would see the same pack."""
+    db, now = Database(), utcnow()
+    shops, _ = market
+    packs_planted = {plant_pack(db, s, [("item", world.cable.id)]) for s in shops[:3]}
+    monkeypatch.setattr(settings, "search_shadow_ranking_version", settings.ranking.version)
+    monkeypatch.setattr(settings, "search_shadow_share", 1.0)
+    monkeypatch.setattr(se, "sample", lambda: 0.0)
+    shown: dict[int, int] = {}
+    for _ in range(30):
+        p = params()
+        sp = se.plan(p, None)
+        assert sp is not None and sp.shadow is not None
+        result = run_search(db, p, log=True, cache=sp.cache, now=sp.now)
+        shadow = se.shadow_rank(db, p, sp, result["engine"])
+        assert shadow["top"] == shadow["production_top"]
+        pack = boost.read_token(result["sponsored"]["token"])[0]
+        shown[pack] = shown.get(pack, 0) + 1
+    assert set(shown) == packs_planted and sorted(shown.values()) == [10, 10, 10]
+    assert "sponsored" not in run_search(db, params(), log=False, now=now)
+    assert wait_for(lambda: sum(stats(db, p)["impressions"] for p in packs_planted) == 30)
+
+
+def test_a_new_rotation_starts_at_a_random_pack(monkeypatch):
+    starts = set()
+    for _ in range(60):
+        boost.reset_rotation()
+        starts.add(boost._next_turn((11, 12, 13)) % 3)
+    assert starts == {0, 1, 2}
+    boost.reset_rotation()
+    first = boost._next_turn((11, 12, 13))
+    assert [boost._next_turn((11, 12, 13)) for _ in range(3)] == [first + 1, first + 2, first + 3]
 
 
 # ---------------------------------------------------------------- eligibility, pausing and the days added back

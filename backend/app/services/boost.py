@@ -70,6 +70,7 @@ import hashlib
 import hmac
 import itertools
 import logging
+import secrets
 import statistics
 import threading
 from collections import defaultdict
@@ -510,6 +511,9 @@ def description(pack: BoostPack) -> str:
 # ---------------------------------------------------------------- the slot
 
 
+# The rotation is per process and per set of eligible packs. A new counter starts at a random turn, so a restart,
+# a cold start or another worker does not hand the first impressions to the oldest pack (the lowest _id); within a
+# counter the turns go round the packs in order, so each pack gets an equal share.
 _turns: dict[tuple[int, ...], itertools.count] = {}
 _turns_lock = threading.Lock()
 
@@ -519,7 +523,7 @@ def _next_turn(key: tuple[int, ...]) -> int:
         if key not in _turns:
             if len(_turns) > 10_000:
                 _turns.clear()
-            _turns[key] = itertools.count()
+            _turns[key] = itertools.count(secrets.randbelow(max(len(key), 1)))
         return next(_turns[key])
 
 

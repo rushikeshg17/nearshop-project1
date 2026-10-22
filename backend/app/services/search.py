@@ -12,7 +12,8 @@ Results are grouped by catalog item so a customer sees "Samsung 25W charger: 4 s
 from Rs 1,249" and can compare shops, instead of four near-identical cards.
 
 Boost (P10.12, app/services/boost.py): after ranking and paging, the first page of a search with a query or a category
-may carry one sponsored card under the response's sponsored key, with the position it is shown at. It is never part
+may carry one sponsored card under the response's sponsored key, with the position it is shown at; only a search a
+customer is shown (log on, or sponsored=True) chooses one, so unlogged searches never move the rotation. It is never part
 of groups, so the organic results, their order, scores and ratings are the same with or without Boost; with no pack
 serving, the response is exactly as before.
 
@@ -40,6 +41,12 @@ whole groups from the top 20 or shrinks their shop counts and price ranges, whic
 20 equal the uncapped version) forbids. Every listing in radius is grouped from its RANK_FIELDS row instead, so the
 grouping cost still grows with the listings in radius; the bound above is on the full reads. docs/perf/baseline.md
 records this for sign-off.
+
+Boost (P10.12) adds, on the first page of a customer-facing search (log on) with a query or a category, one indexed
+boost_packs read (status, shop) among the shops of the candidate rows; when a pack serves, its listing is read in full
+with DISPLAY_FIELDS (one more read) and its impression is counted off the request path. That is at most 2 database
+operations more per search; unlogged searches (the evaluation harness, the shadow ranking) do neither, so make eval's
+operations per search are unchanged by Boost.
 """
 from __future__ import annotations
 
@@ -367,7 +374,7 @@ def _shown(db: Database, fetched: Fetched, rows: list[dict]) -> dict[int, Produc
 
 def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: bool = True,
                ranking: RankingConfig | None = None, cache: dict | None = None, now: datetime | None = None,
-               engines: EnginePair | None = None) -> dict:
+               engines: EnginePair | None = None, sponsored: bool | None = None) -> dict:
     """Search. `ranking` overrides the configured ranking config (the evaluation and tuning harnesses).
     `cache`, a dict kept by the caller across calls, memoises the fetch stage per query and filters, so a
     tuning run can re-rank the same candidates under many configs. The live API passes one only for a search it
@@ -376,7 +383,10 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
     search fetched. `engines` overrides the configured engines (P5.7: the evaluation harness and the shadow engine
     pair); the cache keeps each engine pair's fetch apart, with the time it took (fetch_ms). A radius above
     MAX_RADIUS_KM is searched at MAX_RADIUS_KM, and a page_size above MAX_PAGE_SIZE is served as MAX_PAGE_SIZE
-    (P8.2); the response's radius_km and page_size are the values searched."""
+    (P8.2); the response's radius_km and page_size are the values searched. `sponsored` (Boost, P10.12) says whether
+    the first page may carry a sponsored card; by default only a search with log on, the one a customer is shown,
+    does, so the shadow ranking, the evaluation harness and the other unlogged searches neither move the Boost
+    rotation nor read its pack."""
     cfg = ranking or settings.ranking
     engines = engines or settings.search_engines
     if p.radius_km > MAX_RADIUS_KM:
@@ -510,7 +520,9 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         })
 
     # Boost (P10.12): at most one sponsored card, chosen after ranking and carried apart from the organic groups.
-    sponsored = _sponsored(db, p, norm, fetched, rows, relevance, len(page_groups), now, log, shop_json)
+    with_card = log if sponsored is None else sponsored
+    card = (_sponsored(db, p, norm, fetched, rows, relevance, len(page_groups), now, log, shop_json)
+            if with_card else None)
 
     # Map pins: every shop with at least one matching listing.
     pins: dict[int, dict] = {}
@@ -528,7 +540,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
     # Nothing found but the query looks misspelled: show results for the correction instead of an empty page.
     if total == 0 and did_you_mean:
         corrected = run_search(db, replace(p, q=did_you_mean), user_id=user_id, log=log, ranking=ranking,
-                               cache=cache, now=now, engines=engines)
+                               cache=cache, now=now, engines=engines, sponsored=sponsored)
         if corrected["total"]:
             return {**corrected, "query": p.q, "corrected_from": p.q, "did_you_mean": None}
 
@@ -553,7 +565,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         "shops": sorted(pins.values(), key=lambda s: s["distance_km"]),
         "category_counts": dict(category_counts),
         "engine": {"semantic": semantic_label, "keyword": keyword_label, "ranking": cfg.version},
-        **({"sponsored": sponsored} if sponsored else {}),
+        **({"sponsored": card} if card else {}),
     }
 
 
