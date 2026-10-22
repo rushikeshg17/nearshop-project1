@@ -53,7 +53,7 @@ from app.models.enums import (
     SaleSource,
 )
 from app.schemas.requests import CONSENT_PURPOSES, OTP_PURPOSES
-from app.services import billing
+from app.services import billing, gateway
 from app.services.leads import COUNT_FIELDS, LEAD_KINDS
 
 log = logging.getLogger(__name__)
@@ -512,6 +512,7 @@ VALIDATORS: dict[str, dict] = {
         amount_paise={"bsonType": INT, "minimum": 1}, paid_at=DATE, matched_at=DATE, matched_by=ACTOR,
         match=enum(billing.CreditSource), reason={"bsonType": STR, "minLength": 3, "maxLength": 500},
         subscription_id=INT, document_id=INT_N, status=enum(billing.PaymentStatus),
+        settled_at=DATE_N, settlement_id=STR_N,  # an Autopay debit's settlement by the gateway (P9.6)
         refund={"oneOf": [{"bsonType": "null"}, {"bsonType": "object", "required": [
             "at", "by", "reason", "bank_reference", "document_id"], "properties": {
             "at": {"bsonType": DATE}, "by": ACTOR, "reason": {"bsonType": STR, "minLength": 3},
@@ -537,6 +538,28 @@ VALIDATORS: dict[str, dict] = {
         ["filename", "uploaded_by", "uploaded_at", "credits", "matched", "unmatched", "duplicates"],
         filename=STR, uploaded_by=ACTOR, uploaded_at=DATE, credits=COUNT, matched=COUNT, unmatched=COUNT,
         duplicates=COUNT, debits_skipped=COUNT, unreadable=COUNT,
+    ),
+    # UPI Autopay (P9.6, app/services/gateway.py): one gateway subscription with a UPI Autopay mandate per row. The
+    # gateway holds the mandate; no card or bank detail is stored.
+    "autopay_mandates": schema(
+        ["shop_id", "owner_id", "billing_account_id", "provider", "gateway_subscription_id", "plan_code",
+         "plan_version", "amount_paise", "gst_mode", "total_paise", "status", "debits", "failed_debits", "created_by",
+         "created_at", "updated_at"],
+        shop_id=INT, owner_id=INT, billing_account_id=INT, provider={"enum": ["fake", "razorpay"]},
+        gateway_subscription_id={"bsonType": STR, "minLength": 1, "maxLength": 80}, gateway_plan_id=STR_N,
+        checkout_url={"bsonType": STR_N, "maxLength": 500}, plan_code=enum(PlanCode), plan_version=POSITIVE_INT,
+        amount_paise={"bsonType": INT, "minimum": 1}, gst_mode=GST_MODE, total_paise={"bsonType": INT, "minimum": 1},
+        status=enum(gateway.MandateStatus), subscription_id=INT_N, debits=COUNT, failed_debits=COUNT,
+        created_by=ACTOR, authorised_at=DATE_N, last_debit_at=DATE_N, last_failure_at=DATE_N, halted_at=DATE_N,
+        cancelled_at=DATE_N, cancelled_by={"enum": [None, "owner", "admin", "system", "gateway"]},
+        created_at=DATE, updated_at=DATE,
+    ),
+    # Each gateway webhook event processed, once (P9.6).
+    "gateway_events": schema(
+        ["event_id", "event", "outcome", "received_at"],
+        event_id={"bsonType": STR, "minLength": 1, "maxLength": 120}, event={"bsonType": STR, "maxLength": 80},
+        gateway_subscription_id=STR_N, payment_id=STR_N, outcome={"bsonType": STR, "minLength": 1},
+        received_at=DATE,
     ),
     # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
     "counters": {},
@@ -767,6 +790,7 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("shop_id", A), ("_id", D)], name="shop_id"),  # the owner's payments
         IndexModel([("status", A), ("_id", D)], name="status_id"),  # the admin list
         IndexModel([("upi_reference", A)], unique=True, name="uq_upi_reference"),
+        IndexModel([("match", A), ("settled_at", A), ("paid_at", A)], name="match_settled"),  # Autopay reconciliation
     ],
     "billing_documents": [
         IndexModel([("number", A)], unique=True, name="uq_number"),  # no duplicate number, ever
@@ -774,6 +798,19 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("payment_id", A)], name="payment"),
     ],
     "bank_statements": [IndexModel([("uploaded_at", D)], name="uploaded_at")],
+    # UPI Autopay (P9.6, app/services/gateway.py).
+    "autopay_mandates": [
+        IndexModel([("gateway_subscription_id", A)], unique=True, name="uq_gateway_subscription"),  # webhook events
+        # One live (created or authorised) mandate per shop, even when the owner taps twice.
+        IndexModel([("shop_id", A)], unique=True, name="uq_live_shop",
+                   partialFilterExpression={"status": {"$in": [s.value for s in gateway.LIVE]}}),
+        IndexModel([("shop_id", A), ("_id", D)], name="shop_id"),  # the owner's latest mandate
+        IndexModel([("subscription_id", A), ("status", A)], name="subscription_status"),  # plans.autopay_renews
+    ],
+    "gateway_events": [
+        IndexModel([("event_id", A)], unique=True, name="uq_event_id"),  # each event processed once
+        IndexModel([("received_at", D)], name="received_at"),
+    ],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),
         IndexModel([("target_user_id", A), ("created_at", D)], name="target_created"),

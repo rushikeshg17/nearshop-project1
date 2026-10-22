@@ -1,7 +1,7 @@
 # Billing: payments to NearShop, receipts, invoices and refunds
 
 How shops pay NearShop's own fees, how every credit is matched, which documents are issued, and what to do when
-something does not fit. Code: backend/app/services/billing.py (P9.5). Plan section 8.18; decisions B5 (the GST
+something does not fit. Code: backend/app/services/billing.py (P9.5) and backend/app/services/gateway.py (UPI Autopay, P9.6). Plan section 8.18; decisions B5 (the GST
 position) and B22 (NearShop's merchant UPI QR and the document formats approved by the CA).
 
 This route only ever collects NearShop's own fees into NearShop's own current account. It never collects money for
@@ -21,7 +21,7 @@ a shop: customers pay shops directly (P6.1, plan section 8.8). Agents never coll
      subscriptions job starts it from 1 Aug); credited on or after that day, it is a shop-paid plan from the match,
      and its receipt describes it so, even if the request was made as an advance.
    - Each request has a unique number, NSP and six digits (NSP000123). A new request cancels the shop's open ones.
-   - Monthly Growth is not paid this way: it is UPI Autopay through a gateway (P9.6).
+   - Monthly Growth is not paid this way: it is UPI Autopay through a gateway (P9.6, below).
 2. The owner pays by UPI to NearShop's merchant UPI ID and payee name (NEARSHOP_BILLING_UPI_ID,
    NEARSHOP_BILLING_PAYEE_NAME), with the request number as the payment note. The screen (P9.10) builds the UPI
    link and QR from these with frontend/src/lib/upi.ts.
@@ -30,6 +30,104 @@ a shop: customers pay shops directly (P6.1, plan section 8.8). Agents never coll
 
 Merchant discount rate: UPI merchant payments of ₹2,000 or less carry none; larger ones 0.4%, capped at ₹300
 (business/BUSINESS_MODEL.md section 8.2). Every plan price today is below ₹2,000 except Pro and Business.
+
+## UPI Autopay for Growth monthly (P9.6)
+
+Monthly Growth is paid by UPI Autopay through an RBI-authorised payment gateway (Razorpay subscriptions, whose UPI
+Autopay holds the mandate). NearShop stores no card or bank detail: the gateway holds the mandate. The money reaches
+NearShop's current account through the gateway's settlement, less its fee. It is NearShop's own fee, never money for
+a shop.
+
+### The flow
+
+1. From NEARSHOP_BILLING_STARTS_ON (1 Aug 2027) the owner chooses Growth monthly (Owner > Plan, or
+   POST /api/owner/billing/autopay). The server creates a gateway subscription for the monthly price in the
+   catalogue in force (₹149; GST added once NearShop is registered) and answers with the gateway's checkout link.
+   The owner approves the mandate in their UPI app there. Asking again while it waits for approval returns the same
+   link. A shop on a yearly plan, or with an advance, can start monthly Autopay only when that plan ends; a shop whose
+   earlier monthly plan is still running is renewed from the end of that month.
+2. The gateway sends its events to POST /api/webhooks/autopay (set this URL, on the site's domain, in the gateway's
+   webhook settings, with the events below and the webhook secret). Each call must carry a valid
+   X-Razorpay-Signature (HMAC-SHA256 of the raw body with NEARSHOP_AUTOPAY_WEBHOOK_SECRET); each event id
+   (X-Razorpay-Event-Id) is processed once, so the gateway's retries and replays change nothing.
+
+| Gateway event | What NearShop does |
+|---|---|
+| subscription.authenticated, subscription.activated | The mandate is authorised; the owner is told. |
+| subscription.charged | The debit becomes a payment, the next month of the subscription (the first month on the first debit) and a receipt or tax invoice, in one transaction, through the same code as a bank payment. The receipt says "by UPI Autopay". |
+| subscription.pending | A debit failed and the gateway will retry. The owner is told once. The plan is held, with its extras, for NEARSHOP_AUTOPAY_GRACE_DAYS (3) after its end date while the gateway retries; a debit in that time continues the plan without a break. |
+| subscription.halted | The gateway's last retry failed. The mandate is halted, the plan lapses to Free at once (the shop keeps every stock tool and its place in search), and the owner is told how to restart: set up Autopay again, or pay for a year. |
+| subscription.cancelled, subscription.completed | The owner cancelled the mandate in their UPI app, or its debits ran out (NEARSHOP_AUTOPAY_TOTAL_COUNT, 60). The plan ends at the end of the paid month. |
+
+3. The owner can also cancel in NearShop (Owner > Plan, or POST /api/owner/billing/autopay/cancel): the gateway
+   subscription is cancelled first, then the mandate; the plan runs to the end of the paid month, then lapses to Free.
+4. No "your plan ends" reminders go out under an authorised mandate: the gateway sends the pre-debit notice.
+
+### Fee per debit
+
+Razorpay's pricing page (read 18 Oct 2026, plan section 11): 2% per transaction plus 18% GST on the fee, about ₹3.52
+on a ₹149 debit (₹2.98 fee and ₹0.54 GST), so ₹145.48 reaches the current account. Twelve monthly debits cost about
+₹42 in fees against ₹0 for a yearly UPI payment of ₹1,499 into the account (no merchant discount rate at ₹2,000 or
+less), which is why the business model pushes yearly plans. Record the fee the gateway actually agrees with B22 here:
+
+| Date | Fee per debit agreed with the gateway | Recorded by |
+|---|---|---|
+| | | |
+
+### The pre-debit notice (RBI e-mandate rules)
+
+RBI's e-mandate framework for recurring payments requires the issuer to send the payer a pre-debit notification at
+least 24 hours before each debit, with the option to opt out of that debit; recurring debits up to the RBI limit
+(₹15,000 at the time of writing) need no additional factor of authentication after the first. The gateway and the
+payer's UPI app send this notice; NearShop does not. Confirm the current rules and the gateway's retry schedule with
+the gateway before switching on, and record them here:
+
+| Date | Rule or schedule confirmed | Confirmed with (gateway contact) | Notes |
+|---|---|---|---|
+| | Pre-debit notice timing and content | | |
+| | Retry schedule after a failed debit (sets NEARSHOP_AUTOPAY_GRACE_DAYS) | | |
+| | Limit without additional authentication | | |
+
+### Daily reconciliation and mismatches
+
+The billing_reconciliation job runs once per IST day. It reads the gateway's settlement reports for the last
+NEARSHOP_AUTOPAY_RECONCILE_DAYS (3) days and compares them with the Autopay payment rows. Every mismatch becomes a
+credit in the unmatched queue (Admin > Billing > Credits, source autopay), once, with its reason; the 3-working-day
+alert then applies as for any credit. Target: 0 mismatches.
+
+| Reason in the queue | What to do |
+|---|---|
+| Autopay debit not applied: … (the price or GST position changed since the mandate was set up, or the shop's plan was cancelled or refunded) | The money was taken. Look up the payment in the gateway's dashboard. Refund it through the gateway's dashboard and ask the owner to set up Autopay again at the current price, or grant the month by hand (Admin > Subscriptions) with a reason. Then return the credit (POST /api/admin/billing/credits/{id}/return) with the gateway refund's id as the reference. |
+| Gateway reconciliation: settled by the gateway, but no Autopay payment is recorded | A webhook event was lost or refused. Check the webhook's delivery log in the gateway's dashboard and resend the event: it is then applied once. If it cannot be resent, handle as above. Close the credit by returning it with the gateway payment id and the reason. |
+| Gateway reconciliation: settled ₹X, but payment N recorded ₹Y | Compare the gateway's settlement with the payment. Raise the difference with the gateway; return the credit with their reference when settled. |
+| Gateway reconciliation: payment N is in no gateway settlement report 5 days after it was paid | Look up the payment and its settlement in the gateway's dashboard. A late settlement: return the credit with the settlement id. A payment the gateway reversed: refund the NearShop payment (POST /api/admin/billing/payments/{id}/refund) and return the credit. |
+
+When the monthly price or the GST position changes, existing mandates keep debiting the old amount and those debits
+go to the queue: before publishing a new monthly price, or before GST registration takes effect, plan how the
+mandates are moved (the gateway can update a subscription's plan; owners may need to approve again).
+
+### Refunds of Autopay payments
+
+An Autopay payment is refunded through the gateway's dashboard (the money goes back to the payer's UPI account),
+then recorded in NearShop as for any payment (POST /api/admin/billing/payments/{id}/refund, with the gateway
+refund's id as the reference), which issues the refund receipt or credit note. Cancel the mandate first when the
+shop is leaving the plan.
+
+### Switching Autopay on
+
+1. Staging: set NEARSHOP_AUTOPAY_PROVIDER=razorpay, the gateway's test-mode key id and secret
+   (NEARSHOP_AUTOPAY_KEY_ID rzp_test_…, NEARSHOP_AUTOPAY_KEY_SECRET), the webhook secret
+   (NEARSHOP_AUTOPAY_WEBHOOK_SECRET) and NEARSHOP_AUTOPAY_ENABLED=true. A live key id outside production stops the
+   API at startup. Run the acceptance check: 10 mandates with 3 debits each, including 2 failed debits and 1
+   cancellation, reconcile with 0 mismatches. Record the run below.
+2. Production (1 Aug 2027, only if B25 says go): the same settings with the live keys, set only in the Render
+   environment of the production API, never in the repository or on staging. Check that the first live debit
+   produces its document, and record it below.
+
+| Date | Environment | Check | Result | By |
+|---|---|---|---|---|
+| | staging (test mode) | 10 mandates × 3 debits, 2 failed, 1 cancelled: 0 mismatches | | |
+| | production | First live debit produced its document (number) | | |
 
 ## Statement layout
 
@@ -168,5 +266,9 @@ refuses the whole import.
 | NEARSHOP_BILLING_GST_MODE, NEARSHOP_BILLING_GST_REGISTERED_FROM, NEARSHOP_BILLING_GSTIN, NEARSHOP_BILLING_GST_RATE_PCT, NEARSHOP_BILLING_SAC | registered, the date the CA sets, the GSTIN, 18, the SAC | Only if B5 says NearShop must register |
 | NEARSHOP_BILLING_NUMBER_PREFIX | NS unless the CA asks otherwise | B22 |
 | NEARSHOP_BILLING_BANK_HOLIDAYS | The year's bank holidays, comma-separated ISO dates | Each January |
+| NEARSHOP_AUTOPAY_ENABLED, NEARSHOP_AUTOPAY_PROVIDER | true, razorpay | Staging in test mode first; production from 1 Aug 2027 if B25 says go |
+| NEARSHOP_AUTOPAY_KEY_ID, NEARSHOP_AUTOPAY_KEY_SECRET | The gateway's key id and secret: test mode (rzp_test_…) on staging, live only in production's Render environment | B22 (a gateway account in the company's name) |
+| NEARSHOP_AUTOPAY_WEBHOOK_SECRET | The secret typed into the gateway's webhook settings for /api/webhooks/autopay | With the keys |
+| NEARSHOP_AUTOPAY_GRACE_DAYS, NEARSHOP_AUTOPAY_TOTAL_COUNT, NEARSHOP_AUTOPAY_RECONCILE_DAYS, NEARSHOP_AUTOPAY_SETTLEMENT_DAYS | 3, 60, 3, 5 unless the gateway's retry and settlement schedules say otherwise | Before switching on |
 
 None of these values is ever committed to the repository; set them in the Render environment of each service.

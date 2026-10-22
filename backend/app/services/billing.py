@@ -58,6 +58,16 @@ turns the advance payments R1 recorded by hand into matched payments, advance su
 original payment date, in the order they were paid (the founding offer counts first payments); a UPI reference seen
 before refuses the whole import.
 
+UPI Autopay debits (P9.6)
+-------------------------
+Monthly Growth is paid by UPI Autopay through a gateway (app/services/gateway.py). Each successful debit goes through
+settle_autopay_debit, inside the transaction that records the gateway's event: a payment request of one month (made
+already paid, created_by system), a credit with source autopay and the gateway's payment id as its reference, and then
+_settle, exactly as for a bank credit: the payment, the subscription's first month (create_subscription) or next month
+(renew) and its document, all written or none. A debit that cannot be applied (the shop's plan was cancelled, the
+monthly price or the GST position changed since the mandate was set up) goes to the unmatched queue instead
+(record_unmatched_autopay), as does every mismatch the daily reconciliation with the gateway's settlement report finds.
+
 The daily job
 -------------
 alert_unmatched (the billing_reconciliation job in app/jobs.py, once per IST day) alerts every admin, in the app and
@@ -119,7 +129,8 @@ STATE_NAMES = {"29": "Karnataka"}  # the place of supply is printed as the state
 BILLING_LINK = "/owner/billing"
 KIND_PAYMENT_RECEIVED, KIND_REFUNDED, KIND_UNMATCHED = "payment_received", "payment_refunded", "credit_unmatched"
 UNMATCHED_WARNING = "bank credit unmatched"
-SUBSCRIPTION_EVENT_KINDS = ("refunded", "renewal_refunded")  # the subscription_events kinds this module adds to plans.EVENT_KINDS
+# The subscription_events kinds billing adds to plans.EVENT_KINDS (autopay_cancelled: P9.6, app/services/gateway.py).
+SUBSCRIPTION_EVENT_KINDS = ("refunded", "renewal_refunded", "autopay_cancelled")
 
 
 class BillingRefused(AppError):
@@ -210,6 +221,7 @@ class CreditSource(StrEnum):
     STATEMENT = "statement"
     MANUAL = "manual"
     PILOT_LEDGER = "pilot_ledger"
+    AUTOPAY = "autopay"  # a UPI Autopay debit through the gateway (P9.6), or a reconciliation mismatch
 
 
 class CreditReturn(Embedded):
@@ -265,6 +277,9 @@ class Payment(Document):
     document_id: int | None = None
     status: PaymentStatus = PaymentStatus.MATCHED
     refund: Refund | None = None
+    # An Autopay debit (P9.6): when the gateway's settlement report showed it settled, and the settlement's id.
+    settled_at: datetime | None = None
+    settlement_id: str | None = None
 
 
 class DocType(StrEnum):
@@ -594,13 +609,14 @@ def next_number(db: Database, fy: str) -> tuple[int, str]:
     return seq, number
 
 
-def _description(req: PaymentRequest, kind: RequestKind, plan_name: str) -> str:
+def _description(req: PaymentRequest, kind: RequestKind, plan_name: str, how: CreditSource) -> str:
     """kind is what the payment became (_settle), which may differ from the request's: an advance request paid on or
     after billing starts is a shop-paid subscription."""
     what = {RequestKind.ADVANCE: "advance payment for", RequestKind.NEW: "subscription to",
             RequestKind.RENEWAL: "renewal of"}[kind]
     founding = " (founding offer, first year)" if req.founding else ""
-    return f"NearShop {plan_name} plan, one year: {what} the plan{founding}"
+    autopay = " by UPI Autopay" if how == CreditSource.AUTOPAY else ""
+    return f"NearShop {plan_name} plan, one {Period(req.period).value}: {what} the plan{founding}{autopay}"
 
 
 TAX_FIELDS = ("gst_rate_pct", "cgst_paise", "sgst_paise", "igst_paise")
@@ -681,7 +697,7 @@ def _settle(db: Database, credit: BankCredit, req: PaymentRequest, *, actor: Act
     plan = plans.plans(db).get(sub.plan_id)
     doc = _issue(db, DocType.TAX_INVOICE if mode == GstMode.REGISTERED else DocType.RECEIPT, payment=pay,
                  recipient=_party(account),
-                 description=_description(req, kind, plan.name if plan else req.plan_code.value),
+                 description=_description(req, kind, plan.name if plan else req.plan_code.value, how),
                  taxable=req.amount_paise, split=gst_split(req.amount_paise, mode, account.state_code), issued_at=now,
                  payment_date=credit.credited_at)
     if doc.total_paise != credit.amount_paise:
@@ -1075,6 +1091,69 @@ def import_pilot_ledger(db: Database, rows: list[dict[str, Any]], *, reason: str
     return {"imported": len(done), "payments": [payment_out(p) for p in done]}
 
 
+# ---------------------------------------------------------------- UPI Autopay debits (P9.6)
+
+AUTOPAY_ACTOR = Actor(type="system")
+
+
+def settle_autopay_debit(db: Database, *, shop_id: int, billing_account_id: int, plan_code: PlanCode | str,
+                         subscription_id: int | None, amount_paise: int, total_paise: int, received_paise: int,
+                         gst_mode: GstMode | str, payment_reference: str, paid_at: datetime, mandate_id: int,
+                         now: datetime, credit_id: int | None = None) -> Payment:
+    """Inside db's transaction (gateway.process_event; the caller has run prepare_autopay before it began): a
+    successful Autopay debit of received_paise, for the mandate's total_paise (amount_paise before GST), becomes a
+    month's payment request, already paid, a credit with the gateway's payment id as its reference, and, through
+    _settle, the payment, the subscription's first month (subscription_id None) or next month, and the document.
+    Raises AppError (the caller's transaction is rolled back) when they do not fit: another amount, a GST position or
+    a monthly price that changed since the mandate was set up, or a subscription that cannot be renewed. credit_id is
+    the unmatched credit already recorded for this payment (the reconciliation found it settled before its event
+    arrived), which is matched instead of recording a new one."""
+    shop = db.shops.get(shop_id)
+    if shop is None:
+        raise NotFound("Shop not found")
+    plan = plans.plan_in_force(db, plan_code, now)
+    req = PaymentRequest(
+        id=db.next_id(REQUESTS), billing_account_id=billing_account_id, owner_id=shop.owner_id, shop_id=shop.id,
+        plan_code=plan.code, plan_version=plan.version, period=Period.MONTH,
+        kind=RequestKind.RENEWAL if subscription_id else RequestKind.NEW, subscription_id=subscription_id,
+        amount_paise=amount_paise, gst_mode=GstMode(gst_mode), gst_paise=total_paise - amount_paise,
+        total_paise=total_paise, created_by=AUTOPAY_ACTOR, reason=f"UPI Autopay mandate {mandate_id}", created_at=now,
+        updated_at=now)
+    req.number = f"{REQUEST_PREFIX}{req.id:06d}"
+    requests(db).insert(req)
+    known = credits(db).get(credit_id) if credit_id else None
+    if known is not None:
+        if known.status != CreditStatus.UNMATCHED or known.upi_reference != payment_reference:
+            raise BillingRefused(f"Credit {known.upi_reference} is {known.status.value}")
+        credit = credits(db).set(known, credited_at=leads.ist_start(leads.ist_day(paid_at)),
+                                 request_number=req.number)
+    else:
+        credit = credits(db).insert(BankCredit(
+            id=db.next_id(CREDITS), upi_reference=payment_reference,
+            credited_at=leads.ist_start(leads.ist_day(paid_at)), amount_paise=received_paise,
+            narration=f"UPI Autopay debit, mandate {mandate_id}", source=CreditSource.AUTOPAY,
+            request_number=req.number, created_at=now))
+    return _settle(db, credit, req, actor=AUTOPAY_ACTOR, how=CreditSource.AUTOPAY,
+                   reason=f"UPI Autopay debit {payment_reference}", now=now)
+
+
+def prepare_autopay(db: Database, now: datetime) -> None:
+    """The counter documents settle_autopay_debit's transaction increments, created before it begins."""
+    _prepare(db, now)
+
+
+def record_unmatched_autopay(db: Database, *, reference: str, amount_paise: int, at: datetime, narration: str,
+                             note: str, now: datetime) -> BankCredit | None:
+    """Put a gateway debit that could not be applied, or a reconciliation mismatch, in the unmatched queue (in db's
+    transaction, if any), once per reference: None when that reference is already recorded."""
+    if credits(db).exists({"upi_reference": reference}):
+        return None
+    return credits(db).insert(BankCredit(
+        id=db.next_id(CREDITS), upi_reference=reference[:64], credited_at=leads.ist_start(leads.ist_day(at)),
+        amount_paise=max(1, amount_paise), narration=narration[:500], source=CreditSource.AUTOPAY, note=note[:300],
+        created_at=now))
+
+
 # ---------------------------------------------------------------- the daily reconciliation alert
 
 
@@ -1137,7 +1216,8 @@ def payment_out(p: Payment) -> dict[str, Any]:
             "paid_at": _iso(p.paid_at), "matched_at": _iso(p.matched_at), "matched_by": p.matched_by.model_dump(),
             "match": p.match.value, "reason": p.reason, "subscription_id": p.subscription_id,
             "document_id": p.document_id, "status": p.status.value,
-            "refund": p.refund.model_dump(mode="json") if p.refund else None}
+            "refund": p.refund.model_dump(mode="json") if p.refund else None,
+            "settled_at": _iso(p.settled_at), "settlement_id": p.settlement_id}
 
 
 def account_out(a: BillingAccount) -> dict[str, Any]:

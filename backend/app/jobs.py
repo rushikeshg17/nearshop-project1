@@ -40,10 +40,13 @@ NEARSHOP_BILLING_STARTS_ON, the outcome guarantee credits paid quarters with too
 past their end date lapse to Free, owners are reminded 30, 7 and 1 days before the end, and admins are alerted about
 an advance still not active 300 days after its payment. Each step is one indexed query when nothing is due, and each
 change is conditional on the state it read, so a run repeated or overlapping a lease take-over changes nothing twice.
-billing_reconciliation (P9.5), once per IST day (the first tick of the day), alerts the admins about every bank
-credit still unmatched NEARSHOP_BILLING_UNMATCHED_ALERT_WORKING_DAYS (3) working days after it was credited
+billing_reconciliation (P9.5), once per IST day (the first tick of the day), first compares the payment gateway's
+settlement reports with the UPI Autopay payment rows (P9.6, app/services/gateway.py reconcile; while Autopay is off it
+does nothing), putting every mismatch in the unmatched queue, then alerts the admins about every bank credit still
+unmatched NEARSHOP_BILLING_UNMATCHED_ALERT_WORKING_DAYS (3) working days after it was credited
 (app/services/billing.py alert_unmatched), once per credit; the day it ran for is kept in the lease's last_result
-(ran_for), like lead_counts.
+(ran_for), like lead_counts. A gateway that cannot be reached is logged and the alert still runs; the next day's run
+reads the missed day's report again (NEARSHOP_AUTOPAY_RECONCILE_DAYS).
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -447,10 +450,11 @@ def subscriptions(clock: Clock = utcnow) -> dict[str, Any]:
 
 
 def billing_reconciliation(clock: Clock = utcnow) -> dict[str, Any]:
-    """The daily unmatched-credit alert (P9.5, app/services/billing.py alert_unmatched), once per IST day: the day it
-    ran for is kept in the lease's last_result (ran_for), and every later tick that day only repeats the last
-    result. A failed run is retried an hour later (RETRY_AFTER_FAILURE)."""
-    from app.services import billing
+    """The daily Autopay reconciliation (P9.6, app/services/gateway.py reconcile) and unmatched-credit alert (P9.5,
+    app/services/billing.py alert_unmatched), once per IST day: the day it ran for is kept in the lease's last_result
+    (ran_for), and every later tick that day only repeats the last result. A failed run is retried an hour later
+    (RETRY_AFTER_FAILURE)."""
+    from app.services import billing, gateway
 
     now = clock()
     today = ist_day(now).isoformat()
@@ -458,7 +462,12 @@ def billing_reconciliation(clock: Clock = utcnow) -> dict[str, Any]:
     last = (db.mongo[LEASES].find_one({"_id": BILLING_JOB}, {"last_result": 1}) or {}).get("last_result") or {}
     if last.get("ok") is True and last.get("ran_for") == today:
         return {k: v for k, v in last.items() if k != "ok"}
-    return {"ran_for": today, **billing.alert_unmatched(db, now)}
+    try:
+        autopay: dict[str, Any] = gateway.reconcile(db, now)
+    except AppError as exc:
+        log.warning("Autopay reconciliation failed: %s", exc.message)
+        autopay = {"error": exc.code}
+    return {"ran_for": today, **billing.alert_unmatched(db, now), "autopay": autopay}
 
 
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {

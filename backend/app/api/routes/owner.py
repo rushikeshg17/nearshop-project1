@@ -41,7 +41,7 @@ from app.schemas.serializers import (
     shop_detail,
     thumbnail_url,
 )
-from app.services import analytics, billing, importer, plans
+from app.services import analytics, billing, gateway, importer, plans
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
 from app.services import reviews as review_service
@@ -245,8 +245,8 @@ def my_plan(shop: OwnerShop, db: DB):
 @router.get("/billing")
 def my_billing(shop: OwnerShop, db: DB):
     """The billing account, open payment requests (NearShop's UPI ID, payee name, amount and the request number as
-    the note), payments and their receipts or invoices."""
-    return billing.owner_billing(db, shop)
+    the note), payments and their receipts or invoices, and UPI Autopay for Growth monthly (P9.6)."""
+    return {**billing.owner_billing(db, shop), "autopay": gateway.owner_autopay(db, shop)}
 
 
 @router.put("/billing/account")
@@ -263,6 +263,19 @@ def request_payment(body: PaymentRequestIn, shop: OwnerShop, user: OwnerUser, db
     req = billing.create_request(db, shop, plan_code=body.plan_code, period=body.period,
                                  actor=Actor(type="owner", id=user.id))
     return billing.request_out(req)
+
+
+@router.post("/billing/autopay")
+def start_autopay(shop: OwnerShop, user: OwnerUser, db: DB):
+    """Growth monthly by UPI Autopay (P9.6, app/services/gateway.py): the mandate, with the gateway's checkout link
+    where the owner approves it in their UPI app. A mandate still waiting for approval is returned as it is."""
+    return gateway.mandate_out(gateway.create_mandate(db, shop, actor=Actor(type="owner", id=user.id)))
+
+
+@router.post("/billing/autopay/cancel")
+def cancel_autopay(shop: OwnerShop, user: OwnerUser, db: DB):
+    """Cancel UPI Autopay: no more debits; the plan ends at the end of the paid month."""
+    return gateway.mandate_out(gateway.cancel_mandate(db, shop, actor=Actor(type="owner", id=user.id)))
 
 
 @router.get("/billing/documents/{document_id}")

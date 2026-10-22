@@ -373,6 +373,61 @@ class Settings(BaseSettings):
                              "NEARSHOP_BILLING_GSTIN")
         return self
 
+    # UPI Autopay for monthly plans (P9.6, app/services/gateway.py, docs/runbooks/billing.md). Off by default: until
+    # autopay_enabled is on and the gateway is configured, POST /api/owner/billing/autopay answers 503
+    # autopay_not_configured. The gateway is an RBI-authorised one with UPI Autopay (Razorpay subscriptions; B22: an
+    # account in the company's name). autopay_provider "fake" is an in-memory stand-in for development and test only;
+    # the test suite never reaches the gateway. Keys: the key id and secret from the gateway's dashboard, and the
+    # webhook secret typed into its webhook settings, which signs every webhook call (X-Razorpay-Signature). Test-mode
+    # keys only outside production: a live key id (rzp_live_...) anywhere else stops startup. Live keys are set only in
+    # the production Render environment, never in the repository or on staging.
+    autopay_enabled: bool = False
+    autopay_provider: Literal["fake", "razorpay"] = "fake"
+    autopay_key_id: str = ""
+    autopay_key_secret: SecretStr = SecretStr("")
+    autopay_webhook_secret: SecretStr = SecretStr("")
+    autopay_api_base: str = "https://api.razorpay.com/v1"
+    # How many monthly debits one mandate allows (the gateway's total_count); the owner sets it up again after.
+    autopay_total_count: int = 60
+    # A monthly subscription under an authorised mandate does not lapse at its end date while the gateway debits and
+    # retries: it is held this many days, then lapses if no debit succeeded (confirm the retry schedule with the
+    # gateway). The gateway's final failure (subscription.halted) lapses it at once.
+    autopay_grace_days: int = 3
+    # The daily reconciliation: the gateway's settlement reports of the last autopay_reconcile_days IST days are
+    # compared with the payment rows, and a debit not settled autopay_settlement_days after it was paid is a mismatch.
+    autopay_reconcile_days: int = 3
+    autopay_settlement_days: int = 5
+
+    @field_validator("autopay_total_count", "autopay_grace_days", "autopay_reconcile_days",
+                     "autopay_settlement_days", mode="after")
+    @classmethod
+    def _check_autopay_numbers(cls, value: int) -> int:
+        if not 1 <= value <= 120:
+            raise ValueError("NEARSHOP_AUTOPAY_TOTAL_COUNT, _GRACE_DAYS, _RECONCILE_DAYS and _SETTLEMENT_DAYS must be "
+                             "between 1 and 120")
+        return value
+
+    @model_validator(mode="after")
+    def _check_autopay_keys(self) -> "Settings":
+        if self.environment != "production" and self.autopay_key_id.strip().startswith("rzp_live_"):
+            raise ValueError(f"NEARSHOP_AUTOPAY_KEY_ID is a live key; {self.environment} uses gateway test-mode keys "
+                             f"only")
+        if self.autopay_enabled and self.autopay_provider == "fake" and self.environment not in ("development",
+                                                                                                "test"):
+            raise ValueError("NEARSHOP_AUTOPAY_PROVIDER=fake is for development and test only")
+        return self
+
+    @property
+    def autopay_configured(self) -> bool:
+        """Whether Autopay mandates can be set up here: on, and the fake gateway (development and test) or the
+        gateway's key id, key secret and webhook secret."""
+        if not self.autopay_enabled:
+            return False
+        if self.autopay_provider == "fake":
+            return self.environment in ("development", "test")
+        return bool(self.autopay_key_id.strip() and self.autopay_key_secret.get_secret_value().strip()
+                    and self.autopay_webhook_secret.get_secret_value().strip())
+
     @property
     def billing_holiday_list(self) -> list[date]:
         """NEARSHOP_BILLING_BANK_HOLIDAYS as dates (an entry that is not an ISO date is ignored)."""

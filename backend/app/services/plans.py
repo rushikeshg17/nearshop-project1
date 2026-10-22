@@ -56,10 +56,13 @@ run_jobs (the subscriptions job in app/jobs.py, every tick, under the P1.7 lease
      not paid, so they earn no further credit, and a monthly plan that stops before its quarter ends earns none.
   3. lapse_due: at ends_at without a renewal the status becomes lapsed (effective_plan already treats the shop as
      Free from that moment), with a notice to the owner. Nothing about the shop changes: every free tool and the same
-     visibility in search.
+     visibility in search. A monthly plan renewed by an authorised UPI Autopay mandate (P9.6, app/services/gateway.py)
+     is held instead for NEARSHOP_AUTOPAY_GRACE_DAYS after ends_at, keeping its plan, while the gateway debits and
+     retries (autopay_hold); a debit in that time renews it from ends_at, without a break.
   4. send_reminders: 30, 7 and 1 days (IST calendar days) before ends_at, through notify, once per stage per end date.
      A stage is used only when it is shorter than the period's shortest term (a monthly plan: 7 and 1 days only, so
-     no "30 days left" notice goes out the day a month is bought).
+     no "30 days left" notice goes out the day a month is bought). A plan an authorised Autopay mandate renews gets
+     none: the gateway sends the pre-debit notice instead.
   5. alert_unused_advances: an advance still not active NEARSHOP_ADVANCE_ALERT_DAYS (300) days after its payment
      raises an admin alert (in-app to every admin, and a warning event), once, because an advance must be used
      within 365 days (plan section 8.18).
@@ -110,6 +113,8 @@ REMINDER_WINDOW = timedelta(days=max(REMINDER_DAYS) + 1)
 QUARTER_MONTHS = 3
 PERIOD_MONTHS = {Period.YEAR: 12, Period.MONTH: 1}
 PLAN_LINK = "/owner/plan"
+AUTOPAY_MANDATES = "autopay_mandates"  # app/services/gateway.py MANDATES (P9.6), read here without importing it
+AUTOPAY_RENEWING = "authorised"  # the mandate status under which the gateway debits each month
 ADVANCE_ALERT_WARNING = "advance subscription not active"
 
 # The kinds of the notifications this module sends.
@@ -274,10 +279,17 @@ def plan_out(p: Plan) -> dict[str, Any]:
 
 
 def active_subscription(db: Database, shop_id: int, at: datetime | None = None) -> Subscription | None:
-    """The active subscription covering the shop at `at`, or None."""
+    """The active subscription covering the shop at `at`, or None. A monthly plan whose UPI Autopay debit is due is
+    still covered while it is held (autopay_hold: at most NEARSHOP_AUTOPAY_GRACE_DAYS after its end date)."""
     at = at or utcnow()
-    return subscriptions(db).find_one({"shop_ids": shop_id, "status": SubscriptionStatus.ACTIVE.value,
-                                       "starts_at": {"$lte": at}, "ends_at": {"$gt": at}}, sort=[("ends_at", -1)])
+    found = subscriptions(db).find_one({"shop_ids": shop_id, "status": SubscriptionStatus.ACTIVE.value,
+                                        "starts_at": {"$lte": at}, "ends_at": {"$gt": at}}, sort=[("ends_at", -1)])
+    if found is not None:
+        return found
+    due = subscriptions(db).find_one({"shop_ids": shop_id, "status": SubscriptionStatus.ACTIVE.value,
+                                      "period": Period.MONTH.value, "ends_at": {
+                                          "$lte": at, "$gt": at - timedelta(days=settings.autopay_grace_days)}})
+    return due if due is not None and autopay_hold(db, due, at) else None
 
 
 def effective_plan(db: Database, shop_id: int, at: datetime | None = None) -> dict[str, Any]:
@@ -388,6 +400,19 @@ def _add_paid_term(sub: Subscription, start: datetime, end: datetime) -> dict[st
         terms[-1] = PaidTerm(start=terms[-1].start, end=end)
         return _cursor(terms, sub.quarters_done)
     return _cursor([*terms, PaidTerm(start=start, end=end)], sub.quarters_done if terms else 0)
+
+
+def autopay_renews(db: Database, sub: Subscription) -> bool:
+    """Whether an authorised UPI Autopay mandate (P9.6) renews this monthly subscription each month."""
+    return sub.period == Period.MONTH and db.mongo[AUTOPAY_MANDATES].find_one(
+        {"subscription_id": sub.id, "status": AUTOPAY_RENEWING}, {"_id": 1}, session=db.session) is not None
+
+
+def autopay_hold(db: Database, sub: Subscription, now: datetime) -> bool:
+    """Whether an active subscription past its end date is held, not lapsed: its Autopay debit is due and the gateway
+    may still debit or retry, for NEARSHOP_AUTOPAY_GRACE_DAYS after ends_at."""
+    return (sub.status == SubscriptionStatus.ACTIVE and sub.ends_at <= now
+            < sub.ends_at + timedelta(days=settings.autopay_grace_days) and autopay_renews(db, sub))
 
 
 def _live_conflict(exc: DuplicateKeyError) -> bool:
@@ -545,7 +570,8 @@ def renew(db: Database, sub_id: int, *, actor: Actor, reason: str, paid_at: date
           now: datetime | None = None) -> Subscription:
     """A paid renewal (P9.5 and P9.6 call it once the payment is recorded): one more period on the catalogue version
     in force now, at its list price (the founding price is for the first year only). An active subscription's new term
-    starts at its end date (after any guarantee credit or extension); a lapsed one's starts now."""
+    starts at its end date (after any guarantee credit or extension), also while an Autopay hold keeps it active past
+    that date (autopay_hold); a lapsed one's starts now."""
     now = now or utcnow()
 
     def apply(sub: Subscription) -> dict[str, Any]:
@@ -555,7 +581,7 @@ def renew(db: Database, sub_id: int, *, actor: Actor, reason: str, paid_at: date
         price = plan.price_year_paise if sub.period == Period.YEAR else plan.price_month_paise
         if price is None:
             raise PlanRefused(f"{plan.name} is not sold by the {sub.period.value}")
-        contiguous = sub.status == SubscriptionStatus.ACTIVE and sub.ends_at > now
+        contiguous = sub.status == SubscriptionStatus.ACTIVE and (sub.ends_at > now or autopay_hold(db, sub, now))
         term_start = sub.ends_at if contiguous else now
         new_end = months_after(term_start, _months(sub.period))
         fields: dict[str, Any] = {"plan_id": plan.id, "plan_code": plan.code, "plan_version": plan.version,
@@ -700,7 +726,7 @@ def lapse_due(db: Database, now: datetime) -> int:
     for row in subscriptions(db).find_raw({"status": SubscriptionStatus.ACTIVE.value, "ends_at": {"$lte": now}},
                                           {"_id": 1}):
         def apply(sub: Subscription) -> dict[str, Any] | None:
-            if sub.status != SubscriptionStatus.ACTIVE or sub.ends_at > now:
+            if sub.status != SubscriptionStatus.ACTIVE or sub.ends_at > now or autopay_hold(db, sub, now):
                 return None
             return {"status": SubscriptionStatus.LAPSED}
 
@@ -734,7 +760,7 @@ def send_reminders(db: Database, now: datetime) -> int:
             continue
 
         def apply(sub: Subscription, stage=stage) -> dict[str, Any] | None:
-            if stage in sub.reminded or sub.status != SubscriptionStatus.ACTIVE:
+            if stage in sub.reminded or sub.status != SubscriptionStatus.ACTIVE or autopay_renews(db, sub):
                 return None
             days_left = (leads.ist_day(sub.ends_at) - leads.ist_day(now)).days
             left = "tomorrow" if days_left == 1 else f"in {days_left} days"
