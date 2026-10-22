@@ -267,6 +267,8 @@ VALIDATORS: dict[str, dict] = {
         "last_result": {"bsonType": ["object", "null"]},
         # phone_migration only (P4.2): the first IST day (YYYY-MM-DD) it saw phone sign-in available.
         "phone_signin_since": {"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        # send_notifications only (P4.3): when the WhatsApp failure-rate warning was last reported.
+        "failure_alert_at": {"bsonType": DATE_N},
     }}},
     # Retraining requests, processed by the retrain cron job outside the API. `active` is set only while a
     # request is queued or running, and `nightly_for` (the slot's date) only on nightly runs: both unique.
@@ -374,6 +376,23 @@ VALIDATORS: dict[str, dict] = {
             "warned_at": {"bsonType": DATE_N}, "expires_at": {"bsonType": DATE},
         },
     }},
+    # The notification outbox (P4.3, app/services/whatsapp.py): one row per notification and outbox channel the
+    # recipient opted into, written in the notification's transaction, delivered by the send_notifications job. It
+    # never holds the phone number; the template's variables (params) are cleared once the row is finished. Times
+    # from notify (created_at) to the Cloud API's accept (seconds_to_sent) and to delivered (seconds_to_delivered).
+    # message_id is the Cloud API's id, which the status webhook names. Kept 30 days (TTL on created_at).
+    "notification_outbox": schema(
+        ["notification_id", "user_id", "channel", "kind", "template", "language", "status", "attempts", "created_at",
+         "next_attempt_at"],
+        notification_id=INT, user_id=INT, channel={"enum": ["whatsapp"]}, kind=STR, template=STR, language=STR,
+        params={"bsonType": ["array", "null"], "maxItems": 10, "items": {"bsonType": STR, "maxLength": 1024}},
+        subject=STR_N, buttons={"bsonType": "array", "maxItems": 3, "items": {"bsonType": STR, "maxLength": 128}},
+        status={"enum": ["queued", "sending", "sent", "delivered", "read", "failed", "cancelled"]},
+        attempts={"bsonType": INT, "minimum": 0}, error={"bsonType": STR_N, "maxLength": 80},
+        message_id=STR_N, created_at=DATE, next_attempt_at=DATE, claimed_at=DATE_N, sent_at=DATE_N,
+        wa_sent_at=DATE_N, delivered_at=DATE_N, read_at=DATE_N, failed_at=DATE_N, finished_at=DATE_N,
+        seconds_to_sent=NUM_N, seconds_to_delivered=NUM_N, cost_estimate=NUM_N,
+    ),
     # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
     "counters": {},
     "text_embeddings": {},
@@ -391,6 +410,7 @@ NOTIFICATIONS_TTL = IndexModel([("created_at", ASCENDING)], expireAfterSeconds=N
 IS_INT = {"$type": "number"}  # partial-index filter: "this optional reference is set"
 OTP_CODES_KEEP_SECONDS = 10 * 60  # otp_codes: removed 10 minutes after they were created (plan section 8.4)
 OTP_SENDS_KEEP_SECONDS = 30 * 24 * 60 * 60  # otp_sends: the send log is kept 30 days
+OUTBOX_KEEP_SECONDS = 30 * 24 * 60 * 60  # notification_outbox rows are deleted 30 days after the notification (P4.3)
 # One account per email and one per phone, among the accounts that have one (migration 7 built both; uq_email_set
 # replaced uq_email, which also counted a missing email as a value). Phones are stored as their 10 digits. The
 # filter is "a string after the empty one": it leaves out a missing or null value, and, unlike a $type filter, an
@@ -536,6 +556,15 @@ INDEXES: dict[str, list[IndexModel]] = {
     "otp_codes": [IndexModel([("created_at", A)], expireAfterSeconds=OTP_CODES_KEEP_SECONDS, name="created_ttl_10m")],
     "otp_sends": [IndexModel([("at", A)], expireAfterSeconds=OTP_SENDS_KEEP_SECONDS, name="at_ttl_30d")],
     "otp_daily": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
+    "notification_outbox": [
+        IndexModel([("status", A), ("next_attempt_at", A)], name="status_next"),  # the sender's due rows
+        IndexModel([("message_id", A)], unique=True, name="uq_message_id",  # the status webhook's lookup
+                   partialFilterExpression={"message_id": IS_SET}),
+        # The hourly failure rate: both fields are set only when a row is sent or fails.
+        IndexModel([("sent_at", A)], name="sent_at", sparse=True),
+        IndexModel([("failed_at", A)], name="failed_at", sparse=True),
+        IndexModel([("created_at", A)], expireAfterSeconds=OUTBOX_KEEP_SECONDS, name="created_ttl_30d"),
+    ],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),
         IndexModel([("target_user_id", A), ("created_at", D)], name="target_created"),

@@ -27,6 +27,10 @@ it warns those without a verified phone in the app 30, 7 and 1 days before the s
 unverified 30 days after it (an owner's shops are hidden with the account). The sunset in force is never earlier than
 NEARSHOP_EMAIL_LOGIN_MIN_NOTICE_DAYS after the first day the job saw phone sign-in available, which it keeps on its
 lease (phone_signin_since), so a provider that goes live late moves the sunset later (sunset_in_force).
+send_notifications (P4.3), every tick, delivers the WhatsApp notification outbox (app/services/whatsapp.py): rows
+written by notify() in the reservation and order transactions, sent here, outside them, with retries after 30 s,
+2 min and 10 min. Each run also computes the hourly failure rate and, above 5%, reports the warning event the
+WhatsApp alert fires on, at most once every 15 minutes (failure_alert_at on its lease).
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -106,6 +110,8 @@ PHONE_MIGRATION_JOB = "phone_migration"
 PHONE_SIGNIN_SINCE = "phone_signin_since"  # on that job's lease: the first IST day it saw phone sign-in available
 DEACTIVATED_NO_PHONE = "phone_not_verified"  # User.deactivated_reason of an account the job switched off
 IST = ZoneInfo("Asia/Kolkata")
+SEND_NOTIFICATIONS_JOB = "send_notifications"  # the WhatsApp outbox sender (P4.3)
+FAILURE_ALERT_AT = "failure_alert_at"  # on that job's lease: when the failure-rate warning was last reported
 
 RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
@@ -367,9 +373,31 @@ def phone_migration(clock: Clock = utcnow) -> dict[str, Any]:
             "warned": warned, **switched, "remaining": remaining}
 
 
+def send_notifications(clock: Clock = utcnow) -> dict[str, Any]:
+    """The WhatsApp outbox sender (P4.3, app/services/whatsapp.py send_due), then the failure rate over the last hour.
+    Above 5% it reports the warning event (whatsapp.report_failure_rate) when none was reported in the last
+    FAILURE_ALERT_EVERY: the lease keeps failure_alert_at, so one incident is not an event every 30 s. last_result:
+    the sender's counts, the hour's finished and failed rows, the rate, and whether the warning went out."""
+    from app.services import whatsapp
+
+    db = Database()
+    result: dict[str, Any] = dict(whatsapp.send_due(db, clock=clock))
+    now = clock()
+    rate = whatsapp.failure_rate(db, now)
+    result.update(rate, alerted=False)
+    if whatsapp.above_threshold(rate):
+        due = {"$or": [{FAILURE_ALERT_AT: None}, {FAILURE_ALERT_AT: {"$lte": now - whatsapp.FAILURE_ALERT_EVERY}}]}
+        if db.mongo[LEASES].update_one({"_id": SEND_NOTIFICATIONS_JOB, **due},
+                                       {"$set": {FAILURE_ALERT_AT: now}}).modified_count:
+            whatsapp.report_failure_rate(rate)
+            result["alerted"] = True
+    return result
+
+
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {
     "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage, "retention": retention,
-    "process_deletions": process_deletions, PHONE_MIGRATION_JOB: phone_migration}
+    "process_deletions": process_deletions, PHONE_MIGRATION_JOB: phone_migration,
+    SEND_NOTIFICATIONS_JOB: send_notifications}
 
 
 class SearchIndexRefresher:

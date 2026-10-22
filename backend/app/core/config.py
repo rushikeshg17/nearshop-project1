@@ -181,6 +181,17 @@ class Settings(BaseSettings):
     whatsapp_api_base: str = "https://graph.facebook.com"
     whatsapp_api_version: str = "v21.0"
     whatsapp_cost_inr: float = 0.13  # per authentication message (plan section 8.3: about ₹260 for 2,000)
+    # Outbound WhatsApp notifications (P4.3, app/services/whatsapp.py; docs/whatsapp-templates.md). Off by default:
+    # while off, notify() writes no outbox rows and the sender job sends nothing. On, rows are written for recipients
+    # who consented to WhatsApp messages and have a verified phone, and sent through the Cloud API with the access
+    # token and phone number id above and the approved utility templates (B8). In development and test a fake client
+    # stands in (messages kept in memory and logged); the test suite never reaches the Cloud API.
+    whatsapp_notifications: bool = False
+    # The Meta app's secret, which signs every webhook call (X-Hub-Signature-256), and the verify token typed into the
+    # webhook's settings in Meta's app dashboard (the GET challenge). Without them the webhook refuses every call.
+    whatsapp_app_secret: SecretStr = SecretStr("")
+    whatsapp_webhook_verify_token: SecretStr = SecretStr("")
+    whatsapp_utility_cost_inr: float = 0.16  # per utility template outside a service window (plan section 8.7)
     # SMS through MSG91's flow API (B7: the DLT entity, sender header and OTP template; the flow template at MSG91
     # holds that registered text and its code variable). The auth key and template id are needed.
     sms_auth_key: SecretStr = SecretStr("")
@@ -234,6 +245,11 @@ class Settings(BaseSettings):
     def whatsapp_configured(self) -> bool:
         return bool(self.whatsapp_access_token.get_secret_value().strip() and self.whatsapp_phone_number_id.strip()
                     and self.whatsapp_otp_template.strip())
+
+    @property
+    def whatsapp_notify_configured(self) -> bool:
+        """The Cloud API can send notification templates: the access token and phone number id are set."""
+        return bool(self.whatsapp_access_token.get_secret_value().strip() and self.whatsapp_phone_number_id.strip())
 
     @property
     def sms_configured(self) -> bool:

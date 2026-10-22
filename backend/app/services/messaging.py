@@ -14,7 +14,8 @@
     memory (ConsoleProvider.outbox), which the tests read. It is never used anywhere else (config.py refuses
     NEARSHOP_OTP_CONSOLE outside development and test).
 
-Provider keys come only from settings (config.py: NEARSHOP_WHATSAPP_* and NEARSHOP_SMS_*), never from code.
+Provider keys come only from settings (config.py: NEARSHOP_WHATSAPP_* and NEARSHOP_SMS_*), never from code. The
+WhatsApp notifications of P4.3 (app/services/whatsapp.py) send through send_whatsapp and the same transport.
 otp_providers() lists the providers to try, in order. A provider never raises for a failed send: it returns a
 Delivery whose error is a short reason (an HTTP status or an exception class), never the phone or the code.
 """
@@ -127,25 +128,33 @@ class WhatsAppProvider:
 
     def payload(self, phone: str, code: str) -> dict[str, Any]:
         c = self.config
-        return {
-            "messaging_product": "whatsapp", "recipient_type": "individual", "to": e164(phone), "type": "template",
-            "template": {
-                "name": c.whatsapp_otp_template.strip(), "language": {"code": c.whatsapp_template_language.strip()},
-                "components": [
-                    {"type": "body", "parameters": [{"type": "text", "text": code}]},
-                    # The copy-code button: Meta's authentication templates take the code as the button's parameter.
-                    {"type": "button", "sub_type": "url", "index": "0", "parameters": [{"type": "text", "text": code}]},
-                ],
-            },
-        }
+        return whatsapp_template_payload(phone, c.whatsapp_otp_template, c.whatsapp_template_language, [
+            {"type": "body", "parameters": [{"type": "text", "text": code}]},
+            # The copy-code button: Meta's authentication templates take the code as the button's parameter.
+            {"type": "button", "sub_type": "url", "index": "0", "parameters": [{"type": "text", "text": code}]},
+        ])
 
     def send_otp(self, phone: str, code: str) -> Delivery:
-        c = self.config
-        url = (f"{c.whatsapp_api_base.rstrip('/')}/{c.whatsapp_api_version.strip()}/"
-               f"{c.whatsapp_phone_number_id.strip()}/messages")
-        headers = {"Authorization": f"Bearer {c.whatsapp_access_token.get_secret_value().strip()}"}
-        return _send(self.channel, url, self.payload(phone, code), headers, c.whatsapp_cost_inr, _whatsapp_id,
-                     lambda reply: _whatsapp_id(reply) is not None)
+        return send_whatsapp(self.config, self.payload(phone, code), self.config.whatsapp_cost_inr)
+
+
+def whatsapp_template_payload(phone: str, template: str, language: str,
+                              components: list[dict[str, Any]]) -> dict[str, Any]:
+    """A Cloud API template message to a 10-digit Indian mobile number."""
+    return {"messaging_product": "whatsapp", "recipient_type": "individual", "to": e164(phone), "type": "template",
+            "template": {"name": template.strip(), "language": {"code": language.strip()}, "components": components}}
+
+
+def send_whatsapp(config: Settings, payload: dict[str, Any], cost: float) -> Delivery:
+    """POST one message to the Cloud API (/<version>/<phone number id>/messages) with the access token from settings.
+    Sent only when the answer carries a message id; the Delivery's message_id is that id (wamid), which the status
+    webhook names (app/api/routes/webhooks.py). The OTP sends and the notification outbox (app/services/whatsapp.py)
+    both go through here."""
+    c = config
+    url = (f"{c.whatsapp_api_base.rstrip('/')}/{c.whatsapp_api_version.strip()}/"
+           f"{c.whatsapp_phone_number_id.strip()}/messages")
+    headers = {"Authorization": f"Bearer {c.whatsapp_access_token.get_secret_value().strip()}"}
+    return _send("whatsapp", url, payload, headers, cost, _whatsapp_id, lambda reply: _whatsapp_id(reply) is not None)
 
 
 def _whatsapp_id(reply: dict[str, Any]) -> str | None:
