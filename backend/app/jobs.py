@@ -33,7 +33,8 @@ written by notify() in the reservation and order transactions, sent here, outsid
 WhatsApp alert fires on, at most once every 15 minutes (failure_alert_at on its lease). stock_check (P4.4), every
 tick, sends each shop's daily stock check from its opening time (IST): a stock-check notification, delivered on
 WhatsApp through the outbox, listing up to 5 listings counted more than 48 hours ago (app/services/whatsapp.py
-send_stock_checks). A shop's day is recorded once considered, so each tick after that is one read of today's rows.
+send_stock_checks). A shop's day is recorded once considered, so each tick after that reads today's rows and the
+active shops (their id, owner, name and opening hours), and sends nothing more to that shop that day.
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running

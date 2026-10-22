@@ -14,9 +14,11 @@ import pytest
 from app import jobs
 from app.core.config import settings
 from app.core.database import Database, utcnow
-from app.models import InventoryReason, Product
+from app.models import InventoryEvent, InventoryReason, Product
 from app.services import whatsapp
+from app.services.analytics import admin_overview
 from app.services.privacy import set_consent
+from app.services.reliability import shop_reliability
 from tests.conftest import HEADERS
 
 APP_SECRET = "test-app-secret-" + "y" * 16
@@ -246,6 +248,66 @@ def test_an_ambiguous_line_offers_up_to_three_choices(shop_owner, tapes, client,
     assert event["reason"] == "whatsapp_update" and event["quantity_after"] == 20
 
 
+def test_a_removed_listing_is_never_matched(shop_owner, client, ids):
+    """A listing removed and added again leaves a removed copy with the same name: the line matches the live one
+    alone, and the removed copy's count is never changed."""
+    db = Database()
+    tape = db.products.get(ids["tape"])
+    [removed] = db.products.insert_many([Product(shop_id=tape.shop_id, category_id=tape.category_id, name=tape.name,
+                                                 keywords=tape.keywords, price=tape.price, quantity=9,
+                                                 is_active=False)])
+    try:
+        post(client, text(f"{tape.name} 33"))
+        session = db.mongo[whatsapp.SESSIONS].find_one({"_id": shop_owner.id})
+        assert session["pending"]["queue"] == []
+        assert [i["product_id"] for i in session["pending"]["items"]] == [tape.id]
+        post(client, text("Yes"))
+        assert db.products.get(tape.id).quantity == 33 and db.products.get(removed.id).quantity == 9
+    finally:
+        db.products.delete_many({"_id": removed.id})
+
+
+def test_a_listing_removed_after_the_preview_is_not_saved(shop_owner, client, ids):
+    db = Database()
+    before = db.products.get(ids["charger"]).quantity
+    post(client, text("Samsung 25W charger: 7"))
+    db.products.update_one({"_id": ids["charger"]}, {"$set": {"is_active": False}})
+    try:
+        post(client, text("Yes"))
+        assert db.products.get(ids["charger"]).quantity == before
+        assert "no longer in your shop" in replies()[-1]
+    finally:
+        db.products.update_one({"_id": ids["charger"]}, {"$set": {"is_active": True}})
+
+
+def test_a_digit_like_character_while_choosing_is_not_a_failure(shop_owner, tapes, client):
+    """"²" passes str.isdigit but not int(); it must not fail the webhook (Meta would resend it for days)."""
+    post(client, text("tape 20"))
+    for odd in ("²", "①"):
+        post(client, text(odd))  # post asserts the webhook answered 200
+    session = Database().mongo[whatsapp.SESSIONS].find_one({"_id": shop_owner.id})
+    assert len(session["pending"]["queue"]) == 1  # the choice is still open
+    post(client, text("١"))  # an Arabic-Indic one is a real decimal digit: choice 1
+    assert "Reply Yes" in replies()[-1]
+
+
+def test_whatsapp_updates_count_as_the_owner_updating_stock(ids):
+    """The reliability signal (frequently updated) and the admin overview's daily stock-update series count a
+    whatsapp_update like a stock change made in the web app."""
+    db = Database()
+    shop = db.shops.get(ids["shop_a"]).model_copy(update={"id": 987654})  # a shop with no other stock events
+    today = admin_overview(db)["activity"][-1]["inventory_updates"]
+    made = db.inventory_events.insert_many([
+        InventoryEvent(product_id=987654, shop_id=shop.id, delta=1, quantity_after=1 + n,
+                       reason=InventoryReason.WHATSAPP_UPDATE, created_at=utcnow() - timedelta(days=n))
+        for n in range(2)])
+    try:
+        assert shop_reliability(db, shop)["inventory_update_days_7d"] == 2
+        assert admin_overview(db)["activity"][-1]["inventory_updates"] == today + 1
+    finally:
+        db.inventory_events.raw.delete_many({"_id": {"$in": [e.id for e in made]}})
+
+
 def test_unmatched_and_unreadable_lines_are_left_out(shop_owner, client, ids):
     post(client, text("Astral PTFE thread seal tape 30\nGarden hose pipe 5\njust some words"))
     preview = replies()[-1]
@@ -391,6 +453,37 @@ def test_the_stock_check_goes_at_opening_time_with_stale_listings(shop_owner, id
     sent = whatsapp.send_due(db, client=whatsapp.FAKE)  # the notification is dated by the real clock
     assert sent["sent"] == 1 and whatsapp.FAKE.sent[-1]["template"] == "nearshop_shop_stock_check"
     assert whatsapp.FAKE.sent[-1]["phone"] == OWNER_PHONE
+
+
+def test_the_stock_check_text_fits_one_variable_and_shows_every_listing():
+    now = utcnow()
+    stale = [{"name": f"Listing {n} " + "with a very long descriptive name " * 3, "quantity": 100 + n,
+              "stock_updated_at": now - timedelta(days=10 + n)} for n in range(whatsapp.STOCK_CHECK_ITEMS)]
+    title, body = whatsapp.stock_check_text({"name": "Sri Ganesh Hardware"}, stale, now)
+    assert title == "Stock check for Sri Ganesh Hardware"
+    assert len(body) <= whatsapp.PARAM_MAX and whatsapp._one_line(body) == body  # never cut off at the end
+    assert all(f"Listing {n}" in body and f": {100 + n} (counted {10 + n} days ago)" in body
+               for n in range(whatsapp.STOCK_CHECK_ITEMS))
+    assert "Reply" not in body  # the template body says how to reply
+
+
+def test_a_failed_stock_check_releases_the_shops_day_for_the_next_tick(shop_owner, ids, monkeypatch):
+    db = Database()
+    now = ist(1, 10)
+    db.shops.update_one({"_id": ids["shop_a"]}, {"$set": {"opening_hours": None}})
+    db.products.update_one({"_id": ids["tape"]}, {"$set": {"stock_updated_at": now - timedelta(days=3)}})
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("transient transaction error")
+
+    original = whatsapp._recipient
+    monkeypatch.setattr(whatsapp, "_recipient", broken)
+    with pytest.raises(RuntimeError):
+        whatsapp.send_stock_checks(db, now)
+    assert db.mongo[whatsapp.STOCK_CHECKS].count_documents({"shop_id": ids["shop_a"]}) == 0
+    monkeypatch.setattr(whatsapp, "_recipient", original)
+    whatsapp.send_stock_checks(db, now + timedelta(minutes=15))
+    assert db.mongo[whatsapp.STOCK_CHECKS].find_one({"shop_id": ids["shop_a"]})["outcome"] == "sent"
 
 
 def test_the_stock_check_is_skipped_late_fresh_or_unreachable(shop_owner, ids):

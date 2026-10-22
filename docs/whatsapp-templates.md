@@ -102,7 +102,7 @@ a stock message (below). Submitted as **utility**; Meta may class it as **market
 | Variable | Holds | Example |
 |---|---|---|
 | {{1}} | Stock check for the shop | Stock check for Sri Ganesh Hardware |
-| {{2}} | The listings, counts and age, on one line (at most 400 characters) | Are these counts still right? Astral PTFE Thread Seal Tape: 50 (counted 3 days ago); Samsung 25W Charger: 3 (counted 5 days ago). Reply with each item's name and count, one per line, to update them. |
+| {{2}} | The listings, counts and age, on one line (at most 400 characters: long names are shortened to fit, so every listing is shown). How to reply is the body's last line, so {{2}} does not repeat it | Are these counts still right? Samsung 25W Charger: 3 (counted 5 days ago); Astral PTFE Thread Seal Tape: 50 (counted 3 days ago) |
 
 ### Not sent on WhatsApp
 

@@ -7,6 +7,9 @@ from app.models import InventoryEvent, InventoryReason, Notification, Product, S
 
 OWNER_REASONS = {InventoryReason.INITIAL, InventoryReason.RESTOCK, InventoryReason.ADJUSTMENT,
                  InventoryReason.WHATSAPP_UPDATE}
+# The same reasons as stored strings, for queries that count the owner's own stock updates
+# (reliability's "frequently updated" signal, the admin overview's stock-update series).
+OWNER_REASON_VALUES = sorted(r.value for r in OWNER_REASONS)
 
 
 def _crossed_low(before: int, after: int, threshold: int) -> bool:

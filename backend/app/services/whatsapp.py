@@ -857,7 +857,7 @@ def answer_text(db: Database, owner: User, shop: Shop, text: str, now: datetime)
     new stock lines (which replace any preview in progress). Returns (outcome, reply)."""
     word = " ".join(text.lower().split()).strip(" .!")
     pending = _session_pending(db, owner, shop, now)
-    if pending and pending["queue"] and word.isdigit():
+    if pending and pending["queue"] and word.isdecimal():  # not isdigit: int() refuses "²"
         return choose(db, owner, pending, int(word), now)
     if word in YES:
         if pending and pending["queue"]:
@@ -876,7 +876,7 @@ def answer_text(db: Database, owner: User, shop: Shop, text: str, now: datetime)
     if len(lines) > MAX_STOCK_LINES:
         return "too_many_lines", (f"Please send at most {MAX_STOCK_LINES} items in one message. Nothing was "
                                   f"changed.")
-    listings = db.products.find({"shop_id": shop.id})
+    listings = db.products.find({"shop_id": shop.id, "is_active": True})  # never a removed listing
     pending = {"token": uuid.uuid4().hex, "shop_id": shop.id, "items": [], "queue": [],
                "skipped": [f"{u} (no count)" for u in unread][:10]}
     for name, quantity in lines:
@@ -903,7 +903,7 @@ def choose(db: Database, owner: User, pending: dict[str, Any], number: int, now:
         pending["skipped"].append(line["line"])
     else:
         product = db.products.get(line["candidates"][number - 1]["product_id"])
-        if product is None:
+        if product is None or not product.is_active:  # removed since the choices were offered
             pending["skipped"].append(line["line"])
         else:
             _add_item(pending, _item(product, line["quantity"]))
@@ -926,7 +926,7 @@ def apply_stock(db: Database, owner: User, shop: Shop, token: str, now: datetime
         saved = []
         for item in session["pending"]["items"]:
             product = db.products.get(item["product_id"])
-            if product is None or product.shop_id != shop.id:
+            if product is None or product.shop_id != shop.id or not product.is_active:
                 continue
             set_stock(db, product, item["quantity"], owner.id, InventoryReason.WHATSAPP_UPDATE)
             saved.append((product.name, item["quantity"]))
@@ -971,13 +971,27 @@ def _ago(then: datetime, now: datetime) -> str:
     return f"{days} days ago"
 
 
+STOCK_CHECK_NAME = 60  # characters of a listing's name in the stock check, shortened further to fit PARAM_MAX
+STOCK_CHECK_NAME_MIN = 12
+
+
 def stock_check_text(shop: dict[str, Any], stale: list[dict[str, Any]], now: datetime) -> tuple[str, str]:
-    """The stock check's title and text: the listings and their counts, oldest count first."""
-    items = "; ".join(f"{p['name'][:60]}: {p['quantity']} (counted {_ago(p['stock_updated_at'], now)})"
-                      for p in stale)
-    return (f"Stock check for {shop.get('name') or 'your shop'}",
-            f"Are these counts still right? {items}. Reply with each item's name and count, one per line, to update "
-            f"them.")
+    """The stock check's title and text ({{1}} and {{2}} of the template): the listings and their counts, oldest
+    count first. How to reply is the template body's own last line, so the text does not repeat it. Long names are
+    shortened until the text fits one template variable (PARAM_MAX), so no listing is cut off the end."""
+
+    def text(cap: int) -> str:
+        def name(p: dict[str, Any]) -> str:
+            flat = " ".join(str(p.get("name") or "").split())
+            return flat if len(flat) <= cap else flat[:cap - 1].rstrip() + "…"
+
+        return "Are these counts still right? " + "; ".join(
+            f"{name(p)}: {p['quantity']} (counted {_ago(p['stock_updated_at'], now)})" for p in stale)
+
+    cap = STOCK_CHECK_NAME
+    while len(text(cap)) > PARAM_MAX and cap > STOCK_CHECK_NAME_MIN:
+        cap -= 1
+    return f"Stock check for {shop.get('name') or 'your shop'}", text(cap)
 
 
 def send_stock_checks(db: Database, now: datetime | None = None, limit: int = BATCH) -> dict[str, Any]:
@@ -985,7 +999,8 @@ def send_stock_checks(db: Database, now: datetime | None = None, limit: int = BA
     a day, the owner gets the stock-check template listing up to STOCK_CHECK_ITEMS active listings counted more than
     48 hours ago, oldest first. It goes as a notification of kind stock_check (in the app and, through the outbox,
     on WhatsApp), only to an owner the WhatsApp template can reach (verified phone and consent), and only while
-    WhatsApp is on here. A shop's day is claimed in whatsapp_stock_checks first, so it is considered once. Returns
+    WhatsApp is on here. A shop's day is claimed in whatsapp_stock_checks first, so it is considered once; a failure
+    after the claim releases it and raises, so a later tick tries the shop again. Returns
     the counts of shops sent, fresh (nothing stale), unreachable and not due yet."""
     if get_client() is None:
         return {"enabled": False}
@@ -1011,19 +1026,25 @@ def send_stock_checks(db: Database, now: datetime | None = None, limit: int = BA
                                                "at": now, "expires_at": now + STOCK_CHECK_KEEP})
         except DuplicateKeyError:
             continue
-        stale = db.products.find_raw(
-            {"shop_id": shop["_id"], "is_active": True, "stock_updated_at": {"$lt": now - STALE_STOCK}},
-            {"name": 1, "quantity": 1, "stock_updated_at": 1}, sort=[("stock_updated_at", 1), ("_id", 1)],
-            limit=STOCK_CHECK_ITEMS)
-        if not stale:
-            outcome = "fresh"
-        elif _recipient(db, shop["owner_id"], template)[0] is None:
-            outcome = "unreachable"
-        else:
-            title, body = stock_check_text(shop, stale, now)
-            db.transaction(lambda s=shop, t=title, b=body: notify(db, s["owner_id"], STOCK_CHECK_KIND, t, b,
-                                                                  "/shop/inventory"))
-            outcome = "sent"
+        try:
+            stale = db.products.find_raw(
+                {"shop_id": shop["_id"], "is_active": True, "stock_updated_at": {"$lt": now - STALE_STOCK}},
+                {"name": 1, "quantity": 1, "stock_updated_at": 1}, sort=[("stock_updated_at", 1), ("_id", 1)],
+                limit=STOCK_CHECK_ITEMS)
+            if not stale:
+                outcome = "fresh"
+            elif _recipient(db, shop["owner_id"], template)[0] is None:
+                outcome = "unreachable"
+            else:
+                title, body = stock_check_text(shop, stale, now)
+                db.transaction(lambda s=shop, t=title, b=body: notify(db, s["owner_id"], STOCK_CHECK_KIND, t, b,
+                                                                      "/shop/inventory"))
+                outcome = "sent"
+        except Exception:
+            # Release the day's claim, so the next tick (still inside the grace period) tries this shop again
+            # instead of skipping it for the rest of the day; the job run fails and is retried.
+            db.mongo[STOCK_CHECKS].delete_one({"_id": f"{shop['_id']}:{day}"})
+            raise
         db.mongo[STOCK_CHECKS].update_one({"_id": f"{shop['_id']}:{day}"}, {"$set": {"outcome": outcome}})
         counts[outcome] += 1
     return {"enabled": True, "day": day, **counts}
