@@ -10,10 +10,18 @@ from app.core.database import Database, utcnow
 from app.core.deps import DB, AdminUser
 from app.core.errors import AppError, Conflict, Forbidden, NotFound
 from app.models import AnomalyStatus, Role, Shop, User
+from app.models.billing import Actor, SubscriptionStatus
 from app.models.core import VerificationStatus, evidence_keys, months_after
-from app.schemas.requests import AdminShopUpdateIn, AnomalyReviewIn
+from app.schemas.requests import (
+    AdminShopUpdateIn,
+    AnomalyReviewIn,
+    CataloguePublishIn,
+    SubscriptionCancelIn,
+    SubscriptionExtendIn,
+    SubscriptionGrantIn,
+)
 from app.schemas.serializers import iso, listing, shop_brief
-from app.services import analytics
+from app.services import analytics, plans
 from app.services import reviews as review_service
 from app.services.loaders import with_categories, with_category
 from app.services.media import (
@@ -487,3 +495,78 @@ def reveal_email(user_id: int, body: RevealEmailIn, admin: AdminUser, db: DB):
         {"_id": db.next_id("admin_audit"), "admin_id": admin.id, "action": "reveal_email",
          "target_user_id": user.id, "reason": body.reason, "created_at": utcnow()}, session=db.session)
     return {"id": user.id, "email": user.email}
+
+
+# ------------------------------------------------------------------ plans and subscriptions (P9.4)
+
+
+@router.get("/plans")
+def plan_catalogue(_: AdminUser, db: DB, version: int | None = Query(None, ge=1)):
+    """A catalogue version (default: the one in force), with every version number published so far."""
+    in_force = plans.catalogue_version(db)
+    shown = version or in_force
+    rows = plans.catalogue(db, version=shown)
+    if not rows:
+        raise NotFound("No such catalogue version")
+    versions = sorted(plans.plans(db).distinct("version"))
+    return {"version": shown, "in_force": in_force, "versions": versions,
+            "plans": [plans.plan_out(p) for p in rows.values()]}
+
+
+@router.post("/plans")
+def publish_plans(body: CataloguePublishIn, admin: AdminUser, db: DB):
+    """Publish a new catalogue version: prices (paise) and on-sale flags, with a reason. Existing subscriptions keep
+    their version until they renew."""
+    version = plans.publish_catalogue(
+        db, admin_id=admin.id, reason=body.reason, effective_from=body.effective_from,
+        changes={code: change.model_dump(exclude_unset=True) for code, change in body.plans.items()})
+    return {"version": version, "plans": [plans.plan_out(p) for p in plans.catalogue(db, version=version).values()]}
+
+
+@router.get("/founding")
+def founding_counter(_: AdminUser, db: DB):
+    """The founding offer's counter: the cap, slots taken and remaining, and the founding cities."""
+    return plans.founding_counter(db)
+
+
+@router.get("/subscriptions")
+def subscription_list(_: AdminUser, db: DB, status: Literal["advance", "active", "lapsed", "cancelled", "refunded"]
+                      | None = None, limit: int = Query(200, ge=1, le=500)):
+    """Subscriptions by status (all when none is given), the ones ending soonest first."""
+    query = {"status": SubscriptionStatus(status).value} if status else {}
+    rows = plans.subscriptions(db).find(query, sort=[("ends_at", 1), ("_id", 1)], limit=limit)
+    names = {s.id: s.name for s in db.shops.by_ids(i for r in rows for i in r.shop_ids).values()}
+    return [{**plans.subscription_out(r), "shops": [{"id": i, "name": names.get(i)} for i in r.shop_ids]}
+            for r in rows]
+
+
+@router.get("/subscriptions/{subscription_id}")
+def subscription_detail(subscription_id: int, _: AdminUser, db: DB):
+    sub = plans.subscriptions(db).get(subscription_id)
+    if sub is None:
+        raise NotFound("Subscription not found")
+    history = plans.events(db).find({"subscription_id": sub.id}, sort=[("at", 1), ("_id", 1)])
+    return {**plans.subscription_out(sub), "events": [plans.event_out(e) for e in history]}
+
+
+@router.post("/subscriptions")
+def grant_subscription(body: SubscriptionGrantIn, admin: AdminUser, db: DB):
+    """Record a subscription: a payment taken by hand (shop_paid, or an advance before billing starts), a sponsored
+    seat or a credit. A founding-city Growth year takes a founding slot while any remain."""
+    sub = plans.create_subscription(
+        db, shop_ids=body.shop_ids, plan_code=body.plan_code, period=body.period, source=body.source,
+        actor=Actor(type="admin", id=admin.id), reason=body.reason, paid_at=body.paid_at, months=body.months)
+    return plans.subscription_out(sub)
+
+
+@router.post("/subscriptions/{subscription_id}/extend")
+def extend_subscription(subscription_id: int, body: SubscriptionExtendIn, admin: AdminUser, db: DB):
+    sub = plans.extend(db, subscription_id, actor=Actor(type="admin", id=admin.id), reason=body.reason,
+                       months=body.months, ends_at=body.ends_at)
+    return plans.subscription_out(sub)
+
+
+@router.post("/subscriptions/{subscription_id}/cancel")
+def cancel_subscription(subscription_id: int, body: SubscriptionCancelIn, admin: AdminUser, db: DB):
+    sub = plans.cancel(db, subscription_id, actor=Actor(type="admin", id=admin.id), reason=body.reason)
+    return plans.subscription_out(sub)

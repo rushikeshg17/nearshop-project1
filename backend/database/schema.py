@@ -42,6 +42,7 @@ from pymongo import ASCENDING, DESCENDING, GEOSPHERE, TEXT, IndexModel, MongoCli
 from pymongo.database import Database as MongoDatabase
 from pymongo.errors import OperationFailure
 
+from app.models.billing import EVENT_KINDS, AccountType, Period, PlanCode, SubscriptionSource, SubscriptionStatus
 from app.models.core import KycType, VerificationStatus
 from app.models.enums import (
     AnomalyStatus,
@@ -93,6 +94,7 @@ RATING = {"bsonType": INT, "minimum": 1, "maximum": 5}
 RATING_N = {"oneOf": [{"bsonType": "null"}, RATING]}
 POSITIVE_INT = {"bsonType": INT, "minimum": 1}
 NON_NEGATIVE = {"bsonType": NUM, "minimum": 0}
+PAISE_N = {"bsonType": INT_N, "minimum": 0}  # a price in paise, or null where none is offered
 
 # The shop verification actions admins take (P3.3, app/api/routes/admin.py), each one row in admin_audit.
 SHOP_AUDIT_ACTIONS = ("shop_phone_verified", "shop_verification_approve", "shop_verification_reject",
@@ -420,6 +422,44 @@ VALIDATORS: dict[str, dict] = {
         shop_id=INT, month={"bsonType": STR, "pattern": "^\\d{4}-(0[1-9]|1[0-2])$"},
         **{f: {"bsonType": INT, "minimum": 0} for f in COUNT_FIELDS}, computed_at=DATE, keep_until=DATE,
     ),
+    # The plan catalogue (P9.4, app/services/plans.py; plan section 8.18): one row per plan code and catalogue version,
+    # never changed after it is written; a price change is a new version. Prices in paise, GST excluded.
+    "plans": schema(
+        ["code", "version", "name", "on_sale", "entitlements", "effective_from", "published_at", "reason"],
+        code=enum(PlanCode), version=POSITIVE_INT, name={"bsonType": STR, "minLength": 1, "maxLength": 60},
+        price_year_paise=PAISE_N, price_month_paise=PAISE_N, founding_year_paise=PAISE_N, on_sale=BOOL,
+        entitlements={"bsonType": "object", "required": ["demand_report", "logins", "outlets"], "properties": {
+            "demand_report": {"enum": ["teaser", "full"]}, "low_stock_alerts": {"bsonType": BOOL},
+            "logins": POSITIVE_INT, "roi_statement": {"bsonType": BOOL}, "priority_support": {"bsonType": BOOL},
+            "boost_discount_pct": {"bsonType": INT, "minimum": 0, "maximum": 100},
+            "outcome_guarantee": {"bsonType": BOOL}, "pro_insights": {"bsonType": BOOL}, "outlets": POSITIVE_INT}},
+        effective_from=DATE, published_at=DATE, published_by=INT_N, reason={"bsonType": STR, "minLength": 3},
+    ),
+    # Subscriptions (P9.4): a billing account's plan for its shops between starts_at and ends_at (exclusive). Every
+    # change also writes a subscription_events row. founding_shop_id is set only on a founding-offer subscription.
+    "subscriptions": schema(
+        ["account_type", "account_id", "shop_ids", "plan_id", "plan_code", "plan_version", "period", "price_paise",
+         "source", "status", "starts_at", "ends_at", "paid_until", "created_at", "updated_at"],
+        account_type=enum(AccountType), account_id=INT,
+        shop_ids={"bsonType": "array", "minItems": 1, "maxItems": 50, "items": {"bsonType": INT}},
+        plan_id=INT, plan_code=enum(PlanCode), plan_version=POSITIVE_INT, period=enum(Period),
+        price_paise={"bsonType": INT, "minimum": 0}, founding=BOOL, founding_slot=INT_N, founding_shop_id=INT_N,
+        source=enum(SubscriptionSource), status=enum(SubscriptionStatus), starts_at=DATE, ends_at=DATE,
+        paid_until=DATE, paid_at=DATE_N, term_start=DATE_N, quarters_done={"bsonType": INT, "minimum": 0},
+        next_quarter_end=DATE_N, reminded={"bsonType": "array", "items": {"bsonType": INT}},
+        advance_alerted_at=DATE_N, created_at=DATE, updated_at=DATE,
+    ),
+    # The append-only log of every subscription change (P9.4), with the actor and the reason.
+    "subscription_events": schema(
+        ["subscription_id", "shop_ids", "kind", "actor", "reason", "status_after", "ends_at_after", "at"],
+        subscription_id=INT, shop_ids={"bsonType": "array", "items": {"bsonType": INT}},
+        kind={"enum": list(EVENT_KINDS)},
+        actor={"bsonType": "object", "required": ["type"], "properties": {
+            "type": {"enum": ["admin", "system", "owner"]}, "id": {"bsonType": INT_N}}},
+        reason={"bsonType": STR, "minLength": 3, "maxLength": 500},
+        status_before={"enum": [None, *(s.value for s in SubscriptionStatus)]}, status_after=enum(SubscriptionStatus),
+        ends_at_before=DATE_N, ends_at_after=DATE, at=DATE,
+    ),
     # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
     "counters": {},
     "text_embeddings": {},
@@ -610,6 +650,23 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("shop_id", A), ("month", A)], unique=True, name="uq_shop_month"),
         IndexModel([("month", A)], name="month"),
         IndexModel([("keep_until", A)], expireAfterSeconds=0, name="keep_until_ttl"),
+    ],
+    # Plans and subscriptions (P9.4, app/services/plans.py).
+    "plans": [
+        IndexModel([("version", A), ("code", A)], unique=True, name="uq_version_code"),  # one row per code per version
+        IndexModel([("effective_from", A), ("version", D)], name="effective_version"),  # the version in force
+    ],
+    "subscriptions": [
+        IndexModel([("shop_ids", A), ("status", A), ("ends_at", D)], name="shop_status_ends"),  # effective_plan
+        IndexModel([("status", A), ("ends_at", A)], name="status_ends"),  # lapses, reminders, the admin list
+        IndexModel([("status", A), ("next_quarter_end", A)], name="status_quarter"),  # the outcome guarantee
+        IndexModel([("status", A), ("paid_at", A)], name="status_paid"),  # the 300-day advance alert
+        IndexModel([("founding_shop_id", A)], unique=True, name="uq_founding_shop",  # one founding offer per shop
+                   partialFilterExpression={"founding_shop_id": IS_INT}),
+    ],
+    "subscription_events": [
+        IndexModel([("subscription_id", A), ("at", A)], name="subscription_at"),
+        IndexModel([("at", D)], name="at"),
     ],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),

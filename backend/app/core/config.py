@@ -276,6 +276,39 @@ class Settings(BaseSettings):
     # either way.
     completion_codes_required: bool = True
 
+    # Plans and subscriptions (P9.4, app/services/plans.py; plan section 8.18). The prices and entitlements are data
+    # (the plans collection, versioned); these are the rules around them, all assumptions under test
+    # (business/BUSINESS_MODEL.md), so they are settings, never constants in code.
+    # The IST day paid plans start: advance subscriptions become active for one year on it, and no shop-paid plan is
+    # recorded before it (until then a shop can only pay a refundable advance).
+    billing_starts_on: date = date(2027, 8, 1)
+    # The founding offer: Growth at the catalogue's founding price for the first year, for the first founding_offer_cap
+    # shops in these cities (comma-separated, compared without case), counted in order of first payment, advances
+    # included. The cap is enforced in a transaction (plans.claim_founding_slot).
+    founding_offer_cap: int = 100
+    founding_offer_cities: str = "Ballari,Bellary"
+    # The outcome guarantee: a paid quarter that ends with fewer than this many customer requests (P9.2) adds
+    # plan_guarantee_credit_months to the subscription's end date.
+    plan_guarantee_min_requests: int = 3
+    plan_guarantee_credit_months: int = 3
+    # An advance must be used within 365 days of its payment (plan section 8.18); the admins are alerted when one is
+    # still not active this many days after it.
+    advance_alert_days: int = 300
+
+    @field_validator("founding_offer_cap", "plan_guarantee_min_requests", "plan_guarantee_credit_months",
+                     "advance_alert_days", mode="after")
+    @classmethod
+    def _check_plan_numbers(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("NEARSHOP_FOUNDING_OFFER_CAP, NEARSHOP_PLAN_GUARANTEE_* and NEARSHOP_ADVANCE_ALERT_DAYS "
+                             "must be 0 or more")
+        return value
+
+    @property
+    def founding_city_list(self) -> list[str]:
+        """NEARSHOP_FOUNDING_OFFER_CITIES as lower-case names, without blanks."""
+        return [c.strip().lower() for c in self.founding_offer_cities.split(",") if c.strip()]
+
     # AI
     embedding_provider: str = "fastembed"  # fastembed | tfidf
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"

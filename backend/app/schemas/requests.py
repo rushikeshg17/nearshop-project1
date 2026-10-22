@@ -1,7 +1,8 @@
 """Validated request bodies (Pydantic). Anything a client sends is checked here first."""
+from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 PHONE_PATTERN = r"^[6-9]\d{9}$"  # Indian mobile numbers
 
@@ -244,3 +245,72 @@ class AnomalyReviewIn(_Strict):
 class AdminShopUpdateIn(_Strict):
     is_verified: bool | None = None
     is_active: bool | None = None
+
+
+# Plans and subscriptions (P9.4, app/services/plans.py). Every admin change carries a reason, kept on the catalogue
+# row or in subscription_events. Times may be sent with an offset; they are stored as naive UTC.
+PLAN_CODES = Literal["free", "growth", "pro", "business", "partner_seat"]
+PAISE_MAX = 10_000_000  # ₹1,00,000
+
+
+def _naive_utc(value: datetime | None) -> datetime | None:
+    if value is not None and value.tzinfo is not None:
+        value = value.astimezone(UTC).replace(tzinfo=None)
+    return value
+
+
+class PlanChangeIn(_Strict):
+    """One plan's changes in a new catalogue version: prices in paise and the on-sale flag (and the name)."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=60)
+    price_year_paise: int | None = Field(default=None, ge=0, le=PAISE_MAX)
+    price_month_paise: int | None = Field(default=None, ge=0, le=PAISE_MAX)
+    founding_year_paise: int | None = Field(default=None, ge=0, le=PAISE_MAX)
+    on_sale: bool | None = None
+
+
+class CataloguePublishIn(_Strict):
+    reason: str = Field(min_length=10, max_length=500)
+    effective_from: datetime | None = None  # default: now; never earlier
+    plans: dict[PLAN_CODES, PlanChangeIn] = Field(min_length=1)
+
+    @field_validator("effective_from")
+    @classmethod
+    def _utc(cls, value: datetime | None) -> datetime | None:
+        return _naive_utc(value)
+
+
+class SubscriptionGrantIn(_Strict):
+    shop_ids: list[int] = Field(min_length=1, max_length=10)
+    plan_code: Literal["growth", "pro", "business", "partner_seat"]
+    period: Literal["year", "month"] = "year"
+    source: Literal["shop_paid", "advance", "sponsored", "guarantee_credit"]
+    paid_at: datetime | None = None  # shop_paid and advance: when the payment was made (default now)
+    months: int | None = Field(default=None, ge=1, le=36)  # default: the period's length
+    reason: str = Field(min_length=10, max_length=500)
+
+    @field_validator("paid_at")
+    @classmethod
+    def _utc(cls, value: datetime | None) -> datetime | None:
+        return _naive_utc(value)
+
+
+class SubscriptionExtendIn(_Strict):
+    months: int | None = Field(default=None, ge=1, le=36)
+    ends_at: datetime | None = None
+    reason: str = Field(min_length=10, max_length=500)
+
+    @field_validator("ends_at")
+    @classmethod
+    def _utc(cls, value: datetime | None) -> datetime | None:
+        return _naive_utc(value)
+
+    @model_validator(mode="after")
+    def _one(self) -> "SubscriptionExtendIn":
+        if (self.months is None) == (self.ends_at is None):
+            raise ValueError("Give either months or ends_at")
+        return self
+
+
+class SubscriptionCancelIn(_Strict):
+    reason: str = Field(min_length=10, max_length=500)

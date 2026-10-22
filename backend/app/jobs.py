@@ -35,6 +35,11 @@ lead_counts (P9.2), once a month, on the 1st at 02:00 IST or on the first tick a
 month's lead_counts row for every shop (app/services/leads.py rollup_month); the month it ran for is kept in the
 lease's last_result (ran_for), and every later tick that month only repeats the last result. A re-run replaces the
 month's rows.
+subscriptions (P9.4), every tick, runs the plan rules of app/services/plans.py run_jobs: advances become active on
+NEARSHOP_BILLING_STARTS_ON, the outcome guarantee credits paid quarters with too few customer requests, subscriptions
+past their end date lapse to Free, owners are reminded 30, 7 and 1 days before the end, and admins are alerted about
+an advance still not active 300 days after its payment. Each step is one indexed query when nothing is due, and each
+change is conditional on the state it read, so a run repeated or overlapping a lease take-over changes nothing twice.
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -118,6 +123,7 @@ SEND_NOTIFICATIONS_JOB = "send_notifications"  # the WhatsApp outbox sender (P4.
 FAILURE_ALERT_AT = "failure_alert_at"  # on that job's lease: when the failure-rate warning was last reported
 LEAD_COUNTS_JOB = "lead_counts"  # the monthly lead counts per shop (P9.2)
 LEAD_COUNTS_AT = time(2, 0)  # IST, on the 1st of each month
+SUBSCRIPTIONS_JOB = "subscriptions"  # plans and subscriptions (P9.4)
 
 RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
@@ -426,10 +432,18 @@ def lead_counts(clock: Clock = utcnow) -> dict[str, Any]:
     return {"ran_for": key, **leads.rollup_month(db, year, month, now)}
 
 
+def subscriptions(clock: Clock = utcnow) -> dict[str, Any]:
+    """Plans and subscriptions (P9.4, app/services/plans.py run_jobs), every tick. last_result: the numbers of advances
+    activated, guarantee credits and quarters met, lapses, reminders and advance alerts of this run."""
+    from app.services import plans
+
+    return plans.run_jobs(Database(), clock())
+
+
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {
     "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage, "retention": retention,
     "process_deletions": process_deletions, PHONE_MIGRATION_JOB: phone_migration,
-    SEND_NOTIFICATIONS_JOB: send_notifications, LEAD_COUNTS_JOB: lead_counts}
+    SEND_NOTIFICATIONS_JOB: send_notifications, LEAD_COUNTS_JOB: lead_counts, SUBSCRIPTIONS_JOB: subscriptions}
 
 
 class SearchIndexRefresher:

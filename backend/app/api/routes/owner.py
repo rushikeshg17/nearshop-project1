@@ -38,7 +38,7 @@ from app.schemas.serializers import (
     shop_detail,
     thumbnail_url,
 )
-from app.services import analytics, importer
+from app.services import analytics, importer, plans
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
 from app.services import reviews as review_service
@@ -227,6 +227,13 @@ def overview(shop: OwnerShop, db: DB):
     data["pending_orders"] = _ord(db, pending)
     data["shop"] = {"id": shop.id, "name": shop.name, "slug": shop.slug, "offers_delivery": shop.offers_delivery}
     return data
+
+
+@router.get("/plan")
+def my_plan(shop: OwnerShop, db: DB):
+    """The shop's plan (P9.4): its entitlements and end date, the founding offer, this quarter's outcome-guarantee
+    progress, any advance waiting for billing to start, and the plans on sale."""
+    return plans.owner_plan(db, shop)
 
 
 @router.get("/insights")
