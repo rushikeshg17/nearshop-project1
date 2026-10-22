@@ -2,10 +2,11 @@ import re
 from datetime import datetime, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, File, Query, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from app.api.routes import grievances as grievance_routes
+from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.core.deps import DB, AdminUser
 from app.core.errors import AppError, Conflict, Forbidden, NotFound
@@ -13,15 +14,20 @@ from app.models import AnomalyStatus, Role, Shop, User
 from app.models.billing import Actor, SubscriptionStatus
 from app.models.core import VerificationStatus, evidence_keys, months_after
 from app.schemas.requests import (
+    AdminPaymentRequestIn,
     AdminShopUpdateIn,
     AnomalyReviewIn,
     CataloguePublishIn,
+    CreditReturnIn,
+    ManualMatchIn,
+    PilotLedgerIn,
+    RefundIn,
     SubscriptionCancelIn,
     SubscriptionExtendIn,
     SubscriptionGrantIn,
 )
 from app.schemas.serializers import iso, listing, shop_brief
-from app.services import analytics, plans
+from app.services import analytics, billing, plans
 from app.services import reviews as review_service
 from app.services.loaders import with_categories, with_category
 from app.services.media import (
@@ -570,3 +576,90 @@ def extend_subscription(subscription_id: int, body: SubscriptionExtendIn, admin:
 def cancel_subscription(subscription_id: int, body: SubscriptionCancelIn, admin: AdminUser, db: DB):
     sub = plans.cancel(db, subscription_id, actor=Actor(type="admin", id=admin.id), reason=body.reason)
     return plans.subscription_out(sub)
+
+
+# ------------------------------------------------------------------ payments to NearShop (P9.5, app/services/billing.py)
+
+
+def _admin(admin: User) -> Actor:
+    return Actor(type="admin", id=admin.id)
+
+
+@router.get("/billing/requests")
+def payment_requests(_: AdminUser, db: DB, status: Literal["open", "paid", "cancelled", "refunded"] | None = None,
+                     limit: int = Query(200, ge=1, le=500)):
+    query = {"status": status} if status else {}
+    return [billing.request_out(r) for r in billing.requests(db).find(query, sort=[("_id", -1)], limit=limit)]
+
+
+@router.post("/billing/requests")
+def create_payment_request(body: AdminPaymentRequestIn, admin: AdminUser, db: DB):
+    """A payment request made for an owner (the shop's other open requests are cancelled)."""
+    req = billing.create_request(db, _shop(db, body.shop_id), plan_code=body.plan_code, period=body.period,
+                                 actor=_admin(admin))
+    return billing.request_out(req)
+
+
+@router.post("/billing/statements")
+def upload_statement(admin: AdminUser, db: DB, file: UploadFile = File(...)):
+    """The bank's statement export (CSV, the layout in docs/runbooks/billing.md): every new credit is recorded and
+    matched by its request number and amount; the rest go to the unmatched queue, and repeats are duplicates."""
+    data = file.file.read(settings.import_max_mb * 1024 * 1024 + 1)
+    return billing.import_statement(db, data, file.filename or "statement.csv", actor=_admin(admin))
+
+
+@router.get("/billing/credits")
+def bank_credits(_: AdminUser, db: DB, status: Literal["unmatched", "matched", "returned"] | None = "unmatched",
+                 limit: int = Query(200, ge=1, le=500)):
+    """The credits, by default the unmatched queue, oldest first."""
+    query = {"status": status} if status else {}
+    rows = billing.credits(db).find(query, sort=[("credited_at", 1), ("_id", 1)], limit=limit)
+    return [billing.credit_out(c) for c in rows]
+
+
+@router.post("/billing/credits/match")
+def match_credit(body: ManualMatchIn, admin: AdminUser, db: DB):
+    """Match a credit to a request by hand, by its UPI reference, with a reason."""
+    pay = billing.match_by_hand(db, upi_reference=body.upi_reference, request_number=body.request_number,
+                                reason=body.reason, actor=_admin(admin), amount_paise=body.amount_paise,
+                                credited_on=body.credited_on)
+    return billing.payment_out(pay)
+
+
+@router.post("/billing/credits/{credit_id}/return")
+def return_credit(credit_id: int, body: CreditReturnIn, admin: AdminUser, db: DB):
+    """An unmatched credit sent back to the payer by bank transfer."""
+    credit = billing.return_credit(db, credit_id, reason=body.reason, bank_reference=body.bank_reference,
+                                   actor=_admin(admin))
+    return billing.credit_out(credit)
+
+
+@router.get("/billing/payments")
+def billing_payments(_: AdminUser, db: DB, status: Literal["matched", "refunded"] | None = None,
+                     limit: int = Query(200, ge=1, le=500)):
+    query = {"status": status} if status else {}
+    return [billing.payment_out(p) for p in billing.payments(db).find(query, sort=[("_id", -1)], limit=limit)]
+
+
+@router.post("/billing/payments/{payment_id}/refund")
+def refund_payment(payment_id: int, body: RefundIn, admin: AdminUser, db: DB):
+    """Refund a payment in full: the subscription is refunded and a refund receipt or credit note is issued."""
+    pay = billing.refund_payment(db, payment_id, reason=body.reason, bank_reference=body.bank_reference,
+                                 actor=_admin(admin))
+    return billing.payment_out(pay)
+
+
+@router.get("/billing/documents/{document_id}")
+def billing_document(document_id: int, _: AdminUser, db: DB):
+    doc = billing.documents(db).get(document_id)
+    if doc is None:
+        raise NotFound("Document not found")
+    return billing.document_out(doc)
+
+
+@router.post("/billing/pilot-ledger")
+def import_pilot_ledger(body: PilotLedgerIn, admin: AdminUser, db: DB):
+    """The advance payments R1 recorded by hand: each becomes a matched payment, an advance subscription and a
+    receipt showing the original payment date. A repeated UPI reference refuses the whole import."""
+    return billing.import_pilot_ledger(db, [r.model_dump() for r in body.rows], reason=body.reason,
+                                       actor=_admin(admin))

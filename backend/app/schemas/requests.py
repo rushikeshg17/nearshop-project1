@@ -1,5 +1,5 @@
 """Validated request bodies (Pydantic). Anything a client sends is checked here first."""
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
@@ -323,3 +323,65 @@ class SubscriptionExtendIn(_Strict):
 
 class SubscriptionCancelIn(_Strict):
     reason: str = Field(min_length=10, max_length=500)
+
+
+# ------------------------------------------------------------------ payments to NearShop (P9.5, app/services/billing.py)
+
+STATE_CODE_PATTERN = r"^\d{2}$"  # the two-digit GST state code (29 is Karnataka)
+UPI_REFERENCE = Field(min_length=6, max_length=64, pattern=r"^[A-Za-z0-9/\-]+$")
+BANK_REFERENCE = Field(min_length=4, max_length=64)
+BILLING_REASON = Field(min_length=10, max_length=500)
+
+
+class BillingAccountIn(_Strict):
+    legal_name: str = Field(min_length=2, max_length=200)
+    address: str = Field(min_length=5, max_length=500)
+    state_code: str = Field(pattern=STATE_CODE_PATTERN)
+    gstin: str | None = Field(default=None, max_length=15)  # only when the payer is registered for GST
+
+
+class PaymentRequestIn(_Strict):
+    plan_code: Literal["growth", "pro", "business"] = "growth"
+    period: Literal["year"] = "year"  # monthly plans are paid by UPI Autopay (P9.6)
+
+
+class AdminPaymentRequestIn(PaymentRequestIn):
+    shop_id: int = Field(ge=1)
+    reason: str = BILLING_REASON
+
+
+class ManualMatchIn(_Strict):
+    upi_reference: str = UPI_REFERENCE
+    request_number: str = Field(min_length=9, max_length=16)
+    reason: str = BILLING_REASON
+    # Only for a credit not on any uploaded statement yet: its amount and the day it was credited.
+    amount_paise: int | None = Field(default=None, ge=1, le=PAISE_MAX)
+    credited_on: date | None = None
+
+    @model_validator(mode="after")
+    def _both(self) -> "ManualMatchIn":
+        if (self.amount_paise is None) != (self.credited_on is None):
+            raise ValueError("Give both amount_paise and credited_on, or neither")
+        return self
+
+
+class CreditReturnIn(_Strict):
+    bank_reference: str = BANK_REFERENCE
+    reason: str = BILLING_REASON
+
+
+class RefundIn(_Strict):
+    bank_reference: str = BANK_REFERENCE  # the bank transfer that returned the money
+    reason: str = BILLING_REASON
+
+
+class PilotLedgerRow(_Strict):
+    paid_on: date
+    shop_id: int = Field(ge=1)
+    amount_paise: int = Field(ge=1, le=PAISE_MAX)
+    upi_reference: str = UPI_REFERENCE
+
+
+class PilotLedgerIn(_Strict):
+    rows: list[PilotLedgerRow] = Field(min_length=1, max_length=500)
+    reason: str = BILLING_REASON

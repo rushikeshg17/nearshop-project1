@@ -53,6 +53,7 @@ from app.models.enums import (
     SaleSource,
 )
 from app.schemas.requests import CONSENT_PURPOSES, OTP_PURPOSES
+from app.services import billing
 from app.services.leads import COUNT_FIELDS, LEAD_KINDS
 
 log = logging.getLogger(__name__)
@@ -106,6 +107,17 @@ MODERATION: dict[str, dict | str | list] = dict(
     reported_at=DATE_N, triaged_at=DATE_N, decided_at=DATE_N, decision={"enum": ["keep", "hide", "remove", None]},
     decided_by=INT_N, decision_note={"bsonType": STR_N, "maxLength": 500},
 )
+
+# Billing (P9.5): an amount in paise, a GST state code, an actor, a party on a document, a count.
+PAISE = {"bsonType": INT, "minimum": 0}
+COUNT = {"bsonType": INT, "minimum": 0}
+STATE_CODE = {"bsonType": STR, "pattern": "^\\d{2}$"}
+GST_MODE = enum(billing.GstMode)
+ACTOR = {"bsonType": "object", "required": ["type"], "properties": {
+    "type": {"enum": ["admin", "system", "owner"]}, "id": {"bsonType": INT_N}}}
+PARTY = {"bsonType": "object", "required": ["legal_name", "address", "state_code"], "properties": {
+    "legal_name": {"bsonType": STR, "minLength": 1}, "address": {"bsonType": STR, "minLength": 1},
+    "state_code": STATE_CODE, "gstin": {"bsonType": STR_N}}}
 
 VALIDATORS: dict[str, dict] = {
     # email is optional since P4.1 (migration 7): an account registered by phone has none, and leaves the field out.
@@ -455,12 +467,75 @@ VALIDATORS: dict[str, dict] = {
     "subscription_events": schema(
         ["subscription_id", "shop_ids", "kind", "actor", "reason", "status_after", "ends_at_after", "at"],
         subscription_id=INT, shop_ids={"bsonType": "array", "items": {"bsonType": INT}},
-        kind={"enum": list(EVENT_KINDS)},
+        kind={"enum": [*EVENT_KINDS, *billing.SUBSCRIPTION_EVENT_KINDS]},  # billing adds refunded (P9.5)
         actor={"bsonType": "object", "required": ["type"], "properties": {
             "type": {"enum": ["admin", "system", "owner"]}, "id": {"bsonType": INT_N}}},
         reason={"bsonType": STR, "minLength": 3, "maxLength": 500},
         status_before={"enum": [None, *(s.value for s in SubscriptionStatus)]}, status_after=enum(SubscriptionStatus),
         ends_at_before=DATE_N, ends_at_after=DATE, at=DATE,
+    ),
+    # Payments to NearShop's own account (P9.5, app/services/billing.py; plan section 8.18; docs/runbooks/billing.md).
+    # Who pays: a shop owner now; distributor and lender are reserved for P10.3 and P10.10.
+    "billing_accounts": schema(
+        ["kind", "legal_name", "address", "state_code", "contact_user_id", "created_at", "updated_at"],
+        kind=enum(billing.AccountKind), legal_name={"bsonType": STR, "minLength": 1, "maxLength": 200},
+        address={"bsonType": STR, "minLength": 1, "maxLength": 500}, state_code=STATE_CODE,
+        gstin={"bsonType": STR_N, "pattern": billing.GSTIN_PATTERN.pattern}, contact_user_id=INT,
+        created_at=DATE, updated_at=DATE,
+    ),
+    # A payment request: its number is the UPI payment note. Amounts in paise; total = amount + GST.
+    "payment_requests": schema(
+        ["number", "billing_account_id", "owner_id", "shop_id", "purpose", "plan_code", "plan_version", "period",
+         "kind", "amount_paise", "gst_mode", "gst_paise", "total_paise", "status", "created_by", "created_at",
+         "updated_at"],
+        number={"bsonType": STR, "pattern": "^NSP\\d{6,9}$"}, billing_account_id=INT, owner_id=INT, shop_id=INT,
+        purpose=enum(billing.Purpose), plan_code=enum(PlanCode), plan_version=POSITIVE_INT, period=enum(Period),
+        kind=enum(billing.RequestKind), subscription_id=INT_N, founding=BOOL, amount_paise=PAISE, gst_mode=GST_MODE,
+        gst_paise=PAISE, total_paise=PAISE, status=enum(billing.RequestStatus), created_by=ACTOR, payment_id=INT_N,
+        created_at=DATE, updated_at=DATE,
+    ),
+    # Every credit seen on a bank statement, entered by hand or imported from the pilot ledger; one per UPI reference.
+    "bank_credits": schema(
+        ["upi_reference", "credited_at", "amount_paise", "source", "status", "created_at"],
+        upi_reference={"bsonType": STR, "minLength": 1, "maxLength": 64}, credited_at=DATE,
+        amount_paise={"bsonType": INT, "minimum": 1}, narration={"bsonType": STR, "maxLength": 600},
+        source=enum(billing.CreditSource), statement_id=INT_N, request_number=STR_N,
+        status=enum(billing.CreditStatus), note={"bsonType": STR_N, "maxLength": 300}, payment_id=INT_N,
+        alerted_at=DATE_N, returned={"bsonType": ["object", "null"]}, created_at=DATE,
+    ),
+    # A matched payment, with its request, credit, subscription and document, and its refund.
+    "billing_payments": schema(
+        ["request_id", "request_number", "billing_account_id", "shop_id", "credit_id", "upi_reference",
+         "amount_paise", "paid_at", "matched_at", "matched_by", "match", "reason", "subscription_id", "status"],
+        request_id=INT, request_number=STR, billing_account_id=INT, shop_id=INT, credit_id=INT, upi_reference=STR,
+        amount_paise={"bsonType": INT, "minimum": 1}, paid_at=DATE, matched_at=DATE, matched_by=ACTOR,
+        match=enum(billing.CreditSource), reason={"bsonType": STR, "minLength": 3, "maxLength": 500},
+        subscription_id=INT, document_id=INT_N, status=enum(billing.PaymentStatus),
+        refund={"oneOf": [{"bsonType": "null"}, {"bsonType": "object", "required": [
+            "at", "by", "reason", "bank_reference", "document_id"], "properties": {
+            "at": {"bsonType": DATE}, "by": ACTOR, "reason": {"bsonType": STR, "minLength": 3},
+            "bank_reference": {"bsonType": STR, "minLength": 1}, "document_id": {"bsonType": INT}}}]},
+    ),
+    # Receipts, tax invoices, refund receipts and credit notes: immutable snapshots, numbered without gaps per
+    # financial year (number: at most 16 characters, unique).
+    "billing_documents": schema(
+        ["number", "financial_year", "seq", "type", "issued_at", "payment_date", "format", "wording", "supplier",
+         "recipient", "place_of_supply", "description", "taxable_paise", "cgst_paise", "sgst_paise", "igst_paise",
+         "total_paise", "payment_id", "request_number", "upi_reference", "content_hash"],
+        number={"bsonType": STR, "minLength": 1, "maxLength": billing.MAX_NUMBER_LENGTH},
+        financial_year={"bsonType": STR, "pattern": "^\\d{4}-\\d{2}$"}, seq=POSITIVE_INT, type=enum(billing.DocType),
+        issued_at=DATE, payment_date=DATE, format={"bsonType": STR, "minLength": 1}, draft_line=STR_N,
+        wording={"bsonType": STR, "minLength": 1}, supplier=PARTY, recipient=PARTY, place_of_supply=STR,
+        description=STR, sac=STR_N, taxable_paise=PAISE, gst_rate_pct={"bsonType": INT, "minimum": 0, "maximum": 100},
+        cgst_paise=PAISE, sgst_paise=PAISE, igst_paise=PAISE, total_paise=PAISE, payment_id=INT,
+        request_number=STR, upi_reference=STR, original_document_id=INT_N, original_number=STR_N,
+        refund_reference=STR_N, content_hash={"bsonType": STR, "pattern": "^[0-9a-f]{64}$"},
+    ),
+    # One row per statement upload, with its counts.
+    "bank_statements": schema(
+        ["filename", "uploaded_by", "uploaded_at", "credits", "matched", "unmatched", "duplicates"],
+        filename=STR, uploaded_by=ACTOR, uploaded_at=DATE, credits=COUNT, matched=COUNT, unmatched=COUNT,
+        duplicates=COUNT, debits_skipped=COUNT, unreadable=COUNT,
     ),
     # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
     "counters": {},
@@ -674,6 +749,30 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("subscription_id", A), ("at", A)], name="subscription_at"),
         IndexModel([("at", D)], name="at"),
     ],
+    # Billing (P9.5, app/services/billing.py).
+    "billing_accounts": [
+        IndexModel([("kind", A), ("contact_user_id", A)], unique=True, name="uq_kind_contact"),  # one per owner
+    ],
+    "payment_requests": [
+        IndexModel([("number", A)], unique=True, name="uq_number"),  # matching by the payment note
+        IndexModel([("shop_id", A), ("status", A)], name="shop_status"),  # the owner's open requests
+        IndexModel([("status", A), ("_id", D)], name="status_id"),  # the admin list
+    ],
+    "bank_credits": [
+        IndexModel([("upi_reference", A)], unique=True, name="uq_upi_reference"),  # duplicates on upload
+        IndexModel([("status", A), ("credited_at", A)], name="status_credited"),  # the unmatched queue and alert
+    ],
+    "billing_payments": [
+        IndexModel([("shop_id", A), ("_id", D)], name="shop_id"),  # the owner's payments
+        IndexModel([("status", A), ("_id", D)], name="status_id"),  # the admin list
+        IndexModel([("upi_reference", A)], unique=True, name="uq_upi_reference"),
+    ],
+    "billing_documents": [
+        IndexModel([("number", A)], unique=True, name="uq_number"),  # no duplicate number, ever
+        IndexModel([("financial_year", A), ("seq", A)], unique=True, name="uq_year_seq"),
+        IndexModel([("payment_id", A)], name="payment"),
+    ],
+    "bank_statements": [IndexModel([("uploaded_at", D)], name="uploaded_at")],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),
         IndexModel([("target_user_id", A), ("created_at", D)], name="target_created"),

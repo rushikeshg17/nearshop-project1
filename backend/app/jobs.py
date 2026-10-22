@@ -40,6 +40,10 @@ NEARSHOP_BILLING_STARTS_ON, the outcome guarantee credits paid quarters with too
 past their end date lapse to Free, owners are reminded 30, 7 and 1 days before the end, and admins are alerted about
 an advance still not active 300 days after its payment. Each step is one indexed query when nothing is due, and each
 change is conditional on the state it read, so a run repeated or overlapping a lease take-over changes nothing twice.
+billing_reconciliation (P9.5), once per IST day (the first tick of the day), alerts the admins about every bank
+credit still unmatched NEARSHOP_BILLING_UNMATCHED_ALERT_WORKING_DAYS (3) working days after it was credited
+(app/services/billing.py alert_unmatched), once per credit; the day it ran for is kept in the lease's last_result
+(ran_for), like lead_counts.
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -108,7 +112,8 @@ TICK_SECONDS = 30
 LEASE_TTL = timedelta(seconds=60)
 # Jobs too costly, or too loud, to repeat on every tick after a failure: retried after this long.
 RETRY_AFTER_FAILURE: dict[str, timedelta] = {"snapshot_storage": timedelta(hours=1), "retention": timedelta(hours=1),
-                                              "phone_migration": timedelta(hours=1), "lead_counts": timedelta(hours=1)}
+                                              "phone_migration": timedelta(hours=1), "lead_counts": timedelta(hours=1),
+                                              "billing_reconciliation": timedelta(hours=1)}
 RETENTION_AT = time(21, 30)  # UTC: 03:00 IST, the nightly retention job (P3.2)
 # The phone migration (P4.2): in-app warnings this many days before the email sign-in sunset, and accounts still
 # without a verified phone switched off this many days after it.
@@ -124,6 +129,7 @@ FAILURE_ALERT_AT = "failure_alert_at"  # on that job's lease: when the failure-r
 LEAD_COUNTS_JOB = "lead_counts"  # the monthly lead counts per shop (P9.2)
 LEAD_COUNTS_AT = time(2, 0)  # IST, on the 1st of each month
 SUBSCRIPTIONS_JOB = "subscriptions"  # plans and subscriptions (P9.4)
+BILLING_JOB = "billing_reconciliation"  # the daily unmatched-credit alert (P9.5)
 
 RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
@@ -440,10 +446,26 @@ def subscriptions(clock: Clock = utcnow) -> dict[str, Any]:
     return plans.run_jobs(Database(), clock())
 
 
+def billing_reconciliation(clock: Clock = utcnow) -> dict[str, Any]:
+    """The daily unmatched-credit alert (P9.5, app/services/billing.py alert_unmatched), once per IST day: the day it
+    ran for is kept in the lease's last_result (ran_for), and every later tick that day only repeats the last
+    result. A failed run is retried an hour later (RETRY_AFTER_FAILURE)."""
+    from app.services import billing
+
+    now = clock()
+    today = ist_day(now).isoformat()
+    db = Database()
+    last = (db.mongo[LEASES].find_one({"_id": BILLING_JOB}, {"last_result": 1}) or {}).get("last_result") or {}
+    if last.get("ok") is True and last.get("ran_for") == today:
+        return {k: v for k, v in last.items() if k != "ok"}
+    return {"ran_for": today, **billing.alert_unmatched(db, now)}
+
+
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {
     "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage, "retention": retention,
     "process_deletions": process_deletions, PHONE_MIGRATION_JOB: phone_migration,
-    SEND_NOTIFICATIONS_JOB: send_notifications, LEAD_COUNTS_JOB: lead_counts, SUBSCRIPTIONS_JOB: subscriptions}
+    SEND_NOTIFICATIONS_JOB: send_notifications, LEAD_COUNTS_JOB: lead_counts, SUBSCRIPTIONS_JOB: subscriptions,
+    BILLING_JOB: billing_reconciliation}
 
 
 class SearchIndexRefresher:

@@ -309,6 +309,81 @@ class Settings(BaseSettings):
         """NEARSHOP_FOUNDING_OFFER_CITIES as lower-case names, without blanks."""
         return [c.strip().lower() for c in self.founding_offer_cities.split(",") if c.strip()]
 
+    # Payments to NearShop's own account, receipts and invoices (P9.5, app/services/billing.py, docs/runbooks/billing.md).
+    # No account number, UPI handle or GSTIN is ever in the repository: they are these settings, set per environment.
+    # Payment requests are refused (503 billing_not_configured) until the UPI ID and the payee name are set.
+    billing_upi_id: str = ""  # NearShop's merchant UPI ID on the company's current account (B22)
+    billing_payee_name: str = ""  # the payee name the UPI app shows
+    # The supplier on every document: NearShop's legal name, address and GST state code (29 is Karnataka), and its
+    # GSTIN once registered (B5).
+    billing_legal_name: str = ""
+    billing_address: str = ""
+    billing_state_code: str = "29"
+    billing_gstin: str = ""
+    # The GST position (B5): "unregistered" (payment receipts that state no GST is charged) or "registered" (tax
+    # invoices and credit notes, GST added to the price) from billing_gst_registered_from, the IST day the CA sets.
+    billing_gst_mode: Literal["unregistered", "registered"] = "unregistered"
+    billing_gst_registered_from: date | None = None
+    billing_gst_rate_pct: int = 18
+    billing_sac: str = ""  # the SAC the CA chooses, printed on tax invoices and credit notes
+    # The document number: <prefix>/<YY-YY>/<6 digits>, one series per financial year, at most 16 characters.
+    billing_number_prefix: str = "NS"
+    # The document format the CA approved in writing (B22), as its version label, or "draft". A draft document
+    # carries "Draft format, not for use", and production refuses to issue one. The wording of each document type is
+    # the CA's approved text, copied here exactly, never written by the team; an approved format with no wording for
+    # a type refuses to issue that type.
+    billing_document_format: str = "draft"
+    billing_wording_receipt: str = ""
+    billing_wording_tax_invoice: str = ""
+    billing_wording_refund_receipt: str = ""
+    billing_wording_credit_note: str = ""
+    # The daily reconciliation alert: a bank credit still unmatched this many working days (Monday to Friday, except
+    # the bank holidays listed, comma-separated ISO dates) after the day it was credited.
+    billing_unmatched_alert_working_days: int = 3
+    billing_bank_holidays: str = ""
+
+    @field_validator("billing_gst_rate_pct", "billing_unmatched_alert_working_days", mode="after")
+    @classmethod
+    def _check_billing_numbers(cls, value: int) -> int:
+        if not 0 <= value <= 100:
+            raise ValueError("NEARSHOP_BILLING_GST_RATE_PCT and NEARSHOP_BILLING_UNMATCHED_ALERT_WORKING_DAYS must be "
+                             "between 0 and 100")
+        return value
+
+    @field_validator("billing_number_prefix", mode="after")
+    @classmethod
+    def _check_number_prefix(cls, value: str) -> str:
+        # <prefix>/YY-YY/NNNNNN stays within the 16 characters the GST rules allow.
+        if not (1 <= len(value) <= 3 and value.isascii() and value.isalnum() and value == value.upper()):
+            raise ValueError("NEARSHOP_BILLING_NUMBER_PREFIX is 1 to 3 capital letters or digits")
+        return value
+
+    @field_validator("billing_state_code", mode="after")
+    @classmethod
+    def _check_state_code(cls, value: str) -> str:
+        if not (len(value) == 2 and value.isdigit()):
+            raise ValueError("NEARSHOP_BILLING_STATE_CODE is the two-digit GST state code (29 for Karnataka)")
+        return value
+
+    @model_validator(mode="after")
+    def _check_gst_mode(self) -> "Settings":
+        if self.billing_gst_mode == "registered" and (self.billing_gst_registered_from is None
+                                                      or not self.billing_gstin.strip()):
+            raise ValueError("NEARSHOP_BILLING_GST_MODE=registered needs NEARSHOP_BILLING_GST_REGISTERED_FROM and "
+                             "NEARSHOP_BILLING_GSTIN")
+        return self
+
+    @property
+    def billing_holiday_list(self) -> list[date]:
+        """NEARSHOP_BILLING_BANK_HOLIDAYS as dates (an entry that is not an ISO date is ignored)."""
+        days = []
+        for part in self.billing_bank_holidays.split(","):
+            try:
+                days.append(date.fromisoformat(part.strip()))
+            except ValueError:
+                continue
+        return days
+
     # AI
     embedding_provider: str = "fastembed"  # fastembed | tfidf
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
