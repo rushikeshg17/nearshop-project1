@@ -69,6 +69,7 @@ from app.models import ModelRun, Role, User
 from app.schemas.serializers import iso
 from app.services.loaders import category_by_slug
 from app.services.search import SearchParams, _local_term_candidates, run_search, search_now, suggestion_allowed
+from app.utils.hours import IST
 from app.utils.text import normalize_query
 
 log = logging.getLogger(__name__)
@@ -92,6 +93,7 @@ MIN_LANGUAGE_SEARCHES = 100  # a language's figures appear only once it has this
 WINDOWS_DAYS = (7, 30)
 SNAPSHOT_NAME = "search_online"
 KEYWORD_ENGINE = "mongodb-text-index"
+VECTOR_LOADING = "loading"  # run_search's engine.semantic while the vector index is still being built
 # Shadow guardrails (plan section 8.6).
 GUARDRAIL_MIN_DAYS = 7
 GUARDRAIL_MIN_SEARCHES = 300
@@ -447,19 +449,37 @@ def record_search(db: Database, sp: SearchPlan, p: SearchParams, result: dict, r
 
 
 def _write_search(name: str, doc: dict, sp: SearchPlan, p: SearchParams, engine: dict) -> None:
+    """Insert the event first, so a later page or a click that comes soon after finds it, and only then tag its
+    language (whose first call after start-up, and after each hourly expiry, reads the catalogue's local terms) and
+    run the shadow ranking."""
     db = Database(name)
-    doc["language"] = language_tag(db, normalize_query(p.q))
     if doc["category"] is not None and category_by_slug(db, doc["category"]) is None:
-        doc["category"] = None  # only a real category slug, never free text from the query string
-    db.mongo[COLLECTION].insert_one(doc)
-    if sp.shadow is not None:
+        doc["category"] = None  # only a real category slug, never free text from the query string (cached lookup)
+    collection = db.mongo[COLLECTION]
+    collection.insert_one(doc)
+    language = language_tag(db, normalize_query(p.q))
+    if language != doc["language"]:
+        collection.update_one({"_id": doc["_id"]}, {"$set": {"language": language}})
+    # A search served while the vector index was still loading (after a deploy) is not shadowed: its scores lack
+    # the vector engine, and its label would split the candidate into a row of its own.
+    if sp.shadow is not None and str(engine.get("semantic") or VECTOR_LOADING) != VECTOR_LOADING:
         shadow = shadow_rank(db, p, sp, engine)
-        db.mongo[COLLECTION].update_one({"_id": doc["_id"]}, {"$set": {"shadow": shadow}})
+        collection.update_one({"_id": doc["_id"]}, {"$set": {"shadow": shadow}})
+
+
+IMPRESSION_RETRIES = 5  # a later page whose search's insert is still queued waits for it, off the request path
+IMPRESSION_RETRY_SECONDS = 0.2
 
 
 def _add_impressions(name: str, search_id: str, impressions: list[dict]) -> None:
     collection = Database(name).mongo[COLLECTION]
-    doc = collection.find_one({"_id": search_id}, {"impressions.position": 1})
+    doc = None
+    for attempt in range(IMPRESSION_RETRIES):
+        doc = collection.find_one({"_id": search_id}, {"impressions.position": 1})
+        if doc is not None:
+            break
+        if attempt + 1 < IMPRESSION_RETRIES:
+            time.sleep(IMPRESSION_RETRY_SECONDS)
     if doc is None:
         return
     shown = {i["position"] for i in doc.get("impressions") or []}
@@ -737,6 +757,14 @@ def _overlap(a: list[str], b: list[str]) -> float:
     return len(set(a) & set(b)) / max(len(a), len(b))
 
 
+def calendar_days(first: datetime, last: datetime) -> int:
+    """The calendar days (Ballari's, Asia/Kolkata) from the first to the last shadowed search, both counted: a run
+    from day 1 at 00:05 to day 7 at 23:50 covers 7 days, though less than 7 times 24 hours pass between them."""
+    def day(at: datetime):
+        return (at if at.tzinfo else at.replace(tzinfo=UTC)).astimezone(IST).date()
+    return (day(last) - day(first)).days + 1
+
+
 def shadow_comparison(db: Database) -> list[dict]:
     """Per shadow label: shadowed searches and days covered, the mean overlap of the two top 10s, the difference
     in zero-result searches, for shadowed searches with a click how often the clicked group is in the candidate's
@@ -750,7 +778,8 @@ def shadow_comparison(db: Database) -> list[dict]:
     for label, events in sorted(by_label.items()):
         n = len(events)
         first, last = min(e["created_at"] for e in events), max(e["created_at"] for e in events)
-        days = round((last - first).total_seconds() / 86400, 2)
+        elapsed = round((last - first).total_seconds() / 86400, 2)
+        days = calendar_days(first, last)
         overlap = round(statistics.fmean(_overlap(e["shadow"]["production_top"], e["shadow"]["top"])
                                          for e in events), 4)
         prod_zero = sum(1 for e in events if not e["shadow"]["production_results_count"])
@@ -789,6 +818,7 @@ def shadow_comparison(db: Database) -> list[dict]:
             "label": label, "ranking": sample_shadow["ranking"], "keyword": sample_shadow["keyword"],
             "vector": sample_shadow["vector"], "engine_candidate": engine_candidate,
             "searches": n, "first_at": iso(first), "last_at": iso(last), "days_covered": days,
+            "elapsed_days": elapsed,
             "mean_overlap_top10": overlap,
             "zero_result": {"production": prod_zero, "candidate": cand_zero, "difference": cand_zero - prod_zero,
                             "difference_pp": zero_pp},

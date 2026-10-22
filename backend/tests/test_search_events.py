@@ -3,7 +3,7 @@
 Background writes run inline here (and swallow errors, as db.background does), so each request's events are in
 the database when it returns."""
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -545,3 +545,91 @@ def test_the_ttl_index_expires_events_after_90_days(db):
     info = db.mongo[se.COLLECTION].index_information()["created_ttl_90d"]
     assert info["key"] == [("created_at", 1)] and info["expireAfterSeconds"] == 90 * 24 * 60 * 60
     assert schema.SEARCH_EVENTS_KEEP_SECONDS == 90 * 86400
+
+
+# ---------------------------------------------------------------- review fixes
+
+
+def test_the_event_is_inserted_before_its_language_is_tagged(consented, monkeypatch):
+    """The first language tag after start-up reads the catalogue's local terms; a later page or a click that comes
+    meanwhile must already find the event."""
+    seen: list[int] = []
+    real = se.language_tag
+
+    def slow_tag(db, norm, terms=None):
+        seen.append(Database().mongo[se.COLLECTION].count_documents({}))
+        return real(db, norm, terms)
+
+    monkeypatch.setattr(se, "language_tag", slow_tag)
+    consented.get("/api/search", params={**SEARCH, "q": "ಕೊಡೆ"})
+    assert seen == [1]
+    assert events()[0]["language"] == "kn"  # tagged after the insert
+
+
+def test_a_later_page_waits_for_its_search_to_be_inserted(db, monkeypatch):
+    """_add_impressions retries, off the request path, while the page-1 insert is still queued."""
+    doc = _event(utcnow(), 7000)
+    sleeps: list[float] = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 2 and db.mongo[se.COLLECTION].count_documents({"_id": doc["_id"]}) == 0:
+            db.mongo[se.COLLECTION].insert_one(doc)  # the page-1 insert lands while the later page waits
+
+    monkeypatch.setattr(se.time, "sleep", sleep)
+    se._add_impressions(db.mongo.name, doc["_id"], [{"group": "c9", "listing": 9, "position": 2}])
+    assert len(sleeps) == 2
+    assert [i["position"] for i in db.mongo[se.COLLECTION].find_one({"_id": doc["_id"]})["impressions"]] == [1, 2]
+    sleeps.clear()
+    se._add_impressions(db.mongo.name, "f" * 24, [{"group": "c9", "listing": 9, "position": 2}])  # never inserted
+    assert len(sleeps) == se.IMPRESSION_RETRIES - 1
+
+
+def test_seven_calendar_days_of_shadow_pass_the_days_guardrail(db):
+    """A run from day 1 at 00:05 to day 7 at 23:50 (Ballari time) covers 7 days, though under 7 x 24 hours."""
+    day1 = datetime(2026, 11, 2, 0, 5, tzinfo=se.IST).astimezone(UTC).replace(tzinfo=None)
+    day7 = datetime(2026, 11, 8, 23, 50, tzinfo=se.IST).astimezone(UTC).replace(tzinfo=None)
+    shadow = {"label": "r2 + mongodb-text-index + x", "ranking": "r2", "keyword": "mongodb-text-index", "vector": "x",
+              "production_label": "r1 + mongodb-text-index + x", "top": ["c1"], "production_top": ["c1"],
+              "results_count": 1, "production_results_count": 1, "ms": 5.0, "production_ms": 4.0}
+    step = (day7 - day1) / 299
+    rows = [_event(day1 + step * n, 8000 + n, clicks=[(1, 5)], shadow=shadow) for n in range(300)]
+    db.mongo[se.COLLECTION].insert_many(rows)
+    [row] = se.shadow_comparison(db)
+    assert row["elapsed_days"] < 7 and row["days_covered"] == 7 and row["guardrails"][0]["pass"] is True
+    assert se.calendar_days(day1, day1 + timedelta(days=5, hours=23)) == 6
+
+
+def test_a_search_served_while_the_vector_index_loads_is_not_shadowed(consented, monkeypatch):
+    """Its label would read "loading" and split the candidate into a row of its own."""
+    monkeypatch.setattr(settings, "search_shadow_ranking_version", settings.ranking.version)
+    monkeypatch.setattr(settings, "search_shadow_share", 1.0)
+    real = search_module.run_search
+
+    def loading(*args, **kwargs):
+        out = real(*args, **kwargs)
+        return {**out, "engine": {**out["engine"], "semantic": se.VECTOR_LOADING}}
+
+    monkeypatch.setattr(search_module, "run_search", loading)
+    consented.get("/api/search", params=SEARCH)
+    monkeypatch.setattr(search_module, "run_search", real)
+    consented.get("/api/search", params=SEARCH)
+    first, second = events()
+    assert first["shadow"] is None and second["shadow"] is not None
+    assert [r["label"] for r in se.shadow_comparison(Database())] == [second["shadow"]["label"]]
+    assert "loading" not in second["shadow"]["label"]
+
+
+def test_the_click_endpoint_answers_204_to_any_body(consented, ids):
+    """Past the CSRF guard and the rate limit, a body that is not a click records nothing and still gets 204."""
+    _search_and_click(consented)
+    before = events()[0]["clicks"]
+    for body in ({}, {"listing_id": "x", "group": "c1", "position": 1}, {"listing_id": 1, "group": "z1"},
+                 {"listing_id": 1, "group": "c1", "position": 0}):
+        assert consented.post("/api/search/click", json=body, headers=HEADERS).status_code == 204, body
+    for raw in (b"not json", b""):
+        res = consented.post("/api/search/click", content=raw,
+                             headers={**HEADERS, "Content-Type": "application/json"})
+        assert res.status_code == 204, raw
+    assert events()[0]["clicks"] == before
+    assert consented.post("/api/search/click", json={}).status_code == 403  # the guard still comes first

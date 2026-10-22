@@ -1,7 +1,7 @@
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, Query, Request, Response
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.core.deps import DB, AdminUser, OptionalUser
 from app.services import search as search_service
@@ -69,12 +69,24 @@ class ClickIn(BaseModel):
     position: int = Field(ge=1, le=1000)
 
 
-@router.post("/click", status_code=204)
-def click(body: ClickIn, request: Request, response: Response, db: DB, user: OptionalUser) -> Response:
-    """Record a click on a search result. 204 whether or not anything is recorded: nothing without a trail, or for
-    a caller who is not measured. Rate limit: 120 per IP per minute (app/core/ratelimit.py)."""
+async def click_body(request: Request) -> ClickIn | None:
+    """The click's body, or None when it is not valid JSON or not a ClickIn: the click endpoint answers 204 to any
+    body once past the CSRF guard and the rate limit, so it never raises a validation error."""
     try:
-        search_events.record_click(db, request, response, user, body.listing_id, body.group, body.position)
+        return ClickIn.model_validate_json(await request.body())
+    except (ValidationError, ValueError):
+        return None
+
+
+@router.post("/click", status_code=204)
+def click(request: Request, response: Response, db: DB, user: OptionalUser,
+          body: Annotated[ClickIn | None, Depends(click_body)]) -> Response:
+    """Record a click on a search result. 204 whether or not anything is recorded: nothing for a body that is not
+    a click, without a trail, or for a caller who is not measured. Rate limit: 120 per IP per minute
+    (app/core/ratelimit.py)."""
+    try:
+        if body is not None:
+            search_events.record_click(db, request, response, user, body.listing_id, body.group, body.position)
     except Exception as exc:  # a click is never worth an error
         search_events.log.warning("search click not recorded: %s", type(exc).__name__)
     response.status_code = 204
