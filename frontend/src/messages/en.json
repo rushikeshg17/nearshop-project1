@@ -1,0 +1,48 @@
+{
+  "shell": {
+    "nav": {
+      "home": "Home",
+      "search": "Search",
+      "shops": "Shops",
+      "aiLab": "AI Lab",
+      "listShop": "List your shop",
+      "signIn": "Sign in",
+      "shopDashboard": "Shop dashboard",
+      "myShop": "My shop",
+      "activity": "Activity"
+    },
+    "language": {
+      "label": "Language"
+    },
+    "tabBar": {
+      "label": "Primary"
+    },
+    "footer": {
+      "tagline": "Local inventory, online. See what the shops around you have in stock, then reserve it or get it delivered by the shop.",
+      "shopHeading": "Shop",
+      "searchNearby": "Search nearby",
+      "browseShops": "Browse shops",
+      "yourReservations": "Your reservations",
+      "forShopsHeading": "For shops",
+      "howItWorksHeading": "How it works",
+      "pickupDelivery": "Pickup and delivery",
+      "notice": "Map data from OpenStreetMap contributors. Demo data: shops, prices and sales are generated for demonstration.",
+      "legal": "Legal",
+      "privacy": "Privacy notice",
+      "terms": "Terms of use",
+      "grievances": "Grievances"
+    },
+    "userMenu": {
+      "trigger": "Account menu",
+      "reservations": "My reservations and orders",
+      "viewShopPage": "View my shop page",
+      "adminConsole": "Admin console",
+      "priceReview": "Price review queue",
+      "theme": "Theme",
+      "themeLight": "Light",
+      "themeDark": "Dark",
+      "themeSystem": "System",
+      "signOut": "Sign out"
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "shell": {
+    "nav": {
+      "home": "",
+      "search": "",
+      "shops": "",
+      "aiLab": "",
+      "listShop": "",
+      "signIn": "",
+      "shopDashboard": "",
+      "myShop": "",
+      "activity": ""
+    },
+    "language": {
+      "label": ""
+    },
+    "tabBar": {
+      "label": ""
+    },
+    "footer": {
+      "tagline": "",
+      "shopHeading": "",
+      "searchNearby": "",
+      "browseShops": "",
+      "yourReservations": "",
+      "forShopsHeading": "",
+      "howItWorksHeading": "",
+      "pickupDelivery": "",
+      "notice": "",
+      "legal": "",
+      "privacy": "",
+      "terms": "",
+      "grievances": ""
+    },
+    "userMenu": {
+      "trigger": "",
+      "reservations": "",
+      "viewShopPage": "",
+      "adminConsole": "",
+      "priceReview": "",
+      "theme": "",
+      "themeLight": "",
+      "themeDark": "",
+      "themeSystem": "",
+      "signOut": ""
+    }
+  }
+}

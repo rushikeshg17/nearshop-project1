@@ -6,11 +6,124 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ThemeProvider } from "next-themes";
-import { Suspense, useEffect, useState } from "react";
+import { createContext, Suspense, use, useEffect, useOptimistic, useState, useTransition } from "react";
 
 import { useMe } from "@/hooks/use-session";
 import { ApiError, errorMessage } from "@/lib/api";
+import {
+  createTranslator,
+  type Language,
+  type LanguageCode,
+  languageInfo,
+  type Messages,
+  type Translate,
+  writeLanguageCookie,
+} from "@/lib/i18n";
 import { LocationProvider } from "@/lib/location";
+
+// ---------------------------------------------------------------- the interface language (P7.5, src/lib/i18n.ts)
+
+export type I18n = {
+  /** The language the page is rendered in. */
+  language: LanguageCode;
+  /** Its registry entry: name, html lang (also the Intl locale) and font. */
+  info: Language;
+  /** The language the visitor last chose: shown by the switches while the page re-renders in it. */
+  selected: LanguageCode;
+  t: Translate;
+  /** Remember the choice (the nearshop_lang cookie) and re-render the page in it, without a full reload. */
+  setLanguage: (code: LanguageCode) => void;
+};
+
+const I18nContext = createContext<I18n | null>(null);
+
+/** The interface language in a client component. Server components use requestI18n from src/lib/i18n.ts. */
+export function useI18n(): I18n {
+  const i18n = use(I18nContext);
+  if (!i18n) throw new Error("useI18n needs the Providers from src/components/providers.tsx");
+  return i18n;
+}
+
+/** The script font of the active language (src/app/layout.tsx), kept off the page's load entirely. Until it is
+ * used, the script's characters show in the phone's own font for it (every Android phone has a Kannada one, itself
+ * Noto Sans Kannada), so text is never blocked or missing. The visitor's first tap or key press downloads it
+ * without using it, and the first one after it has arrived adds it to the body font's family list, in a task of its
+ * own so the tap's own response paints first. It is removed when the language changes.
+ *
+ * Why not on load (P2.9 budgets, which must pass in every language, plan section 8.16): the lab counts every
+ * request that finishes before the largest contentful paint, so the font named in the first paint added 150 ms
+ * (28 KB) to 450 ms (the 91 KB variable file) to the lab LCP of the budget pages. And any web font that finishes
+ * loading after that paint makes Chrome lay all text out again: on the search page the result titles re-wrap and
+ * the lab takes that as a new, late largest paint (seconds later). After an input, the largest paint is final, and
+ * a layout shift within 0.5 s of it does not count. */
+function useScriptFont(fontStack: string | null, sample: string) {
+  useEffect(() => {
+    if (!fontStack) return;
+    const root = document.documentElement;
+    let state: "idle" | "loading" | "loaded" = "idle";
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stop = () => {
+      window.removeEventListener("pointerdown", onInput, true);
+      window.removeEventListener("keydown", onInput, true);
+    };
+    function onInput() {
+      if (state === "loaded") {
+        stop();
+        timer = setTimeout(() => root.style.setProperty("--font-geist-sans", fontStack), 0);
+      } else if (state === "idle") {
+        state = "loading";
+        document.fonts.load(`1em ${fontStack}`, sample).then(
+          () => {
+            if (!cancelled) state = "loaded";
+          },
+          () => {
+            if (!cancelled) state = "idle"; // not downloaded (offline): the phone's own font stays; try again later
+          },
+        );
+      }
+    }
+    window.addEventListener("pointerdown", onInput, true);
+    window.addEventListener("keydown", onInput, true);
+    return () => {
+      cancelled = true;
+      stop();
+      clearTimeout(timer);
+      root.style.removeProperty("--font-geist-sans");
+    };
+  }, [fontStack, sample]);
+}
+
+function I18nProvider({
+  language,
+  messages,
+  fontStack,
+  children,
+}: {
+  language: LanguageCode;
+  messages: Messages;
+  fontStack: string | null;
+  children: React.ReactNode;
+}) {
+  const info = languageInfo(language);
+  // The language's own name is in its script: enough text to fetch that script's part of the font.
+  useScriptFont(fontStack, info.name);
+  const router = useRouter();
+  const [, startTransition] = useTransition();
+  const [selected, setSelected] = useOptimistic(language);
+  const setLanguage = (code: LanguageCode) => {
+    if (code === selected) return;
+    writeLanguageCookie(code);
+    // The refresh re-renders the root layout and every server component in the chosen language (the html lang,
+    // the font and these messages included) and keeps client state: no full reload.
+    startTransition(() => {
+      setSelected(code);
+      router.refresh();
+    });
+  };
+  const value: I18n = { language, info, selected, t: createTranslator(messages), setLanguage };
+  return <I18nContext value={value}>{children}</I18nContext>;
+}
 
 // The toast viewport is not first-load JavaScript (P2.9): it mounts 2 s after the page has loaded, when the
 // browser is idle. A toast raised before then is not lost: sonner replays active toasts to a new Toaster.
@@ -105,7 +218,18 @@ function PhoneMigration() {
   );
 }
 
-export function Providers({ children }: { children: React.ReactNode }) {
+export function Providers({
+  language,
+  messages,
+  fontStack,
+  children,
+}: {
+  language: LanguageCode;
+  messages: Messages;
+  /** The body font's family list with the active language's script font, or null when the body font covers it. */
+  fontStack: string | null;
+  children: React.ReactNode;
+}) {
   const [client] = useState(
     () =>
       new QueryClient({
@@ -128,18 +252,21 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-      <QueryClientProvider client={client}>
-        {/* No MotionConfig and no TooltipProvider on every page (P2.9): shared screens animate with CSS, which
-            globals.css stops for the reduced-motion setting. That rule does not reach motion's JavaScript
-            animations, so each screen that still uses motion wraps itself in its own MotionConfig with
-            reducedMotion "user"; a screen that uses a Radix tooltip wraps it in its own TooltipProvider. */}
-        {/* usePathname inside: a Suspense boundary keeps every page prerendered. */}
-        <Suspense fallback={null}>
-          <PhoneMigration />
-        </Suspense>
-        <LocationProvider>{children}</LocationProvider>
-        <IdleToaster />
-      </QueryClientProvider>
+      <I18nProvider language={language} messages={messages} fontStack={fontStack}>
+        <QueryClientProvider client={client}>
+          {/* No MotionConfig and no TooltipProvider on every page (P2.9): shared screens animate with CSS, which
+              globals.css stops for the reduced-motion setting. That rule does not reach motion's JavaScript
+              animations, so each screen that still uses motion wraps itself in its own MotionConfig with
+              reducedMotion "user"; a screen that uses a Radix tooltip wraps it in its own TooltipProvider. */}
+          {/* usePathname inside, in a Suspense boundary (it kept pages prerendered before P7.5 made the root
+              layout render per request, for the language). */}
+          <Suspense fallback={null}>
+            <PhoneMigration />
+          </Suspense>
+          <LocationProvider>{children}</LocationProvider>
+          <IdleToaster />
+        </QueryClientProvider>
+      </I18nProvider>
     </ThemeProvider>
   );
 }

@@ -1,7 +1,13 @@
-const inr = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
-const inrPrecise = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 2 });
-const compact = new Intl.NumberFormat("en-IN", { notation: "compact", maximumFractionDigits: 1 });
-const number = new Intl.NumberFormat("en-IN");
+import { DEFAULT_LANGUAGE, type LanguageCode, languageInfo } from "@/lib/i18n";
+
+// Numbers and rupee amounts use Indian grouping (12,34,567) and Latin digits in every interface language (P7.5):
+// they are always formatted with en-IN. The kn-IN locale would group them the Western way (1,234,567) and
+// abbreviate with the Kannada word for million, which is not how prices are written in Ballari.
+const NUMBER_LOCALE = "en-IN";
+const inr = new Intl.NumberFormat(NUMBER_LOCALE, { style: "currency", currency: "INR", maximumFractionDigits: 0 });
+const inrPrecise = new Intl.NumberFormat(NUMBER_LOCALE, { style: "currency", currency: "INR", maximumFractionDigits: 2 });
+const compact = new Intl.NumberFormat(NUMBER_LOCALE, { notation: "compact", maximumFractionDigits: 1 });
+const number = new Intl.NumberFormat(NUMBER_LOCALE);
 
 export function formatPrice(value: number | null | undefined, precise = false) {
   if (value === null || value === undefined) return "";
@@ -42,9 +48,10 @@ export function timeAgo(iso: string | null | undefined, now: number = Date.now()
   return new Date(iso).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
 }
 
-export function formatDateTime(iso: string | null | undefined) {
+/** Dates and times are written in the interface language (month names, AM and PM); English when not given. */
+export function formatDateTime(iso: string | null | undefined, language: LanguageCode = DEFAULT_LANGUAGE) {
   if (!iso) return "";
-  return new Date(iso).toLocaleString("en-IN", {
+  return new Date(iso).toLocaleString(languageInfo(language).htmlLang, {
     day: "numeric",
     month: "short",
     hour: "numeric",
@@ -52,9 +59,9 @@ export function formatDateTime(iso: string | null | undefined) {
   });
 }
 
-export function formatTime(iso: string | null | undefined) {
+export function formatTime(iso: string | null | undefined, language: LanguageCode = DEFAULT_LANGUAGE) {
   if (!iso) return "";
-  return new Date(iso).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" });
+  return new Date(iso).toLocaleTimeString(languageInfo(language).htmlLang, { hour: "numeric", minute: "2-digit" });
 }
 
 /** "In stock, updated 2 minutes ago" style freshness text. */

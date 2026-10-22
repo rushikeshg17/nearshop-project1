@@ -1,9 +1,10 @@
 "use client";
 
-import { BarChart3, LayoutDashboard, LogOut, Monitor, Moon, ShieldCheck, Sparkles, Store, Sun, User2 } from "lucide-react";
+import { BarChart3, Languages, LayoutDashboard, LogOut, Monitor, Moon, ShieldCheck, Sparkles, Store, Sun, User2 } from "lucide-react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
 
+import { useI18n } from "@/components/providers";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,21 +22,23 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useSignOut } from "@/hooks/use-session";
 import { initials } from "@/lib/format";
+import { isLanguage, LANGUAGES } from "@/lib/i18n";
 import type { User } from "@/lib/types";
 
 export function UserMenu({ user }: { user: User }) {
   const signOut = useSignOut();
   const { theme, setTheme } = useTheme();
+  const { t, selected, setLanguage } = useI18n();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon-lg" className="rounded-full" aria-label="Account menu">
+        <Button variant="ghost" size="icon-lg" className="rounded-full" aria-label={t("shell.userMenu.trigger")}>
           <Avatar className="size-8">
             <AvatarFallback className="bg-primary text-xs font-semibold text-primary-foreground">{initials(user.name)}</AvatarFallback>
           </Avatar>
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-60">
+      <DropdownMenuContent align="end" className="w-64">
         <DropdownMenuLabel className="font-normal">
           <p className="truncate text-sm font-medium">{user.name}</p>
           <p className="truncate text-xs text-muted-foreground">{user.email}</p>
@@ -44,7 +47,7 @@ export function UserMenu({ user }: { user: User }) {
         {user.role === "customer" && (
           <DropdownMenuItem asChild>
             <Link href="/account">
-              <User2 /> My reservations and orders
+              <User2 /> {t("shell.userMenu.reservations")}
             </Link>
           </DropdownMenuItem>
         )}
@@ -52,13 +55,13 @@ export function UserMenu({ user }: { user: User }) {
           <>
             <DropdownMenuItem asChild>
               <Link href="/shop">
-                <LayoutDashboard /> Shop dashboard
+                <LayoutDashboard /> {t("shell.nav.shopDashboard")}
               </Link>
             </DropdownMenuItem>
             {user.shop && (
               <DropdownMenuItem asChild>
                 <Link href={`/shops/${user.shop.slug}`}>
-                  <Store /> View my shop page
+                  <Store /> {t("shell.userMenu.viewShopPage")}
                 </Link>
               </DropdownMenuItem>
             )}
@@ -67,19 +70,19 @@ export function UserMenu({ user }: { user: User }) {
         {user.role === "admin" && (
           <DropdownMenuItem asChild>
             <Link href="/admin">
-              <ShieldCheck /> Admin console
+              <ShieldCheck /> {t("shell.userMenu.adminConsole")}
             </Link>
           </DropdownMenuItem>
         )}
         <DropdownMenuItem asChild>
           <Link href="/ai">
-            <Sparkles /> AI Lab
+            <Sparkles /> {t("shell.nav.aiLab")}
           </Link>
         </DropdownMenuItem>
         {user.role === "admin" && (
           <DropdownMenuItem asChild>
             <Link href="/admin/anomalies">
-              <BarChart3 /> Price review queue
+              <BarChart3 /> {t("shell.userMenu.priceReview")}
             </Link>
           </DropdownMenuItem>
         )}
@@ -87,25 +90,44 @@ export function UserMenu({ user }: { user: User }) {
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <Sun className="dark:hidden" />
-            <Moon className="hidden dark:block" /> Theme
+            <Moon className="hidden dark:block" /> {t("shell.userMenu.theme")}
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent>
             <DropdownMenuRadioGroup value={theme} onValueChange={setTheme}>
               <DropdownMenuRadioItem value="light">
-                <Sun /> Light
+                <Sun /> {t("shell.userMenu.themeLight")}
               </DropdownMenuRadioItem>
               <DropdownMenuRadioItem value="dark">
-                <Moon /> Dark
+                <Moon /> {t("shell.userMenu.themeDark")}
               </DropdownMenuRadioItem>
               <DropdownMenuRadioItem value="system">
-                <Monitor /> System
+                <Monitor /> {t("shell.userMenu.themeSystem")}
               </DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <Languages /> {t("shell.language.label")}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuRadioGroup
+              value={selected}
+              onValueChange={(code) => {
+                if (isLanguage(code)) setLanguage(code);
+              }}
+            >
+              {LANGUAGES.map((l) => (
+                <DropdownMenuRadioItem key={l.code} value={l.code} lang={l.htmlLang}>
+                  {l.name}
+                </DropdownMenuRadioItem>
+              ))}
             </DropdownMenuRadioGroup>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={signOut} variant="destructive">
-          <LogOut /> Sign out
+          <LogOut /> {t("shell.userMenu.signOut")}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
