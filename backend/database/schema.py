@@ -273,7 +273,8 @@ VALIDATORS: dict[str, dict] = {
     ),
     # Search synonyms managed by admins (P5.4, app/services/synonyms.py; migration 5 imported the 42 that were
     # in code). term is normalised and unique; expansions are OR'd into the keyword search. Every write bumps
-    # the counters document synonyms_version, which each process checks every 30 seconds.
+    # the shared synonyms version in cache_versions (checked every 5 seconds) and the counters document
+    # synonyms_version (checked every 30 seconds).
     "synonyms": schema(
         ["term", "expansions", "active", "created_at", "updated_at"],
         term={"bsonType": STR, "minLength": 1, "maxLength": 40},
@@ -282,6 +283,13 @@ VALIDATORS: dict[str, dict] = {
         languages={"bsonType": "array", "maxItems": 5, "items": {"bsonType": STR, "maxLength": 8}},
         active=BOOL, created_by=INT_N, updated_by=INT_N, created_at=DATE, updated_at=DATE,
     ),
+    # Shared cache versions (P8.1, app/core/cache_version.py): one document per in-memory cache that every API
+    # process keeps, _id its name (listings, synonyms), version (bumped after each committed change to what it
+    # holds) and updated_at. Each process reads them all, in one query, at most once every 5 seconds.
+    "cache_versions": {"$jsonSchema": {"bsonType": "object", "required": ["_id", "version", "updated_at"],
+                                       "properties": {
+        "_id": {"enum": ["listings", "synonyms"]}, "version": POSITIVE_INT, "updated_at": {"bsonType": DATE},
+    }}},
     # No validators: `counters` ({_id: collection name, seq}; also synonyms_version) and `text_embeddings`
     # (binary vector cache).
     "counters": {},
@@ -319,6 +327,8 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("catalog_item_id", A), ("is_active", A)], name="catalog_item_active"),
         IndexModel([("category_id", A), ("is_active", A)], name="category_active"),
         IndexModel([("local_terms", A)], name="local_terms"),  # multikey; search's local-term match (P5.2)
+        # The semantic index's incremental refresh: the listings changed since its watermark (P8.1).
+        IndexModel([("updated_at", A)], name="updated"),
         # Keyword half of hybrid search (replaces SQLite FTS5): weighted, stemmed text index.
         IndexModel([("name", TEXT), ("brand", TEXT), ("keywords", TEXT), ("description", TEXT)],
                    weights={"name": 10, "brand": 6, "keywords": 4, "description": 1},

@@ -4,6 +4,7 @@ from typing import Literal
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
+from app.core import cache_version
 from app.core.database import utcnow
 from app.core.deps import DB, AdminUser
 from app.core.errors import NotFound
@@ -128,6 +129,9 @@ def update_shop(shop_id: int, body: AdminShopUpdateIn, _: AdminUser, db: DB):
     changes = body.model_dump(exclude_unset=True)
     if changes:
         db.shops.set(s, **changes)
+        # Verification and suspension change what search may show: every API process's search caches follow
+        # within 5 seconds (P8.1).
+        cache_version.bump(db.mongo, cache_version.LISTINGS)
     return {"ok": True}
 
 

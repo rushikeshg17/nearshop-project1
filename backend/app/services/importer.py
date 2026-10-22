@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 from rapidfuzz import fuzz, process
 
+from app.core import cache_version
 from app.core.config import settings
 from app.core.database import Database
 from app.core.errors import AppError
@@ -364,7 +365,8 @@ class _Matcher:
 
 
 def commit(db: Database, shop: Shop, rows: list[dict], actor_id: int) -> dict:
-    """Apply confirmed rows in a single transaction: all rows succeed or none do.
+    """Apply confirmed rows in a single transaction: all rows succeed or none do. Then bump the shared listings
+    version, so every API process's search sees the changes.
 
     Everything is validated and prepared in memory first, then written in a few bulk operations,
     so a 2,000-row sheet is as safe (and nearly as fast) as a 2-row one."""
@@ -442,6 +444,8 @@ def commit(db: Database, shop: Shop, rows: list[dict], actor_id: int) -> dict:
                 creates = [(cp, qty if cp is p else cq) for cp, cq in creates]
             del updates[key]
     apply_bulk(db, shop, actor_id, creates, list(updates.values()))
+    # Committed: every API process's search caches follow within 5 seconds (P8.1).
+    cache_version.bump(db.mongo, cache_version.LISTINGS)
     return counts
 
 

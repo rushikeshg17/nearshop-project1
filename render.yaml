@@ -25,6 +25,10 @@ services:
     name: nearshop-api-staging
     runtime: python
     plan: 0.5c-512mb # Starter
+    # Two instances (P8.1). Each holds its own search caches and follows the shared versions in cache_versions
+    # (backend/app/core/cache_version.py): a change made through one instance is searchable on the other within
+    # seconds. Background jobs run once at any instance count (job_leases, P1.7).
+    numInstances: 2
     region: singapore
     branch: main
     rootDir: backend
@@ -38,9 +42,10 @@ services:
     # Schema migrations (backend/database/migrate.py) run after the build and before the new version
     # starts, while the previous version still serves. A failure stops the deploy; nothing new goes live.
     preDeployCommand: uv run --no-dev python -m database.migrate
-    # One worker: the semantic search index lives inside each API process, so a second worker would hold
-    # a second index (until P8.1). Background jobs no longer stop a second process or instance: each job
-    # runs only in the process holding its lease in job_leases (app/jobs.py, P1.7).
+    # One worker per instance: each API process holds its own semantic search index in memory, so a second
+    # worker would double the memory, not the safety. Processes keep their indexes in step through
+    # cache_versions (P8.1), and each background job runs only in the process holding its lease in
+    # job_leases (app/jobs.py, P1.7).
     startCommand: uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
     # /api/health is liveness only (it also reports RENDER_GIT_COMMIT, which tells the smoke workflow which
     # commit it tests). Uptime monitors use /api/health/ready instead (plan section 8.10): booleans for the
@@ -112,6 +117,9 @@ services:
     name: nearshop-api
     runtime: python
     plan: 1c-2g # Standard: always on (a free instance sleeps after 15 idle minutes and must not serve production)
+    # Two instances (P8.1; see the staging service). Production takes this only when promoted, after staging
+    # with two instances made a new listing searchable on both within 10 s in 20 of 20 tries.
+    numInstances: 2
     region: singapore
     branch: release
     rootDir: backend

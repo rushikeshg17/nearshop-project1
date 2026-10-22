@@ -7,7 +7,7 @@ from fastapi import APIRouter, File, Query, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Discriminator, Field, Tag
 
-from app.ai.semantic_index import index
+from app.core import cache_version
 from app.core.config import settings
 from app.core.database import Database
 from app.core.deps import DB, OwnerShop, OwnerUser
@@ -46,7 +46,6 @@ from app.services.loaders import (
 )
 from app.services.media import delete_image, save_image
 from app.services.reliability import shop_reliability
-from app.services.search import reset_vocabulary
 from app.utils.text import normalize_query
 
 router = APIRouter(prefix="/owner", tags=["shop owner"])
@@ -55,10 +54,10 @@ RES_ACTIVE = list(reservation_service.ACTIVE)
 ORDER_OPEN = [*order_service.ACTIVE, "DELIVERY_FAILED"]
 
 
-def _listings_changed() -> None:
-    """Search caches (semantic index, spelling vocabulary) are rebuilt on the next query."""
-    index.mark_dirty()
-    reset_vocabulary()
+def _listings_changed(db: Database) -> None:
+    """After a committed change to listings: every API process's search caches (the semantic index, refreshed
+    incrementally, and the spelling vocabulary) follow within 5 seconds, this process's on its next search."""
+    cache_version.bump(db.mongo, cache_version.LISTINGS)
 
 
 # ------------------------------------------------------------------ shop
@@ -194,7 +193,7 @@ def create_product(body: ProductIn, shop: OwnerShop, user: OwnerUser, db: DB):
             change_stock(db, p, body.quantity, InventoryReason.INITIAL, user.id)
 
     db.transaction(create)
-    _listings_changed()
+    _listings_changed(db)
     return listing(p)
 
 
@@ -211,7 +210,7 @@ def update_product(product_id: int, body: ProductUpdateIn, shop: OwnerShop, db: 
         data["keywords"] = _keywords([t.lower() for t in data.pop("tags")], p.category)
     if data:
         db.products.set(p, **data)
-    _listings_changed()
+    _listings_changed(db)
     return listing(p)
 
 
@@ -230,7 +229,7 @@ def delete_product(product_id: int, shop: OwnerShop, db: DB):
     if active_holds:
         raise Conflict(f"This item has {active_holds} active reservation(s). Complete or cancel them first.")
     db.products.set(p, is_active=False)
-    _listings_changed()
+    _listings_changed(db)
     return {"ok": True}
 
 
@@ -299,7 +298,7 @@ def add_from_catalog(body: CatalogAddIn, shop: OwnerShop, user: OwnerUser, db: D
                                 keywords=_keywords(c.tags or [], cats[c.category_id], c.subcategory), icon=c.icon,
                                 price=item.price, mrp=c.mrp, quantity=0), item.quantity))
     apply_bulk(db, shop, user.id, creates, updates)
-    _listings_changed()
+    _listings_changed(db)
     return {"added": len(creates), "reactivated": len(updates)}
 
 
@@ -453,6 +452,4 @@ def import_preview(shop: OwnerShop, db: DB, file: UploadFile = File(...),
 def import_commit(body: CommitBody, shop: OwnerShop, user: OwnerUser, db: DB):
     if isinstance(body, SalesImportCommitIn):
         return importer.sales_commit(db, shop, body.start, body.end, [r.model_dump() for r in body.rows])
-    result = importer.commit(db, shop, [r.model_dump() for r in body.rows], user.id)
-    _listings_changed()
-    return result
+    return importer.commit(db, shop, [r.model_dump() for r in body.rows], user.id)  # bumps the listings version

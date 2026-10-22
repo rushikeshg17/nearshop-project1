@@ -18,6 +18,7 @@ from functools import lru_cache
 from rapidfuzz import fuzz, process
 
 from app.ai.semantic_index import index
+from app.core import cache_version
 from app.core.config import SEARCH_SIMILARITY_SCALE, RankingConfig, settings
 from app.core.database import Database, utcnow
 from app.models import Product, SearchEvent, Shop
@@ -336,7 +337,10 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
 
 # ---------------------------------------------------------------- "did you mean"
 
-_vocab: dict[str, set[str]] = {}
+# Per database: (the shared listings version it was built for, the words). Rebuilt when another process or
+# this one bumps that version (app/core/cache_version.py, P8.1), so every process's corrections follow the
+# listings within 5 seconds.
+_vocab: dict[str, tuple[int, set[str]]] = {}
 # Vocabulary words: Latin letters (lower-cased), or Kannada, Telugu or Devanagari letters with their vowel
 # signs and viramas (P5.2). Three characters or more, as before.
 _VOCAB_WORD = re.compile(r"[a-z]{3,}|[\u0900-\u097f\u0c00-\u0c7f\u0c80-\u0cff]{3,}")
@@ -349,9 +353,11 @@ def _vocab_words(text: str) -> list[str]:
 def _vocabulary(db: Database) -> set[str]:
     """Every word customers could mean: catalogue names, brands, tags, category names and the
     names of shop-specific listings, and the catalogue's local terms (Kannada, Telugu, Devanagari and Latin
-    transliterations). Cached per process; reset when listings change."""
+    transliterations). Cached per process, and rebuilt when the shared listings version changes."""
     key = db.mongo.name
-    if key not in _vocab:
+    version = cache_version.watcher.version(db.mongo, cache_version.LISTINGS)  # read before the words
+    hit = _vocab.get(key)
+    if hit is None or hit[0] != version:
         words: set[str] = set()
         for c in db.catalog_items.find_raw({}, {"name": 1, "brand": 1, "tags": 1, "local_terms": 1}):
             for chunk in [c["name"], c.get("brand") or "", *(c.get("tags") or []), *(c.get("local_terms") or [])]:
@@ -360,8 +366,8 @@ def _vocabulary(db: Database) -> set[str]:
             words.update(_vocab_words(f"{c['name']} {c.get('keywords') or ''}"))
         for c in categories(db).values():
             words.update(_vocab_words(c.name))
-        _vocab[key] = words
-    return _vocab[key]
+        hit = _vocab[key] = (version, words)
+    return hit[1]
 
 
 def suggest_correction(db: Database, norm: str) -> str | None:
@@ -500,4 +506,5 @@ def recent_searches(db: Database, user_id: int, limit: int = 6) -> list[str]:
 
 
 def reset_vocabulary() -> None:
+    """Forget this process's vocabularies (tests and the evaluation harness): rebuilt on the next search."""
     _vocab.clear()

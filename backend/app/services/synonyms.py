@@ -6,12 +6,13 @@ keyword search, at most MAX_EXPANSIONS, each MAX_EXPANSION_LENGTH characters or 
 as en or hi-Latn), active, created_by (the admin's id; null for entries imported by migration 5), created_at,
 updated_at and updated_by. Migration 5 imported the 42 entries that used to be a dictionary in code.
 
-Every write bumps a version number (counters, _id synonyms_version). Each process keeps the active entries
-in memory and checks the version at most once every CHECK_SECONDS, so an admin's change reaches every API
-process within 30 seconds, and immediately in the process that made it. When the database cannot be read,
+Every write bumps two version numbers: the shared synonyms version in cache_versions (app/core/cache_version.py,
+P8.1), which every process reads at most once every 5 seconds, and the older counters document synonyms_version,
+which migration 5 also bumps and each process still checks at most once every CHECK_SECONDS. Each process keeps
+the active entries in memory and re-reads them when either version changes, so an admin's change reaches every
+API process within 5 seconds, and immediately in the process that made it. When the database cannot be read,
 search keeps the entries the process already has; a process that has none yet searches without synonyms and
-tries again after RETRY_SECONDS rather than CHECK_SECONDS. Cache invalidation across processes in general is
-P8.1.
+tries again after RETRY_SECONDS rather than CHECK_SECONDS.
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ from pymongo import ReturnDocument
 from pymongo.database import Database as MongoDatabase
 from pymongo.errors import DuplicateKeyError
 
+from app.core import cache_version
 from app.core.database import Database, utcnow
 from app.core.errors import AppError, Conflict, NotFound
 
@@ -35,7 +37,7 @@ log = logging.getLogger(__name__)
 
 COLLECTION = "synonyms"
 VERSION_ID = "synonyms_version"  # the counters document whose seq is the synonyms' version
-CHECK_SECONDS = 30.0
+CHECK_SECONDS = 30.0  # the counters version; the shared version is checked every cache_version.CHECK_SECONDS
 RETRY_SECONDS = 5.0  # how soon a process that has never loaded the entries tries again after a failed read
 MAX_ENTRIES = 500  # every entry, active or not
 MAX_EXPANSIONS = 20
@@ -105,31 +107,37 @@ def read_version(mongo: MongoDatabase) -> int:
 
 
 class SynonymCache:
-    """The active entries of each database this process searches, re-read when the version changes. The
-    version is checked at most once every CHECK_SECONDS per database."""
+    """The active entries of each database this process searches, re-read when a version changes: the shared
+    synonyms version (read through watcher, at most once every 5 seconds) or the counters version (checked at
+    most once every CHECK_SECONDS per database)."""
 
-    def __init__(self, clock: Callable[[], float] = time.monotonic):
+    def __init__(self, clock: Callable[[], float] = time.monotonic,
+                 watcher: cache_version.VersionWatcher | None = None):
         self.clock = clock
+        self._watcher = watcher  # None: the process-wide cache_version.watcher
         self._lock = threading.Lock()
-        self._state: dict[str, tuple[Table, int, float]] = {}  # db name -> (table, version, checked at)
+        # db name -> (table, counters version, checked at, shared version)
+        self._state: dict[str, tuple[Table, int, float, int]] = {}
 
     def table(self, mongo: MongoDatabase | None = None) -> Table:
         override = _override.get()
         if override is not None:
             return override
         mongo = mongo if mongo is not None else Database().mongo
+        shared = (self._watcher or cache_version.watcher).version(mongo, cache_version.SYNONYMS)  # never raises
         now = self.clock()
         state = self._state.get(mongo.name)
-        if state is not None and now - state[2] < CHECK_SECONDS:
+        if state is not None and state[3] == shared and now - state[2] < CHECK_SECONDS:
             return state[0]
         with self._lock:
             state = self._state.get(mongo.name)
-            if state is not None and now - state[2] < CHECK_SECONDS:
+            if state is not None and state[3] == shared and now - state[2] < CHECK_SECONDS:
                 return state[0]
             checked = now
             try:
                 version = read_version(mongo)
-                table = state[0] if state is not None and state[1] == version else load_table(mongo)
+                unchanged = state is not None and state[1] == version and state[3] == shared
+                table = state[0] if unchanged else load_table(mongo)
             except Exception as exc:  # a database hiccup must not fail a search: keep what we had
                 if state is not None and state[1] >= 0:
                     log.warning("synonyms: could not refresh (%s); using the previous entries", exc)
@@ -138,7 +146,7 @@ class SynonymCache:
                     log.warning("synonyms: could not load (%s); retrying in %.0f s", exc, RETRY_SECONDS)
                     table, version = {}, -1
                     checked = now - CHECK_SECONDS + RETRY_SECONDS
-            self._state[mongo.name] = (table, version, checked)
+            self._state[mongo.name] = (table, version, checked, shared)
             return table
 
     def invalidate(self, name: str | None = None) -> None:
@@ -185,6 +193,12 @@ def serialize(doc: Mapping[str, Any]) -> dict[str, Any]:
 
 def _bump(db: Database) -> None:
     db.mongo["counters"].update_one({"_id": VERSION_ID}, {"$inc": {"seq": 1}}, upsert=True)
+    _changed(db)
+
+
+def _changed(db: Database) -> None:
+    """After a committed write: every process re-reads the entries within 5 seconds, this one at once."""
+    cache_version.bump(db.mongo, cache_version.SYNONYMS)
     cache.invalidate(db.mongo.name)
 
 
@@ -233,7 +247,7 @@ def create_entry(db: Database, admin_id: int, term: str, expansions: list[str],
         doc = db.transaction(write)
     except DuplicateKeyError as exc:  # the unique index, when two admins add the same term at once
         raise Conflict(f"There is already an entry for {entry['term']!r}.", code="synonym_exists") from exc
-    cache.invalidate(db.mongo.name)
+    _changed(db)  # the counters version was bumped inside the transaction
     return serialize(doc)
 
 
