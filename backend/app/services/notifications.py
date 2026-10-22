@@ -20,9 +20,10 @@ OUTBOX_CHANNELS: tuple[Callable[[Database, Notification], object], ...] = (whats
 
 
 def notify(db: Database, user_id: int, kind: str, title: str | None = None, body: str | None = None,
-           link: str | None = None, *, message: str | None = None, params: Mapping[str, Any] | None = None) -> None:
-    """Notify a user. message: a key of notification_text.MESSAGES, rendered with params in the recipient's
-    language; otherwise title (and body) are the finished text."""
+           link: str | None = None, *, message: str | None = None, params: Mapping[str, Any] | None = None
+           ) -> Notification:
+    """Notify a user and return the in-app notification written. message: a key of notification_text.MESSAGES,
+    rendered with params in the recipient's language; otherwise title (and body) are the finished text."""
     if message is not None:
         title, body = notification_text.render(message, notification_text.recipient_language(db, user_id), params)
     if not title:
@@ -30,3 +31,4 @@ def notify(db: Database, user_id: int, kind: str, title: str | None = None, body
     note = db.notifications.insert(Notification(user_id=user_id, kind=kind, title=title, body=body, link=link))
     for enqueue in OUTBOX_CHANNELS:
         enqueue(db, note)
+    return note

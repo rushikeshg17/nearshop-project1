@@ -569,8 +569,11 @@ def _pricing(status: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def priced_cost(pricing: dict[str, Any]) -> float | None:
-    """The cost in rupees a callback's pricing implies (plan section 8.7 rates), or None when it does not say."""
-    if pricing.get("billable") is False or pricing.get("meta_category") == CATEGORY_SERVICE:
+    """The cost in rupees a callback's pricing implies (plan section 8.7 rates), or None when it does not say. Free
+    when not billable, in the service category, or of a free pricing type (free_customer_service, free_entry_point):
+    Meta is deprecating billable, after which a free utility message is told apart only by its pricing type."""
+    if (pricing.get("billable") is False or pricing.get("meta_category") == CATEGORY_SERVICE
+            or str(pricing.get("pricing_type") or "").startswith("free_")):
         return 0.0
     rates = {"utility": settings.whatsapp_utility_cost_inr, "marketing": settings.whatsapp_marketing_cost_inr,
              "authentication": settings.whatsapp_cost_inr}
@@ -1236,13 +1239,14 @@ def send_stock_checks(db: Database, now: datetime | None = None, limit: int = BA
     return {"enabled": True, "day": day, **counts}
 
 
-def _notify_stock_check(db: Database, notify: Callable[..., None], shop: dict[str, Any], params: dict[str, Any],
-                        route: str) -> None:
+def _notify_stock_check(db: Database, notify: Callable[..., Notification], shop: dict[str, Any],
+                        params: dict[str, Any], route: str) -> None:
     """Inside the transaction: the stock-check notification, and its outbox row's route and category (enqueue writes
-    the template route; inside the window it is a free-form text, Meta's service category)."""
-    notify(db, shop["owner_id"], STOCK_CHECK_KIND, link="/shop/inventory", message=STOCK_CHECK_KIND, params=params)
+    the template route; inside the window it is a free-form text, Meta's service category). Only the row written for
+    this notification is changed, never an older queued stock check of the same owner."""
+    note = notify(db, shop["owner_id"], STOCK_CHECK_KIND, link="/shop/inventory", message=STOCK_CHECK_KIND,
+                  params=params)
     if route == ROUTE_IN_WINDOW:
-        db.mongo[OUTBOX].find_one_and_update(
-            {"user_id": shop["owner_id"], "kind": STOCK_CHECK_KIND, "status": "queued"},
-            {"$set": {"route": ROUTE_IN_WINDOW, "category": CATEGORY_SERVICE}}, sort=[("_id", -1)],
-            session=db.session)
+        db.mongo[OUTBOX].update_one(
+            {"notification_id": note.id, "kind": STOCK_CHECK_KIND, "status": "queued"},
+            {"$set": {"route": ROUTE_IN_WINDOW, "category": CATEGORY_SERVICE}}, session=db.session)

@@ -442,9 +442,11 @@ VALIDATORS: dict[str, dict] = {
                      "queue": {"bsonType": "array", "maxItems": 20},
                      "skipped": {"bsonType": "array", "maxItems": 40, "items": {"bsonType": STR}}}},
     ),
-    # The daily stock check (P4.4, app/services/whatsapp.py send_stock_checks): one row per shop and IST day it was
-    # considered, _id "<shop id>:<YYYY-MM-DD>", so each shop gets at most one a day, with the outcome (sent, fresh
-    # when nothing was stale, unreachable when the owner cannot get the template). Removed at expires_at (3 days).
+    # The daily stock check (P4.4, cadence P9.3; app/services/whatsapp.py send_stock_checks): one row per shop and
+    # IST day it was considered, _id "<shop id>:<YYYY-MM-DD>", so each shop gets at most one a day. decision is
+    # in_window, template, fresh, unreachable, closed or waiting; route is in_window or template when a check was sent
+    # (else null); outcome is sent, fresh (nothing stale) or unreachable (owner cannot get WhatsApp), and null on a
+    # closed or waiting day. Removed at expires_at (3 days).
     "whatsapp_stock_checks": {"$jsonSchema": {
         "bsonType": "object", "required": ["_id", "shop_id", "day", "at", "expires_at"],
         "properties": {

@@ -265,3 +265,30 @@ def test_the_weekly_day_and_the_closed_day_are_read_from_names():
     assert whatsapp.template_weekday({"closed_on": None}, Config) == 0
     assert whatsapp.template_weekday({"closed_on": "Monday"}, Config) == 1
     assert whatsapp.template_weekday({"closed_on": "Friday"}, Config) == 0
+
+
+def test_a_free_pricing_type_costs_nothing_without_the_billable_flag():
+    """Meta is deprecating billable: a utility message sent free inside a window is told apart by its type."""
+    for kind in ("free_customer_service", "free_entry_point"):
+        assert whatsapp.priced_cost({"meta_category": "utility", "pricing_type": kind}) == 0
+    assert whatsapp.priced_cost({"meta_category": "utility", "pricing_type": "regular"}) == \
+        settings.whatsapp_utility_cost_inr
+    assert whatsapp.priced_cost({"meta_category": "marketing"}) == settings.whatsapp_marketing_cost_inr
+
+
+def test_an_in_window_check_never_relabels_an_older_queued_template(owners, ids, monkeypatch):
+    """Only the outbox row written for the new notification becomes in_window; when none is written, an older
+    queued template of the same owner (still retrying) stays a template."""
+    db = Database()
+    monkeypatch.setattr(settings, "stock_check_weekly_day", weekday_name(1))
+    whatsapp.send_stock_checks(db, ist(1, 9, 5))  # no window: the weekly template, left queued
+    [older] = outbox(db, owners["a"].id)
+    assert (older["route"], older["status"]) == ("template", "queued")
+
+    message_from(db, owners["a"].phone, ist(1, 20))
+    from app.services import notifications
+    monkeypatch.setattr(notifications, "OUTBOX_CHANNELS", ())  # this time no outbox row is written
+    whatsapp.send_stock_checks(db, ist(2, 9, 5))
+    assert check_row(db, ids["shop_a"], 2)["route"] == "in_window"
+    [row] = outbox(db, owners["a"].id)
+    assert (row["_id"], row["route"], row["category"]) == (older["_id"], "template", "utility")

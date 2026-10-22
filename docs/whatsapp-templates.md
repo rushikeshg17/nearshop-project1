@@ -149,10 +149,18 @@ lease):
 and category (the category it was submitted under: utility for a template, service for a free-form text). Meta's
 status callbacks carry a pricing object; the row records the category Meta reports (meta_category: utility,
 marketing, authentication or service), billable and pricing_type (for example regular or free_customer_service),
-and cost_estimate is set from them (₹0 when not billable or service; otherwise the rate of Meta's category, below).
-The day's whatsapp_stock_checks row records the decision (in_window, template, fresh, unreachable, closed or
-waiting) and the route. The share of stock checks sent inside the window in a month is the stock_check rows with
-route in_window over all stock_check rows sent that month (rows are kept 30 days).
+and cost_estimate is set from them (₹0 when not billable, service, or a free pricing_type such as
+free_customer_service or free_entry_point; otherwise the rate of Meta's category, below). The day's
+whatsapp_stock_checks row records the decision (in_window, template, fresh, unreachable, closed or waiting) and the
+route. The share of stock checks sent inside the window is the stock_check rows with route in_window over all
+stock_check rows sent in the period.
+
+Outbox rows are deleted 30 days after created_at, and whatsapp_stock_checks rows after 3 days, so neither can give a
+whole calendar month after it ends: on the last day of a 31-day month its first day is already gone. Measure over the
+last 30 days at most, and run the query on the day the measurement is due, not later. For the June 2027 acceptance
+check (stock checks per shop and the in-window share), run it on 30 June 2027 with created_at from 1 June 2027 IST:
+June has 30 days, so all its rows are still kept that day, but not on 1 July. For a 31-day month, or any figure
+needed later, save the counts daily before the rows expire.
 
 **Cost, both cases** (rates below; per shop with stale listings, a 30-day month, about 4.3 weekly days):
 
