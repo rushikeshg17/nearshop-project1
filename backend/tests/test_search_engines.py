@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import time
+from dataclasses import replace
 from datetime import datetime
 
 import numpy as np
@@ -21,6 +22,7 @@ from app.core.config import EnginePair, Settings, settings
 from app.core.database import Database, utcnow
 from app.main import app
 from app.models import CatalogItem, Category, Product, Role, Shop, User
+from app.services import search as search_module
 from app.services import search_events as se
 from app.services import synonyms
 from app.services.search import SearchParams, run_search, suggestions
@@ -315,7 +317,17 @@ def test_a_shadow_engine_pair_never_changes_the_response(consented, ids, monkeyp
     assert fake.sent == []
     monkeypatch.setattr(settings, "search_shadow_engines", "atlas_search,in_process")
     monkeypatch.setattr(settings, "search_shadow_share", 1.0)
+    fetched: list[EnginePair | None] = []
+    real = search_module._candidates
+
+    def counted(db, p, norm, expanded, now, engines=None):
+        fetched.append(engines)
+        return real(db, p, norm, expanded, now, engines)
+
+    monkeypatch.setattr(search_module, "_candidates", counted)
     shadowed = consented.get("/api/search", params=params).json()
+    # One fetch for the customer and one for the candidate: production is re-ranked from the customer's fetch.
+    assert fetched == [EnginePair(), EnginePair("atlas_search", "in_process")]
     strip = lambda b: {k: v for k, v in b.items() if k != "search_id"}  # noqa: E731
     assert strip(shadowed) == strip(plain)  # customers see the production engines only
     assert [c for c, _ in fake.sent] == ["products"]  # the candidate ran, after the response
@@ -325,6 +337,7 @@ def test_a_shadow_engine_pair_never_changes_the_response(consented, ids, monkeyp
     assert shadow["production_label"] == f"r1 + mongodb-text-index + {shadow['vector']}"
     assert shadow["label"] == f"r1 + atlas-search + {shadow['vector']}"
     assert shadow["production_top"] == [g["key"] for g in plain["groups"]][:20]
+    assert shadow["production_ms"] > 0 and shadow["ms"] > 0  # each a fetch and a ranking
     assert shadow["top"] and set(shadow["top"]) <= {g["key"] for g in plain["groups"]} | {"c2"}
     [row] = se.shadow_comparison(Database())
     assert row["engine_candidate"] is True and row["keyword"] == "atlas-search"
@@ -459,6 +472,7 @@ class FakeIndexApi:
     def __init__(self, existing: list[dict] | None = None):
         self.existing = list(existing or [])
         self.created: list[str] = []
+        self.specs: list = []
         self.dropped: list[str] = []
 
     def list(self) -> list[dict]:
@@ -466,6 +480,7 @@ class FakeIndexApi:
 
     def create(self, spec) -> None:
         self.created.append(spec.name)
+        self.specs.append(spec)
         self.existing.append({"collection": spec.collection, "name": spec.name, "type": spec.type,
                               "status": "PENDING", "queryable": False})
 
@@ -475,6 +490,8 @@ class FakeIndexApi:
 
 
 OTHER = {"collection": "shops", "name": "someone_elses", "type": "search", "status": "READY", "queryable": True}
+ELSEWHERE = {"database": "another_app", "collection": "items", "name": "theirs", "type": "search", "status": "READY",
+             "queryable": True}
 DAYTIME_UTC = datetime(2026, 10, 22, 6, 30)  # 12:00 IST
 NIGHT_UTC = datetime(2026, 10, 22, 16, 30)  # 22:00 IST
 
@@ -487,10 +504,21 @@ def test_create_refuses_beyond_the_tier_limit_and_production_without_the_flag(sn
 
     def fill(db, _out):
         filled.append(db.mongo.name)
+        return 48  # the dimensions of the vectors written, whatever the configured model lists
 
     api = FakeIndexApi([OTHER])
     assert admin_tasks.search_index_create(snap_db, api, "M0", ask=yes, out=out, fill=fill) == 1
     assert api.created == [] and any("above M0's limit of 3" in line for line in lines)
+    # Flex allows 10, but NearShop's 3 counts too, over the whole cluster: two indexes elsewhere stop it.
+    api = FakeIndexApi([OTHER, ELSEWHERE])
+    lines.clear()
+    assert admin_tasks.search_index_create(snap_db, api, "Flex", ask=yes, out=out, fill=fill) == 1
+    assert api.created == [] and "above NearShop's limit of 3" in lines[-1] and "make 5" in lines[-1]
+    # Our own index names in another database of the cluster are someone else's indexes.
+    api = FakeIndexApi([{**ELSEWHERE, "name": atlas_search.PRODUCTS_INDEX}])
+    assert admin_tasks.search_index_create(snap_db, api, "Flex", ask=yes, out=out, fill=fill) == 1
+    assert api.created == [] and "make 4" in lines[-1]
+    api = FakeIndexApi([])
 
     monkeypatch.setattr(settings, "environment", "production")
     lines.clear()
@@ -505,18 +533,23 @@ def test_create_refuses_beyond_the_tier_limit_and_production_without_the_flag(sn
     assert admin_tasks.search_index_create(snap_db, api, "Flex", production=True, ask=yes, out=out, fill=fill,
                                            now=NIGHT_UTC) == 0
     assert api.created == [spec.name for spec in atlas_search.index_plan()] and filled == [snap_db.mongo.name]
+    [vector] = [spec for spec in api.specs if spec.type == "vectorSearch"]
+    assert vector.definition["fields"][0]["numDimensions"] == 48  # sized from the vectors written
     active = snap_db.mongo["synonyms"].count_documents({"active": True})
     assert snap_db.mongo[atlas_search.SYNONYM_COLLECTION].count_documents({}) == active > 0
 
     lines.clear()
     assert admin_tasks.search_index_status(api, "Flex", out=out) == 0
-    assert lines[0] == "Search and vector indexes: 4" and "4 of Flex's limit of 10." in lines
-    assert admin_tasks.search_index_status(api, "M0", out=out) == 1  # 4 is over M0's 3
+    assert lines[0] == "Search and vector indexes: 3" and "3 of Flex's limit of 10." in lines
+    api.existing.append(OTHER)  # an index made outside create
+    assert admin_tasks.search_index_status(api, "Flex", out=out) == 1  # 4 is above NearShop's 3
+    assert admin_tasks.search_index_status(api, "M0", out=out) == 1  # and over M0's 3
+    api.existing.remove(OTHER)
 
     assert admin_tasks.search_index_drop(snap_db, api, ask=yes, out=out, now=NIGHT_UTC) == 1  # no --production
     assert admin_tasks.search_index_drop(snap_db, api, production=True, ask=yes, out=out, now=NIGHT_UTC) == 0
     assert sorted(api.dropped) == sorted(spec.name for spec in atlas_search.index_plan())
-    assert api.existing == [OTHER]
+    assert api.existing == []
     assert snap_db.mongo[atlas_search.SYNONYM_COLLECTION].count_documents({}) == 0
     assert admin_tasks.in_production_window(datetime(2026, 10, 22, 0, 29))  # 05:59 IST
     assert not admin_tasks.in_production_window(datetime(2026, 10, 22, 0, 30))  # 06:00 IST
@@ -571,31 +604,38 @@ def test_search_synonyms_holds_active_entries_only_and_is_regenerated_on_save(sn
 # ---------------------------------------------------------------- listing_vectors
 
 
-def _refresh(db: Database) -> None:
+def _bump(db: Database) -> None:
     cache_version.bump(db.mongo, cache_version.LISTINGS)
     cache_version.watcher.forget(db.mongo.name)
-    semantic_index.index.ensure(db)
 
 
 def test_listing_vectors_follow_listing_changes_and_reuse_cached_vectors(snap_db, provider, monkeypatch):
     coll = snap_db.mongo[atlas_search.VECTOR_COLLECTION]
     coll.delete_many({})
-    semantic_index.index.ensure(snap_db)  # default engines: a full build writes nothing there
-    assert coll.count_documents({}) == 0
+    monkeypatch.setattr(atlas_search, "runner", FakeAtlas({}))
+    sync = semantic_index.ListingVectorSync(background=False)
+    monkeypatch.setattr(semantic_index, "listing_sync", sync)
+    monkeypatch.setattr(search_module, "listing_sync", sync)
+    p = SearchParams(q="charger", lat=CENTER[0], lng=CENTER[1], radius_km=5)
+    semantic_index.index.mark_dirty()
+    run_search(snap_db, p, log=False, now=NOW)  # default engines: the matrix is built and nothing is written there
+    assert coll.count_documents({}) == 0 and not sync.ready
 
     monkeypatch.setattr(settings, "search_vector_engine", "atlas_vector")
     semantic_index.index.mark_dirty()
-    semantic_index.index.ensure(snap_db)
+    builds = semantic_index.index.full_builds
+    run_search(snap_db, p, log=False, now=NOW)  # the atlas_vector stage brings listing_vectors in step first
+    assert semantic_index.index.full_builds == builds  # and the in-process matrix is not built for it
     active = snap_db.products.find_raw({"is_active": True}, sort=[("_id", 1)])
     docs = {d["_id"]: d for d in coll.find()}
     assert sorted(docs) == [r["_id"] for r in active]
-    snap = semantic_index.index.snapshot
-    for row in active:
+    texts = [semantic_index._row_text(r) for r in active]
+    cached = semantic_index.vectors(snap_db, provider, texts)
+    for row, vec in zip(active, cached, strict=True):
         doc = docs[row["_id"]]
         assert doc["shop_id"] == row["shop_id"] and doc["is_active"] is True and doc["model"] == provider.name
         assert doc["key"] == semantic_index.cache_key(provider.name, semantic_index._row_text(row))
-        position = int(np.searchsorted(snap.product_ids, row["_id"]))
-        assert np.allclose(np.array(doc["vector"].as_vector().data, dtype=np.float32), snap.matrix[position])
+        assert np.allclose(np.array(doc["vector"].as_vector().data, dtype=np.float32), vec)
 
     provider.embedded.clear()
     stamps = {i: d["updated_at"] for i, d in docs.items()}
@@ -607,17 +647,67 @@ def test_listing_vectors_follow_listing_changes_and_reuse_cached_vectors(snap_db
     third_shop = snap_db.shops.find_one({"slug": "engines-shop-2"}).id
     snap_db.products.raw.insert_one({**copy, "_id": new_id, "shop_id": third_shop, "catalog_item_id": None,
                                      "updated_at": utcnow()})
-    _refresh(snap_db)
+    _bump(snap_db)
+    run_search(snap_db, p, log=False, now=NOW)  # a later search: an incremental sync, with no matrix
+    assert sync.refreshes == 1 and semantic_index.index.full_builds == builds
     after = {d["_id"]: d for d in coll.find()}
     assert gone["_id"] not in after and new_id in after and after[new_id]["shop_id"] == third_shop
     assert after[priced["_id"]]["updated_at"] == stamps[priced["_id"]]  # same text and shop: not rewritten
     assert provider.embedded == []  # the new listing's text was cached: nothing was embedded
+
+    # The nightly full pass catches a change made without bumping the version.
+    snap_db.products.raw.update_one({"_id": new_id}, {"$set": {"is_active": False}})
+    sync._state = replace(sync._state, full_at=datetime(2000, 1, 1))
+    sync.ensure(snap_db)
+    assert coll.find_one({"_id": new_id}) is None and sync.full_syncs == 2
 
     snap_db.products.raw.update_one({"_id": gone["_id"]}, {"$set": {"is_active": True, "updated_at": utcnow()}})
     snap_db.products.raw.update_one({"_id": priced["_id"]}, {"$set": {"price": priced["price"], "updated_at": utcnow()}})
     snap_db.products.raw.delete_one({"_id": new_id})
     coll.delete_many({})
     semantic_index.index.mark_dirty()
+
+
+def test_warm_up_builds_only_what_the_engines_use(snap_db, provider, monkeypatch):
+    coll = snap_db.mongo[atlas_search.VECTOR_COLLECTION]
+    coll.delete_many({})
+    sync = semantic_index.ListingVectorSync(background=False)
+    fresh = semantic_index.SemanticIndex(background=False)
+    monkeypatch.setattr(semantic_index, "listing_sync", sync)
+    monkeypatch.setattr(semantic_index, "index", fresh)
+    monkeypatch.setattr(settings, "search_vector_engine", "atlas_vector")
+    semantic_index.warm_up(snap_db)
+    assert fresh.full_builds == 0 and fresh.built_at == 0  # an API process on atlas_vector holds no matrix
+    assert sync.ready and coll.count_documents({}) == snap_db.products.count({"is_active": True})
+    assert semantic_index.vector_stage_ready()
+
+    monkeypatch.setattr(settings, "search_vector_engine", "in_process")
+    assert not semantic_index.vector_stage_ready()
+    semantic_index.warm_up(snap_db)
+    assert fresh.full_builds == 1 and semantic_index.vector_stage_ready()
+    coll.delete_many({})
+
+
+def test_the_vectors_of_a_fallback_model_never_reach_listing_vectors(snap_db, provider, monkeypatch):
+    coll = snap_db.mongo[atlas_search.VECTOR_COLLECTION]
+    coll.delete_many({})
+    monkeypatch.setattr(settings, "embedding_provider", "fastembed")  # the configured model "failed to load"
+    assert semantic_index.is_fallback(provider)
+    sync = semantic_index.ListingVectorSync(background=False)
+    sync.ensure(snap_db)
+    assert sync.ready and coll.count_documents({}) == 0
+    lines: list[str] = []
+    assert admin_tasks.fill_listing_vectors(snap_db, lines.append) is None
+    assert coll.count_documents({}) == 0 and "did not load" in lines[-1]
+    api = FakeIndexApi()
+    assert admin_tasks.search_index_create(snap_db, api, "M0", ask=lambda _p: snap_db.mongo.name,
+                                           out=lines.append) == 1
+    assert api.created == [] and lines[-1] == "No index was created."
+    monkeypatch.setattr(settings, "embedding_provider", "tfidf")
+    assert not semantic_index.is_fallback(provider)
+    assert admin_tasks.fill_listing_vectors(snap_db, lines.append) == provider.dim
+    coll.delete_many({})
+    snap_db.mongo[atlas_search.SYNONYM_COLLECTION].delete_many({})
 
 
 # ---------------------------------------------------------------- the scale option

@@ -40,9 +40,10 @@ With NEARSHOP_SEARCH_SHADOW_RANKING_VERSION set and NEARSHOP_SEARCH_SHADOW_SHARE
 measured page-1 searches with a query is re-ranked after the response, on the same fetched listings and scores
 (run_search's cache), with the production config and with the candidate. Both top 20s are stored on the event,
 under a label naming the config version and the keyword and vector engines. With NEARSHOP_SEARCH_SHADOW_ENGINES set
-(P5.7), the candidate is that engine pair: both rankings are then fetched afresh, the production one on the serving
-engines and the candidate on the pair (with the shadow config, or the production one when none is set), so their
-times compare like for like. Customers always get the production ranking.
+(P5.7), the candidate is that engine pair, fetched afresh on the pair (with the shadow config, or the production
+one when none is set) and timed with its fetch. Production is not fetched again: it is re-ranked from the customer's
+fetch, and its time is that fetch's time in the request plus the re-ranking, so both times cover a fetch and a
+ranking and each sampled search costs one extra fetch. Customers always get the production ranking.
 """
 from __future__ import annotations
 
@@ -70,7 +71,14 @@ from app.core.database import Database, utcnow
 from app.models import ModelRun, Role, User
 from app.schemas.serializers import iso
 from app.services.loaders import category_by_slug
-from app.services.search import SearchParams, _local_term_candidates, run_search, search_now, suggestion_allowed
+from app.services.search import (
+    SearchParams,
+    _local_term_candidates,
+    fetch_ms,
+    run_search,
+    search_now,
+    suggestion_allowed,
+)
 from app.utils.hours import IST
 from app.utils.text import normalize_query
 
@@ -499,8 +507,9 @@ def engine_label(ranking: str, keyword: str, vector: str) -> str:
 
 def shadow_rank(db: Database, p: SearchParams, sp: SearchPlan, engine: dict) -> dict:
     """Re-rank the search's fetched listings and scores (sp.cache) with the production config and the candidate,
-    top SHADOW_TOP groups each, with the time each re-ranking took. With a shadow engine pair (P5.7), both are
-    fetched afresh instead: production on the serving engines, the candidate on the pair."""
+    top SHADOW_TOP groups each, with the time each re-ranking took. With a shadow engine pair (P5.7), the candidate
+    is fetched on the pair and timed with its fetch; production is re-ranked from the customer's fetch and timed
+    with the time that fetch took in the request, so each sampled search costs one extra fetch, not two."""
     assert sp.shadow is not None
     top = replace(p, page=1, page_size=SHADOW_TOP)
     production = settings.ranking
@@ -516,8 +525,9 @@ def shadow_rank(db: Database, p: SearchParams, sp: SearchPlan, engine: dict) -> 
         cand, cand_ms = ranked(sp.shadow, cache=sp.cache)
         keyword = prod_keyword = str(engine.get("keyword") or KEYWORD_ENGINE)
         vector = prod_vector = str(engine.get("semantic") or "unknown")
-    else:
-        prod, prod_ms = ranked(production, settings.search_engines, {})
+    else:  # production from the customer's own fetch, timed in the request; only the candidate is fetched again
+        prod, prod_ms = ranked(production, cache=sp.cache)
+        prod_ms += fetch_ms(sp.cache)
         cand, cand_ms = ranked(sp.shadow, pair, {})
         prod_keyword, prod_vector = str(prod["engine"]["keyword"]), str(prod["engine"]["semantic"])
         keyword, vector = str(cand["engine"]["keyword"]), str(cand["engine"]["semantic"])

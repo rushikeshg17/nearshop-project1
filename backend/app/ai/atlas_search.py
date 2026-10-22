@@ -55,8 +55,8 @@ VECTOR_COLLECTION = "listing_vectors"
 INDIC_ANALYZER = "nearshop_indic"
 
 # Atlas limits (MongoDB docs, 18 Oct 2026; plan section 11).
-TIER_INDEX_LIMITS = {"M0": 3, "Flex": 10}  # search and vector indexes together, per cluster
-PLAN_MAX_INDEXES = 3  # NearShop's own limit, so staging (M0) can mirror production
+TIER_INDEX_LIMITS = {"M0": 3, "Flex": 10}  # search and vector indexes together, per cluster (every database)
+PLAN_MAX_INDEXES = 3  # NearShop's own limit per cluster, so staging (M0) can mirror production
 MAX_DEFINITION_BYTES = 3 * 1024
 MAX_SYNONYM_MAPPINGS = 1  # per index definition
 MAX_SYNONYM_DOCUMENTS = 10_000  # per synonym source collection
@@ -114,6 +114,9 @@ def catalog_definition() -> dict:
 
 
 def vector_dimensions(model_name: str | None = None) -> int:
+    """The listed dimensions of a model (the configured one by default). search-index plan shows the definition with
+    these; create sizes the index from the vectors it has just written to listing_vectors instead
+    (database/admin_tasks.py, fill_listing_vectors), so the two always agree."""
     from app.core.config import embedding_spec
 
     return embedding_spec(model_name or settings.embedding_model).dim
@@ -205,7 +208,8 @@ def keyword_pipeline(words: list[str], completions: list[str], shop_ids: list[in
                      limit: int = KEYWORD_LIMIT) -> list[dict]:
     """One compound query. Exact terms with synonyms, and terms with typos, are separate clauses: Atlas Search
     does not allow fuzzy and synonyms in one text clause. Completions of the word being typed (from the
-    catalogue vocabulary, as the text index stage does) match exactly, without synonyms or typos."""
+    catalogue vocabulary, as the text index stage does) join the exact clauses, so synonyms apply to them too,
+    but never the typo clauses: a completion is already a catalogue word."""
     text = " ".join(dict.fromkeys([*words, *completions]))
     should: list[dict] = [
         {"text": {"query": text, "path": field, "synonyms": SYNONYM_MAPPING, "score": {"boost": {"value": weight}}}}

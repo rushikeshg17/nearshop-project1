@@ -365,8 +365,9 @@ VALIDATORS: dict[str, dict] = {
     ),
     # Listing vectors for Atlas Vector Search (P5.7, app/ai/atlas_search.py): one document per active listing, _id
     # the listing's id, with its shop, the model and its text_embeddings key, and the vector as a BSON float32
-    # vector. The semantic index (app/ai/semantic_index.py) keeps it in step on each rebuild and refresh, reusing
-    # the text_embeddings vectors, but only while the vector engine or the shadow engine pair is atlas_vector.
+    # vector. app/ai/semantic_index.py (ListingVectorSync) keeps it in step before each atlas_vector query, with the
+    # in-process index's version check, watermark and nightly full pass, reusing the text_embeddings vectors, so it
+    # is written only while the vector engine or the shadow engine pair is atlas_vector.
     "listing_vectors": schema(
         ["product_id", "shop_id", "is_active", "model", "key", "vector", "updated_at"],
         product_id=INT, shop_id=INT, is_active=BOOL, model={"bsonType": STR, "minLength": 1, "maxLength": 120},

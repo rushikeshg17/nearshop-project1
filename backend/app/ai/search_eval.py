@@ -448,15 +448,21 @@ def evaluate(db: Database, queries: Sequence[LabelledQuery], *, ranking: Any = N
     engines: the engine pair to search with (the configured one when None). counter: the command counter of the
     client db uses (install_command_counter), to count each search's database operations.
     """
-    from app.ai.semantic_index import index
+    from app.ai.semantic_index import index, listing_sync
     from app.services.search import SearchParams, reset_vocabulary, run_search
 
     def params(q: LabelledQuery) -> SearchParams:
         return SearchParams(q=q.text, lat=q.lat, lng=q.lng, radius_km=q.radius_km, page_size=RECALL_K)
 
     if prepare:
-        index.mark_dirty()
-        index.ensure(db)
+        # Only what the vector engine searches with: on atlas_vector the process holds no matrix, as an API process
+        # on that engine would not, so the memory measured is that of the candidate.
+        if (engines or settings.search_engines).vector == "atlas_vector":
+            listing_sync.mark_dirty()
+            listing_sync.ensure(db)
+        else:
+            index.mark_dirty()
+            index.ensure(db)
         reset_vocabulary()
         if queries:  # warm-up, untimed: the vocabulary and caches load on the first search
             run_search(db, params(queries[0]), log=False, ranking=ranking, engines=engines)
@@ -531,7 +537,7 @@ def scale_listings(db: Database, target: int) -> int:
     """Copy the seed's shops and their active listings, as synthetic shops near the shops they copy, until the
     database holds `target` active listings. Returns the number of listings added (0 when it holds that many).
     Refused (ValueError) where the P1.1 guard does not allow a seed."""
-    from app.ai.semantic_index import index
+    from app.ai.semantic_index import index, listing_sync
     from app.core import cache_version
 
     if problem := scale_problem(db):
@@ -568,6 +574,7 @@ def scale_listings(db: Database, target: int) -> int:
         added += len(listings)
     cache_version.bump(db.mongo, cache_version.LISTINGS)
     index.mark_dirty()
+    listing_sync.mark_dirty()
     return added
 
 
@@ -585,17 +592,18 @@ def git_commit() -> tuple[str, bool]:
 
 def record_run(db: Database, *, split: str, result: Mapping[str, Any], queries: Sequence[LabelledQuery],
                queries_file: str, commit: str, dirty: bool, snapshot: str, duration_ms: int):
-    from app.ai.semantic_index import index
+    from app.ai.semantic_index import index, listing_sync
     from app.models import ModelRun
 
     synthetic = sum(q.synthetic for q in queries)
     ranking = settings.ranking.version
+    embedding = index.provider_name or listing_sync.provider_name  # the matrix's, or listing_vectors' on atlas_vector
     run = ModelRun(
         name=RUN_NAME,
-        algorithm=f"run_search, {index.provider_name or 'unknown'} embeddings, ranking {ranking}",
+        algorithm=f"run_search, {embedding or 'unknown'} embeddings, ranking {ranking}",
         n_samples=len(queries),
         metrics={"split": split, "commit": commit, "commit_dirty": dirty, "queries_file": queries_file,
-                 "synthetic_queries": synthetic, "snapshot": snapshot[:12], "embedding": index.provider_name,
+                 "synthetic_queries": synthetic, "snapshot": snapshot[:12], "embedding": embedding,
                  "ranking": ranking, **result},
         data_note=(f"{len(queries)} labelled {split} queries ({synthetic} synthetic examples) on the seeded "
                    f"evaluation snapshot."),
@@ -755,7 +763,7 @@ def main(argv: Sequence[str] = ()) -> int:
         load_queries(split_path(split, args.queries_dir))
     engines = EnginePair(args.keyword_engine or settings.search_keyword_engine,
                          args.vector_engine or settings.search_vector_engine)
-    # This process only: the semantic index keeps listing_vectors in step while the vector engine is atlas_vector.
+    # This process only: what follows the configured engines (the synonym source, the startup warm-up) follows these.
     settings.search_keyword_engine, settings.search_vector_engine = engines.keyword, engines.vector  # type: ignore[assignment]
     counter = install_command_counter()
     db = Database()

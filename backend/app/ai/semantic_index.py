@@ -30,11 +30,19 @@ any write that changed a listing without bumping the version.
 
 Atlas Vector Search (P5.7)
 --------------------------
-While the vector engine or the shadow engine pair is atlas_vector (app/core/config.py), each full build and each
-incremental refresh also keeps the listing_vectors collection in step, which the Atlas Vector Search index reads
-(app/ai/atlas_search.py): one document per active listing with its shop, the model, its text_embeddings key and
-the same vector the matrix holds, reused from text_embeddings. Only documents that changed are written, and those
-of listings no longer active are deleted. With the default engines nothing is written there.
+The Atlas Vector Search index (app/ai/atlas_search.py) reads the listing_vectors collection: one document per active
+listing with its shop, the model, its text_embeddings key and its vector, reused from text_embeddings. The matrix
+above does not keep it in step, since with the vector engine on atlas_vector nothing queries the matrix: a
+ListingVectorSync (`listing_sync`) does, with the same version check, watermark and nightly full pass, but without
+holding any vector in memory. The atlas_vector stage calls it before each query (app/services/search.py), so it
+runs exactly while the vector engine or the shadow engine pair is atlas_vector (app/core/config.py), and warm_up
+starts it at startup only then. Only documents that changed are written, and those of listings no longer active
+are deleted. With the default engines nothing is written there. It never writes the vectors of a TF-IDF stand-in
+the configured model fell back to (is_fallback): another process, whose model loaded, would rewrite them all.
+
+warm_up builds at startup what the configured engines use: the matrix only while the vector engine or the shadow
+pair is in_process, so an API process on atlas_vector holds no matrix. The AI routes and the analytics that query
+the matrix still build it on their first call.
 """
 from __future__ import annotations
 
@@ -137,10 +145,25 @@ def vectors(db: Database, provider: EmbeddingProvider, texts: list[str]) -> np.n
     return np.vstack([found[cache_key(provider.name, t)] for t in texts]).astype(np.float32, copy=False)
 
 
+def _vector_engine_used(engine: str) -> bool:
+    shadow = settings.shadow_engines
+    return settings.search_engines.vector == engine or (shadow is not None and shadow.vector == engine)
+
+
 def listing_vectors_needed() -> bool:
     """Whether listing_vectors must follow the listings: the vector engine, or the shadow pair's, is atlas_vector."""
-    shadow = settings.shadow_engines
-    return settings.search_engines.vector == "atlas_vector" or (shadow is not None and shadow.vector == "atlas_vector")
+    return _vector_engine_used("atlas_vector")
+
+
+def matrix_needed() -> bool:
+    """Whether search queries the in-process matrix: the vector engine, or the shadow pair's, is in_process."""
+    return _vector_engine_used("in_process")
+
+
+def is_fallback(provider: EmbeddingProvider) -> bool:
+    """Whether provider is the TF-IDF stand-in for a configured model that failed to load. Its vectors are fitted in
+    this process only, so they must never reach listing_vectors (or an Atlas index sized for them)."""
+    return settings.embedding_provider == "fastembed" and provider.name != settings.embedding_model
 
 
 def sync_listing_vectors(db: Database, rows: list[dict], texts: list[str], matrix: np.ndarray, model: str, *,
@@ -171,14 +194,135 @@ def sync_listing_vectors(db: Database, rows: list[dict], texts: list[str], matri
     return {"written": written, "deleted": len(gone)}
 
 
-def _sync_quietly(db: Database, rows: list[dict], texts: list[str], matrix: np.ndarray, model: str, **kw) -> None:
-    """sync_listing_vectors when it is needed; a failure is logged and never fails a search."""
-    if not listing_vectors_needed():
-        return
-    try:
-        sync_listing_vectors(db, rows, texts, matrix, model, **kw)
-    except Exception as exc:  # the next full build tries again
-        log.warning("semantic index: listing_vectors not updated: %s", exc)
+@dataclass(frozen=True)
+class SyncState:
+    """What listing_vectors reflects: as Snapshot, without the vectors."""
+
+    db_name: str | None
+    version: int | None  # None: never synced
+    provider_name: str
+    since: datetime
+    full_at: datetime
+
+
+class ListingVectorSync:
+    """Keeps listing_vectors in step with the active listings for Atlas Vector Search (module docstring), in batches
+    of VECTOR_BATCH listings, so it never holds every vector at once."""
+
+    def __init__(self, watcher: cache_version.VersionWatcher | None = None, background: bool = True) -> None:
+        self._lock = threading.Lock()
+        self._dirty = True
+        self._watcher = watcher
+        self._background = background
+        self._rebuilding: threading.Thread | None = None
+        self._nightly_retry_at = 0.0
+        self._state = SyncState(None, None, "", datetime.min, datetime.min)
+        self.full_syncs = 0
+        self.refreshes = 0
+
+    @property
+    def watcher(self) -> cache_version.VersionWatcher:
+        return self._watcher or cache_version.watcher
+
+    @property
+    def provider_name(self) -> str:
+        return self._state.provider_name
+
+    @property
+    def ready(self) -> bool:
+        return self._state.version is not None
+
+    def mark_dirty(self) -> None:
+        """Sync every listing again on the next ensure."""
+        self._dirty = True
+
+    def _needs_full(self, db: Database, version: int) -> bool:
+        s = self._state
+        return self._dirty or s.version is None or s.db_name != db.mongo.name or version < s.version
+
+    def ensure(self, db: Database) -> None:
+        """Bring listing_vectors up to date with this database's listings (a full sync or an incremental one)."""
+        version = self.watcher.version(db.mongo, cache_version.LISTINGS)
+        if self._needs_full(db, version) or self._state.version != version:
+            with self._lock:
+                version = self.watcher.version(db.mongo, cache_version.LISTINGS)
+                if self._needs_full(db, version):
+                    self._state = self._full(db, version)
+                    self._dirty = False
+                    return
+                if self._state.version != version:
+                    self._state = self._incremental(db, self._state, version)
+        s = self._state
+        if s.version is not None and s.full_at < nightly_slot(utcnow()) and time.monotonic() >= self._nightly_retry_at:
+            self._nightly_retry_at = time.monotonic() + NIGHTLY_RETRY_SECONDS
+            self._resync_nightly(db.mongo.name)
+
+    def ensure_quietly(self, db: Database) -> None:
+        """ensure, for a search: a failure is logged, and the query runs on what listing_vectors holds."""
+        try:
+            self.ensure(db)
+        except Exception as exc:  # the next search tries again
+            log.warning("listing_vectors not updated: %s", exc)
+
+    def _write(self, db: Database, provider: EmbeddingProvider, rows: list[dict], **kw) -> None:
+        for i in range(0, len(rows), VECTOR_BATCH):
+            part = rows[i:i + VECTOR_BATCH]
+            texts = [_row_text(r) for r in part]
+            sync_listing_vectors(db, part, texts, vectors(db, provider, texts), provider.name, **kw)
+
+    def _full(self, db: Database, version: int) -> SyncState:
+        started = utcnow()
+        rows = db.products.find_raw({"is_active": True}, ROW_FIELDS, sort=[("_id", 1)])
+        provider = get_provider(fallback_corpus=[_row_text(r) for r in rows])
+        if is_fallback(provider):
+            log.warning("listing_vectors not updated: %s did not load (the TF-IDF stand-in is in use)",
+                        settings.embedding_model)
+        else:
+            self._write(db, provider, rows)
+            db.mongo[VECTOR_COLLECTION].delete_many({"_id": {"$nin": [r["_id"] for r in rows]}})
+        self.full_syncs += 1
+        return SyncState(db.mongo.name, version, provider.name, started - OVERLAP, started)
+
+    def _incremental(self, db: Database, s: SyncState, version: int) -> SyncState:
+        started = utcnow()
+        provider = get_provider()
+        if provider.name != s.provider_name:  # the model setting changed: every vector changes
+            return self._full(db, version)
+        rows = db.products.find_raw({"updated_at": {"$gte": s.since}}, {**ROW_FIELDS, "is_active": 1},
+                                    sort=[("_id", 1)])
+        if not is_fallback(provider):
+            self._write(db, provider, [r for r in rows if r.get("is_active")])
+            gone = [r["_id"] for r in rows if not r.get("is_active")]
+            if gone:
+                db.mongo[VECTOR_COLLECTION].delete_many({"_id": {"$in": gone}})
+        self.refreshes += 1
+        return SyncState(s.db_name, version, provider.name, started - OVERLAP, s.full_at)
+
+    def _resync_nightly(self, db_name: str) -> None:
+        """The nightly full sync, which catches a write that changed a listing without bumping the version."""
+        def run() -> None:
+            try:
+                db = Database(db_name)
+                fresh = self._full(db, self.watcher.version(db.mongo, cache_version.LISTINGS))
+                with self._lock:
+                    if self._state.db_name == db_name and not self._dirty and fresh.full_at > self._state.full_at:
+                        self._state = fresh
+            except Exception as exc:  # tried again NIGHTLY_RETRY_SECONDS later
+                log.warning("listing_vectors: nightly sync failed: %s", exc)
+
+        if not self._background:
+            run()
+            return
+        with self._lock:
+            if self._rebuilding is not None and self._rebuilding.is_alive():
+                return
+            self._rebuilding = threading.Thread(target=run, name="listing-vectors-sync", daemon=True)
+            self._rebuilding.start()
+
+    def wait_for_resync(self, timeout: float | None = None) -> None:
+        thread = self._rebuilding
+        if thread is not None:
+            thread.join(timeout)
 
 
 @dataclass(frozen=True)
@@ -263,7 +407,6 @@ class SemanticIndex:
         texts = [_row_text(r) for r in rows]
         provider = get_provider(fallback_corpus=texts)
         matrix = vectors(db, provider, texts)
-        _sync_quietly(db, rows, texts, matrix, provider.name, full=True)
         self.full_builds += 1
         return Snapshot(np.array([r["_id"] for r in rows], dtype=np.int64), matrix, provider.name, db.mongo.name,
                         version, started - OVERLAP, started, time.time())
@@ -280,7 +423,6 @@ class SemanticIndex:
         ids = np.concatenate([snap.product_ids[keep], np.array([r["_id"] for r in active], dtype=np.int64)])
         texts = [_row_text(r) for r in active]
         fresh = vectors(db, provider, texts)
-        _sync_quietly(db, active, texts, fresh, provider.name, removed=[r["_id"] for r in rows if not r.get("is_active")])
         matrix = np.vstack([snap.matrix[keep], fresh])
         order = np.argsort(ids, kind="stable")
         self.refreshes += 1
@@ -335,3 +477,21 @@ class SemanticIndex:
 
 
 index = SemanticIndex()
+listing_sync = ListingVectorSync()
+
+
+def warm_up(db: Database) -> str:
+    """At startup: build what the configured engines search with (the module docstring). Returns a line to log."""
+    done = []
+    if matrix_needed():
+        index.ensure(db)
+        done.append(f"semantic index ready: {len(index.product_ids)} listings via {index.provider_name}")
+    if listing_vectors_needed():
+        listing_sync.ensure(db)
+        done.append(f"listing_vectors in step ({listing_sync.provider_name})")
+    return "; ".join(done) or "nothing to warm up"
+
+
+def vector_stage_ready() -> bool:
+    """For readiness: what the configured engines search with is built (the matrix, listing_vectors or both)."""
+    return (not matrix_needed() or index.built_at > 0) and (not listing_vectors_needed() or listing_sync.ready)

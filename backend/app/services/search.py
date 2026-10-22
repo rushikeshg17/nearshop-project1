@@ -14,6 +14,7 @@ from Rs 1,249" and can compare shops, instead of four near-identical cards.
 from __future__ import annotations
 
 import re
+import time
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -22,7 +23,7 @@ from functools import lru_cache
 from rapidfuzz import fuzz, process
 
 from app.ai import atlas_search
-from app.ai.semantic_index import OVERLAP, index, nightly_slot
+from app.ai.semantic_index import OVERLAP, index, listing_sync, nightly_slot
 from app.core import cache_version
 from app.core.config import SEARCH_SIMILARITY_SCALE, EnginePair, RankingConfig, settings
 from app.core.database import Database, utcnow
@@ -177,7 +178,8 @@ def _keyword_stage(db: Database, norm: str, expanded: list[str], engine: str = "
 
 
 def _vector_stage(db: Database, norm: str, engine: str, shop_ids: list[int]) -> dict[int, float]:
-    if engine == "atlas_vector":
+    if engine == "atlas_vector":  # listing_vectors first catches up with the listings, as the matrix would
+        listing_sync.ensure_quietly(db)
         return atlas_search.vector_scores(db, norm, shop_ids)
     return index.query(db, norm)
 
@@ -224,6 +226,12 @@ def _candidates(db: Database, p: SearchParams, norm: str, expanded: list[str], n
     return shops, products, kw, local, sem
 
 
+def fetch_ms(cache: dict) -> float:
+    """The milliseconds the fetches memoised in a run_search cache took. The P5.6 shadow ranking with an engine pair
+    (app/services/search_events.py) times production with it instead of fetching production again."""
+    return sum(ms for _, ms in cache.values())
+
+
 def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: bool = True,
                ranking: RankingConfig | None = None, cache: dict | None = None, now: datetime | None = None,
                engines: EnginePair | None = None) -> dict:
@@ -233,7 +241,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
     shadows (P5.6, app/services/search_events.py), together with `now`, the time freshness is judged at
     (search_now() by default), so the shadow ranking re-ranks exactly the listings and scores the customer's
     search fetched. `engines` overrides the configured engines (P5.7: the evaluation harness and the shadow engine
-    pair); the cache keeps each engine pair's fetch apart."""
+    pair); the cache keeps each engine pair's fetch apart, with the time it took (fetch_ms)."""
     cfg = ranking or settings.ranking
     engines = engines or settings.search_engines
     norm = normalize_query(p.q) if p.q else ""
@@ -245,8 +253,10 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         key = (norm, p.lat, p.lng, p.radius_km, p.category, p.min_price, p.max_price, p.in_stock_only,
                p.fulfillment, p.shop_id, now if p.in_stock_only else None, engines)
         if key not in cache:
-            cache[key] = _candidates(db, p, norm, expanded, now, engines)
-        shops, products, kw, local, sem = cache[key]
+            started = time.perf_counter()
+            fetched = _candidates(db, p, norm, expanded, now, engines)
+            cache[key] = (fetched, (time.perf_counter() - started) * 1000)
+        (shops, products, kw, local, sem), _ = cache[key]
     if local:
         kw = dict(kw)
         for pid, matched in local.items():

@@ -39,10 +39,15 @@ What this change ships, so that the cycle can run as soon as those are in place:
 
   The API refuses to start in staging or production with a serving engine other than its default;
 - the three index definitions and the queries (backend/app/ai/atlas_search.py);
-- the listing_vectors and search_synonyms collections (backend/database/schema.py). The semantic index and the
-  synonym service keep them in step, but only while an Atlas engine is configured;
+- the listing_vectors and search_synonyms collections (backend/database/schema.py), kept in step only while an
+  Atlas engine is configured. listing_vectors catches up with the listings before each Atlas Vector Search query
+  (app/ai/semantic_index.py, ListingVectorSync: the in-process index's version check, watermark and nightly full
+  pass, without a matrix), and at startup when the engines use it. It never takes the vectors of a TF-IDF stand-in
+  for a model that failed to load. The synonym service regenerates search_synonyms on every save;
 - search sends each stage to its engine. A shadow engine pair runs after the response, on the P5.6 sampled
-  share, and its top 20 is stored under the P5.6 label, for example "r1 + atlas-search + <vector engine>";
+  share, and its top 20 is stored under the P5.6 label, for example "r1 + atlas-search + <vector engine>". Only
+  the candidate is fetched again: production is re-ranked from the customer's own fetch and timed with the time
+  that fetch took in the request;
 - the operator commands: uv run python -m database.admin_tasks search-index plan|create|status|drop;
 - the harness options: --keyword-engine, --vector-engine and --scale, plus the new measurements (below);
 - tests/test_search_engines.py. With default settings, results equal those before P5.7 (a snapshot) and no
@@ -81,8 +86,10 @@ Measured on 22 Oct 2026:
 - runs: each figure is from a second run on the reused snapshot, so memory does not include seeding.
 
 Database operations are counted by a command listener: every command run_search sends, including getMore, but
-not handshakes or pings. Memory is the evaluation process's resident set, which holds what an API process holds:
-the model, the vector matrix and the vocabulary.
+not handshakes or pings. Memory is the evaluation process's resident set, which holds what an API process on the
+same engines holds: the model and the vocabulary, and the vector matrix only for candidates whose vector stage is
+in-process. With --vector-engine atlas_vector the harness brings listing_vectors in step instead and never builds
+the matrix, as an API process on that engine does not (its startup warm-up skips it too).
 
 ### Candidate 1: today's engines
 
@@ -137,7 +144,9 @@ that is 2.5 searches and 7.5 suggest calls a second. Search and suggestions then
 - with today's engines at 1,351 listings: 2.5 × 6.3 + 7.5 × 2 = **about 31 operations a second**;
 - at 50,000 listings: 2.5 × 9.3 + 7.5 × 2 = **about 38 operations a second**.
 
-Both are inside the $8 band. These figures exclude product pages, owner polling and reservations, and the P2.5
+Both are inside the $8 band. A shadow engine pair adds, per sampled search, one fetch on the candidate's engines
+only (production is re-ranked from the customer's fetch): at the P2.5 load and a 10% share, about 0.25 × the
+candidate's operations per search, under 3 operations a second at today's counts. These figures exclude product pages, owner polling and reservations, and the P2.5
 run itself has not happened yet (docs/perf/baseline.md). M10 at about 500 shops costs $56.94 a month (plan
 section 11), with no Search Nodes in any candidate. On Flex and M10 the search process shares the cluster's
 nodes, and the pricing page shows no separate charge for it. Confirm that on the first Atlas bill after an index
@@ -153,7 +162,9 @@ How each Atlas candidate is expected to change the operation count, to be confir
 - **Autocomplete** replaces the catalogue regex find with one $search. Suggest calls stay at 2 operations.
 
 **Index count against each tier's limit.** The plan has 3 indexes. M0 (staging and demo) allows 3, so staging
-can mirror production exactly. Flex (production) allows 10. Definition sizes (search-index plan) are all within
+can mirror production exactly. Flex (production) allows 10. Atlas counts these limits per cluster, so search-index
+plan, status and create count the indexes of every database the operator's user can list, and create refuses to
+take the cluster above the tier's limit or NearShop's 3, whichever is lower. Definition sizes (search-index plan) are all within
 the 3 KB limit, and the plan has one synonym mapping in all:
 
 | Index | Collection | Type | Definition size | Synonym mappings |
@@ -161,6 +172,10 @@ the 3 KB limit, and the plan has one synonym mapping in all:
 | nearshop_products_search | products | search | 1,257 bytes | 1 |
 | nearshop_catalog_autocomplete | catalog_items | search | 256 bytes | 0 |
 | nearshop_listing_vectors | listing_vectors | vectorSearch | 215 bytes (217 with scalar quantization) | 0 |
+
+plan shows the vector index with the configured model's listed dimensions (384). create sizes it from the vectors
+it has just written to listing_vectors, and writes none, and creates no index, when the configured model fails to
+load on the operator's machine.
 
 The synonym source holds one explicit mapping per active entry. P5.4 allows at most 500 entries, well under
 Atlas's limit of 10,000 documents.
@@ -178,9 +193,11 @@ add them here. Every candidate stays far below 3.5 GB on these estimates.
 evaluation process measured 281 MB resident at 1,351 listings and 472 MB at 50,000, with a 618 MB peak. The
 Standard instance has 2 GB, and the P2.5 target is 75% of it.
 
-Atlas Vector Search (candidates 3 and 4) would drop the matrix from every API process. The embedding model stays,
-to embed the query. On Flex and M10 the vector index then uses the cluster's own memory, which the shared tier
-does not report.
+Atlas Vector Search (candidates 3 and 4) would drop the matrix from every API process: on atlas_vector neither the
+startup warm-up nor search builds it, and the harness's memory figures for those candidates show that. Only the
+AI routes and the owner analytics that query the matrix directly would still build it, on their first call. The
+embedding model stays, to embed the query. On Flex and M10 the vector index then uses the cluster's own memory,
+which the shared tier does not report.
 
 ## Recommendation (item 11)
 
