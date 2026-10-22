@@ -31,6 +31,10 @@ send_notifications (P4.3), every tick, delivers the WhatsApp notification outbox
 written by notify() in the reservation and order transactions, sent here, outside them, with retries after 30 s,
 2 min and 10 min. Each run also computes the hourly failure rate and, above 5%, reports the warning event the
 WhatsApp alert fires on, at most once every 15 minutes (failure_alert_at on its lease).
+lead_counts (P9.2), once a month, on the 1st at 02:00 IST or on the first tick after it, writes the previous IST
+month's lead_counts row for every shop (app/services/leads.py rollup_month); the month it ran for is kept in the
+lease's last_result (ran_for), and every later tick that month only repeats the last result. A re-run replaces the
+month's rows.
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -99,7 +103,7 @@ TICK_SECONDS = 30
 LEASE_TTL = timedelta(seconds=60)
 # Jobs too costly, or too loud, to repeat on every tick after a failure: retried after this long.
 RETRY_AFTER_FAILURE: dict[str, timedelta] = {"snapshot_storage": timedelta(hours=1), "retention": timedelta(hours=1),
-                                              "phone_migration": timedelta(hours=1)}
+                                              "phone_migration": timedelta(hours=1), "lead_counts": timedelta(hours=1)}
 RETENTION_AT = time(21, 30)  # UTC: 03:00 IST, the nightly retention job (P3.2)
 # The phone migration (P4.2): in-app warnings this many days before the email sign-in sunset, and accounts still
 # without a verified phone switched off this many days after it.
@@ -112,6 +116,8 @@ DEACTIVATED_NO_PHONE = "phone_not_verified"  # User.deactivated_reason of an acc
 IST = ZoneInfo("Asia/Kolkata")
 SEND_NOTIFICATIONS_JOB = "send_notifications"  # the WhatsApp outbox sender (P4.3)
 FAILURE_ALERT_AT = "failure_alert_at"  # on that job's lease: when the failure-rate warning was last reported
+LEAD_COUNTS_JOB = "lead_counts"  # the monthly lead counts per shop (P9.2)
+LEAD_COUNTS_AT = time(2, 0)  # IST, on the 1st of each month
 
 RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
@@ -394,10 +400,36 @@ def send_notifications(clock: Clock = utcnow) -> dict[str, Any]:
     return result
 
 
+def lead_counts_month(now: datetime) -> tuple[int, int]:
+    """The month the lead_counts job rolls up at now: the one before the most recent slot (the 1st at LEAD_COUNTS_AT
+    IST) at or before now."""
+    local = now.replace(tzinfo=ZoneInfo("UTC")).astimezone(IST)
+    year, month = local.year, local.month
+    if local < datetime.combine(date(year, month, 1), LEAD_COUNTS_AT, tzinfo=IST):
+        year, month = (year - 1, 12) if month == 1 else (year, month - 1)  # this month's slot is still ahead
+    return (year - 1, 12) if month == 1 else (year, month - 1)
+
+
+def lead_counts(clock: Clock = utcnow) -> dict[str, Any]:
+    """The monthly lead counts (P9.2, app/services/leads.py rollup_month), once per month: the month it ran for is kept
+    in the lease's last_result (ran_for), and every later tick only repeats the last result. A failed run is retried
+    an hour later (RETRY_AFTER_FAILURE)."""
+    from app.services import leads
+
+    now = clock()
+    year, month = lead_counts_month(now)
+    key = leads.month_key(year, month)
+    db = Database()
+    last = (db.mongo[LEASES].find_one({"_id": LEAD_COUNTS_JOB}, {"last_result": 1}) or {}).get("last_result") or {}
+    if last.get("ok") is True and last.get("ran_for") == key:
+        return {k: v for k, v in last.items() if k != "ok"}
+    return {"ran_for": key, **leads.rollup_month(db, year, month, now)}
+
+
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {
     "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage, "retention": retention,
     "process_deletions": process_deletions, PHONE_MIGRATION_JOB: phone_migration,
-    SEND_NOTIFICATIONS_JOB: send_notifications}
+    SEND_NOTIFICATIONS_JOB: send_notifications, LEAD_COUNTS_JOB: lead_counts}
 
 
 class SearchIndexRefresher:

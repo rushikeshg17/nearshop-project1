@@ -52,6 +52,7 @@ from app.models.enums import (
     SaleSource,
 )
 from app.schemas.requests import CONSENT_PURPOSES, OTP_PURPOSES
+from app.services.leads import COUNT_FIELDS, LEAD_KINDS
 
 log = logging.getLogger(__name__)
 
@@ -393,6 +394,32 @@ VALIDATORS: dict[str, dict] = {
         wa_sent_at=DATE_N, delivered_at=DATE_N, read_at=DATE_N, failed_at=DATE_N, finished_at=DATE_N,
         seconds_to_sent=NUM_N, seconds_to_delivered=NUM_N, cost_estimate=NUM_N,
     ),
+    # Lead events (P9.2, app/services/leads.py; plan sections 8.4 and 8.18): one row per counted Call or Directions
+    # tap, holding only the shop, the listing or none, the kind and the IST day (the day's start as a UTC time). No
+    # other field is allowed, so no user id, phone, IP address, user agent or tap time can ever be stored. The TTL
+    # index on day removes a row after 90 days.
+    "lead_events": {"$jsonSchema": {
+        **schema(["shop_id", "kind", "day"], shop_id=INT, product_id=INT_N, kind={"enum": list(LEAD_KINDS)},
+                 day=DATE)["$jsonSchema"],
+        "additionalProperties": False,
+    }},
+    # The once-per-visitor check (P9.2): _id is a hash of the client IP, the user agent and the day's salt, with the
+    # shop, kind and day. Nothing else; the TTL index removes it at expires_at, 48 hours after the tap.
+    "lead_dedupe": {"$jsonSchema": {"bsonType": "object", "required": ["_id", "expires_at"],
+                                    "additionalProperties": False, "properties": {
+        "_id": {"bsonType": STR, "pattern": "^[0-9a-f]{64}$"}, "expires_at": {"bsonType": DATE}}}},
+    # The dedupe salt of each IST day (P9.2): random, _id the day, removed by the TTL index an hour after the day ends.
+    "lead_salts": {"$jsonSchema": {"bsonType": "object", "required": ["_id", "salt", "expires_at"],
+                                   "additionalProperties": False, "properties": {
+        "_id": {"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}, "salt": {"bsonType": STR, "minLength": 32},
+        "expires_at": {"bsonType": DATE}}}},
+    # Monthly lead counts per shop (P9.2): one row per shop and IST month (YYYY-MM), written by the lead_counts job
+    # on the 1st and replaced by a re-run. Business records, kept 8 years: the TTL index removes a row at keep_until.
+    "lead_counts": schema(
+        ["shop_id", "month", *COUNT_FIELDS, "computed_at", "keep_until"],
+        shop_id=INT, month={"bsonType": STR, "pattern": "^\\d{4}-(0[1-9]|1[0-2])$"},
+        **{f: {"bsonType": INT, "minimum": 0} for f in COUNT_FIELDS}, computed_at=DATE, keep_until=DATE,
+    ),
     # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
     "counters": {},
     "text_embeddings": {},
@@ -411,6 +438,7 @@ IS_INT = {"$type": "number"}  # partial-index filter: "this optional reference i
 OTP_CODES_KEEP_SECONDS = 10 * 60  # otp_codes: removed 10 minutes after they were created (plan section 8.4)
 OTP_SENDS_KEEP_SECONDS = 30 * 24 * 60 * 60  # otp_sends: the send log is kept 30 days
 OUTBOX_KEEP_SECONDS = 30 * 24 * 60 * 60  # notification_outbox rows are deleted 30 days after the notification (P4.3)
+LEAD_EVENTS_KEEP_SECONDS = 90 * 24 * 60 * 60  # lead_events rows are deleted 90 days after their day (P9.2)
 # One account per email and one per phone, among the accounts that have one (migration 7 built both; uq_email_set
 # replaced uq_email, which also counted a missing email as a value). Phones are stored as their 10 digits. The
 # filter is "a string after the empty one": it leaves out a missing or null value, and, unlike a $type filter, an
@@ -465,6 +493,10 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("shop_id", A), ("status", A), ("created_at", A)], name="shop_status_created"),
         IndexModel([("customer_id", A), ("status", A), ("created_at", D)], name="customer_status_created"),
         IndexModel([("status", A), ("expires_at", A)], name="status_expires"),  # the expiry sweep
+        # The monthly lead counts and the facilitated-sales export (P9.2, app/services/leads.py) read by these dates.
+        IndexModel([("created_at", A)], name="created"),
+        IndexModel([("confirmed_at", A)], name="confirmed"),
+        IndexModel([("completed_at", A)], name="completed"),
         IndexModel([("product_id", A), ("status", A)], name="product_status"),
         # A customer can hold only one active reservation per listing, guaranteed by the database.
         IndexModel([("customer_id", A), ("product_id", A)], unique=True, name="uq_active_customer_product",
@@ -475,6 +507,8 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("shop_id", A), ("status", A), ("created_at", A)], name="shop_status_created"),
         IndexModel([("customer_id", A), ("status", A), ("created_at", D)], name="customer_status_created"),
         IndexModel([("status", A), ("created_at", A)], name="status_created"),  # stale-pending sweep
+        IndexModel([("created_at", A)], name="created"),  # the monthly lead counts (P9.2)
+        IndexModel([("delivered_at", A)], name="delivered"),  # the lead counts and the facilitated-sales export
     ],
     "status_events": [
         IndexModel([("entity", A), ("entity_id", A), ("created_at", A)], name="entity_timeline"),
@@ -564,6 +598,18 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("sent_at", A)], name="sent_at", sparse=True),
         IndexModel([("failed_at", A)], name="failed_at", sparse=True),
         IndexModel([("created_at", A)], expireAfterSeconds=OUTBOX_KEEP_SECONDS, name="created_ttl_30d"),
+    ],
+    # Lead events and counts (P9.2). day_ttl_90d also serves the monthly rollup's range on day.
+    "lead_events": [
+        IndexModel([("day", A)], expireAfterSeconds=LEAD_EVENTS_KEEP_SECONDS, name="day_ttl_90d"),
+        IndexModel([("shop_id", A), ("day", A)], name="shop_day"),  # one shop's month so far (month_counts)
+    ],
+    "lead_dedupe": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
+    "lead_salts": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
+    "lead_counts": [
+        IndexModel([("shop_id", A), ("month", A)], unique=True, name="uq_shop_month"),
+        IndexModel([("month", A)], name="month"),
+        IndexModel([("keep_until", A)], expireAfterSeconds=0, name="keep_until_ttl"),
     ],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),
