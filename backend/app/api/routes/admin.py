@@ -594,9 +594,10 @@ def payment_requests(_: AdminUser, db: DB, status: Literal["open", "paid", "canc
 
 @router.post("/billing/requests")
 def create_payment_request(body: AdminPaymentRequestIn, admin: AdminUser, db: DB):
-    """A payment request made for an owner (the shop's other open requests are cancelled)."""
+    """A payment request made for an owner, with the admin's reason kept on it (the shop's other open requests are
+    cancelled)."""
     req = billing.create_request(db, _shop(db, body.shop_id), plan_code=body.plan_code, period=body.period,
-                                 actor=_admin(admin))
+                                 actor=_admin(admin), reason=body.reason)
     return billing.request_out(req)
 
 

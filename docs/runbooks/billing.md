@@ -10,11 +10,16 @@ a shop: customers pay shops directly (P6.1, plan section 8.8). Agents never coll
 ## Payment route
 
 1. The owner (or an admin, for them) creates a payment request for a plan year: Owner > Plan, or
-   POST /api/owner/billing/requests; admins POST /api/admin/billing/requests with a reason.
+   POST /api/owner/billing/requests; admins POST /api/admin/billing/requests with a reason, which is kept on the
+   request (reason, with created_by admin).
    - The amount is the plan's list price in the catalogue in force, or the founding price (Growth, ₹999 for the
      first year) while the shop qualifies (P9.4). GST is added only when NearShop is registered (below).
    - Before NEARSHOP_BILLING_STARTS_ON (1 Aug 2027) the request is an advance; from then on it is a new plan, or a
      renewal of the shop's active plan (the same plan and period).
+   - What a payment becomes follows the day the money was credited, not the day it is matched: credited before
+     billing starts, it is an advance (a payment on 31 Jul matched on 2 Aug is still an advance, and the
+     subscriptions job starts it from 1 Aug); credited on or after that day, it is a shop-paid plan from the match,
+     and its receipt describes it so, even if the request was made as an advance.
    - Each request has a unique number, NSP and six digits (NSP000123). A new request cancels the shop's open ones.
    - Monthly Growth is not paid this way: it is UPI Autopay through a gateway (P9.6).
 2. The owner pays by UPI to NearShop's merchant UPI ID and payee name (NEARSHOP_BILLING_UPI_ID,
@@ -129,12 +134,18 @@ approved text, on staging first; issue a test receipt on staging and send it to 
 - An admin refunds a payment in full: POST /api/admin/billing/payments/{id}/refund with the bank transfer's
   reference and a reason. Send the money back by bank transfer (NEFT or IMPS from the current account) first, then
   record it.
-- The subscription becomes refunded at once: the shop is on Free, with every stock tool and the same place in search
-  (P9.4). The payment and its request are marked refunded, the owner is notified, and a refund receipt (for a
-  receipt) or a credit note (for a tax invoice) is issued with the original's number and the same amounts.
+- The subscription loses only the refunded payment's term. When no other payment on it is still matched, it becomes
+  refunded at once: the shop is on Free, with every stock tool and the same place in search (P9.4). When the payment
+  is a renewal and earlier paid terms remain, only the renewal's term is taken off (ends_at and paid_until move back
+  by it; the subscription lapses if that end has passed), and the shop keeps the time it paid for and kept. The
+  payment and its request are marked refunded, the owner is notified, and a refund receipt (for a receipt) or a
+  credit note (for a tax invoice) is issued with the original's number and the same amounts.
+- Payments on one subscription are refunded latest first. Refunding an earlier one while a later one is still
+  matched is refused (refund_later_first) and names the later payment; refund that one first, then the earlier one.
+  A matched payment can therefore always be refunded.
 - Advance subscriptions are refunded on request before billing starts, and all of them if billing does not start
   (plan section 8.18). An advance not used 300 days after its payment raises an admin alert (P9.4).
-- A refund ends the whole subscription. To refund part of a term, refund the payment and grant the remaining months
+- A refund is always of a whole payment. To refund part of a term, refund the payment and grant the remaining months
   by hand (Admin > Subscriptions), with a reason.
 
 ## The pilot ledger
@@ -144,7 +155,8 @@ POST /api/admin/billing/pilot-ledger with a reason and one row per payment: paid
 amount_paise and upi_reference. Each row becomes a matched payment, an advance subscription and a receipt that shows
 the original payment date. Rows are processed in order of payment date, so founding slots go in the order shops
 paid. The import is all or nothing: a UPI reference repeated in the file or already recorded, a shop not found, a
-shop that already has a plan, or an amount that is not the advance's price refuses the whole import.
+shop that already has a plan, an amount that is not the advance's price, or a payment date later than today (IST)
+refuses the whole import.
 
 ## Settings to configure
 

@@ -5,7 +5,7 @@ on dates, a controlled clock (the now passed to the service). Everything they wr
 starts on 1 Aug 2027 (NEARSHOP_BILLING_STARTS_ON), so a payment made before it is an advance."""
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -347,6 +347,39 @@ def test_a_refund_references_its_original_and_refunds_the_subscription(db, world
     assert again.status_code == 409
 
 
+def test_refunding_a_renewal_takes_off_only_its_term_and_payments_are_refunded_latest_first(db, world, monkeypatch):
+    monkeypatch.setattr(settings, "billing_starts_on", date(2020, 1, 1))
+    shop = world.shop(1, city="Mysuru")
+    first = pay_by_hand(db, request_for(db, shop), "612345670030", on=date(2026, 10, 1))
+    one_year = plans.subscriptions(db).get(first.subscription_id)
+    second = pay_by_hand(db, request_for(db, shop), "612345670031", on=date(2026, 10, 2))
+    assert plans.subscriptions(db).get(one_year.id).ends_at == months_after(one_year.ends_at, 12)
+
+    with pytest.raises(billing.BillingRefused) as refused:  # the first year is refunded after the renewal, not before
+        billing.refund_payment(db, first.id, reason="Refund asked for", bank_reference="NEFT-TEST-0010", actor=ADMIN)
+    assert refused.value.code == "refund_later_first"
+    assert billing.payments(db).get(first.id).status == billing.PaymentStatus.MATCHED
+
+    billing.refund_payment(db, second.id, reason="Renewed by mistake", bank_reference="NEFT-TEST-0011", actor=ADMIN)
+    sub = plans.subscriptions(db).get(one_year.id)
+    # The shop keeps the first year it paid for: only the renewal's year is taken off.
+    assert (sub.status, sub.ends_at, sub.paid_until) == (SubscriptionStatus.ACTIVE, one_year.ends_at,
+                                                         one_year.paid_until)
+    assert sub.paid_terms[-1].end == one_year.ends_at
+    assert plans.effective_plan(db, shop.id)["code"] == "growth"
+    assert billing.requests(db).get(first.request_id).status == billing.RequestStatus.PAID
+
+    refunded = billing.refund_payment(db, first.id, reason="Shop closed for good", bank_reference="NEFT-TEST-0012",
+                                      actor=ADMIN)
+    assert refunded.status == billing.PaymentStatus.REFUNDED
+    assert plans.subscriptions(db).get(one_year.id).status == SubscriptionStatus.REFUNDED
+    assert plans.effective_plan(db, shop.id)["code"] == "free"
+    kinds = [e["kind"] for e in db.mongo[plans.EVENTS].find({"subscription_id": one_year.id}).sort("_id", 1)]
+    assert kinds == ["created", "renewed", "renewal_refunded", "refunded"]
+    notes = [billing.documents(db).get(billing.payments(db).get(p.id).refund.document_id) for p in (second, first)]
+    assert [n.original_number for n in notes] == [doc_of(db, second).number, doc_of(db, first).number]
+
+
 def test_a_tax_invoice_is_refunded_with_a_credit_note(db, world, monkeypatch):
     monkeypatch.setattr(settings, "billing_gst_mode", "registered")
     monkeypatch.setattr(settings, "billing_gst_registered_from", date(2026, 1, 1))
@@ -428,13 +461,13 @@ def test_a_planted_statement_of_20_credits_gives_18_matches_1_unmatched_and_1_du
 def test_the_pilot_ledger_import_and_its_refusal_of_a_repeated_upi_reference(db, world, admin):
     first, second = world.shop(1), world.shop(2)
     body = {"reason": "R1's hand-kept ledger of pilot advances", "rows": [
-        {"paid_on": "2027-06-05", "shop_id": second.id, "amount_paise": 99_900, "upi_reference": "612355550002"},
-        {"paid_on": "2027-06-01", "shop_id": first.id, "amount_paise": 99_900, "upi_reference": "612355550001"},
+        {"paid_on": "2026-06-05", "shop_id": second.id, "amount_paise": 99_900, "upi_reference": "612355550002"},
+        {"paid_on": "2026-06-01", "shop_id": first.id, "amount_paise": 99_900, "upi_reference": "612355550001"},
     ]}
     res = admin.post("/api/admin/billing/pilot-ledger", json=body, headers=HEADERS)
     assert res.status_code == 200, res.text
     assert res.json()["imported"] == 2
-    for shop, paid_on, slot in ((first, date(2027, 6, 1), 1), (second, date(2027, 6, 5), 2)):
+    for shop, paid_on, slot in ((first, date(2026, 6, 1), 1), (second, date(2026, 6, 5), 2)):
         sub = subscription_of(db, shop)
         # In order of payment: the shop that paid first has founding slot 1.
         assert (sub.status, sub.founding_slot, sub.paid_at) == (SubscriptionStatus.ADVANCE, slot,
@@ -447,20 +480,35 @@ def test_the_pilot_ledger_import_and_its_refusal_of_a_repeated_upi_reference(db,
     third = world.shop(3)
     repeated = admin.post("/api/admin/billing/pilot-ledger", headers=HEADERS, json={
         "reason": "R1's ledger, second page", "rows": [
-            {"paid_on": "2027-06-07", "shop_id": third.id, "amount_paise": 99_900, "upi_reference": "612355550003"},
-            {"paid_on": "2027-06-08", "shop_id": third.id, "amount_paise": 99_900, "upi_reference": "612355550001"}]})
+            {"paid_on": "2026-06-07", "shop_id": third.id, "amount_paise": 99_900, "upi_reference": "612355550003"},
+            {"paid_on": "2026-06-08", "shop_id": third.id, "amount_paise": 99_900, "upi_reference": "612355550001"}]})
     assert repeated.status_code == 409 and repeated.json()["error"]["code"] == "repeated_reference"
     in_file = admin.post("/api/admin/billing/pilot-ledger", headers=HEADERS, json={
         "reason": "R1's ledger, second page", "rows": [
-            {"paid_on": "2027-06-07", "shop_id": third.id, "amount_paise": 99_900, "upi_reference": "612355550004"},
-            {"paid_on": "2027-06-08", "shop_id": third.id, "amount_paise": 99_900, "upi_reference": "612355550004"}]})
+            {"paid_on": "2026-06-07", "shop_id": third.id, "amount_paise": 99_900, "upi_reference": "612355550004"},
+            {"paid_on": "2026-06-08", "shop_id": third.id, "amount_paise": 99_900, "upi_reference": "612355550004"}]})
     assert in_file.status_code == 409
     assert subscription_of(db, third) is None and billing.payments(db).count({}) == 2
     wrong = admin.post("/api/admin/billing/pilot-ledger", headers=HEADERS, json={
         "reason": "R1's ledger, second page", "rows": [
-            {"paid_on": "2027-06-07", "shop_id": third.id, "amount_paise": 50_000, "upi_reference": "612355550005"}]})
+            {"paid_on": "2026-06-07", "shop_id": third.id, "amount_paise": 50_000, "upi_reference": "612355550005"}]})
     assert wrong.status_code == 409 and wrong.json()["error"]["code"] == "ledger_amount"
     assert billing.credits(db).find_one({"upi_reference": "612355550005"}) is None
+
+
+def test_the_pilot_ledger_refuses_a_payment_date_later_than_today(db, world, admin):
+    shop = world.shop(1)
+    tomorrow = (datetime.now(IST).date() + timedelta(days=1)).isoformat()
+    res = admin.post("/api/admin/billing/pilot-ledger", headers=HEADERS, json={
+        "reason": "R1's hand-kept ledger of pilot advances", "rows": [
+            {"paid_on": tomorrow, "shop_id": shop.id, "amount_paise": 99_900, "upi_reference": "612355550006"}]})
+    assert res.status_code == 422
+    with pytest.raises(billing.BillingRefused) as refused:
+        billing.import_pilot_ledger(db, [{"paid_on": date(2026, 6, 10), "shop_id": shop.id, "amount_paise": 99_900,
+                                          "upi_reference": "612355550007"}], reason="R1's ledger", actor=ADMIN,
+                                    now=ist(2026, 6, 9, 12))
+    assert refused.value.code == "ledger_future_date"
+    assert subscription_of(db, shop) is None and billing.credits(db).count({}) == 0
 
 
 # ---------------------------------------------------------------- renewals
@@ -479,6 +527,36 @@ def test_a_renewal_payment_extends_the_active_subscription(db, world, monkeypatc
     assert renewed.ends_at == months_after(sub.ends_at, 12)
     with pytest.raises(billing.BillingRefused):
         request_for(db, shop, plan_code="pro")  # Pro is not on sale
+
+
+def test_an_advance_paid_before_billing_starts_stays_an_advance_when_matched_after_it(db, world):
+    early, late = world.shop(1), world.shop(2)
+    on_time = request_for(db, early, now=ist(2027, 7, 30, 12))
+    too_late = request_for(db, late, now=ist(2027, 7, 30, 12))
+    assert on_time.kind == too_late.kind == billing.RequestKind.ADVANCE
+    # Paid on 31 Jul, matched from the statement on 2 Aug: still the advance it was paid as.
+    pay = pay_by_hand(db, on_time, "612388880001", on=date(2027, 7, 31), now=ist(2027, 8, 2, 10))
+    sub = plans.subscriptions(db).get(pay.subscription_id)
+    assert (sub.source.value, sub.status, sub.paid_at) == ("advance", SubscriptionStatus.ADVANCE,
+                                                           billing.leads.ist_start(date(2027, 7, 31)))
+    assert "advance payment for" in doc_of(db, pay).description
+    plans.activate_advances(db, ist(2027, 8, 2, 10, 5))
+    sub = plans.subscriptions(db).get(pay.subscription_id)
+    assert (sub.status, sub.starts_at) == (SubscriptionStatus.ACTIVE, plans.billing_start())
+    # Paid on 2 Aug, after billing started: a shop-paid plan from then, and its receipt does not call it an advance.
+    paid_late = pay_by_hand(db, too_late, "612388880002", on=date(2027, 8, 2), now=ist(2027, 8, 2, 10))
+    sub = plans.subscriptions(db).get(paid_late.subscription_id)
+    assert (sub.source.value, sub.status) == ("shop_paid", SubscriptionStatus.ACTIVE)
+    assert "subscription to" in doc_of(db, paid_late).description
+
+
+def test_an_admins_reason_for_a_request_made_for_the_owner_is_kept(db, world, admin):
+    shop = world.shop(1)
+    res = admin.post("/api/admin/billing/requests", headers=HEADERS,
+                     json={"shop_id": shop.id, "reason": "Owner asked on the phone to pay for Growth"})
+    assert res.status_code == 200, res.text
+    assert res.json()["reason"] == "Owner asked on the phone to pay for Growth"
+    assert billing.requests(db).get(res.json()["id"]).reason == "Owner asked on the phone to pay for Growth"
 
 
 # ---------------------------------------------------------------- the daily reconciliation alert

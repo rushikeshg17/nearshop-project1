@@ -1,6 +1,7 @@
 """Validated request bodies (Pydantic). Anything a client sends is checked here first."""
 from datetime import UTC, date, datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
@@ -380,6 +381,13 @@ class PilotLedgerRow(_Strict):
     shop_id: int = Field(ge=1)
     amount_paise: int = Field(ge=1, le=PAISE_MAX)
     upi_reference: str = UPI_REFERENCE
+
+    @field_validator("paid_on")
+    @classmethod
+    def _not_future(cls, value: date) -> date:
+        if value > datetime.now(ZoneInfo("Asia/Kolkata")).date():
+            raise ValueError("paid_on is later than today (IST): a ledger row records a payment already made")
+        return value
 
 
 class PilotLedgerIn(_Strict):

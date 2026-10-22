@@ -492,6 +492,7 @@ VALIDATORS: dict[str, dict] = {
         purpose=enum(billing.Purpose), plan_code=enum(PlanCode), plan_version=POSITIVE_INT, period=enum(Period),
         kind=enum(billing.RequestKind), subscription_id=INT_N, founding=BOOL, amount_paise=PAISE, gst_mode=GST_MODE,
         gst_paise=PAISE, total_paise=PAISE, status=enum(billing.RequestStatus), created_by=ACTOR, payment_id=INT_N,
+        reason={"bsonType": STR_N, "maxLength": 500},  # an admin's reason for a request made for the owner
         created_at=DATE, updated_at=DATE,
     ),
     # Every credit seen on a bank statement, entered by hand or imported from the pilot ledger; one per UPI reference.

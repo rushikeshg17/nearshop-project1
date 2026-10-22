@@ -47,9 +47,13 @@ settings; until NEARSHOP_BILLING_DOCUMENT_FORMAT names the approved format, docu
 
 Refunds and the pilot ledger
 ----------------------------
-An admin refunds a payment with a reason and the bank transfer's reference: the subscription becomes refunded (the
-shop is on Free from then), the payment and its request are marked refunded, and the refund document references
-the original. Advance subscriptions are refunded on request before billing starts this way. The pilot ledger import
+An admin refunds a payment with a reason and the bank transfer's reference: the payment and its request are marked
+refunded, and the refund document references the original. The subscription changes by the payment's own term only:
+when it is the subscription's only payment not yet refunded, the subscription becomes refunded (the shop is on Free
+from then); when it is a renewal and earlier terms are still paid, only that renewal's term is taken off (ends_at and
+paid_until move back by it, and the subscription lapses if that end has passed), so the shop keeps the time it paid
+for and kept. Payments on one subscription are refunded latest first: an earlier one is refused, naming the later
+payment to refund first, and becomes refundable once that one is, so a matched payment can always be refunded. Advance subscriptions are refunded on request before billing starts this way. The pilot ledger import
 turns the advance payments R1 recorded by hand into matched payments, advance subscriptions and receipts showing the
 original payment date, in the order they were paid (the founding offer counts first payments); a UPI reference seen
 before refuses the whole import.
@@ -82,7 +86,15 @@ from app.core.database import Collection, Database, utcnow
 from app.core.errors import AppError, NotFound
 from app.models import Shop
 from app.models.base import Document, Embedded, Timestamps
-from app.models.billing import Actor, Period, PlanCode, Subscription, SubscriptionSource, SubscriptionStatus
+from app.models.billing import (
+    Actor,
+    PaidTerm,
+    Period,
+    PlanCode,
+    Subscription,
+    SubscriptionSource,
+    SubscriptionStatus,
+)
 from app.services import leads, plans
 from app.services.notifications import notify
 
@@ -107,7 +119,7 @@ STATE_NAMES = {"29": "Karnataka"}  # the place of supply is printed as the state
 BILLING_LINK = "/owner/billing"
 KIND_PAYMENT_RECEIVED, KIND_REFUNDED, KIND_UNMATCHED = "payment_received", "payment_refunded", "credit_unmatched"
 UNMATCHED_WARNING = "bank credit unmatched"
-SUBSCRIPTION_EVENT_KINDS = ("refunded",)  # the subscription_events kinds this module adds to plans.EVENT_KINDS
+SUBSCRIPTION_EVENT_KINDS = ("refunded", "renewal_refunded")  # the subscription_events kinds this module adds to plans.EVENT_KINDS
 
 
 class BillingRefused(AppError):
@@ -184,6 +196,7 @@ class PaymentRequest(Document, Timestamps):
     total_paise: int
     status: RequestStatus = RequestStatus.OPEN
     created_by: Actor
+    reason: str | None = None  # why an admin made the request for the owner (AdminPaymentRequestIn)
     payment_id: int | None = None
 
 
@@ -504,15 +517,17 @@ def _new_request(db: Database, shop: Shop, account: BillingAccount, quote: dict[
 
 
 def create_request(db: Database, shop: Shop, *, plan_code: PlanCode | str, period: Period | str = Period.YEAR,
-                   actor: Actor, now: datetime | None = None) -> PaymentRequest:
-    """A payment request for a plan year, by the owner or an admin for them. The shop's other open requests are
-    cancelled (a payment that still names one goes to the unmatched queue)."""
+                   actor: Actor, reason: str | None = None, now: datetime | None = None) -> PaymentRequest:
+    """A payment request for a plan year, by the owner or an admin for them (with the admin's reason, kept on the
+    request). The shop's other open requests are cancelled (a payment that still names one goes to the unmatched
+    queue)."""
     _require_configured()
     now = now or utcnow()
     account = account_for_owner(db, shop.owner_id, shop)
 
     def write() -> PaymentRequest:
         req = _new_request(db, shop, account, _quote(db, shop, plan_code, period, now), actor, now)
+        req.reason = reason
         requests(db).update_many({"shop_id": shop.id, "status": RequestStatus.OPEN.value},
                                  {"$set": {"status": RequestStatus.CANCELLED.value, "updated_at": now}})
         return requests(db).insert(req)
@@ -527,6 +542,7 @@ def request_out(req: PaymentRequest) -> dict[str, Any]:
             "kind": req.kind.value, "founding": req.founding, "amount_paise": req.amount_paise,
             "gst_mode": req.gst_mode.value, "gst_paise": req.gst_paise, "total_paise": req.total_paise,
             "status": req.status.value, "created_at": _iso(req.created_at), "payment_id": req.payment_id,
+            "created_by": req.created_by.type, "reason": req.reason,
             "pay_to": {"upi_id": settings.billing_upi_id, "payee_name": settings.billing_payee_name,
                        "amount": rupees(req.total_paise), "note": req.number}}
 
@@ -578,9 +594,11 @@ def next_number(db: Database, fy: str) -> tuple[int, str]:
     return seq, number
 
 
-def _description(req: PaymentRequest, plan_name: str) -> str:
+def _description(req: PaymentRequest, kind: RequestKind, plan_name: str) -> str:
+    """kind is what the payment became (_settle), which may differ from the request's: an advance request paid on or
+    after billing starts is a shop-paid subscription."""
     what = {RequestKind.ADVANCE: "advance payment for", RequestKind.NEW: "subscription to",
-            RequestKind.RENEWAL: "renewal of"}[req.kind]
+            RequestKind.RENEWAL: "renewal of"}[kind]
     founding = " (founding offer, first year)" if req.founding else ""
     return f"NearShop {plan_name} plan, one year: {what} the plan{founding}"
 
@@ -634,11 +652,22 @@ def _settle(db: Database, credit: BankCredit, req: PaymentRequest, *, actor: Act
     note = f"Payment {req.number} ({credit.upi_reference}): {reason}"
     sub: Subscription | None
     if req.kind == RequestKind.RENEWAL and req.subscription_id is not None:
+        kind = RequestKind.RENEWAL
         sub = plans.renew(db, req.subscription_id, actor=actor, reason=note, paid_at=credit.credited_at, now=now)
-    else:
-        source = SubscriptionSource.ADVANCE if now < plans.billing_start() else SubscriptionSource.SHOP_PAID
+    elif credit.credited_at < plans.billing_start():
+        # The money arrived before billing started, so it is an advance, however late it is matched (a payment on
+        # 31 Jul matched from the statement on 2 Aug). Matched after the start, it is recorded as of its payment
+        # date (an advance cannot be taken any later), and the subscriptions job activates it on its next tick.
+        kind = RequestKind.ADVANCE
         sub = plans.create_subscription(db, shop_ids=[req.shop_id], plan_code=req.plan_code, period=req.period,
-                                        source=source, actor=actor, reason=note, paid_at=credit.credited_at, now=now)
+                                        source=SubscriptionSource.ADVANCE, actor=actor, reason=note,
+                                        paid_at=credit.credited_at,
+                                        now=now if now < plans.billing_start() else credit.credited_at)
+    else:
+        kind = RequestKind.NEW
+        sub = plans.create_subscription(db, shop_ids=[req.shop_id], plan_code=req.plan_code, period=req.period,
+                                        source=SubscriptionSource.SHOP_PAID, actor=actor, reason=note,
+                                        paid_at=credit.credited_at, now=now)
     if sub is None or sub.price_paise != req.amount_paise:
         raise BillingRefused(f"The price of request {req.number} has changed (the founding offer may be full, or a "
                              f"new catalogue is in force)")
@@ -651,7 +680,8 @@ def _settle(db: Database, credit: BankCredit, req: PaymentRequest, *, actor: Act
         raise NotFound("Billing account not found")
     plan = plans.plans(db).get(sub.plan_id)
     doc = _issue(db, DocType.TAX_INVOICE if mode == GstMode.REGISTERED else DocType.RECEIPT, payment=pay,
-                 recipient=_party(account), description=_description(req, plan.name if plan else req.plan_code.value),
+                 recipient=_party(account),
+                 description=_description(req, kind, plan.name if plan else req.plan_code.value),
                  taxable=req.amount_paise, split=gst_split(req.amount_paise, mode, account.state_code), issued_at=now,
                  payment_date=credit.credited_at)
     if doc.total_paise != credit.amount_paise:
@@ -902,10 +932,22 @@ def import_statement(db: Database, data: bytes, filename: str, *, actor: Actor, 
 # ---------------------------------------------------------------- refunds
 
 
+def _renewal_term(db: Database, sub_id: int, request_number: str) -> timedelta:
+    """How far a renewal paid by request_number moved the subscription's end (its renewed event): the term to take
+    off when that renewal is refunded. After a lapse it is from the old end, so taking it off restores that end."""
+    event = plans.events(db).find_one({"subscription_id": sub_id, "kind": "renewed",
+                                       "reason": {"$regex": f"^Payment {re.escape(request_number)} "}})
+    if event is None or event.ends_at_before is None or event.ends_at_after is None:
+        raise BillingRefused(f"The renewal paid by {request_number} was not found on subscription {sub_id}")
+    return event.ends_at_after - event.ends_at_before
+
+
 def refund_payment(db: Database, payment_id: int, *, reason: str, bank_reference: str, actor: Actor,
                    now: datetime | None = None) -> Payment:
-    """Refund a payment in full, sent back by bank transfer (bank_reference): the subscription becomes refunded (the
-    shop is on Free from now), and a refund receipt or a credit note references the original document."""
+    """Refund a payment in full, sent back by bank transfer (bank_reference), with a refund receipt or a credit note
+    that references the original document. The subscription loses only this payment's term (module docstring): it
+    becomes refunded when no other payment on it is still matched, else the renewal's term is taken off. A payment
+    with a later matched payment on the same subscription is refused until that one is refunded."""
     now = now or utcnow()
     ensure_series(db, financial_year(now))
 
@@ -918,14 +960,38 @@ def refund_payment(db: Database, payment_id: int, *, reason: str, bank_reference
         original = documents(db).get(pay.document_id)
         if original is None:
             raise NotFound("The payment's document was not found")
+        others = payments(db).find({"subscription_id": pay.subscription_id, "status": PaymentStatus.MATCHED.value,
+                                    "_id": {"$ne": pay.id}}, sort=[("_id", 1)])
+        later = [p for p in others if p.id > pay.id]
+        if later:
+            raise BillingRefused(f"Payment {later[-1].id} ({later[-1].request_number}) paid a later term of the same "
+                                 f"subscription: refund it first", code="refund_later_first")
+        note = f"Refund of payment {pay.request_number}: {reason}"
+        partial = bool(others)
 
-        def apply(sub: Subscription) -> dict[str, Any]:
-            if sub.status == SubscriptionStatus.REFUNDED:
-                raise BillingRefused(f"Subscription {sub.id} is already refunded")
-            return {"status": SubscriptionStatus.REFUNDED}
+        if not partial:
+            def apply(sub: Subscription) -> dict[str, Any]:
+                if sub.status == SubscriptionStatus.REFUNDED:
+                    raise BillingRefused(f"Subscription {sub.id} is already refunded")
+                return {"status": SubscriptionStatus.REFUNDED}
 
-        plans._change(db, pay.subscription_id, "refunded", actor, f"Refund of payment {pay.request_number}: {reason}",
-                      now, apply)
+            sub = plans._change(db, pay.subscription_id, "refunded", actor, note, now, apply)
+        else:
+            term = _renewal_term(db, pay.subscription_id, pay.request_number)
+
+            def apply(sub: Subscription) -> dict[str, Any]:
+                if sub.status == SubscriptionStatus.REFUNDED:
+                    raise BillingRefused(f"Subscription {sub.id} is already refunded")
+                ends_at, paid_until = sub.ends_at - term, min(sub.paid_until - term, sub.ends_at - term)
+                terms = [PaidTerm(start=t.start, end=min(t.end, paid_until)) for t in sub.paid_terms
+                         if t.start < paid_until]
+                fields: dict[str, Any] = {"ends_at": ends_at, "paid_until": paid_until, "reminded": [],
+                                          **plans._cursor(terms, sub.quarters_done if terms else 0)}
+                if sub.status == SubscriptionStatus.ACTIVE and ends_at <= now:
+                    fields["status"] = SubscriptionStatus.LAPSED
+                return fields
+
+            sub = plans._change(db, pay.subscription_id, "renewal_refunded", actor, note, now, apply)
         doc_type = DocType.CREDIT_NOTE if original.type == DocType.TAX_INVOICE else DocType.REFUND_RECEIPT
         doc = _issue(db, doc_type, payment=pay, recipient=original.recipient,
                      description=f"Refund of {original.number}: {original.description}",
@@ -936,10 +1002,13 @@ def refund_payment(db: Database, payment_id: int, *, reason: str, bank_reference
         req = requests(db).get(pay.request_id)
         if req is not None:
             requests(db).set(req, status=RequestStatus.REFUNDED, updated_at=now)
+            plan_now = (f"Your plan now runs until {plans._date(sub.ends_at)}." if partial and sub is not None
+                        and sub.ends_at > now else "Your shop is on the Free plan, with every stock tool and the "
+                        "same place in search.")
             notify(db, req.owner_id, KIND_REFUNDED, "Payment refunded",
                    f"₹{rupees(pay.amount_paise)} for {pay.request_number} is being returned to your bank account "
-                   f"(reference {bank_reference}). Your {doc.type.value.replace('_', ' ')} is {doc.number}. Your "
-                   f"shop is on the Free plan, with every stock tool and the same place in search.", BILLING_LINK)
+                   f"(reference {bank_reference}). Your {doc.type.value.replace('_', ' ')} is {doc.number}. "
+                   f"{plan_now}", BILLING_LINK)
         return pay
 
     return db.transaction(write)
@@ -958,6 +1027,11 @@ def import_pilot_ledger(db: Database, rows: list[dict[str, Any]], *, reason: str
     _require_configured()
     if now >= plans.billing_start():
         raise BillingRefused("Billing has started: the pilot ledger holds advances only, imported before it starts")
+    today = leads.ist_day(now)
+    future = [i + 1 for i, r in enumerate(rows) if r["paid_on"] > today]
+    if future:
+        raise BillingRefused(f"Row(s) {', '.join(map(str, future))}: the payment date is later than today "
+                             f"({today:%d %b %Y}, IST)", code="ledger_future_date")
     refs = [str(r["upi_reference"]).strip() for r in rows]
     repeated = sorted({r for r in refs if refs.count(r) > 1})
     known = sorted({c["upi_reference"] for c in credits(db).find_raw({"upi_reference": {"$in": refs}},
