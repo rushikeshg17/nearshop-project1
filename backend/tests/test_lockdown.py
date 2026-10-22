@@ -77,8 +77,10 @@ def test_register_works_when_signups_open(client, db, signups, cleanup_signups):
     assert res.json()["role"] == "customer"
 
 
-def test_register_shop_works_when_signups_open(client, db, signups, cleanup_signups):
+def test_register_shop_works_when_signups_open(client, db, signups, cleanup_signups, monkeypatch):
     signups(True)
+    # Without phone sign-in, so the sign-up needs no phone code (P4.2; tests/test_phone_migration.py sends one).
+    monkeypatch.setattr(settings, "otp_enabled", False)
     res = client.post("/api/auth/register-shop", json=SHOP_BODY, headers=HEADERS)
     assert res.status_code == 200, res.text
     assert res.json()["role"] == "owner"

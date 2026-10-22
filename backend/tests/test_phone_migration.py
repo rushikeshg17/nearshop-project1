@@ -1,9 +1,11 @@
 """The move to phone sign-in (P4.2): what /auth/me reports, email sign-in before and after the sunset, the daily
-phone_migration job on a controlled clock, refusing a phone verified on another account, and the sign-ups that verify
-a phone with a code (phone registration with an optional email, and shop sign-up).
+phone_migration job on a controlled clock, the minimum notice that moves the sunset when phone sign-in starts late,
+an owner's shops hidden with the account, refusing a phone verified on another account, and the sign-ups that verify
+a phone with a code (phone registration with an optional email, and shop sign-up, which needs one).
 
 Codes go through the console provider (app/services/messaging.py); nothing reaches WhatsApp or an SMS gateway. The
-suite's sunset is far away (tests/conftest.py); these tests move it."""
+suite's sunset is far away (tests/conftest.py); these tests move it, with no minimum notice unless a test asks for
+it (min_notice)."""
 import uuid
 from datetime import date, datetime, timedelta
 
@@ -12,10 +14,16 @@ from fastapi.testclient import TestClient
 
 from app import jobs, main
 from app.api.routes import auth as auth_routes
-from app.core.config import settings
+from app.core.config import (
+    DEFAULT_EMAIL_LOGIN_SUNSET,
+    DEVELOPMENT_EMAIL_LOGIN_SUNSET,
+    EMAIL_LOGIN_MIN_NOTICE_DAYS,
+    Settings,
+    settings,
+)
 from app.core.database import Database, utcnow
 from app.core.security import hash_password
-from app.models import Role, User
+from app.models import Role, Shop, User
 from app.services import otp
 from app.services.messaging import ConsoleProvider
 from tests.conftest import HEADERS, PASSWORD, login
@@ -30,10 +38,12 @@ def new_phone() -> str:
 
 @pytest.fixture(autouse=True)
 def clean(ids, monkeypatch):
-    """Sign-ups open, empty OTP collections, and the users, shops, consents and notifications a test made removed
-    afterwards."""
+    """Sign-ups open, no minimum notice (min_notice puts it back), no record of when phone sign-in started, empty
+    OTP collections, and the users, shops, consents and notifications a test made removed afterwards."""
     monkeypatch.setattr(settings, "signups_open", True)
+    monkeypatch.setattr(settings, "email_login_min_notice_days", 0)
     db = Database()
+    db.mongo[jobs.LEASES].delete_one({"_id": jobs.PHONE_MIGRATION_JOB})
     for name in (otp.CODES, otp.SENDS, otp.DAILY):
         db.mongo[name].delete_many({})
     ConsoleProvider.outbox.clear()
@@ -47,6 +57,18 @@ def clean(ids, monkeypatch):
         db.mongo[name].delete_many({"user_id": {"$in": made}})
     for name in (otp.CODES, otp.SENDS, otp.DAILY):
         db.mongo[name].delete_many({})
+    db.mongo[jobs.LEASES].delete_one({"_id": jobs.PHONE_MIGRATION_JOB})
+
+
+def min_notice(monkeypatch, since: date | None = None) -> None:
+    """The production minimum notice (8 weeks), with phone sign-in recorded as available since `since` (on an
+    expired phone_migration lease, as the job leaves it), or not recorded at all."""
+    monkeypatch.setattr(settings, "email_login_min_notice_days", EMAIL_LOGIN_MIN_NOTICE_DAYS)
+    db = Database()
+    db.mongo[jobs.LEASES].delete_one({"_id": jobs.PHONE_MIGRATION_JOB})
+    if since is not None:
+        db.mongo[jobs.LEASES].insert_one({"_id": jobs.PHONE_MIGRATION_JOB, "holder": "earlier-process",
+                                          "expires_at": datetime(2000, 1, 1), jobs.PHONE_SIGNIN_SINCE: since.isoformat()})
 
 
 def sunset_in(monkeypatch, days: int) -> date:
@@ -71,6 +93,26 @@ def ask(c: TestClient, phone: str, purpose: str):
     res = c.post("/api/auth/otp/request", json={"phone": phone, "purpose": purpose}, headers=HEADERS)
     assert res.status_code == 200, res.text
     return ConsoleProvider.last_code(phone)
+
+
+# ---------------------------------------------------------------- the settings
+
+
+def test_the_sunset_defaults_and_the_minimum_notice_in_production():
+    def make(**values) -> Settings:
+        return Settings(_env_file=None, **{"email_login_sunset": None, **values})
+
+    assert make(environment="production").email_login_sunset == DEFAULT_EMAIL_LOGIN_SUNSET
+    assert make(environment="staging", email_login_sunset="").email_login_sunset == DEFAULT_EMAIL_LOGIN_SUNSET
+    # Development's seeded accounts sign in with email: its default is far away unless set.
+    assert make(environment="development").email_login_sunset == DEVELOPMENT_EMAIL_LOGIN_SUNSET
+    assert make(environment="development", email_login_sunset="2027-01-05").email_login_sunset == date(2027, 1, 5)
+    assert make(environment="production").email_login_min_notice_days == EMAIL_LOGIN_MIN_NOTICE_DAYS == 56
+    assert make(environment="staging", email_login_min_notice_days=0).email_login_min_notice_days == 0  # rehearsal
+    with pytest.raises(ValueError, match="8 weeks"):
+        make(environment="production", email_login_min_notice_days=10)
+    with pytest.raises(ValueError, match="0 or more"):
+        make(environment="staging", email_login_min_notice_days=-1)
 
 
 # ---------------------------------------------------------------- /auth/me
@@ -149,6 +191,31 @@ def test_without_phone_sign_in_the_sunset_does_not_lock_anyone_out(db, monkeypat
     monkeypatch.setattr(settings, "otp_enabled", False)
     with TestClient(main.app) as c:
         assert email_login(c, customer.email).status_code == 200
+
+
+def test_the_sunset_never_comes_less_than_8_weeks_after_phone_sign_in_started(db, monkeypatch):
+    """A provider that went live late (or a sunset nobody moved): the sunset in force is 8 weeks after the first day
+    phone sign-in was available, for the banner, /phone-signin and email sign-in alike."""
+    customer = account(db)
+    today = auth_routes.ist_today()
+    sunset_in(monkeypatch, -5)
+    min_notice(monkeypatch)  # the job has not recorded a start yet: phone sign-in starts today at the earliest
+    later = (today + timedelta(days=56)).isoformat()
+    with TestClient(main.app) as c:
+        assert email_login(c, customer.email).status_code == 200
+        me = c.get("/api/auth/me").json()
+        assert me["email_login_sunset"] == later and me["phone_migration"] == "warn"  # the banner, not /verify-phone
+        status = c.get("/api/auth/phone-signin").json()
+        assert status["email_login_sunset"] == later and status["email_login_ended"] is False
+
+        min_notice(monkeypatch, since=today - timedelta(days=20))  # started 20 days ago: 36 days to go
+        assert c.get("/api/auth/me").json()["email_login_sunset"] == (today + timedelta(days=36)).isoformat()
+        assert email_login(c, customer.email).status_code == 200
+
+        min_notice(monkeypatch, since=today - timedelta(days=60))  # 8 weeks have passed: the configured date holds
+        assert c.get("/api/auth/phone-signin").json()["email_login_ended"] is True
+        res = email_login(c, customer.email)
+        assert res.status_code == 403 and res.json()["error"]["code"] == "phone_signin_required"
 
 
 def test_after_the_sunset_an_unknown_phone_is_pointed_to_support(api_client, monkeypatch):
@@ -261,9 +328,17 @@ def test_shop_signup_with_a_code_verifies_the_owner_and_shop_phone(api_client, d
         assert res.status_code == 409 and res.json()["error"]["code"] == "phone_taken"
 
 
-def test_shop_signup_without_a_code_leaves_the_phone_unverified(api_client, db):
+def test_shop_signup_needs_a_code_wherever_phone_sign_in_is_available(api_client, db, monkeypatch):
     phone = new_phone()
-    res = api_client.post("/api/auth/register-shop", json=shop_body(phone), headers=HEADERS)
+    body = shop_body(phone)
+    res = api_client.post("/api/auth/register-shop", json=body, headers=HEADERS)
+    assert res.status_code == 422 and res.json()["error"]["code"] == "phone_code_required"
+    assert not db.users.exists({"email": body["owner"]["email"]}) and not db.shops.exists({"phone": phone})
+
+    # Without phone sign-in no code can be sent: the sign-up goes ahead and the phone stays unverified (an admin
+    # records the call-back instead, P3.3).
+    monkeypatch.setattr(settings, "otp_enabled", False)
+    res = api_client.post("/api/auth/register-shop", json=body, headers=HEADERS)
     assert res.status_code == 200, res.text
     assert res.json()["phone_verified"] is False
     assert db.shops.find_one({"owner_id": res.json()["id"]}).phone_verified_at is None
@@ -282,16 +357,16 @@ class Clock:
 
 @pytest.fixture
 def migration(db, monkeypatch):
-    """The job on a controlled clock, with the sunset on SUNSET. The seeded accounts, which have no verified phone,
-    are marked verified meanwhile so that only this test's accounts count; they are put back afterwards."""
+    """The job on a controlled clock, with the sunset on SUNSET and phone sign-in available since well over 8 weeks
+    before it. The seeded accounts, which have no verified phone, are marked verified meanwhile so that only this
+    test's accounts count; they are put back afterwards."""
     monkeypatch.setattr(settings, "email_login_sunset", SUNSET)
+    min_notice(monkeypatch, since=SUNSET - timedelta(days=100))
     seeded = db.users.find_raw({"phone_verified_at": None}, {"_id": 1})
     seeded_ids = [d["_id"] for d in seeded]
     db.users.update_many({"_id": {"$in": seeded_ids}}, {"$set": {"phone_verified_at": utcnow()}})
-    db.mongo[jobs.LEASES].delete_one({"_id": "phone_migration"})
     yield
     db.users.update_many({"_id": {"$in": seeded_ids}}, {"$set": {"phone_verified_at": None}})
-    db.mongo[jobs.LEASES].delete_one({"_id": "phone_migration"})
 
 
 def run_day(db, clock: Clock, day: date) -> dict:
@@ -336,9 +411,12 @@ def test_the_daily_job_warns_30_7_and_1_days_before_and_switches_off_30_days_aft
     result = run_day(db, clock, SUNSET + timedelta(days=30))
     assert (result["warned"], result["deactivated"], result["remaining"]) == (0, 1, 0)
     assert result["ran_for"] == (SUNSET + timedelta(days=30)).isoformat() and result["sunset"] == SUNSET.isoformat()
+    assert result["configured_sunset"] == SUNSET.isoformat() and result["shops_hidden"] == 0
+    assert result["phone_signin_since"] == (SUNSET - timedelta(days=100)).isoformat()
     switched_off = db.users.get(customer.id)
     assert switched_off.is_active is False and switched_off.sessions == []
     assert switched_off.token_version == customer.token_version + 1  # every session ended
+    assert switched_off.deactivated_reason == "phone_not_verified" and switched_off.deactivated_at is not None
     assert db.users.get(owner.id).is_active is True and db.users.get(admin.id).is_active is True
     assert run_day(db, clock, SUNSET + timedelta(days=31))["deactivated"] == 0
 
@@ -364,3 +442,45 @@ def test_without_phone_sign_in_the_job_only_counts(db, migration, monkeypatch):
     assert result["phone_signin_available"] is False
     result = run_day(db, clock, SUNSET + timedelta(days=30))
     assert result["deactivated"] == 0 and db.users.get(customer.id).is_active is True
+
+
+def test_switching_off_an_owner_hides_their_shops(db, migration):
+    owner = account(db, Role.OWNER)
+    shop = db.shops.insert(Shop(owner_id=owner.id, name="Unverified Stores", slug=f"unverified-{owner.id}",
+                                address_line="9 Far Road", city="Mysuru", lat=12.3, lng=76.6))
+    seeded_shop = db.shops.find_one({"owner_id": {"$ne": owner.id}, "is_active": True})
+    clock = Clock(utcnow())
+    assert run_day(db, clock, SUNSET + timedelta(days=29))["shops_hidden"] == 0
+    assert db.shops.get(shop.id).is_active is True
+    result = run_day(db, clock, SUNSET + timedelta(days=30))
+    assert (result["deactivated"], result["shops_hidden"], result["remaining"]) == (1, 1, 0)
+    assert db.users.get(owner.id).is_active is False
+    hidden = db.shops.get(shop.id)
+    assert hidden.is_active is False and hidden.is_live is False  # customers no longer find or reserve at it
+    assert db.shops.get(seeded_shop.id).is_active is True  # a verified owner's shop is untouched
+
+
+def test_phone_sign_in_starting_after_the_sunset_moves_the_warnings_and_the_switch_off(db, migration, monkeypatch):
+    """The providers go live 40 days after the configured sunset, and nobody moved it: nobody is switched off on the
+    first run. The sunset in force is 8 weeks after that first day, with the 30, 7 and 1 day warnings before it."""
+    customer = account(db)
+    min_notice(monkeypatch)  # no record yet: the job records the first day it sees phone sign-in
+    start = SUNSET + timedelta(days=40)
+    moved = start + timedelta(days=56)
+    clock = Clock(utcnow())
+    monkeypatch.setattr(settings, "otp_enabled", False)
+    assert run_day(db, clock, start - timedelta(days=1))["phone_signin_since"] is None
+    monkeypatch.setattr(settings, "otp_enabled", True)
+    first = run_day(db, clock, start)
+    assert (first["warned"], first["deactivated"], first["remaining"]) == (0, 0, 1)
+    assert first["phone_signin_since"] == start.isoformat() and first["sunset"] == moved.isoformat()
+    assert first["configured_sunset"] == SUNSET.isoformat()
+    assert run_day(db, clock, moved - timedelta(days=30))["warned"] == 1
+    assert run_day(db, clock, moved - timedelta(days=7))["warned"] == 1
+    assert run_day(db, clock, moved - timedelta(days=1))["warned"] == 1
+    assert "tomorrow" in warnings_for(db, customer)[-1]["title"]
+    assert run_day(db, clock, moved + timedelta(days=29))["deactivated"] == 0
+    assert db.users.get(customer.id).is_active is True
+    last = run_day(db, clock, moved + timedelta(days=30))
+    assert (last["deactivated"], last["remaining"]) == (1, 0)
+    assert last["phone_signin_since"] == start.isoformat()  # the first day stays

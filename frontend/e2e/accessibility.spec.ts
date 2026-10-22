@@ -161,12 +161,12 @@ function describeViolation(v: Violation) {
   return `${v.id} [${v.impact}] ${v.help}: ${targets}${more}`;
 }
 
-/** Runs axe on the page as it is now. Serious or critical violations fail the test (soft, so every dialog runs). */
 /** A fresh Indian mobile number for a code request (the console provider sends nothing anywhere). */
 function labPhone() {
   return `7${String(Math.floor(Math.random() * 1e9)).padStart(9, "0")}`;
 }
 
+/** Runs axe on the page as it is now. Serious or critical violations fail the test (soft, so every dialog runs). */
 async function audit(page: Page, testInfo: TestInfo, screen: string, language: string) {
   await settle(page);
   await expect(page.locator("html"), "the page's language").toHaveAttribute("lang", new RegExp(`^${language}(-|$)`));

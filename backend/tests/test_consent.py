@@ -90,7 +90,9 @@ def test_customer_consent_rows_for_every_purpose(client, db, monkeypatch):
                        "personalised_suggestions": False, "search_measurement": False}
 
 
-def test_shop_consent_rows_and_optional_purposes_default_false(client, db):
+def test_shop_consent_rows_and_optional_purposes_default_false(client, db, monkeypatch):
+    # Without phone sign-in, so the sign-up needs no phone code (P4.2; tests/test_phone_migration.py sends one).
+    monkeypatch.setattr(settings, "otp_enabled", False)
     res = client.post("/api/auth/register-shop", json={"owner": person("consent-owner@example.com", FULL),
                                                         "shop": SHOP}, headers=HEADERS)
     assert res.status_code == 200, res.text

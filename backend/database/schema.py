@@ -123,6 +123,8 @@ VALIDATORS: dict[str, dict] = {
         totp_recovery_hashes={"bsonType": "array", "maxItems": 10, "items": {"bsonType": STR}},
         totp_last_step={"bsonType": INT, "minimum": 0}, totp_failures={"bsonType": INT, "minimum": 0},
         totp_locked_until=DATE_N,
+        # Switched off by the phone migration (P4.2, app/jobs.py): when, and why.
+        deactivated_at=DATE_N, deactivated_reason={"enum": ["phone_not_verified", None]},
     ),
     "categories": schema(["slug", "name", "icon", "sort_order"], slug=STR, name=STR, icon=STR, sort_order=INT),
     "catalog_items": schema(
@@ -263,6 +265,8 @@ VALIDATORS: dict[str, dict] = {
         "_id": {"bsonType": STR}, "holder": {"bsonType": STR}, "acquired_at": {"bsonType": DATE},
         "expires_at": {"bsonType": DATE}, "last_run_at": {"bsonType": DATE_N},
         "last_result": {"bsonType": ["object", "null"]},
+        # phone_migration only (P4.2): the first IST day (YYYY-MM-DD) it saw phone sign-in available.
+        "phone_signin_since": {"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
     }}},
     # Retraining requests, processed by the retrain cron job outside the API. `active` is set only while a
     # request is queued or running, and `nightly_for` (the slot's date) only on nightly runs: both unique.

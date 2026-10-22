@@ -238,7 +238,7 @@ function PhoneRegisterForm({ status }: { status: PhoneSignin }) {
           }}
         >
           <CodeSentNote otp={otp} id="code-sent" channels={status.channels} />
-          <CodeField id="code" value={code} onChange={setCode} onAutoFill={(c) => register.mutate(c)} describedBy="code-sent" />
+          <CodeField id="code" value={code} onChange={setCode} onAutoFill={(c) => register.mutate(c)} autoCode={otp.autoCode} describedBy="code-sent" />
           {(register.isError || otp.send.isError) && (
             <FormError>
               {errorMessage(register.error ?? otp.send.error)}

@@ -80,6 +80,11 @@ class User(Document, Timestamps):
     deletion_due_at: datetime | None = None
     deletion_flagged_at: datetime | None = None
     deleted_at: datetime | None = None
+    # Why and when the account was switched off by a job, not by deletion: "phone_not_verified" when the phone
+    # migration (P4.2, app/jobs.py) switched it off, still without a verified phone 30 days after the email sign-in
+    # sunset. Admins see the reason in the users list.
+    deactivated_at: datetime | None = None
+    deactivated_reason: str | None = None
 
     @property
     def totp_enrolled(self) -> bool:

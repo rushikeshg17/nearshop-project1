@@ -19,6 +19,12 @@ EDGE_SECRET_MIN_LENGTH = 32
 SECURE_COOKIE_ENVIRONMENTS: tuple[str, ...] = ("staging", "production", "demo")
 # The email sign-in sunset (P4.2, NEARSHOP_EMAIL_LOGIN_SUNSET): at least 8 weeks after phone sign-in starts.
 DEFAULT_EMAIL_LOGIN_SUNSET = date(2027, 4, 10)
+# Development's default instead: there the console provider makes phone sign-in available while the seeded accounts
+# sign in with email and have no verified phone, so the real date would lock a developer's (and the CI lab's) demo
+# accounts out of email sign-in once it passed. Set NEARSHOP_EMAIL_LOGIN_SUNSET to rehearse the sunset locally.
+DEVELOPMENT_EMAIL_LOGIN_SUNSET = date(2100, 1, 1)
+# The least notice between the first day phone sign-in is available and the sunset (P4.2: at least 8 weeks).
+EMAIL_LOGIN_MIN_NOTICE_DAYS = 56
 
 
 class Settings(BaseSettings):
@@ -189,14 +195,33 @@ class Settings(BaseSettings):
     # phone sign-in starts in production (10 Feb 2027 at the latest for 10 Apr 2027). The sunset takes effect only
     # where phone sign-in is available: without a provider, nobody could verify a phone, so email sign-in stays.
     # The daily phone_migration job (app/jobs.py) warns these users 30, 7 and 1 days before it and switches off any
-    # still unverified 30 days after it. Staging sets it to yesterday to rehearse the sunset.
-    email_login_sunset: date = DEFAULT_EMAIL_LOGIN_SUNSET
+    # still unverified 30 days after it. Unset, it is DEFAULT_EMAIL_LOGIN_SUNSET, except in development
+    # (DEVELOPMENT_EMAIL_LOGIN_SUNSET). Staging sets it to yesterday, with the minimum notice below at 0, to rehearse
+    # the sunset.
+    email_login_sunset: date | None = None
+    # The guard on that date (P4.2): the sunset in force is never earlier than this many days after the first IST day
+    # the phone_migration job saw phone sign-in available here (kept on its lease, app/jobs.py), so a provider that
+    # goes live late moves the sunset, the warnings and the switch-off later instead of switching accounts off
+    # without warning. Production refuses anything under EMAIL_LOGIN_MIN_NOTICE_DAYS; staging sets 0 to rehearse.
+    email_login_min_notice_days: int = EMAIL_LOGIN_MIN_NOTICE_DAYS
 
     @field_validator("email_login_sunset", mode="before")
     @classmethod
     def _blank_sunset(cls, value: object) -> object:
-        # An empty value (a Render variable left blank) means the default date.
-        return DEFAULT_EMAIL_LOGIN_SUNSET if isinstance(value, str) and not value.strip() else value
+        # An empty value (a Render variable left blank) means the environment's default date.
+        return None if isinstance(value, str) and not value.strip() else value
+
+    @model_validator(mode="after")
+    def _default_email_login_sunset(self) -> "Settings":
+        if self.email_login_sunset is None:
+            self.email_login_sunset = (DEVELOPMENT_EMAIL_LOGIN_SUNSET if self.environment == "development"
+                                       else DEFAULT_EMAIL_LOGIN_SUNSET)
+        if self.email_login_min_notice_days < 0:
+            raise ValueError("NEARSHOP_EMAIL_LOGIN_MIN_NOTICE_DAYS must be 0 or more")
+        if self.environment == "production" and self.email_login_min_notice_days < EMAIL_LOGIN_MIN_NOTICE_DAYS:
+            raise ValueError(f"NEARSHOP_EMAIL_LOGIN_MIN_NOTICE_DAYS must be {EMAIL_LOGIN_MIN_NOTICE_DAYS} or more in "
+                             "production: customers and owners get at least 8 weeks of warning")
+        return self
 
     @field_validator("otp_daily_cap", mode="after")
     @classmethod

@@ -24,7 +24,9 @@ once a day at RETENTION_AT; process_deletions (P3.2), every tick, which runs acc
 waiting for orders in flight and flags overdue ones for the admins; and phone_migration (P4.2), once per IST day,
 which moves customers and owners to phone sign-in before the email sign-in sunset (NEARSHOP_EMAIL_LOGIN_SUNSET):
 it warns those without a verified phone in the app 30, 7 and 1 days before the sunset, and switches off any still
-unverified 30 days after it.
+unverified 30 days after it (an owner's shops are hidden with the account). The sunset in force is never earlier than
+NEARSHOP_EMAIL_LOGIN_MIN_NOTICE_DAYS after the first day the job saw phone sign-in available, which it keeps on its
+lease (phone_signin_since), so a provider that goes live late moves the sunset later (sunset_in_force).
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -100,6 +102,9 @@ RETENTION_AT = time(21, 30)  # UTC: 03:00 IST, the nightly retention job (P3.2)
 SUNSET_WARN_DAYS = (30, 7, 1)
 SUNSET_DEACTIVATE_AFTER_DAYS = 30
 PHONE_MIGRATION_KIND = "phone_migration"  # the notifications' kind
+PHONE_MIGRATION_JOB = "phone_migration"
+PHONE_SIGNIN_SINCE = "phone_signin_since"  # on that job's lease: the first IST day it saw phone sign-in available
+DEACTIVATED_NO_PHONE = "phone_not_verified"  # User.deactivated_reason of an account the job switched off
 IST = ZoneInfo("Asia/Kolkata")
 
 RETRAIN_REQUESTS = "retrain_requests"
@@ -232,6 +237,32 @@ def ist_midnight_utc(day: date) -> datetime:
     return datetime.combine(day, time(0), tzinfo=IST).astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
 
 
+def phone_signin_since(mongo: MongoDatabase) -> date | None:
+    """The first IST day the phone_migration job saw phone sign-in available here, or None before it has."""
+    doc = mongo[LEASES].find_one({"_id": PHONE_MIGRATION_JOB}, {PHONE_SIGNIN_SINCE: 1}) or {}
+    value = doc.get(PHONE_SIGNIN_SINCE)
+    return date.fromisoformat(value) if isinstance(value, str) else None
+
+
+def sunset_in_force(configured: date, since: date | None, today: date, min_notice_days: int) -> date:
+    """The email sign-in sunset that applies: the configured one, or min_notice_days after phone sign-in became
+    available (since; today when not recorded yet) if that is later, so nobody loses email sign-in, or their
+    account, with less notice than that however late the providers go live. The caller checks availability."""
+    start = today if since is None else min(since, today)
+    return max(configured, start + timedelta(days=min_notice_days))
+
+
+def current_sunset(mongo: MongoDatabase, today: date) -> date:
+    """sunset_in_force for settings, reading phone_signin_since only when it could matter: when the configured date
+    is at least the minimum notice away, no start date (at the latest today) can move it."""
+    from app.core.config import settings
+
+    configured, notice = settings.email_login_sunset, settings.email_login_min_notice_days
+    if configured >= today + timedelta(days=notice):
+        return configured
+    return sunset_in_force(configured, phone_signin_since(mongo), today, notice)
+
+
 def _unverified() -> dict[str, Any]:
     """Active customer and owner accounts without a verified phone (deleted accounts are switched off)."""
     return {"role": {"$in": ["customer", "owner"]}, "is_active": True, "phone_verified_at": None}
@@ -280,46 +311,65 @@ def warn_before_sunset(db: Database, sunset: date, now: datetime) -> int:
     return warned
 
 
-def deactivate_after_sunset(db: Database, sunset: date, now: datetime) -> int:
+def deactivate_after_sunset(db: Database, sunset: date, now: datetime) -> dict[str, int]:
     """From SUNSET_DEACTIVATE_AFTER_DAYS after the sunset, switch off every customer and owner account still without
-    a verified phone, ending its sessions. Returns the number switched off."""
+    a verified phone, ending its sessions and recording when and why (deactivated_at, deactivated_reason). An owner's
+    shops are hidden with the account (is_active false, so customers no longer find or reserve at them; their
+    listings are kept for the day support switches the account back on), in the same transaction. Returns the
+    numbers of accounts switched off and shops hidden."""
     if (ist_day(now) - sunset).days < SUNSET_DEACTIVATE_AFTER_DAYS:
-        return 0
+        return {"deactivated": 0, "shops_hidden": 0}
     from app.core.security import revoke_all_update
 
-    update = revoke_all_update({"is_active": False, "deactivated_at": now, "deactivated_reason": "phone_not_verified"})
-    count = db.mongo["users"].update_many(_unverified(), update).modified_count
-    if count:
-        log.warning("phone migration: switched off %d accounts without a verified phone", count)
-    return count
+    def run() -> dict[str, int]:
+        owners = [d["_id"] for d in db.users.find_raw({**_unverified(), "role": "owner"}, {"_id": 1})]
+        count = db.users.update_many(_unverified(), revoke_all_update(
+            {"is_active": False, "deactivated_at": now, "deactivated_reason": DEACTIVATED_NO_PHONE}))
+        hidden = db.shops.update_many({"owner_id": {"$in": owners}, "is_active": True},
+                                      {"$set": {"is_active": False, "updated_at": now}}) if owners else 0
+        return {"deactivated": count, "shops_hidden": hidden}
+
+    result = db.transaction(run)
+    if result["deactivated"]:
+        log.warning("phone migration: switched off %d accounts without a verified phone and hid %d of their shops",
+                    result["deactivated"], result["shops_hidden"])
+    return result
 
 
 def phone_migration(clock: Clock = utcnow) -> dict[str, Any]:
     """The move to phone sign-in (P4.2), once per IST day: the day it ran for is kept in the lease's last_result
     (ran_for), and every later tick that day only repeats the last result. While phone sign-in is unavailable nobody
-    can verify a phone, so it only counts. last_result: warned, deactivated, and remaining (active customer and owner
-    accounts still without a verified phone). A failed run is retried an hour later (RETRY_AFTER_FAILURE)."""
+    can verify a phone, so it only counts. The first day it finds phone sign-in available is kept on the lease
+    (phone_signin_since), and the sunset in force is current_sunset. last_result: warned, deactivated, shops_hidden,
+    and remaining (active customer and owner accounts still without a verified phone), with the sunset in force and
+    the configured one. A failed run is retried an hour later (RETRY_AFTER_FAILURE)."""
     from app.core.config import settings
     from app.services import otp
 
     now = clock()
     today = ist_day(now)
     db = Database()
-    last = (db.mongo[LEASES].find_one({"_id": "phone_migration"}, {"last_result": 1}) or {}).get("last_result") or {}
+    lease = db.mongo[LEASES].find_one({"_id": PHONE_MIGRATION_JOB}, {"last_result": 1}) or {}
+    last = lease.get("last_result") or {}
     if last.get("ok") is True and last.get("ran_for") == today.isoformat():
         return {k: v for k, v in last.items() if k != "ok"}
-    sunset = settings.email_login_sunset
     available = otp.available()
+    if available:  # the lease is this process's while the job runs; $min keeps the first day
+        db.mongo[LEASES].update_one({"_id": PHONE_MIGRATION_JOB}, {"$min": {PHONE_SIGNIN_SINCE: today.isoformat()}})
+    sunset = current_sunset(db.mongo, today)
     warned = warn_before_sunset(db, sunset, now) if available else 0
-    deactivated = deactivate_after_sunset(db, sunset, now) if available else 0
+    switched = deactivate_after_sunset(db, sunset, now) if available else {"deactivated": 0, "shops_hidden": 0}
     remaining = db.mongo["users"].count_documents(_unverified())
-    return {"ran_for": today.isoformat(), "sunset": sunset.isoformat(), "phone_signin_available": available,
-            "warned": warned, "deactivated": deactivated, "remaining": remaining}
+    since = phone_signin_since(db.mongo)
+    return {"ran_for": today.isoformat(), "sunset": sunset.isoformat(),
+            "configured_sunset": settings.email_login_sunset.isoformat(),
+            "phone_signin_since": since.isoformat() if since else None, "phone_signin_available": available,
+            "warned": warned, **switched, "remaining": remaining}
 
 
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {
     "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage, "retention": retention,
-    "process_deletions": process_deletions, "phone_migration": phone_migration}
+    "process_deletions": process_deletions, PHONE_MIGRATION_JOB: phone_migration}
 
 
 class SearchIndexRefresher:

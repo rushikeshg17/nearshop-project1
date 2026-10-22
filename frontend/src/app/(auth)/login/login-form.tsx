@@ -5,7 +5,7 @@ import { CheckCircle2, Eye, EyeOff, Loader2, LogOut, ShieldCheck, Smartphone } f
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useEffectEvent, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -113,13 +113,15 @@ export function PhoneField({
 }
 
 /** The 6-digit code field: the one-time-code autocomplete hint and the numeric keypad. Where the browser has WebOTP
- * (Android Chrome), the code from the SMS (its last line is "@<domain> #<code>", P4.1) fills the field and calls
- * onAutoFill. Typing the code always works too. */
+ * (Android Chrome), the code read from the SMS (its last line is "@<domain> #<code>", P4.1) arrives as autoCode
+ * (useSendCode listens from the moment the code is asked for): it fills the field and calls onAutoFill. Typing the
+ * code always works too. */
 export function CodeField({
   id,
   value,
   onChange,
   onAutoFill,
+  autoCode,
   describedBy,
   length = 6,
 }: {
@@ -127,6 +129,7 @@ export function CodeField({
   value: string;
   onChange: (value: string) => void;
   onAutoFill?: (code: string) => void;
+  autoCode?: string | null;
   describedBy?: string;
   length?: number;
 }) {
@@ -135,17 +138,8 @@ export function CodeField({
     onAutoFill?.(code);
   });
   useEffect(() => {
-    if (!("OTPCredential" in window) || !navigator.credentials) return;
-    const abort = new AbortController();
-    navigator.credentials
-      .get({ otp: { transport: ["sms"] }, signal: abort.signal } as CredentialRequestOptions)
-      .then((credential) => {
-        const code = (credential as { code?: string } | null)?.code;
-        if (code && /^\d+$/.test(code)) filled(code.slice(0, length));
-      })
-      .catch(() => undefined); // dismissed, aborted, or no SMS: the code is typed instead
-    return () => abort.abort();
-  }, [length]);
+    if (autoCode) filled(autoCode.slice(0, length));
+  }, [autoCode, length]);
   return (
     <div className="space-y-1.5">
       <Label htmlFor={id}>{length}-digit code</Label>
@@ -170,32 +164,59 @@ export function CodeField({
 
 type Sent = { phone: string; channel: OtpChannel; at: number; expiresIn: number };
 
-/** Sending codes for one purpose: the last send (phone, channel, time) and the seconds before a resend is allowed. */
+/** Sending codes for one purpose: the last send (phone, channel, time) and the seconds before a resend is allowed.
+ * Where the browser has WebOTP (Android Chrome), it listens for the SMS from the moment a code is asked for, not from
+ * when the code field appears, so a code that arrives before the request has answered is still read: autoCode. */
 export function useSendCode(purpose: "login" | "register" | "verify") {
   const [sent, setSent] = useState<Sent | null>(null);
   const [resendIn, setResendIn] = useState(0);
+  const [autoCode, setAutoCode] = useState<string | null>(null);
+  const listening = useRef<AbortController | null>(null);
   useEffect(() => {
     if (resendIn <= 0) return;
     const timer = setTimeout(() => setResendIn((s) => s - 1), 1000);
     return () => clearTimeout(timer);
   }, [resendIn]);
+  const stopListening = () => {
+    listening.current?.abort();
+    listening.current = null;
+  };
+  useEffect(() => () => listening.current?.abort(), []); // leaving the screen stops listening
+  const listen = () => {
+    stopListening();
+    setAutoCode(null);
+    if (!("OTPCredential" in window) || !navigator.credentials) return;
+    const abort = new AbortController();
+    listening.current = abort;
+    navigator.credentials
+      .get({ otp: { transport: ["sms"] }, signal: abort.signal } as CredentialRequestOptions)
+      .then((credential) => {
+        const code = (credential as { code?: string } | null)?.code;
+        if (!abort.signal.aborted && code && /^\d+$/.test(code)) setAutoCode(code);
+      })
+      .catch(() => undefined); // dismissed, aborted, or no SMS: the code is typed instead
+  };
   const send = useMutation({
     mutationFn: ({ phone, channel }: { phone: string; channel?: OtpChannel }) =>
       api.post<OtpSent>("/auth/otp/request", { phone, purpose, ...(channel ? { channel } : {}) }),
     meta: { silent: true },
+    onMutate: listen,
     onSuccess: (res, { phone }) => {
       setSent({ phone, channel: res.channel, at: Date.now(), expiresIn: res.expires_in });
       setResendIn(res.resend_after);
     },
+    onError: stopListening,
   });
   /** Whether a code sent to this phone is still valid (with a minute to spare), so a step back and forward need
    * not send another. */
   const fresh = (phone: string) => !!sent && sent.phone === phone && Date.now() - sent.at < (sent.expiresIn - 60) * 1000;
   const reset = () => {
+    stopListening();
+    setAutoCode(null);
     setSent(null);
     send.reset();
   };
-  return { send, sent, resendIn, fresh, reset };
+  return { send, sent, resendIn, fresh, reset, autoCode };
 }
 
 type SendCode = ReturnType<typeof useSendCode>;
@@ -325,7 +346,7 @@ function PhoneLogin({ status, onUseEmail }: { status: PhoneSignin; onUseEmail: (
           }}
         >
           <CodeSentNote otp={otp} id="code-sent" channels={status.channels} />
-          <CodeField id="code" value={code} onChange={setCode} onAutoFill={(c) => verify.mutate(c)} describedBy="code-sent" />
+          <CodeField id="code" value={code} onChange={setCode} onAutoFill={(c) => verify.mutate(c)} autoCode={otp.autoCode} describedBy="code-sent" />
           {(verify.isError || otp.send.isError) && (
             <FormError>
               {errorMessage(verify.error ?? otp.send.error)}
@@ -615,7 +636,7 @@ export function VerifyPhoneForm() {
           }}
         >
           <CodeSentNote otp={otp} id="code-sent" channels={status.channels} />
-          <CodeField id="code" value={code} onChange={setCode} onAutoFill={(c) => verify.mutate(c)} describedBy="code-sent" />
+          <CodeField id="code" value={code} onChange={setCode} onAutoFill={(c) => verify.mutate(c)} autoCode={otp.autoCode} describedBy="code-sent" />
           {(verify.isError || otp.send.isError) && (
             <FormError>
               {errorMessage(verify.error ?? otp.send.error)}

@@ -471,7 +471,8 @@ def users(_: AdminUser, db: DB, role: Literal["customer", "owner", "admin"] | No
         query["$or"] = [{"name": _contains(term)}, *([{"_id": int(term)}] if by_id else [])]
     # Emails are masked; the full address takes the reveal action below, which is audited.
     return [{"id": u.id, "name": u.name, "email": mask_email(u.email), "role": u.role.value,
-             "is_active": u.is_active, "created_at": iso(u.created_at), "last_login_at": iso(u.last_login_at)}
+             "is_active": u.is_active, "deactivated_reason": u.deactivated_reason, "deactivated_at": iso(u.deactivated_at),
+             "created_at": iso(u.created_at), "last_login_at": iso(u.last_login_at)}
             for u in db.users.find(query, sort=[("created_at", -1)], limit=limit)]
 
 

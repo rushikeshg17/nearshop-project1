@@ -146,7 +146,7 @@ export function ShopSignup() {
                     This number becomes your sign-in number, and your shop&apos;s phone counts as verified when an admin reviews it.
                   </p>
                   <CodeSentNote otp={otp} id="code-sent" channels={phoneSignin?.channels ?? []} />
-                  <CodeField id="code" value={code} onChange={setCode} onAutoFill={(c) => submit.mutate(c)} describedBy="code-sent" />
+                  <CodeField id="code" value={code} onChange={setCode} onAutoFill={(c) => submit.mutate(c)} autoCode={otp.autoCode} describedBy="code-sent" />
                 </div>
               )}
             </motion.div>

@@ -30,6 +30,7 @@ from app.core.security import (
     session_minutes,
     verify_password,
 )
+from app.jobs import current_sunset
 from app.models import Role, Shop, User
 from app.schemas.requests import (
     CONSENT_PURPOSES,
@@ -102,22 +103,30 @@ def ist_today() -> date:
     return date.fromisoformat(otp.today())
 
 
-def email_login_ended() -> bool:
-    """Whether the sunset (settings.email_login_sunset) has come. Only where phone sign-in is available: without a
-    provider nobody could verify a phone, so email sign-in carries on."""
-    return otp.available() and ist_today() >= settings.email_login_sunset
+def email_login_sunset(db: Database) -> date:
+    """The sunset in force (an IST day): settings.email_login_sunset, moved later where phone sign-in became
+    available less than settings.email_login_min_notice_days before it (app/jobs.py current_sunset), so nobody
+    loses email sign-in with less notice than that. Where phone sign-in is unavailable, the configured date."""
+    return current_sunset(db.mongo, ist_today()) if otp.available() else settings.email_login_sunset
+
+
+def email_login_ended(db: Database) -> bool:
+    """Whether the sunset in force has come. Only where phone sign-in is available: without a provider nobody could
+    verify a phone, so email sign-in carries on."""
+    return otp.available() and ist_today() >= email_login_sunset(db)
 
 
 def needs_verified_phone(user: User) -> bool:
     return user.role in MIGRATING_ROLES and user.phone_verified_at is None
 
 
-def phone_migration(user: User) -> str | None:
-    """What the site asks of this user (providers.tsx): "warn" shows the banner with the sunset date, "required" sends
-    every page to /verify-phone, None asks nothing (a verified phone, an admin, or phone sign-in unavailable)."""
+def phone_migration(user: User, sunset: date) -> str | None:
+    """What the site asks of this user (providers.tsx), given the sunset in force: "warn" shows the banner with the
+    sunset date, "required" sends every page to /verify-phone, None asks nothing (a verified phone, an admin, or phone
+    sign-in unavailable)."""
     if not needs_verified_phone(user) or not otp.available():
         return None
-    return "required" if ist_today() >= settings.email_login_sunset else "warn"
+    return "required" if ist_today() >= sunset else "warn"
 
 
 def email_login_closed() -> AppError:
@@ -167,7 +176,8 @@ class PhoneVerifyIn(OtpVerifyIn):
 
 class OwnerSignupIn(RegisterIn):
     """The owner of a shop sign-up. code: the 6-digit code sent to the owner's phone (purpose register), which
-    verifies it (P4.2); the screens send it whenever phone sign-in is available."""
+    verifies it (P4.2). Required wherever phone sign-in is available (register_shop); without it there is nothing to
+    send a code with, and it is left out."""
 
     code: str | None = Field(default=None, pattern=OTP_CODE_PATTERN)
 
@@ -222,6 +232,7 @@ OptionalPurpose = Literal[OPTIONAL_PURPOSES]  # one consent endpoint per optiona
 
 def user_out(user: User, db: Database) -> dict:
     shop = None
+    sunset = email_login_sunset(db)
     if user.role == Role.OWNER:
         s = db.shops.find_one({"owner_id": user.id}, sort=[("_id", 1)])
         if s:
@@ -233,8 +244,8 @@ def user_out(user: User, db: Database) -> dict:
         "phone": user.phone,
         # P4.2: whether the phone is verified, the email sign-in sunset (an IST day) and what the site asks.
         "phone_verified": user.phone_verified_at is not None,
-        "email_login_sunset": settings.email_login_sunset.isoformat(),
-        "phone_migration": phone_migration(user),
+        "email_login_sunset": sunset.isoformat(),
+        "phone_migration": phone_migration(user, sunset),
         "role": user.role.value,
         "home_lat": user.home_lat,
         "home_lng": user.home_lng,
@@ -377,11 +388,15 @@ def _verifiable_phone(db: Database, phone: str) -> None:
 
 @router.post("/register-shop", dependencies=[Depends(require_open_signups)])
 def register_shop(body: RegisterShopWithCodeIn, request: Request, response: Response, db: DB):
-    """A shop and its owner's account. With owner.code (a register code sent to the owner's phone, which is the
-    shop's unless the owner gives another), the owner's phone is verified (P4.2), and so is the shop's when it is
-    the same number, which P3.3 needs before the shop goes live. Without one the phone stays unverified (where
-    phone sign-in is unavailable): an admin records the call-back instead (P3.3)."""
+    """A shop and its owner's account. Wherever phone sign-in is available, owner.code (a register code sent to the
+    owner's phone, which is the shop's unless the owner gives another) is required (422 phone_code_required): the
+    owner's phone is verified (P4.2), and so is the shop's when it is the same number, which P3.3 needs before the
+    shop goes live. Where phone sign-in is unavailable no code can be sent, so the phone stays unverified and an
+    admin records the call-back instead (P3.3)."""
     check_consent(body.owner.consent)
+    if not body.owner.code and otp.available():
+        raise AppError("Enter the 6-digit code we sent to your phone, so we know the number is yours.",
+                       code="phone_code_required", status_code=422)
     _ensure_email_free(db, body.owner.email)
     code_phone = body.owner.phone or body.shop.phone
     verified_at = None
@@ -490,7 +505,7 @@ def login(body: LoginWithCodeIn, request: Request, response: Response, db: DB):
         raise invalid_credentials()
     # After the sunset (P4.2), only the phone signs customers and owners in until they verify one. Checked after
     # the password, so the answer says nothing about an account to someone without it.
-    if needs_verified_phone(user) and email_login_ended():
+    if needs_verified_phone(user) and email_login_ended(db):
         raise email_login_closed()
     if user.role == Role.ADMIN:
         _check_second_factor(db, user, body.code)
@@ -564,11 +579,13 @@ def update_me(body: ProfileUpdateIn, user: CurrentUser, db: DB):
 
 
 @router.get("/phone-signin")
-def phone_signin():
+def phone_signin(db: DB):
     """Whether phone sign-in is available here (a provider configured); P4.2 shows the phone screens only then. Also
-    the email sign-in sunset (an IST day) and whether it has come (email_login_ended), for the sign-in screen."""
-    return {**otp.status(), "email_login_sunset": settings.email_login_sunset.isoformat(),
-            "email_login_ended": email_login_ended()}
+    the email sign-in sunset in force (an IST day) and whether it has come (email_login_ended), for the sign-in
+    screen."""
+    sunset = email_login_sunset(db)
+    return {**otp.status(), "email_login_sunset": sunset.isoformat(),
+            "email_login_ended": otp.available() and ist_today() >= sunset}
 
 
 def _otp_preconditions(purpose: str, user: User | None) -> int | None:
@@ -605,8 +622,8 @@ def request_otp(body: OtpRequestIn, user: OptionalUser, db: DB):
     return otp.request_code(db, body.phone, body.purpose, user_id=user_id, channel=body.channel)
 
 
-def _no_account() -> AppError:
-    if email_login_ended():
+def _no_account(db: Database) -> AppError:
+    if email_login_ended(db):
         return NotFound("No account has this verified phone number. Create an account with it, or, if you used to "
                         "sign in with email, contact us through the grievance page.", code="no_account")
     return NotFound("No account has this verified phone number yet. Create an account, or sign in with your "
@@ -654,7 +671,7 @@ def verify_otp(body: PhoneVerifyIn, request: Request, response: Response, user: 
 
     if body.purpose == "login":
         if holder is None:
-            raise _no_account()
+            raise _no_account(db)
         if holder.role == Role.ADMIN:
             raise Forbidden("Admins sign in with their email, password and authenticator code.",
                             code="password_required")
@@ -663,7 +680,7 @@ def verify_otp(body: PhoneVerifyIn, request: Request, response: Response, user: 
 
     if body.purpose == "reset":
         if holder is None:
-            raise _no_account()
+            raise _no_account(db)
         if holder.role == Role.ADMIN:
             raise Forbidden("Admin passwords are reset by another admin with the operator command line.",
                             code="admin_reset")
@@ -691,7 +708,7 @@ def verify_otp(body: PhoneVerifyIn, request: Request, response: Response, user: 
 
     # verify: the signed-in user's phone (_otp_preconditions refused a verify code without one)
     if user is None:
-        raise _no_account()
+        raise _no_account(db)
     if holder is not None and holder.id != user.id:
         raise PHONE_IN_USE
     if body.phone == user.phone:

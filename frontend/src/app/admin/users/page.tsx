@@ -14,7 +14,22 @@ import { useDebounce } from "@/hooks/use-debounce";
 import { api } from "@/lib/api";
 import { formatDateTime, timeAgo } from "@/lib/format";
 
-type AdminUser = { id: number; name: string; email: string; role: string; is_active: boolean; created_at: string; last_login_at: string | null };
+type AdminUser = {
+  id: number;
+  name: string;
+  email: string;
+  role: string;
+  is_active: boolean;
+  /** Why a job switched the account off (P4.2: "phone_not_verified"), or null. */
+  deactivated_reason: string | null;
+  deactivated_at: string | null;
+  created_at: string;
+  last_login_at: string | null;
+};
+
+const DEACTIVATED_REASONS: Record<string, string> = {
+  phone_not_verified: "no verified phone 30 days after the email sign-in sunset",
+};
 
 export default function AdminUsersPage() {
   const [role, setRole] = useState("all");
@@ -61,7 +76,16 @@ export default function AdminUsersPage() {
               {users.data.map((u) => (
                 <TableRow key={u.id}>
                   <TableCell><p className="font-medium">{u.name}</p><p className="text-xs text-muted-foreground">{u.email}</p></TableCell>
-                  <TableCell><Badge variant="secondary" className="capitalize">{u.role}</Badge></TableCell>
+                  <TableCell>
+                    <Badge variant="secondary" className="capitalize">{u.role}</Badge>
+                    {!u.is_active && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Switched off
+                        {u.deactivated_reason ? `: ${DEACTIVATED_REASONS[u.deactivated_reason] ?? u.deactivated_reason}` : ""}
+                        {u.deactivated_at ? ` (${formatDateTime(u.deactivated_at)})` : ""}
+                      </p>
+                    )}
+                  </TableCell>
                   <TableCell className="hidden text-muted-foreground md:table-cell">{formatDateTime(u.created_at)}</TableCell>
                   <TableCell className="hidden text-muted-foreground md:table-cell">{u.last_login_at ? timeAgo(u.last_login_at) : "Never"}</TableCell>
                 </TableRow>
