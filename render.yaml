@@ -117,9 +117,13 @@ services:
     name: nearshop-api
     runtime: python
     plan: 1c-2g # Standard: always on (a free instance sleeps after 15 idle minutes and must not serve production)
-    # Two instances (P8.1; see the staging service). Production takes this only when promoted, after staging
-    # with two instances made a new listing searchable on both within 10 s in 20 of 20 tries.
-    numInstances: 2
+    # One instance until the P8.1 promotion. Every Blueprint sync applies this file to both services at once,
+    # whatever branch each deploys, so a 2 here would scale production as soon as it reached main: before
+    # release runs code that keeps two instances' search in step, and before the staging check. Promotion
+    # is its own commit that changes this to 2, made only after staging with two instances made a new
+    # listing searchable on both within 10 s in 20 of 20 tries, and fast-forwarded to release with or after
+    # the P8.1 code.
+    numInstances: 1
     region: singapore
     branch: release
     rootDir: backend

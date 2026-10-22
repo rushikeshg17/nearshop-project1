@@ -17,7 +17,7 @@ from functools import lru_cache
 
 from rapidfuzz import fuzz, process
 
-from app.ai.semantic_index import index
+from app.ai.semantic_index import OVERLAP, index, nightly_slot
 from app.core import cache_version
 from app.core.config import SEARCH_SIMILARITY_SCALE, RankingConfig, settings
 from app.core.database import Database, utcnow
@@ -337,37 +337,90 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
 
 # ---------------------------------------------------------------- "did you mean"
 
-# Per database: (the shared listings version it was built for, the words). Rebuilt when another process or
-# this one bumps that version (app/core/cache_version.py, P8.1), so every process's corrections follow the
-# listings within 5 seconds.
-_vocab: dict[str, tuple[int, set[str]]] = {}
+# Per database: the words, and the shared listings version they were built for (app/core/cache_version.py,
+# P8.1), so every process's corrections follow the listings within 5 seconds. The catalogue and category
+# words are read in full only when the vocabulary is first built, after a version that went down (a reset
+# database) and once a night: the app never writes catalogue items or categories (seeds and migrations do).
+# A new listings version re-reads only the listings changed since the last refresh (by updated_at, as the
+# semantic index does), so a bump that changed no listing (an admin verifying a shop) reads no words at all.
+@dataclass(frozen=True)
+class _Vocab:
+    version: int
+    base: frozenset[str]  # catalogue names, brands, tags and local terms, and category names
+    listings: dict[int, frozenset[str]]  # active shop-specific listings (no catalogue item): id -> words
+    words: frozenset[str]  # base and every listing's words
+    since: datetime  # the next refresh re-reads listings with updated_at at or after this
+    full_at: datetime  # when the catalogue and every listing were last read
+
+
+_vocab: dict[str, _Vocab] = {}
 # Vocabulary words: Latin letters (lower-cased), or Kannada, Telugu or Devanagari letters with their vowel
 # signs and viramas (P5.2). Three characters or more, as before.
 _VOCAB_WORD = re.compile(r"[a-z]{3,}|[\u0900-\u097f\u0c00-\u0c7f\u0c80-\u0cff]{3,}")
+_LISTING_FIELDS = {"name": 1, "keywords": 1, "catalog_item_id": 1, "is_active": 1}
+# Full builds and incremental refreshes of the vocabulary, for tests.
+vocab_builds = {"full": 0, "refresh": 0}
 
 
 def _vocab_words(text: str) -> list[str]:
     return [w for part in word_parts(text.lower()) for w in _VOCAB_WORD.findall(part)]
 
 
-def _vocabulary(db: Database) -> set[str]:
+def _listing_words(row: dict) -> frozenset[str] | None:
+    """A listing's vocabulary words, or None when it adds none (inactive, or a catalogue item's listing)."""
+    if not row.get("is_active") or row.get("catalog_item_id") is not None:
+        return None
+    return frozenset(_vocab_words(f"{row['name']} {row.get('keywords') or ''}"))
+
+
+def _union(base: frozenset[str], listings: dict[int, frozenset[str]]) -> frozenset[str]:
+    return base.union(*listings.values())
+
+
+def _full_vocabulary(db: Database, version: int) -> _Vocab:
+    started = utcnow()
+    base: set[str] = set()
+    for c in db.catalog_items.find_raw({}, {"name": 1, "brand": 1, "tags": 1, "local_terms": 1}):
+        for chunk in [c["name"], c.get("brand") or "", *(c.get("tags") or []), *(c.get("local_terms") or [])]:
+            base.update(_vocab_words(chunk))
+    for c in categories(db).values():
+        base.update(_vocab_words(c.name))
+    listings = {r["_id"]: w for r in db.products.find_raw({"catalog_item_id": None, "is_active": True}, _LISTING_FIELDS)
+                if (w := _listing_words(r)) is not None}
+    vocab_builds["full"] += 1
+    frozen = frozenset(base)
+    return _Vocab(version, frozen, listings, _union(frozen, listings), started - OVERLAP, started)
+
+
+def _refreshed_vocabulary(db: Database, old: _Vocab, version: int) -> _Vocab:
+    started = utcnow()
+    rows = db.products.find_raw({"updated_at": {"$gte": old.since}}, _LISTING_FIELDS)
+    vocab_builds["refresh"] += 1
+    if not rows:
+        return replace(old, version=version, since=started - OVERLAP)
+    listings = dict(old.listings)
+    for r in rows:
+        words = _listing_words(r)
+        if words is None:
+            listings.pop(r["_id"], None)
+        else:
+            listings[r["_id"]] = words
+    return replace(old, version=version, listings=listings, words=_union(old.base, listings),
+                   since=started - OVERLAP)
+
+
+def _vocabulary(db: Database) -> frozenset[str]:
     """Every word customers could mean: catalogue names, brands, tags, category names and the
     names of shop-specific listings, and the catalogue's local terms (Kannada, Telugu, Devanagari and Latin
-    transliterations). Cached per process, and rebuilt when the shared listings version changes."""
+    transliterations). Cached per process, and refreshed when the shared listings version changes."""
     key = db.mongo.name
     version = cache_version.watcher.version(db.mongo, cache_version.LISTINGS)  # read before the words
     hit = _vocab.get(key)
-    if hit is None or hit[0] != version:
-        words: set[str] = set()
-        for c in db.catalog_items.find_raw({}, {"name": 1, "brand": 1, "tags": 1, "local_terms": 1}):
-            for chunk in [c["name"], c.get("brand") or "", *(c.get("tags") or []), *(c.get("local_terms") or [])]:
-                words.update(_vocab_words(chunk))
-        for c in db.products.find_raw({"catalog_item_id": None, "is_active": True}, {"name": 1, "keywords": 1}):
-            words.update(_vocab_words(f"{c['name']} {c.get('keywords') or ''}"))
-        for c in categories(db).values():
-            words.update(_vocab_words(c.name))
-        hit = _vocab[key] = (version, words)
-    return hit[1]
+    if hit is None or version < hit.version or hit.full_at < nightly_slot(utcnow()):
+        hit = _vocab[key] = _full_vocabulary(db, version)
+    elif hit.version != version:
+        hit = _vocab[key] = _refreshed_vocabulary(db, hit, version)
+    return hit.words
 
 
 def suggest_correction(db: Database, norm: str) -> str | None:

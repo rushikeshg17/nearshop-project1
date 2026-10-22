@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 COLLECTION = "synonyms"
 VERSION_ID = "synonyms_version"  # the counters document whose seq is the synonyms' version
 CHECK_SECONDS = 30.0  # the counters version; the shared version is checked every cache_version.CHECK_SECONDS
-RETRY_SECONDS = 5.0  # how soon a process that has never loaded the entries tries again after a failed read
+RETRY_SECONDS = 5.0  # how soon a failed read is tried again when entries or a shared change are not loaded
 MAX_ENTRIES = 500  # every entry, active or not
 MAX_EXPANSIONS = 20
 MAX_EXPANSION_LENGTH = 40
@@ -116,8 +116,14 @@ class SynonymCache:
         self.clock = clock
         self._watcher = watcher  # None: the process-wide cache_version.watcher
         self._lock = threading.Lock()
-        # db name -> (table, counters version, checked at, shared version)
-        self._state: dict[str, tuple[Table, int, float, int]] = {}
+        # db name -> (table, counters version, checked at, shared version loaded or None, retry at). After a
+        # failed read, "retry at" holds the cached entries until RETRY_SECONDS have passed, and the shared
+        # version kept is the one the entries were loaded for, so a change not yet loaded is tried again then.
+        self._state: dict[str, tuple[Table, int, float, int | None, float]] = {}
+
+    @staticmethod
+    def _fresh(state: tuple[Table, int, float, int | None, float] | None, shared: int, now: float) -> bool:
+        return state is not None and (now < state[4] or (state[3] == shared and now - state[2] < CHECK_SECONDS))
 
     def table(self, mongo: MongoDatabase | None = None) -> Table:
         override = _override.get()
@@ -127,13 +133,14 @@ class SynonymCache:
         shared = (self._watcher or cache_version.watcher).version(mongo, cache_version.SYNONYMS)  # never raises
         now = self.clock()
         state = self._state.get(mongo.name)
-        if state is not None and state[3] == shared and now - state[2] < CHECK_SECONDS:
+        if self._fresh(state, shared, now):
             return state[0]
         with self._lock:
             state = self._state.get(mongo.name)
-            if state is not None and state[3] == shared and now - state[2] < CHECK_SECONDS:
+            if self._fresh(state, shared, now):
                 return state[0]
-            checked = now
+            kept: int | None = shared
+            retry_at = 0.0
             try:
                 version = read_version(mongo)
                 unchanged = state is not None and state[1] == version and state[3] == shared
@@ -141,12 +148,13 @@ class SynonymCache:
             except Exception as exc:  # a database hiccup must not fail a search: keep what we had
                 if state is not None and state[1] >= 0:
                     log.warning("synonyms: could not refresh (%s); using the previous entries", exc)
-                    table, version = state[0], state[1]
-                else:  # nothing loaded yet: search without synonyms, and try again soon rather than in 30 s
+                    table, version, kept = state[0], state[1], state[3]
+                else:  # nothing loaded yet: search without synonyms
                     log.warning("synonyms: could not load (%s); retrying in %.0f s", exc, RETRY_SECONDS)
-                    table, version = {}, -1
-                    checked = now - CHECK_SECONDS + RETRY_SECONDS
-            self._state[mongo.name] = (table, version, checked, shared)
+                    table, version, kept = {}, -1, None
+                if kept != shared:  # entries not loaded yet, or a shared change not loaded: soon, not in 30 s
+                    retry_at = now + RETRY_SECONDS
+            self._state[mongo.name] = (table, version, now, kept, retry_at)
             return table
 
     def invalidate(self, name: str | None = None) -> None:

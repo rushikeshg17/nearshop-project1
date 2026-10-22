@@ -14,7 +14,7 @@ import pytest
 
 from app.ai import semantic_index
 from app.ai.embeddings import get_provider
-from app.ai.semantic_index import SemanticIndex, nightly_slot, vectors
+from app.ai.semantic_index import SemanticIndex, index, nightly_slot, vectors
 from app.core import cache_version
 from app.core.database import Database
 from app.core.database import client as mongo_client
@@ -242,6 +242,69 @@ def test_the_spelling_vocabulary_follows_another_processs_change(scratch, monkey
     assert search.suggest_correction(db, "galvanized") == "galvanised"
 
 
+def test_the_vocabulary_refreshes_only_the_changed_listings(scratch, monkeypatch):
+    this = Process(scratch)
+    monkeypatch.setattr(cache_version, "watcher", this.watcher)
+    db = Database(scratch)
+    search.reset_vocabulary()
+    builds = dict(search.vocab_builds)
+    search._vocabulary(db)
+    assert search.vocab_builds["full"] == builds["full"] + 1
+
+    guard = [True]
+    real_read = db.catalog_items.find_raw
+
+    def catalogue_read(*args, **kwargs):
+        assert not guard[0], "a refresh must not read the catalogue"
+        return real_read(*args, **kwargs)
+
+    monkeypatch.setattr(db.catalog_items, "find_raw", catalogue_read)
+    Process(scratch).bump()  # an admin verified a shop: no listing changed
+    this.wait(cache_version.CHECK_SECONDS)
+    before = search._vocabulary(db)
+    assert search._vocab[scratch].version == 1 and search.vocab_builds["full"] == builds["full"] + 1
+
+    other = Process(scratch)
+    listing(other.db, "Ornamental Trellis Panel")
+    bucket = other.db.products.find_one({"name": WORDS[0].title()})
+    other.db.products.set(bucket, is_active=False)  # "steel" and "bucket" only came from this listing
+    other.bump()
+    this.wait(cache_version.CHECK_SECONDS)
+    after = search._vocabulary(db)
+    guard[0] = False
+    assert search.vocab_builds == {"full": builds["full"] + 1, "refresh": builds["refresh"] + 2}
+    assert {"ornamental", "trellis"} <= after - before and {"steel", "bucket"} <= before - after
+    search.reset_vocabulary()
+    assert search._vocabulary(db) == after  # the same words as a full build
+
+
+def test_a_synonym_change_whose_read_fails_is_retried_within_5_seconds(db, ids, monkeypatch):
+    other = Process()
+    clock = [0.0]
+    cache = synonyms.SynonymCache(clock=lambda: clock[0], watcher=other.watcher)
+    before = cache.table(db.mongo)
+    admin_id = db.users.find_one({"role": "admin"}).id
+    entry = synonyms.create_entry(db, admin_id, "quaffle", ["ball"])
+    try:
+        real = synonyms.read_version
+
+        def down(mongo):
+            raise ConnectionError("database unreachable")
+
+        monkeypatch.setattr(synonyms, "read_version", down)
+        clock[0] += cache_version.CHECK_SECONDS
+        other.wait(cache_version.CHECK_SECONDS)
+        assert cache.table(db.mongo) == before  # the shared change is seen, its read fails: the old entries
+        monkeypatch.setattr(synonyms, "read_version", real)
+        clock[0] += synonyms.RETRY_SECONDS - 0.1
+        assert "quaffle" not in cache.table(db.mongo)  # not retried on every search
+        clock[0] += 0.1
+        assert cache.table(db.mongo)["quaffle"] == ["ball"]  # retried soon, not at the next 30 s check
+    finally:
+        db.mongo["synonyms"].delete_one({"_id": entry["id"]})
+        synonyms._bump(db)
+
+
 def test_an_admins_synonym_reaches_another_process_within_5_seconds(db, ids):
     term = "zorbix"
     other = Process()
@@ -269,38 +332,51 @@ def test_owner_import_and_admin_changes_bump_the_listings_version(owner_a, admin
     db = Database()
     other = Process()
     other.index.ensure(other.db)
+    was_verified = db.shops.get(ids["shop_a"]).is_verified
+    made: list[int] = []
 
     def version() -> int:
         return cache_version.read_versions(db.mongo).get("listings", 0)
 
-    start = version()
-    res = owner_a.post("/api/owner/products", json={
-        "name": "Quixotic Drain Snake", "category_slug": "plumbing", "price": 210, "quantity": 2,
-        "tags": ["drain", "snake"]}, headers=HEADERS)
-    assert res.status_code == 200, res.text
-    new_id = res.json()["id"]
-    assert version() == start + 1
-    other.wait(cache_version.CHECK_SECONDS)
-    assert new_id in other.index.query(other.db, "drain snake")  # the other process, incrementally
-    assert other.index.full_builds == 1
+    try:
+        start = version()
+        res = owner_a.post("/api/owner/products", json={
+            "name": "Quixotic Drain Snake", "category_slug": "plumbing", "price": 210, "quantity": 2,
+            "tags": ["drain", "snake"]}, headers=HEADERS)
+        assert res.status_code == 200, res.text
+        new_id = res.json()["id"]
+        made.append(new_id)
+        assert version() == start + 1
+        other.wait(cache_version.CHECK_SECONDS)
+        assert new_id in other.index.query(other.db, "drain snake")  # the other process, incrementally
+        assert other.index.full_builds == 1
 
-    rows = [{"row": 2, "action": "add_new", "name": "Quixotic Basin Plug", "category_slug": "plumbing",
-             "price": 35, "quantity": 4}]
-    done = owner_a.post("/api/owner/import/commit", json={"rows": rows}, headers=HEADERS)
-    assert done.status_code == 200, done.text
-    assert version() == start + 2  # one bump per commit, from the importer itself
-    plug = db.products.find_one({"name": "Quixotic Basin Plug"})
-    other.wait(cache_version.CHECK_SECONDS)
-    assert plug.id in other.index.query(other.db, "basin plug")
+        rows = [{"row": 2, "action": "add_new", "name": "Quixotic Basin Plug", "category_slug": "plumbing",
+                 "price": 35, "quantity": 4}]
+        done = owner_a.post("/api/owner/import/commit", json={"rows": rows}, headers=HEADERS)
+        assert done.status_code == 200, done.text
+        plug = db.products.find_one({"name": "Quixotic Basin Plug"})
+        made.append(plug.id)
+        assert version() == start + 2  # one bump per commit, from the importer itself
+        other.wait(cache_version.CHECK_SECONDS)
+        assert plug.id in other.index.query(other.db, "basin plug")
 
-    assert admin.patch(f"/api/admin/shops/{ids['shop_a']}", json={"is_verified": True},
-                       headers=HEADERS).status_code == 200
-    assert version() == start + 3
+        assert admin.patch(f"/api/admin/shops/{ids['shop_a']}", json={"is_verified": not was_verified},
+                           headers=HEADERS).status_code == 200
+        assert version() == start + 3
 
-    assert owner_a.delete(f"/api/owner/products/{new_id}", headers=HEADERS).status_code == 200
-    db.products.update_one({"_id": plug.id}, {"$set": {"is_active": False}})
-    cache_version.bump(db.mongo, cache_version.LISTINGS)
-    other.wait(cache_version.CHECK_SECONDS)
-    other.index.ensure(other.db)
-    assert new_id not in other.index.snapshot.product_ids
-    same_as_full_rebuild(other)
+        # Both removed through the owner's route, so each removal moves updated_at as every real write does.
+        for product_id in made:
+            assert owner_a.delete(f"/api/owner/products/{product_id}", headers=HEADERS).status_code == 200
+        assert version() == start + 5
+        other.wait(cache_version.CHECK_SECONDS)
+        other.index.ensure(other.db)
+        assert not set(made) & set(other.index.snapshot.product_ids.tolist())
+        assert other.index.full_builds == 1
+        same_as_full_rebuild(other)
+    finally:  # the session's shared data as it was: shop_a's verification, and no listing of this test's
+        db.shops.update_one({"_id": ids["shop_a"]}, {"$set": {"is_verified": was_verified}})
+        db.mongo["products"].delete_many({"_id": {"$in": made}})
+        db.mongo["inventory_events"].delete_many({"product_id": {"$in": made}})
+        cache_version.bump(db.mongo, cache_version.LISTINGS)
+        index.mark_dirty()  # the process-wide index rebuilds without the deleted listings
