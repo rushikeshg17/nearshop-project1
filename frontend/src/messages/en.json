@@ -341,5 +341,421 @@
         "other": "{count} cancelled"
       }
     }
+  },
+  "auth": {
+    "layout": {
+      "back": "Back to NearShop",
+      "pitchTitle": "Stop calling five shops for one spare part.",
+      "pitchBody": "NearShop shows what local shops actually have on the shelf, how much it costs, and how recently they counted it.",
+      "pillars": {
+        "search": {
+          "title": "Search",
+          "body": "by meaning"
+        },
+        "reserve": {
+          "title": "Reserve",
+          "body": "no prepayment"
+        },
+        "pickUp": {
+          "title": "Pick up",
+          "body": "or get delivery"
+        }
+      }
+    },
+    "common": {
+      "signIn": "Sign in",
+      "email": "Email",
+      "password": "Password",
+      "passwordHint": "At least 8 characters"
+    },
+    "phone": {
+      "label": "Mobile number",
+      "hint": "10 digits, with or without +91.",
+      "empty": "Enter your 10-digit mobile number.",
+      "invalid": "Enter a 10-digit mobile number that starts with 6, 7, 8 or 9, with or without +91."
+    },
+    "code": {
+      "label": "{length}-digit code",
+      "sent": {
+        "whatsapp": "We sent a 6-digit code to {phone} on WhatsApp. It is valid for 5 minutes.",
+        "sms": "We sent a 6-digit code to {phone} by SMS. It is valid for 5 minutes.",
+        "console": "We sent a 6-digit code to {phone} (development: the code is in the API log). It is valid for 5 minutes."
+      },
+      "resendIn": "You can ask for a new code in {seconds} s.",
+      "resend": "Send a new code",
+      "bySms": "Send it by SMS instead",
+      "send": "Send code",
+      "differentNumber": "Use a different number"
+    },
+    "login": {
+      "loading": "Loading sign-in…",
+      "welcome": "Welcome back",
+      "phoneIntro": "Sign in with a code sent to your phone.",
+      "emailIntro": "Sign in to reserve items and track your pickups.",
+      "createAccount": "Create an account",
+      "listShop": "list your shop",
+      "newHere": "New here? {create} or {listShop}",
+      "passwordPrompt": "Admin, or a shop owner with a verified phone? {link}",
+      "signInWithPassword": "Sign in with your password",
+      "useEmail": "Use email and password",
+      "until": "(until {date})",
+      "showPassword": "Show password",
+      "hidePassword": "Hide password",
+      "authCode": "Authentication code",
+      "authCodeHint": "Enter the 6-digit code from your authenticator app, or one of your recovery codes.",
+      "signInWithPhone": "Sign in with your phone",
+      "verifyAndSignIn": "Verify and sign in",
+      "useCode": "Sign in with a code sent to your phone"
+    },
+    "verify": {
+      "loading": "Loading…",
+      "title": "Verify your phone number",
+      "signInFirst": "Sign in first, then verify the phone number on your account.",
+      "notYours": "Not your account? {signOut}",
+      "signOut": "Sign out",
+      "nothingTitle": "Nothing to verify",
+      "verifiedTitle": "Your phone number is verified",
+      "adminBody": "Admins sign in with their email, password and authenticator code.",
+      "verifiedBody": "You sign in with a code sent to {phone}.",
+      "verifiedBodyNoPhone": "You sign in with a code sent to your phone.",
+      "continue": "Continue",
+      "unavailable": "Phone verification is not available yet. Keep signing in with your email and password; we will tell you when it is.",
+      "requiredTitle": "Verify your phone number to continue",
+      "requiredBody": "Email sign-in ended on {date}. Verify your mobile number with a code to keep using NearShop.",
+      "warnBody": "From {date} you sign in with a code sent to your phone instead of your email and password. Verify your number now: it takes a minute.",
+      "contactSupport": "Contact support",
+      "verify": "Verify"
+    },
+    "signup": {
+      "loading": "Loading sign-up…",
+      "pausedTitle": "Sign-ups are paused while we prepare for launch",
+      "pausedBody": "New accounts cannot be created right now. You can still search what nearby shops have in stock.",
+      "searchNearby": "Search nearby"
+    },
+    "consent": {
+      "legend": "Privacy and consent",
+      "required": "I agree that NearShop uses my details to run my account and fulfil my reservations and orders, as described in the {privacy} and {terms}.",
+      "privacyLink": "privacy notice",
+      "termsLink": "terms",
+      "age": "I am 18 or older.",
+      "ageHint": "NearShop is for adults. We do not create accounts for children, because that needs a parent's verified consent.",
+      "optional": "Optional. You can leave these off.",
+      "whatsapp": {
+        "label": "WhatsApp messages",
+        "hint": "Reservation and order updates on WhatsApp."
+      },
+      "personalised": {
+        "label": "Personalised suggestions",
+        "hint": "Suggestions based on your search history."
+      },
+      "measurement": {
+        "label": "Help improve search",
+        "hint": "Use my searches to measure and improve search results."
+      },
+      "needAgree": "Please agree to the privacy notice and terms to create an account.",
+      "needAge": "NearShop is for adults. You need to be 18 or older to create an account."
+    },
+    "register": {
+      "title": "Create your account",
+      "phoneIntro": "Reserve items at nearby shops and track pickups in one place. You sign in with a code sent to your phone.",
+      "emailIntro": "Reserve items at nearby shops and track pickups in one place.",
+      "fullName": "Full name",
+      "nameMissing": "Please enter your full name.",
+      "optional": "(optional)",
+      "phoneOptional": "(optional, for delivery)",
+      "create": "Create account",
+      "changeDetails": "Change your details",
+      "haveAccount": "Already have an account? {link}",
+      "ownShop": "Own a shop? {link}",
+      "listIt": "List it on NearShop"
+    },
+    "shopSignup": {
+      "steps": {
+        "account": "Your account",
+        "shop": "Your shop",
+        "location": "Location",
+        "hours": "Hours and delivery",
+        "verify": "Verify your phone"
+      },
+      "stepOf": "Step {step} of {total}",
+      "name": "Your name",
+      "verifyNote": "This number becomes your sign-in number, and your shop's phone counts as verified when an admin reviews it.",
+      "back": "Back",
+      "open": "Open my shop",
+      "continue": "Continue",
+      "alreadyListed": "Already listed? {link}"
+    }
+  },
+  "transactions": {
+    "common": {
+      "yourActivity": "Your activity",
+      "quantityPrice": "{count} x {price}",
+      "timeline": "Timeline",
+      "directions": "Directions",
+      "call": "Call"
+    },
+    "reserve": {
+      "title": "Reserve for pickup",
+      "description": "{shop} will set it aside for you. No payment now.",
+      "submitOne": "Reserve it · {price}",
+      "submitMany": "Reserve {count} units · {price}",
+      "eachInStock": "{price} each · {count} in stock",
+      "steps": {
+        "check": {
+          "title": "The shop checks the shelf",
+          "body": "Usually within a few minutes. You get a notification."
+        },
+        "held": {
+          "title": "Held for {minutes} minutes",
+          "body": "Once confirmed, walk in any time before the timer ends."
+        },
+        "pay": {
+          "title": "Inspect, then pay at the counter",
+          "body": "Cash or UPI at the shop. Nothing is charged online."
+        }
+      },
+      "note": "Note for the shop (optional)",
+      "notePlaceholder": "e.g. Size 8 please, or I'll come by 6 pm",
+      "sent": "Reservation {code} sent to {shop}",
+      "sentBody": "You'll be notified the moment they confirm."
+    },
+    "delivery": {
+      "title": "Request delivery",
+      "description": "{shop} delivers this themselves. Cash on delivery.",
+      "placeOrder": "Place order",
+      "placeOrderTotal": "Place order · {price}",
+      "each": "{price} each",
+      "deliverNear": "Deliver near",
+      "ineligible": "{reason}. Try pickup instead, or change the delivery location.",
+      "items": "Items",
+      "fee": "Delivery ({distance})",
+      "free": "Free",
+      "freeAbove": "Free delivery on orders above {price}",
+      "payOnDelivery": "Pay on delivery",
+      "address": "Full address",
+      "addressPlaceholder": "House no., street, landmark",
+      "phone": "Phone",
+      "phonePlaceholder": "10 digits",
+      "note": "Note (optional)",
+      "notePlaceholder": "Call before coming",
+      "sent": "Order {code} sent to {shop}",
+      "sentBody": "Pay cash when it arrives."
+    },
+    "account": {
+      "ownerTitle": "Your activity is on your dashboard",
+      "ownerBody": "Shop owners manage reservations from the shop dashboard. Your account and privacy settings are below.",
+      "goToDashboard": "Go to dashboard",
+      "yourActivity": "Your activity",
+      "hi": "Hi {name}",
+      "hiThere": "Hi there",
+      "stats": {
+        "pickups": {
+          "one": "pickup",
+          "other": "pickups"
+        },
+        "deliveries": {
+          "one": "delivery",
+          "other": "deliveries"
+        },
+        "shops": {
+          "one": "shop",
+          "other": "shops"
+        }
+      },
+      "inProgress": "In progress",
+      "nothingHeld": "Nothing on hold right now",
+      "nothingHeldBody": "Find something nearby and reserve it. The shop sets it aside for you.",
+      "searchNearby": "Search nearby",
+      "rateRecent": "Rate your recent visits",
+      "items": {
+        "one": "{count} item",
+        "other": "{count} items"
+      },
+      "rate": "Rate",
+      "history": "History",
+      "tabs": {
+        "all": "All",
+        "pickups": "Pickups",
+        "deliveries": "Deliveries"
+      },
+      "noPast": {
+        "deliveries": "No past deliveries yet.",
+        "pickups": "No past pickups yet.",
+        "activity": "No past activity yet."
+      },
+      "nextTitle": "You might need next",
+      "nextBody": "Based on what people buy along with your recent purchases.",
+      "recentSearches": "Recent searches",
+      "settingsTitle": "Account and privacy",
+      "settingsBody": "Correct your details, choose what we may use, and download or delete your data.",
+      "privacyNotice": "Privacy notice",
+      "details": {
+        "title": "Your details",
+        "saved": "Your details are saved",
+        "name": "Name",
+        "home": "Home location name",
+        "homePlaceholder": "For example, Agrahara",
+        "savedPoint": "Saved point: {lat}, {lng}",
+        "noPoint": "No home point saved.",
+        "useLocation": "Use my current location",
+        "clearHome": "Clear home",
+        "save": "Save details"
+      },
+      "choices": {
+        "title": "Your choices",
+        "required": "Account and order messages are needed to run your account. To stop them, delete the account."
+      },
+      "purposes": {
+        "whatsapp": {
+          "title": "WhatsApp messages",
+          "description": "Updates about your reservations and orders on WhatsApp."
+        },
+        "personalised": {
+          "title": "Personalised suggestions",
+          "description": "Use your search history for suggestions. Off means new searches are not linked to you, and past ones are unlinked."
+        },
+        "measurement": {
+          "title": "Help improve search",
+          "description": "Count which results you open, without linking them to your account."
+        }
+      },
+      "nominee": {
+        "title": "Nominee",
+        "body": "One person who may use your data rights if you die or cannot act yourself. Support acts on it only with documentary proof.",
+        "name": "Nominee's name",
+        "phone": "Phone",
+        "phonePlaceholder": "10-digit mobile",
+        "email": "Email",
+        "contactHint": "Give a phone number, an email address or both.",
+        "save": "Save nominee",
+        "replace": "Replace nominee",
+        "remove": "Remove",
+        "saved": "Nominee saved",
+        "removed": "Nominee removed"
+      },
+      "devices": {
+        "title": "Signed-in devices",
+        "thisDevice": "{device} (this device)",
+        "lastUsed": "Last used {time}",
+        "revoke": "Revoke",
+        "revokeLabel": "Revoke {device}",
+        "signedOut": "{device} is signed out",
+        "everywhere": "Sign out everywhere"
+      },
+      "export": {
+        "title": "Your data",
+        "body": "Download your profile, choices, nominee, reservations, orders, reviews, notifications and search history as a JSON file. Up to 3 times a day.",
+        "preparing": "Preparing...",
+        "download": "Download my data"
+      },
+      "itemStatus": {
+        "REQUESTED": "waiting for the shop",
+        "CONFIRMED": "held for you",
+        "READY_FOR_PICKUP": "ready for pickup",
+        "PENDING": "waiting for the shop",
+        "SHOP_CONFIRMED": "confirmed",
+        "PREPARING": "being packed",
+        "OUT_FOR_DELIVERY": "out for delivery"
+      },
+      "deletion": {
+        "title": "Delete account",
+        "body": "Your name, email, phone, password, home, nominee and choices are removed, and your notifications and searches deleted. Shops keep the reservations and orders they handled, without your phone or address. Reviews keep their rating and show as “Former customer”.",
+        "shopHidden": "Your shop ({shops}) is hidden and its listings switched off.",
+        "pickup": "Pickup {code}",
+        "delivery": "Delivery {code}",
+        "shop": "Shop",
+        "scheduled": "Deletion is scheduled for {date}.",
+        "scheduledInFlight": "Some orders are on their way. Your account will be deleted when they close, at the latest by {date}.",
+        "cancelFirst": "These will be cancelled first, and the items released back to the shop.",
+        "thenScheduled": "Orders already on their way then keep your account until they close, at the latest {date}.",
+        "thenImmediate": "Then your account is deleted at once.",
+        "immediate": "Your account is deleted at once.",
+        "onTheirWay": "On their way:",
+        "cancelAndDelete": "Cancel all and delete",
+        "delete": "Delete my account",
+        "confirmTitle": "Delete your NearShop account?",
+        "cannotUndo": "This cannot be undone.",
+        "password": "Your password",
+        "keep": "Keep my account",
+        "deleted": "Your account has been deleted",
+        "willDelete": "Your account will be deleted by {date}"
+      }
+    },
+    "reservation": {
+      "status": {
+        "REQUESTED": {
+          "title": "Waiting for the shop",
+          "body": "{shop} is checking the shelf. You'll get a notification when it's set aside."
+        },
+        "CONFIRMED": {
+          "title": "It's held for you",
+          "body": "Walk in before the timer ends and show code {code} at the counter."
+        },
+        "READY_FOR_PICKUP": {
+          "title": "Ready at the counter",
+          "body": "Packed and waiting. Show code {code} and pay at the shop."
+        },
+        "COMPLETED": {
+          "title": "Picked up",
+          "body": "Thanks for shopping local."
+        },
+        "REJECTED": {
+          "title": "The shop couldn't hold it",
+          "body": "Try another shop nearby."
+        },
+        "CANCELLED": {
+          "title": "Reservation cancelled",
+          "body": "Nothing was charged."
+        },
+        "EXPIRED": {
+          "title": "Reservation expired",
+          "body": "The shop didn't respond in time.",
+          "bodyHeld": "The hold time ran out and the item went back on the shelf."
+        }
+      },
+      "cancelled": "Reservation cancelled",
+      "respondsWithin": "Shop responds within",
+      "heldFor": "Held for",
+      "showAtCounter": "Show this at the counter",
+      "pickupCodeHint": "Pickup code. The shop enters it to hand over your item. Pay {price} at the shop.",
+      "yourNote": "Your note: “{note}”",
+      "cancelTitle": "Cancel this reservation?",
+      "cancelBody": "The shop will put the item back on the shelf.",
+      "cancel": "Cancel reservation",
+      "cancelReason": "Reason (optional, helps the shop)",
+      "cancelReasonPlaceholder": "e.g. Found it elsewhere",
+      "rate": "Rate this pickup",
+      "findElsewhere": "Find it at another shop"
+    },
+    "order": {
+      "status": {
+        "PENDING": "Waiting for the shop to confirm",
+        "SHOP_CONFIRMED": "Confirmed, items set aside",
+        "PREPARING": "Packing your order",
+        "OUT_FOR_DELIVERY": "On the way to you",
+        "DELIVERED": "Delivered",
+        "CANCELLED": "Order cancelled",
+        "DELIVERY_FAILED": "Delivery attempt failed",
+        "RETURNED_TO_SHOP": "Returned to the shop"
+      },
+      "cancelled": "Order cancelled",
+      "reason": "Reason: {reason}",
+      "keepReady": "Keep {price} ready. {shop} is delivering it themselves.",
+      "deliveryCode": "Your delivery code",
+      "deliveryCodeHint": "Give it to the person from {shop} only when the order is in your hands. Never share it by phone or message.",
+      "items": "Items",
+      "fee": "Delivery ({distance})",
+      "free": "Free",
+      "paidOnDelivery": "Paid on delivery",
+      "payOnDelivery": "Pay on delivery",
+      "cancelTitle": "Cancel this order?",
+      "cancelBody": "The shop will be notified straight away.",
+      "cancel": "Cancel order",
+      "cancelReason": "Reason (optional)",
+      "rate": "Rate this delivery",
+      "mapYou": "You",
+      "mapAddress": "Delivery address",
+      "callShop": "Call shop"
+    }
   }
 }

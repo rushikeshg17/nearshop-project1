@@ -7,11 +7,13 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 
+import { useI18n } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { homeFor, useMe, useSignOut } from "@/hooks/use-session";
 import { ApiError, api, errorMessage } from "@/lib/api";
+import { DEFAULT_LANGUAGE, type LanguageCode, languageInfo, richText } from "@/lib/i18n";
 import type { OtpChannel, OtpSent, PhoneSignin, User } from "@/lib/types";
 
 // Build-time flag, off by default (next.config.ts gives it the value "false"). Only a demo
@@ -47,11 +49,11 @@ export function normalisePhone(value: string) {
   return digits;
 }
 
-/** The inline format error for a phone field, or null when the number is a valid Indian mobile. */
+/** The message key of the inline format error for a phone field, or null when the number is a valid Indian mobile. */
 export function phoneProblem(value: string) {
   const phone = normalisePhone(value);
-  if (!phone) return "Enter your 10-digit mobile number.";
-  if (!/^[6-9]\d{9}$/.test(phone)) return "Enter a 10-digit mobile number that starts with 6, 7, 8 or 9, with or without +91.";
+  if (!phone) return "auth.phone.empty" as const;
+  if (!/^[6-9]\d{9}$/.test(phone)) return "auth.phone.invalid" as const;
   return null;
 }
 
@@ -59,16 +61,12 @@ export function formatPhone(phone: string) {
   return `+91 ${phone.slice(0, 5)} ${phone.slice(5)}`;
 }
 
-/** An IST day (YYYY-MM-DD) as "10 April 2027". */
-export function formatDay(day: string) {
-  return new Date(`${day}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+/** An IST day (YYYY-MM-DD) as "10 April 2027", with the month named in the interface language. */
+export function formatDay(day: string, language: LanguageCode = DEFAULT_LANGUAGE) {
+  return new Date(`${day}T00:00:00Z`).toLocaleDateString(languageInfo(language).htmlLang, {
+    day: "numeric", month: "long", year: "numeric", timeZone: "UTC",
+  });
 }
-
-const CHANNEL_TEXT: Record<OtpChannel, string> = {
-  whatsapp: "on WhatsApp",
-  sms: "by SMS",
-  console: "(development: the code is in the API log)",
-};
 
 /** A phone number field: 10 digits, with or without +91. The format error shows inline once the field is left, or
  * after a submit (showError). */
@@ -77,8 +75,8 @@ export function PhoneField({
   value,
   onChange,
   showError = false,
-  label = "Mobile number",
-  hint = "10 digits, with or without +91.",
+  label,
+  hint,
 }: {
   id: string;
   value: string;
@@ -87,11 +85,12 @@ export function PhoneField({
   label?: React.ReactNode;
   hint?: string;
 }) {
+  const { t } = useI18n();
   const [left, setLeft] = useState(false);
   const problem = (left && value !== "") || showError ? phoneProblem(value) : null;
   return (
     <div className="space-y-1.5">
-      <Label htmlFor={id}>{label}</Label>
+      <Label htmlFor={id}>{label ?? t("auth.phone.label")}</Label>
       <Input
         id={id}
         type="tel"
@@ -106,7 +105,7 @@ export function PhoneField({
         className="h-11"
       />
       <p id={`${id}-hint`} className={problem ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
-        {problem ?? hint}
+        {problem ? t(problem) : (hint ?? t("auth.phone.hint"))}
       </p>
     </div>
   );
@@ -133,6 +132,7 @@ export function CodeField({
   describedBy?: string;
   length?: number;
 }) {
+  const { t } = useI18n();
   const filled = useEffectEvent((code: string) => {
     onChange(code);
     onAutoFill?.(code);
@@ -142,7 +142,7 @@ export function CodeField({
   }, [autoCode, length]);
   return (
     <div className="space-y-1.5">
-      <Label htmlFor={id}>{length}-digit code</Label>
+      <Label htmlFor={id}>{t("auth.code.label", { length })}</Label>
       <Input
         id={id}
         inputMode="numeric"
@@ -223,24 +223,26 @@ type SendCode = ReturnType<typeof useSendCode>;
 
 /** Where the code went, and the resend controls: a new code after 60 s, by SMS instead of WhatsApp when both exist. */
 export function CodeSentNote({ otp, id, channels }: { otp: SendCode; id: string; channels: OtpChannel[] }) {
+  const { t } = useI18n();
   if (!otp.sent) return null;
   const { phone, channel } = otp.sent;
   return (
     <div className="space-y-2 text-sm">
       <p id={id} role="status" className="text-muted-foreground">
-        We sent a 6-digit code to <span className="font-medium whitespace-nowrap text-foreground">{formatPhone(phone)}</span>{" "}
-        {CHANNEL_TEXT[channel]}. It is valid for 5 minutes.
+        {richText(t(`auth.code.sent.${channel}`), {
+          phone: <span className="font-medium whitespace-nowrap text-foreground">{formatPhone(phone)}</span>,
+        })}
       </p>
       {otp.resendIn > 0 ? (
-        <p className="text-muted-foreground">You can ask for a new code in {otp.resendIn} s.</p>
+        <p className="text-muted-foreground">{t("auth.code.resendIn", { seconds: otp.resendIn })}</p>
       ) : (
         <div className="flex flex-wrap gap-x-4 gap-y-1">
           <button type="button" className={linkClass} disabled={otp.send.isPending} onClick={() => otp.send.mutate({ phone })}>
-            Send a new code
+            {t("auth.code.resend")}
           </button>
           {channel === "whatsapp" && channels.includes("sms") && (
             <button type="button" className={linkClass} disabled={otp.send.isPending} onClick={() => otp.send.mutate({ phone, channel: "sms" })}>
-              Send it by SMS instead
+              {t("auth.code.bySms")}
             </button>
           )}
         </div>
@@ -276,15 +278,18 @@ function useSignedIn() {
 }
 
 function SignUpLinks() {
+  const { t } = useI18n();
   const params = useSearchParams();
   return (
     <p className="mt-6 text-sm text-muted-foreground">
-      New here?{" "}
-      <Link href={`/register${params.get("next") ? `?next=${encodeURIComponent(params.get("next")!)}` : ""}`} className={linkClass}>
-        Create an account
-      </Link>{" "}
-      or{" "}
-      <Link href="/register/shop" className={linkClass}>list your shop</Link>
+      {richText(t("auth.login.newHere"), {
+        create: (
+          <Link href={`/register${params.get("next") ? `?next=${encodeURIComponent(params.get("next")!)}` : ""}`} className={linkClass}>
+            {t("auth.login.createAccount")}
+          </Link>
+        ),
+        listShop: <Link href="/register/shop" className={linkClass}>{t("auth.login.listShop")}</Link>,
+      })}
     </p>
   );
 }
@@ -295,15 +300,17 @@ function SignUpLinks() {
  * "Use email and password" link stays until the sunset; from then on it is for admins (password and authenticator
  * code) and for owners whose phone is verified. */
 export function LoginForm() {
+  const { t } = useI18n();
   const { data: status, isPending } = usePhoneSignin();
   const [method, setMethod] = useState<"phone" | "email" | null>(null);
-  if (isPending) return <Checking label="Loading sign-in…" />;
+  if (isPending) return <Checking label={t("auth.login.loading")} />;
   const phoneOn = status?.available === true;
   if (phoneOn && (method ?? "phone") === "phone") return <PhoneLogin status={status} onUseEmail={() => setMethod("email")} />;
   return <EmailLogin phoneStatus={phoneOn ? status : undefined} onUsePhone={() => setMethod("phone")} />;
 }
 
 function PhoneLogin({ status, onUseEmail }: { status: PhoneSignin; onUseEmail: () => void }) {
+  const { t, language } = useI18n();
   const done = useSignedIn();
   const otp = useSendCode("login");
   const [phone, setPhone] = useState("");
@@ -318,8 +325,8 @@ function PhoneLogin({ status, onUseEmail }: { status: PhoneSignin; onUseEmail: (
 
   return (
     <div>
-      <h1 className="text-3xl font-semibold">Welcome back</h1>
-      <p className="mt-2 text-sm text-muted-foreground">Sign in with a code sent to your phone.</p>
+      <h1 className="text-3xl font-semibold">{t("auth.login.welcome")}</h1>
+      <p className="mt-2 text-sm text-muted-foreground">{t("auth.login.phoneIntro")}</p>
 
       {!otp.sent ? (
         <form
@@ -334,7 +341,7 @@ function PhoneLogin({ status, onUseEmail }: { status: PhoneSignin; onUseEmail: (
           <PhoneField id="phone" value={phone} onChange={setPhone} showError={tried} />
           {otp.send.isError && <FormError>{errorMessage(otp.send.error)}</FormError>}
           <Button type="submit" size="lg" className="h-11 w-full" disabled={otp.send.isPending}>
-            {otp.send.isPending ? <Loader2 className="animate-spin" /> : <Smartphone />} Send code
+            {otp.send.isPending ? <Loader2 className="animate-spin" /> : <Smartphone />} {t("auth.code.send")}
           </Button>
         </form>
       ) : (
@@ -353,13 +360,13 @@ function PhoneLogin({ status, onUseEmail }: { status: PhoneSignin; onUseEmail: (
               {noAccount && (
                 <>
                   {" "}
-                  <Link href="/register" className="font-medium underline underline-offset-4">Create an account</Link>
+                  <Link href="/register" className="font-medium underline underline-offset-4">{t("auth.login.createAccount")}</Link>
                 </>
               )}
             </FormError>
           )}
           <Button type="submit" size="lg" className="h-11 w-full" disabled={verify.isPending || code.length !== 6}>
-            {verify.isPending && <Loader2 className="animate-spin" />} Sign in
+            {verify.isPending && <Loader2 className="animate-spin" />} {t("auth.common.signIn")}
           </Button>
           <button
             type="button"
@@ -370,21 +377,20 @@ function PhoneLogin({ status, onUseEmail }: { status: PhoneSignin; onUseEmail: (
               setCode("");
             }}
           >
-            Use a different number
+            {t("auth.code.differentNumber")}
           </button>
         </form>
       )}
 
       <p className="mt-6 text-sm text-muted-foreground">
         {status.email_login_ended ? (
-          <>
-            Admin, or a shop owner with a verified phone?{" "}
-            <button type="button" className={linkClass} onClick={onUseEmail}>Sign in with your password</button>
-          </>
+          richText(t("auth.login.passwordPrompt"), {
+            link: <button type="button" className={linkClass} onClick={onUseEmail}>{t("auth.login.signInWithPassword")}</button>,
+          })
         ) : (
           <>
-            <button type="button" className={linkClass} onClick={onUseEmail}>Use email and password</button>{" "}
-            <span>(until {formatDay(status.email_login_sunset)})</span>
+            <button type="button" className={linkClass} onClick={onUseEmail}>{t("auth.login.useEmail")}</button>{" "}
+            <span>{t("auth.login.until", { date: formatDay(status.email_login_sunset, language) })}</span>
           </>
         )}
       </p>
@@ -394,6 +400,7 @@ function PhoneLogin({ status, onUseEmail }: { status: PhoneSignin; onUseEmail: (
 }
 
 function EmailLogin({ phoneStatus, onUsePhone }: { phoneStatus?: PhoneSignin; onUsePhone: () => void }) {
+  const { t } = useI18n();
   const done = useSignedIn();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -422,8 +429,8 @@ function EmailLogin({ phoneStatus, onUsePhone }: { phoneStatus?: PhoneSignin; on
 
   return (
     <div>
-      <h1 className="text-3xl font-semibold">Welcome back</h1>
-      <p className="mt-2 text-sm text-muted-foreground">Sign in to reserve items and track your pickups.</p>
+      <h1 className="text-3xl font-semibold">{t("auth.login.welcome")}</h1>
+      <p className="mt-2 text-sm text-muted-foreground">{t("auth.login.emailIntro")}</p>
 
       <form
         className="mt-8 space-y-4"
@@ -433,11 +440,11 @@ function EmailLogin({ phoneStatus, onUsePhone }: { phoneStatus?: PhoneSignin; on
         }}
       >
         <div className="space-y-1.5">
-          <Label htmlFor="email">Email</Label>
+          <Label htmlFor="email">{t("auth.common.email")}</Label>
           <Input id="email" type="email" autoComplete="email" required value={email} onChange={(e) => changeEmail(e.target.value)} className="h-11" />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="password">Password</Label>
+          <Label htmlFor="password">{t("auth.common.password")}</Label>
           <div className="relative">
             <Input
               id="password"
@@ -456,7 +463,7 @@ function EmailLogin({ phoneStatus, onUsePhone }: { phoneStatus?: PhoneSignin; on
               type="button"
               onClick={() => setShow((v) => !v)}
               className="absolute top-1/2 right-2 grid size-8 -translate-y-1/2 place-items-center rounded-md text-muted-foreground hover:bg-muted"
-              aria-label={show ? "Hide password" : "Show password"}
+              aria-label={show ? t("auth.login.hidePassword") : t("auth.login.showPassword")}
             >
               {show ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
             </button>
@@ -465,10 +472,10 @@ function EmailLogin({ phoneStatus, onUsePhone }: { phoneStatus?: PhoneSignin; on
         {needsCode && (
           <div className="space-y-1.5 rounded-lg border p-3">
             <Label htmlFor="code" className="flex items-center gap-1.5">
-              <ShieldCheck className="size-4" aria-hidden /> Authentication code
+              <ShieldCheck className="size-4" aria-hidden /> {t("auth.login.authCode")}
             </Label>
             <p id="code-hint" className="text-xs text-muted-foreground">
-              Enter the 6-digit code from your authenticator app, or one of your recovery codes.
+              {t("auth.login.authCodeHint")}
             </p>
             <Input
               id="code"
@@ -493,19 +500,19 @@ function EmailLogin({ phoneStatus, onUsePhone }: { phoneStatus?: PhoneSignin; on
             {phoneRequired && phoneStatus && (
               <>
                 {" "}
-                <button type="button" className="font-medium underline underline-offset-4" onClick={onUsePhone}>Sign in with your phone</button>
+                <button type="button" className="font-medium underline underline-offset-4" onClick={onUsePhone}>{t("auth.login.signInWithPhone")}</button>
               </>
             )}
           </FormError>
         )}
         <Button type="submit" size="lg" className="h-11 w-full" disabled={login.isPending}>
-          {login.isPending && <Loader2 className="animate-spin" />} {needsCode ? "Verify and sign in" : "Sign in"}
+          {login.isPending && <Loader2 className="animate-spin" />} {needsCode ? t("auth.login.verifyAndSignIn") : t("auth.common.signIn")}
         </Button>
       </form>
 
       {phoneStatus && (
         <p className="mt-6 text-sm text-muted-foreground">
-          <button type="button" className={linkClass} onClick={onUsePhone}>Sign in with a code sent to your phone</button>
+          <button type="button" className={linkClass} onClick={onUsePhone}>{t("auth.login.useCode")}</button>
         </p>
       )}
       <SignUpLinks />
@@ -521,6 +528,7 @@ function EmailLogin({ phoneStatus, onUsePhone }: { phoneStatus?: PhoneSignin; on
  * The banner links here before the sunset, and every page sends such a user here from it. A number already verified
  * on another account is refused with a support message: accounts are never merged automatically. */
 export function VerifyPhoneForm() {
+  const { t, language } = useI18n();
   const { data: me, isPending } = useMe();
   const { data: status, isPending: statusPending } = usePhoneSignin();
   const params = useSearchParams();
@@ -542,29 +550,32 @@ export function VerifyPhoneForm() {
     },
   });
 
-  if (isPending || statusPending) return <Checking label="Loading…" />;
+  if (isPending || statusPending) return <Checking label={t("auth.verify.loading")} />;
   if (!me) {
     return (
       <div>
-        <h1 className="text-3xl font-semibold">Verify your phone number</h1>
-        <p className="mt-3 text-sm text-muted-foreground">Sign in first, then verify the phone number on your account.</p>
+        <h1 className="text-3xl font-semibold">{t("auth.verify.title")}</h1>
+        <p className="mt-3 text-sm text-muted-foreground">{t("auth.verify.signInFirst")}</p>
         <Button asChild size="lg" className="mt-8 h-11">
-          <Link href="/login?next=/verify-phone">Sign in</Link>
+          <Link href="/login?next=/verify-phone">{t("auth.common.signIn")}</Link>
         </Button>
       </div>
     );
   }
 
   const value = phone ?? me.phone ?? "";
-  const sunset = formatDay(me.email_login_sunset);
+  const sunset = formatDay(me.email_login_sunset, language);
   const required = me.phone_migration === "required";
   const inUse = verify.error instanceof ApiError && verify.error.code === "phone_taken";
   const signOutLink = (
     <p className="mt-6 text-sm text-muted-foreground">
-      Not your account?{" "}
-      <button type="button" className={`${linkClass} inline-flex items-center gap-1`} onClick={signOut}>
-        <LogOut className="size-3.5" aria-hidden /> Sign out
-      </button>
+      {richText(t("auth.verify.notYours"), {
+        signOut: (
+          <button type="button" className={`${linkClass} inline-flex items-center gap-1`} onClick={signOut}>
+            <LogOut className="size-3.5" aria-hidden /> {t("auth.verify.signOut")}
+          </button>
+        ),
+      })}
     </p>
   );
 
@@ -574,14 +585,16 @@ export function VerifyPhoneForm() {
         <div className="mb-5 grid size-12 place-items-center rounded-2xl bg-success-soft text-success-ink">
           <CheckCircle2 className="size-6" aria-hidden />
         </div>
-        <h1 className="text-3xl font-semibold">{me.role === "admin" ? "Nothing to verify" : "Your phone number is verified"}</h1>
+        <h1 className="text-3xl font-semibold">{me.role === "admin" ? t("auth.verify.nothingTitle") : t("auth.verify.verifiedTitle")}</h1>
         <p className="mt-3 text-sm text-muted-foreground">
           {me.role === "admin"
-            ? "Admins sign in with their email, password and authenticator code."
-            : `You sign in with a code sent to ${me.phone ? formatPhone(me.phone) : "your phone"}.`}
+            ? t("auth.verify.adminBody")
+            : me.phone
+              ? t("auth.verify.verifiedBody", { phone: formatPhone(me.phone) })
+              : t("auth.verify.verifiedBodyNoPhone")}
         </p>
         <Button asChild size="lg" className="mt-8 h-11">
-          <Link href={next && !next.startsWith("/verify-phone") ? next : homeFor(me)}>Continue</Link>
+          <Link href={next && !next.startsWith("/verify-phone") ? next : homeFor(me)}>{t("auth.verify.continue")}</Link>
         </Button>
       </div>
     );
@@ -590,12 +603,10 @@ export function VerifyPhoneForm() {
   if (!status?.available) {
     return (
       <div>
-        <h1 className="text-3xl font-semibold">Verify your phone number</h1>
-        <p className="mt-3 text-sm text-muted-foreground">
-          Phone verification is not available yet. Keep signing in with your email and password; we will tell you when it is.
-        </p>
+        <h1 className="text-3xl font-semibold">{t("auth.verify.title")}</h1>
+        <p className="mt-3 text-sm text-muted-foreground">{t("auth.verify.unavailable")}</p>
         <Button asChild size="lg" className="mt-8 h-11">
-          <Link href={homeFor(me)}>Continue</Link>
+          <Link href={homeFor(me)}>{t("auth.verify.continue")}</Link>
         </Button>
         {signOutLink}
       </div>
@@ -604,11 +615,9 @@ export function VerifyPhoneForm() {
 
   return (
     <div>
-      <h1 className="text-3xl font-semibold">{required ? "Verify your phone number to continue" : "Verify your phone number"}</h1>
+      <h1 className="text-3xl font-semibold">{required ? t("auth.verify.requiredTitle") : t("auth.verify.title")}</h1>
       <p className="mt-2 text-sm text-muted-foreground">
-        {required
-          ? `Email sign-in ended on ${sunset}. Verify your mobile number with a code to keep using NearShop.`
-          : `From ${sunset} you sign in with a code sent to your phone instead of your email and password. Verify your number now: it takes a minute.`}
+        {required ? t("auth.verify.requiredBody", { date: sunset }) : t("auth.verify.warnBody", { date: sunset })}
       </p>
 
       {!otp.sent ? (
@@ -624,7 +633,7 @@ export function VerifyPhoneForm() {
           <PhoneField id="phone" value={value} onChange={setPhone} showError={tried} />
           {otp.send.isError && <FormError>{errorMessage(otp.send.error)}</FormError>}
           <Button type="submit" size="lg" className="h-11 w-full" disabled={otp.send.isPending}>
-            {otp.send.isPending ? <Loader2 className="animate-spin" /> : <Smartphone />} Send code
+            {otp.send.isPending ? <Loader2 className="animate-spin" /> : <Smartphone />} {t("auth.code.send")}
           </Button>
         </form>
       ) : (
@@ -643,13 +652,13 @@ export function VerifyPhoneForm() {
               {inUse && (
                 <>
                   {" "}
-                  <Link href="/grievance" className="font-medium underline underline-offset-4">Contact support</Link>
+                  <Link href="/grievance" className="font-medium underline underline-offset-4">{t("auth.verify.contactSupport")}</Link>
                 </>
               )}
             </FormError>
           )}
           <Button type="submit" size="lg" className="h-11 w-full" disabled={verify.isPending || code.length !== 6}>
-            {verify.isPending && <Loader2 className="animate-spin" />} Verify
+            {verify.isPending && <Loader2 className="animate-spin" />} {t("auth.verify.verify")}
           </Button>
           <button
             type="button"
@@ -660,7 +669,7 @@ export function VerifyPhoneForm() {
               setCode("");
             }}
           >
-            Use a different number
+            {t("auth.code.differentNumber")}
           </button>
         </form>
       )}

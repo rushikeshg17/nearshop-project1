@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { cookies, headers } from "next/headers";
 import type { ReactNode } from "react";
+
+import { requestI18n } from "@/lib/i18n";
 
 /**
  * The privacy notice and terms pages (P3.1) render the lawyer-reviewed text from docs/legal at build time.
@@ -110,8 +113,10 @@ function Markdown({ text }: { text: string }) {
   return <>{blocks}</>;
 }
 
-/** The page body for /privacy or /terms: the reviewed text, or the draft notice until it is published. */
-export function LegalDocument({ doc, title, legal }: { doc: LegalDoc; title: string; legal: LegalText }) {
+/** The page body for /privacy or /terms: the reviewed text, or the draft notice until it is published. The text in
+ * the visitor's interface language is selected first when that language's version exists (P7.7: the consent text
+ * links here, so a Kannada visitor lands on the Kannada notice); English otherwise. */
+export async function LegalDocument({ doc, title, legal }: { doc: LegalDoc; title: string; legal: LegalText }) {
   const id = `legal-${doc}`;
   if (!legal) {
     return (
@@ -129,6 +134,9 @@ export function LegalDocument({ doc, title, legal }: { doc: LegalDoc; title: str
     );
   }
   const multi = legal.languages.length > 1;
+  // While English is the only interface language offered, this does not read the request and the page stays static.
+  const { language } = await requestI18n({ cookies, headers });
+  const selected = legal.languages.some((l) => l.lang === language) ? language : legal.languages[0].lang;
   const css = multi
     ? `@supports selector(:has(*)){#${id} [data-legal-lang]{display:none}` +
       legal.languages.map(({ lang }) => `#${id}:has(#${id}-${lang}:checked) [data-legal-lang="${lang}"]{display:block}`).join("") +
@@ -140,9 +148,9 @@ export function LegalDocument({ doc, title, legal }: { doc: LegalDoc; title: str
       <h1 className="text-3xl font-semibold">{title}</h1>
       {multi && (
         <div role="radiogroup" aria-label="Language" className="mt-5 flex flex-wrap gap-2">
-          {legal.languages.map(({ lang }, i) => (
+          {legal.languages.map(({ lang }) => (
             <label key={lang} className="cursor-pointer rounded-full border px-3 py-1.5 text-sm has-checked:border-primary has-checked:bg-primary has-checked:text-primary-foreground has-focus-visible:ring-3 has-focus-visible:ring-ring/50">
-              <input type="radio" name={`${id}-lang`} id={`${id}-${lang}`} defaultChecked={i === 0} className="sr-only" />
+              <input type="radio" name={`${id}-lang`} id={`${id}-${lang}`} defaultChecked={lang === selected} className="sr-only" />
               {LANGUAGE_NAMES[lang] ?? lang}
             </label>
           ))}

@@ -17,6 +17,7 @@ import {
   SignupsChecking,
   SignupsPaused,
 } from "@/app/(auth)/register/register-form";
+import { useI18n } from "@/components/providers";
 import {
   ShopBasicsFields,
   type ShopFormState,
@@ -29,22 +30,24 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useMeta } from "@/hooks/use-session";
 import { api, errorMessage } from "@/lib/api";
+import { richText } from "@/lib/i18n";
 import type { User } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const STEPS = ["Your account", "Your shop", "Location", "Hours and delivery"];
+const STEPS = ["account", "shop", "location", "hours"] as const;
 // While phone sign-in is available (P4.2), a last step verifies the shop's phone with a code: it becomes the owner's
 // verified sign-in number, and the shop's phone counts as verified, which an admin needs before the shop goes live
 // (P3.3). The code comes last because it is valid for 5 minutes.
-const VERIFY_STEP = "Verify your phone";
+const VERIFY_STEP = "verify";
 
 export function ShopSignup() {
+  const { t } = useI18n();
   const router = useRouter();
   const qc = useQueryClient();
   const { data: meta, isPending: metaPending } = useMeta();
   const { data: phoneSignin, isPending: phonePending } = usePhoneSignin();
   const phoneOn = phoneSignin?.available === true;
-  const steps = phoneOn ? [...STEPS, VERIFY_STEP] : STEPS;
+  const steps: readonly (typeof STEPS[number] | typeof VERIFY_STEP)[] = phoneOn ? [...STEPS, VERIFY_STEP] : STEPS;
   const otp = useSendCode("register");
   const [code, setCode] = useState("");
   const [step, setStep] = useState(0);
@@ -95,8 +98,8 @@ export function ShopSignup() {
   return (
     <MotionConfig reducedMotion="user">
       <div>
-        <p className="text-sm font-medium text-brand-ink">Step {step + 1} of {steps.length}</p>
-        <h1 className="mt-1 text-3xl font-semibold">{steps[step]}</h1>
+        <p className="text-sm font-medium text-brand-ink">{t("auth.shopSignup.stepOf", { step: step + 1, total: steps.length })}</p>
+        <h1 className="mt-1 text-3xl font-semibold">{t(`auth.shopSignup.steps.${steps[step]}`)}</h1>
         <div className="mt-4 flex gap-1.5" aria-hidden>
           {steps.map((s, i) => (
             <span key={s} className={cn("h-1 flex-1 rounded-full transition-colors duration-300", i <= step ? "bg-brand" : "bg-muted")} />
@@ -122,17 +125,17 @@ export function ShopSignup() {
               {step === 0 && (
                 <div className="space-y-4">
                   <div className="space-y-1.5">
-                    <Label htmlFor="oname">Your name</Label>
+                    <Label htmlFor="oname">{t("auth.shopSignup.name")}</Label>
                     <Input id="oname" autoComplete="name" value={owner.name} onChange={(e) => setOwner({ ...owner, name: e.target.value })} className="h-11" />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="oemail">Email</Label>
+                    <Label htmlFor="oemail">{t("auth.common.email")}</Label>
                     <Input id="oemail" type="email" autoComplete="email" value={owner.email} onChange={(e) => setOwner({ ...owner, email: e.target.value })} className="h-11" />
                   </div>
                   <div className="space-y-1.5">
-                    <Label htmlFor="opw">Password</Label>
+                    <Label htmlFor="opw">{t("auth.common.password")}</Label>
                     <Input id="opw" type="password" autoComplete="new-password" value={owner.password} onChange={(e) => setOwner({ ...owner, password: e.target.value })} className="h-11" />
-                    <p className="text-xs text-muted-foreground">At least 8 characters</p>
+                    <p className="text-xs text-muted-foreground">{t("auth.common.passwordHint")}</p>
                   </div>
                   <ConsentFields idPrefix="owner" value={consent} onChange={setConsent} />
                 </div>
@@ -143,7 +146,7 @@ export function ShopSignup() {
               {step === 4 && (
                 <div className="space-y-4">
                   <p className="text-sm text-muted-foreground">
-                    This number becomes your sign-in number, and your shop&apos;s phone counts as verified when an admin reviews it.
+                    {t("auth.shopSignup.verifyNote")}
                   </p>
                   <CodeSentNote otp={otp} id="code-sent" channels={phoneSignin?.channels ?? []} />
                   <CodeField id="code" value={code} onChange={setCode} onAutoFill={(c) => submit.mutate(c)} autoCode={otp.autoCode} describedBy="code-sent" />
@@ -159,18 +162,28 @@ export function ShopSignup() {
           <div className="mt-8 flex gap-3">
             {step > 0 && (
               <Button type="button" variant="outline" size="lg" className="h-11" onClick={() => setStep(step - 1)}>
-                <ArrowLeft /> Back
+                <ArrowLeft /> {t("auth.shopSignup.back")}
               </Button>
             )}
             <Button type="submit" size="lg" className="h-11 flex-1" disabled={!valid[step] || submit.isPending || otp.send.isPending}>
               {submit.isPending || otp.send.isPending ? <Loader2 className="animate-spin" /> : step === last ? <Check /> : null}
-              {step === last ? "Open my shop" : phoneOn && step === STEPS.length - 1 ? "Send code" : "Continue"}
+              {step === last
+                ? t("auth.shopSignup.open")
+                : phoneOn && step === STEPS.length - 1
+                  ? t("auth.code.send")
+                  : t("auth.shopSignup.continue")}
               {step < last && <ArrowRight />}
             </Button>
           </div>
         </form>
         <p className="mt-6 text-sm text-muted-foreground">
-          Already listed? <Link href="/login?next=/shop" className="font-medium text-foreground underline underline-offset-4">Sign in</Link>
+          {richText(t("auth.shopSignup.alreadyListed"), {
+            link: (
+              <Link href="/login?next=/shop" className="font-medium text-foreground underline underline-offset-4">
+                {t("auth.common.signIn")}
+              </Link>
+            ),
+          })}
         </p>
       </div>
     </MotionConfig>

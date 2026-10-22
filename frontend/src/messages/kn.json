@@ -341,5 +341,421 @@
         "other": ""
       }
     }
+  },
+  "auth": {
+    "layout": {
+      "back": "",
+      "pitchTitle": "",
+      "pitchBody": "",
+      "pillars": {
+        "search": {
+          "title": "",
+          "body": ""
+        },
+        "reserve": {
+          "title": "",
+          "body": ""
+        },
+        "pickUp": {
+          "title": "",
+          "body": ""
+        }
+      }
+    },
+    "common": {
+      "signIn": "",
+      "email": "",
+      "password": "",
+      "passwordHint": ""
+    },
+    "phone": {
+      "label": "",
+      "hint": "",
+      "empty": "",
+      "invalid": ""
+    },
+    "code": {
+      "label": "",
+      "sent": {
+        "whatsapp": "",
+        "sms": "",
+        "console": ""
+      },
+      "resendIn": "",
+      "resend": "",
+      "bySms": "",
+      "send": "",
+      "differentNumber": ""
+    },
+    "login": {
+      "loading": "",
+      "welcome": "",
+      "phoneIntro": "",
+      "emailIntro": "",
+      "createAccount": "",
+      "listShop": "",
+      "newHere": "",
+      "passwordPrompt": "",
+      "signInWithPassword": "",
+      "useEmail": "",
+      "until": "",
+      "showPassword": "",
+      "hidePassword": "",
+      "authCode": "",
+      "authCodeHint": "",
+      "signInWithPhone": "",
+      "verifyAndSignIn": "",
+      "useCode": ""
+    },
+    "verify": {
+      "loading": "",
+      "title": "",
+      "signInFirst": "",
+      "notYours": "",
+      "signOut": "",
+      "nothingTitle": "",
+      "verifiedTitle": "",
+      "adminBody": "",
+      "verifiedBody": "",
+      "verifiedBodyNoPhone": "",
+      "continue": "",
+      "unavailable": "",
+      "requiredTitle": "",
+      "requiredBody": "",
+      "warnBody": "",
+      "contactSupport": "",
+      "verify": ""
+    },
+    "signup": {
+      "loading": "",
+      "pausedTitle": "",
+      "pausedBody": "",
+      "searchNearby": ""
+    },
+    "consent": {
+      "legend": "",
+      "required": "",
+      "privacyLink": "",
+      "termsLink": "",
+      "age": "",
+      "ageHint": "",
+      "optional": "",
+      "whatsapp": {
+        "label": "",
+        "hint": ""
+      },
+      "personalised": {
+        "label": "",
+        "hint": ""
+      },
+      "measurement": {
+        "label": "",
+        "hint": ""
+      },
+      "needAgree": "",
+      "needAge": ""
+    },
+    "register": {
+      "title": "",
+      "phoneIntro": "",
+      "emailIntro": "",
+      "fullName": "",
+      "nameMissing": "",
+      "optional": "",
+      "phoneOptional": "",
+      "create": "",
+      "changeDetails": "",
+      "haveAccount": "",
+      "ownShop": "",
+      "listIt": ""
+    },
+    "shopSignup": {
+      "steps": {
+        "account": "",
+        "shop": "",
+        "location": "",
+        "hours": "",
+        "verify": ""
+      },
+      "stepOf": "",
+      "name": "",
+      "verifyNote": "",
+      "back": "",
+      "open": "",
+      "continue": "",
+      "alreadyListed": ""
+    }
+  },
+  "transactions": {
+    "common": {
+      "yourActivity": "",
+      "quantityPrice": "",
+      "timeline": "",
+      "directions": "",
+      "call": ""
+    },
+    "reserve": {
+      "title": "",
+      "description": "",
+      "submitOne": "",
+      "submitMany": "",
+      "eachInStock": "",
+      "steps": {
+        "check": {
+          "title": "",
+          "body": ""
+        },
+        "held": {
+          "title": "",
+          "body": ""
+        },
+        "pay": {
+          "title": "",
+          "body": ""
+        }
+      },
+      "note": "",
+      "notePlaceholder": "",
+      "sent": "",
+      "sentBody": ""
+    },
+    "delivery": {
+      "title": "",
+      "description": "",
+      "placeOrder": "",
+      "placeOrderTotal": "",
+      "each": "",
+      "deliverNear": "",
+      "ineligible": "",
+      "items": "",
+      "fee": "",
+      "free": "",
+      "freeAbove": "",
+      "payOnDelivery": "",
+      "address": "",
+      "addressPlaceholder": "",
+      "phone": "",
+      "phonePlaceholder": "",
+      "note": "",
+      "notePlaceholder": "",
+      "sent": "",
+      "sentBody": ""
+    },
+    "account": {
+      "ownerTitle": "",
+      "ownerBody": "",
+      "goToDashboard": "",
+      "yourActivity": "",
+      "hi": "",
+      "hiThere": "",
+      "stats": {
+        "pickups": {
+          "one": "",
+          "other": ""
+        },
+        "deliveries": {
+          "one": "",
+          "other": ""
+        },
+        "shops": {
+          "one": "",
+          "other": ""
+        }
+      },
+      "inProgress": "",
+      "nothingHeld": "",
+      "nothingHeldBody": "",
+      "searchNearby": "",
+      "rateRecent": "",
+      "items": {
+        "one": "",
+        "other": ""
+      },
+      "rate": "",
+      "history": "",
+      "tabs": {
+        "all": "",
+        "pickups": "",
+        "deliveries": ""
+      },
+      "noPast": {
+        "deliveries": "",
+        "pickups": "",
+        "activity": ""
+      },
+      "nextTitle": "",
+      "nextBody": "",
+      "recentSearches": "",
+      "settingsTitle": "",
+      "settingsBody": "",
+      "privacyNotice": "",
+      "details": {
+        "title": "",
+        "saved": "",
+        "name": "",
+        "home": "",
+        "homePlaceholder": "",
+        "savedPoint": "",
+        "noPoint": "",
+        "useLocation": "",
+        "clearHome": "",
+        "save": ""
+      },
+      "choices": {
+        "title": "",
+        "required": ""
+      },
+      "purposes": {
+        "whatsapp": {
+          "title": "",
+          "description": ""
+        },
+        "personalised": {
+          "title": "",
+          "description": ""
+        },
+        "measurement": {
+          "title": "",
+          "description": ""
+        }
+      },
+      "nominee": {
+        "title": "",
+        "body": "",
+        "name": "",
+        "phone": "",
+        "phonePlaceholder": "",
+        "email": "",
+        "contactHint": "",
+        "save": "",
+        "replace": "",
+        "remove": "",
+        "saved": "",
+        "removed": ""
+      },
+      "devices": {
+        "title": "",
+        "thisDevice": "",
+        "lastUsed": "",
+        "revoke": "",
+        "revokeLabel": "",
+        "signedOut": "",
+        "everywhere": ""
+      },
+      "export": {
+        "title": "",
+        "body": "",
+        "preparing": "",
+        "download": ""
+      },
+      "itemStatus": {
+        "REQUESTED": "",
+        "CONFIRMED": "",
+        "READY_FOR_PICKUP": "",
+        "PENDING": "",
+        "SHOP_CONFIRMED": "",
+        "PREPARING": "",
+        "OUT_FOR_DELIVERY": ""
+      },
+      "deletion": {
+        "title": "",
+        "body": "",
+        "shopHidden": "",
+        "pickup": "",
+        "delivery": "",
+        "shop": "",
+        "scheduled": "",
+        "scheduledInFlight": "",
+        "cancelFirst": "",
+        "thenScheduled": "",
+        "thenImmediate": "",
+        "immediate": "",
+        "onTheirWay": "",
+        "cancelAndDelete": "",
+        "delete": "",
+        "confirmTitle": "",
+        "cannotUndo": "",
+        "password": "",
+        "keep": "",
+        "deleted": "",
+        "willDelete": ""
+      }
+    },
+    "reservation": {
+      "status": {
+        "REQUESTED": {
+          "title": "",
+          "body": ""
+        },
+        "CONFIRMED": {
+          "title": "",
+          "body": ""
+        },
+        "READY_FOR_PICKUP": {
+          "title": "",
+          "body": ""
+        },
+        "COMPLETED": {
+          "title": "",
+          "body": ""
+        },
+        "REJECTED": {
+          "title": "",
+          "body": ""
+        },
+        "CANCELLED": {
+          "title": "",
+          "body": ""
+        },
+        "EXPIRED": {
+          "title": "",
+          "body": "",
+          "bodyHeld": ""
+        }
+      },
+      "cancelled": "",
+      "respondsWithin": "",
+      "heldFor": "",
+      "showAtCounter": "",
+      "pickupCodeHint": "",
+      "yourNote": "",
+      "cancelTitle": "",
+      "cancelBody": "",
+      "cancel": "",
+      "cancelReason": "",
+      "cancelReasonPlaceholder": "",
+      "rate": "",
+      "findElsewhere": ""
+    },
+    "order": {
+      "status": {
+        "PENDING": "",
+        "SHOP_CONFIRMED": "",
+        "PREPARING": "",
+        "OUT_FOR_DELIVERY": "",
+        "DELIVERED": "",
+        "CANCELLED": "",
+        "DELIVERY_FAILED": "",
+        "RETURNED_TO_SHOP": ""
+      },
+      "cancelled": "",
+      "reason": "",
+      "keepReady": "",
+      "deliveryCode": "",
+      "deliveryCodeHint": "",
+      "items": "",
+      "fee": "",
+      "free": "",
+      "paidOnDelivery": "",
+      "payOnDelivery": "",
+      "cancelTitle": "",
+      "cancelBody": "",
+      "cancel": "",
+      "cancelReason": "",
+      "rate": "",
+      "mapYou": "",
+      "mapAddress": "",
+      "callShop": ""
+    }
   }
 }
