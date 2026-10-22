@@ -69,11 +69,47 @@ class LoginIn(_Strict):
 
 
 class ProfileUpdateIn(_Strict):
+    """The profile fields a user edits directly. Not the phone: since P4.1 a new number is set only by verifying
+    a code sent to it (POST /api/auth/otp/request and /otp/verify, purpose verify), so a phone here is refused
+    (422, an unknown field)."""
+
     name: str | None = Field(default=None, min_length=2, max_length=120)
-    phone: str | None = Field(default=None, pattern=PHONE_PATTERN)
     home_lat: float | None = Field(default=None, ge=-90, le=90)
     home_lng: float | None = Field(default=None, ge=-180, le=180)
     home_label: str | None = Field(default=None, max_length=160)
+
+
+# Phone one-time codes (P4.1, app/services/otp.py). login: sign in to the account with this verified phone;
+# register: create a customer account for it; verify: set or confirm the signed-in user's phone; reset: set a new
+# password for the account with this verified phone.
+OTP_PURPOSES: tuple[str, ...] = ("login", "register", "verify", "reset")
+OtpPurpose = Literal["login", "register", "verify", "reset"]
+OTP_CODE_PATTERN = r"^\d{6}$"
+
+
+class OtpRequestIn(_Strict):
+    phone: str = Field(pattern=PHONE_PATTERN)
+    purpose: OtpPurpose
+
+
+class OtpVerifyIn(_Strict):
+    """The code, and what its purpose needs besides: a name and the P3.1 consent to register, a new password to
+    reset. The consent defaults to nothing ticked, which registration refuses (422 consent_required)."""
+
+    phone: str = Field(pattern=PHONE_PATTERN)
+    purpose: OtpPurpose
+    code: str = Field(pattern=OTP_CODE_PATTERN)
+    name: str | None = Field(default=None, min_length=2, max_length=120)
+    consent: ConsentIn = Field(default_factory=ConsentIn)
+    new_password: str | None = Field(default=None, min_length=8, max_length=128)
+
+    @model_validator(mode="after")
+    def _purpose_fields(self) -> "OtpVerifyIn":
+        if self.purpose == "register" and not self.name:
+            raise ValueError("Give your name to create an account")
+        if self.purpose == "reset" and not self.new_password:
+            raise ValueError("Choose a new password of 8 or more characters")
+        return self
 
 
 class ShopUpdateIn(_Strict):

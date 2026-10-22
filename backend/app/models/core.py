@@ -35,7 +35,9 @@ class Nominee(Embedded):
 
 
 class User(Document, Timestamps):
-    """Collection `users`. Unique on email.
+    """Collection `users`. One account per email and one per phone (unique partial indexes uq_email_set and
+    uq_phone, migration 7): since P4.1 an account may have a phone and no email (phone registration), and then
+    the email field is left out of the document, not stored as null.
 
     Sessions (P2.4): a token is valid only while its ver equals token_version and its sid is in sessions
     (at most 10, newest last). Bumping token_version and clearing sessions ends every session at once.
@@ -44,11 +46,13 @@ class User(Document, Timestamps):
     and the failed-code counter and lock."""
 
     name: str
-    email: str
+    email: str | None = None
     phone: str | None = None
-    # Set when the phone is verified by a one-time code (P4.1). Reviews require it once
-    # settings.review_requires_verified_phone is on (P3.5).
+    # Set when the phone is verified by a one-time code (P4.1, app/services/otp.py). Phone sign-in reaches only an
+    # account whose phone is verified. Reviews require it while settings.review_requires_verified_phone is on (P3.5).
     phone_verified_at: datetime | None = None
+    # An Argon2 hash, or "" for an account with no password: one registered by phone (until it sets one through a
+    # reset code) or a deleted one. An empty hash matches no password.
     password_hash: str
     role: Role = Role.CUSTOMER
     is_active: bool = True
@@ -80,6 +84,12 @@ class User(Document, Timestamps):
     @property
     def totp_enrolled(self) -> bool:
         return bool(self.totp_secret_enc)
+
+    def to_mongo(self) -> dict[str, Any]:
+        doc = super().to_mongo()
+        if doc.get("email") is None:
+            doc.pop("email", None)  # absent, never null: uq_email_set covers only accounts with an email
+        return doc
 
 
 class Category(Document):

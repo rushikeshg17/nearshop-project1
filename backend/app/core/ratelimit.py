@@ -132,8 +132,16 @@ def normalise_contact(value: str) -> str:
     return digits[-10:] if len(digits) >= 10 else value
 
 
+def normalise_phone(value: str) -> str:
+    """An OTP phone (P4.1) as its last ten digits, so a variant spelling of one number shares its counters (the
+    routes accept only the ten digits, PHONE_PATTERN, and refuse the rest with 422 after it was counted)."""
+    digits = re.sub(r"\D", "", value)
+    return digits[-10:] if len(digits) >= 10 else value
+
+
 # How a body field becomes its key, after trimming and lower-casing: the form the route itself looks up.
-BODY_NORMALISERS: dict[str, Callable[[str], str]] = {"email": _email, "contact": normalise_contact}
+BODY_NORMALISERS: dict[str, Callable[[str], str]] = {"email": _email, "contact": normalise_contact,
+                                                     "phone": normalise_phone}
 
 
 @dataclass(frozen=True)
@@ -186,17 +194,27 @@ GRIEVANCE_CONTACT = Rule("grievance_contact", 5, DAY, (body("contact"),))  # P3.
 # Grievance status lookup (P3.8; no row in plan section 8.3): the ticket and the contact must match, and this
 # keeps guessing either slow.
 GRIEVANCE_LOOKUP = Rule("grievance_lookup", 30, HOUR, (IP,))
+# Phone one-time codes (P4.1, app/services/otp.py). Sending: 1 per phone per 60 s, 5 per phone a day and 20 per IP a
+# day; verifying: 10 per phone an hour. Every request counts, whatever the answer, so the counts and the answers are
+# the same for a phone with an account and one without. The other two limits live in otp.py, not here: 5 attempts
+# per code (the code is locked after them) and the global daily cap, NEARSHOP_OTP_DAILY_CAP.
+OTP_SEND_PHONE = Rule("otp_send_phone", 1, MINUTE, (body("phone"),))
+OTP_SEND_PHONE_DAY = Rule("otp_send_phone_day", 5, DAY, (body("phone"),))
+OTP_SEND_IP_DAY = Rule("otp_send_ip_day", 20, DAY, (IP,))
+OTP_VERIFY_PHONE = Rule("otp_verify_phone", 10, HOUR, (body("phone"),))
 CATALOG_READ = Rule("catalog_read", 300, MINUTE, (IP,))
 DEFAULT = Rule("default", 600, MINUTE, (IP,))
 
-# Later prompts add their rows here, with the plan section 8.3 limits: OTP send and verify keyed by
-# body("phone") (P4.1), search result click (P5.6) and lead event (P9.2).
+# Later prompts add their rows here, with the plan section 8.3 limits: search result click (P5.6) and lead event
+# (P9.2).
 LIMITS: tuple[Row, ...] = (
     Row(("POST",), (LOGIN_ACCOUNT_IP, LOGIN_IP, LOGIN_ACCOUNT), route="/api/auth/login"),
     Row(("POST",), (PASSWORD_CHANGE_HOUR, PASSWORD_CHANGE_DAY), route="/api/auth/password"),
     Row(("POST",), (PASSWORD_CHANGE_HOUR, PASSWORD_CHANGE_DAY), route="/api/auth/delete"),  # P3.2
     Row(("POST",), (REGISTER_HOUR, REGISTER_DAY), route="/api/auth/register"),
     Row(("POST",), (REGISTER_HOUR, REGISTER_DAY), route="/api/auth/register-shop"),
+    Row(("POST",), (OTP_SEND_PHONE, OTP_SEND_PHONE_DAY, OTP_SEND_IP_DAY), route="/api/auth/otp/request"),  # P4.1
+    Row(("POST",), (OTP_VERIFY_PHONE,), route="/api/auth/otp/verify"),  # P4.1
     Row(("POST",), (RESERVATION_HOUR, RESERVATION_DAY), route="/api/reservations"),
     Row(("POST",), (ORDER_HOUR, ORDER_DAY), route="/api/orders"),
     Row(("POST",), (REVIEW_DAY,), route="/api/reviews"),

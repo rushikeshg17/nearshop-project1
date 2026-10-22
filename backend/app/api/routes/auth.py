@@ -38,11 +38,14 @@ from app.schemas.requests import (
     REQUIRED_PURPOSES,
     ConsentIn,
     LoginIn,
+    OtpRequestIn,
+    OtpVerifyIn,
     ProfileUpdateIn,
     RegisterIn,
     RegisterShopIn,
 )
 from app.schemas.serializers import iso
+from app.services import otp
 from app.services.loaders import categories
 from app.services.meta import city_config
 from app.services.privacy import (
@@ -64,10 +67,23 @@ me_router = APIRouter(prefix="/me", tags=["auth"])
 log = logging.getLogger("nearshop.auth")
 
 EMAIL_TAKEN = Conflict("An account with this email already exists", code="email_taken")
+PHONE_TAKEN = Conflict("An account with this phone number already exists. Sign in with a code sent to it instead.",
+                       code="phone_taken")
 
 
 def invalid_credentials() -> AppError:
     return AppError("Email or password is incorrect", code="invalid_credentials", status_code=401)
+
+
+def password_ok(password: str, password_hash: str) -> bool:
+    """Whether password matches. An account without a password (registered by phone, or deleted) has an empty
+    hash, which matches nothing."""
+    return bool(password_hash) and verify_password(password, password_hash)
+
+
+def _taken(exc: DuplicateKeyError) -> AppError:
+    """The 409 for a unique-index refusal on users: uq_phone, else uq_email_set."""
+    return PHONE_TAKEN if "phone" in ((exc.details or {}).get("keyPattern") or {}) else EMAIL_TAKEN
 
 
 class LoginWithCodeIn(LoginIn):
@@ -189,6 +205,12 @@ def _ensure_email_free(db: Database, email: str) -> None:
         raise EMAIL_TAKEN
 
 
+def _ensure_phone_free(db: Database, phone: str | None) -> None:
+    """One account per phone (uq_phone). An email registration may still give an unverified phone."""
+    if phone and db.users.exists({"phone": phone}):
+        raise PHONE_TAKEN
+
+
 def check_consent(consent: ConsentIn) -> None:
     """Registration needs the required purposes ticked (422 consent_required) and the 18-or-older
     declaration (422 age_confirmation_required). Children's data would need verifiable parental consent
@@ -216,6 +238,7 @@ def record_consents(db: Database, user_id: int, consent: ConsentIn, *, source: s
 def register(body: RegisterIn, request: Request, response: Response, db: DB):
     check_consent(body.consent)
     _ensure_email_free(db, body.email)
+    _ensure_phone_free(db, body.phone)
 
     def create() -> User:
         # The account and its consent rows are written together or not at all.
@@ -227,8 +250,8 @@ def register(body: RegisterIn, request: Request, response: Response, db: DB):
     password_hash = hash_password(body.password)
     try:
         user = db.transaction(create)
-    except DuplicateKeyError:  # two sign-ups raced: the unique index on email decides
-        raise EMAIL_TAKEN from None
+    except DuplicateKeyError as exc:  # two sign-ups raced: the unique indexes on email and phone decide
+        raise _taken(exc) from None
     user = _start_session(request, response, db, user)
     return user_out(user, db)
 
@@ -237,6 +260,9 @@ def register(body: RegisterIn, request: Request, response: Response, db: DB):
 def register_shop(body: RegisterShopIn, request: Request, response: Response, db: DB):
     check_consent(body.owner.consent)
     _ensure_email_free(db, body.owner.email)
+    _ensure_phone_free(db, body.owner.phone)
+    # The owner's phone defaults to the shop's, unless another account already has that number (one per phone).
+    owner_phone = body.owner.phone or (None if db.users.exists({"phone": body.shop.phone}) else body.shop.phone)
     cats = [c for c in categories(db).values() if c.slug in set(body.shop.category_slugs)]
     if len(cats) != len(set(body.shop.category_slugs)):
         raise AppError("Choose categories from the list")
@@ -250,9 +276,8 @@ def register_shop(body: RegisterShopIn, request: Request, response: Response, db
 
     def create() -> User:
         # The owner account and the shop are created together or not at all.
-        user = db.users.insert(User(name=body.owner.name, email=body.owner.email.lower(),
-                                    phone=body.owner.phone or body.shop.phone, password_hash=password_hash,
-                                    role=Role.OWNER))
+        user = db.users.insert(User(name=body.owner.name, email=body.owner.email.lower(), phone=owner_phone,
+                                    password_hash=password_hash, role=Role.OWNER))
         db.shops.insert(Shop(**data, owner_id=user.id, slug=slug, city=city_config()["name"],
                              category_ids=[c.id for c in cats], inventory_updated_at=utcnow()))
         record_consents(db, user.id, body.owner.consent)
@@ -260,8 +285,8 @@ def register_shop(body: RegisterShopIn, request: Request, response: Response, db
 
     try:
         user = db.transaction(create)
-    except DuplicateKeyError:
-        raise EMAIL_TAKEN from None
+    except DuplicateKeyError as exc:
+        raise _taken(exc) from None
     user = _start_session(request, response, db, user)
     return user_out(user, db)
 
@@ -322,7 +347,7 @@ def _check_second_factor(db: Database, user: User, code: str | None) -> None:
 def login(body: LoginWithCodeIn, request: Request, response: Response, db: DB):
     user = db.users.find_one({"email": body.email.lower()})
     # Same message for unknown email and wrong password, so accounts cannot be enumerated.
-    if not user or not verify_password(body.password, user.password_hash) or not user.is_active:
+    if not user or not password_ok(body.password, user.password_hash) or not user.is_active:
         raise invalid_credentials()
     if user.role == Role.ADMIN:
         _check_second_factor(db, user, body.code)
@@ -370,7 +395,7 @@ def revoke_session(session_id: str, request: Request, response: Response, user: 
 @router.post("/password")
 def change_password(body: PasswordChangeIn, request: Request, response: Response, user: CurrentUser, db: DB):
     """Change the password. Every session ends; this device gets a new one (admins sign in again)."""
-    if not verify_password(body.current_password, user.password_hash):
+    if not password_ok(body.current_password, user.password_hash):
         raise AppError("Your current password is not right", code="wrong_password")
     user = _revoke_all(request, response, db, user, {"password_hash": hash_password(body.new_password)},
                        continue_here=True)
@@ -384,17 +409,134 @@ def me(user: OptionalUser, db: DB):
 
 
 @router.patch("/me")
-def update_me(body: ProfileUpdateIn, request: Request, response: Response, user: CurrentUser, db: DB):
+def update_me(body: ProfileUpdateIn, user: CurrentUser, db: DB):
+    """Name and home location. A phone is refused here (422): it changes only through a verify code (P4.1)."""
     changes = body.model_dump(exclude_unset=True)
-    revoked = "phone" in changes and changes["phone"] != user.phone
-    if revoked:
-        # A new phone number ends every session; this device continues on a new one (admins sign in again).
-        user = _revoke_all(request, response, db, user, {"phone": changes.pop("phone")}, continue_here=True)
-    else:
-        changes.pop("phone", None)
     if changes:
         db.users.set(user, **changes)
-    return _out_after_revoke(user, db) if revoked else user_out(user, db)
+    return user_out(user, db)
+
+
+# ---------------------------------------------------------------- phone codes (P4.1, app/services/otp.py)
+
+
+@router.get("/phone-signin")
+def phone_signin():
+    """Whether phone sign-in is available here (a provider configured); P4.2 shows the phone screens only then."""
+    return otp.status()
+
+
+def _otp_preconditions(purpose: str, user: User | None) -> int | None:
+    """What a purpose needs before any code is sent or checked, the same for every phone: phone sign-in available,
+    sign-ups open to register, a signed-in user to verify (whose id the code is then bound to)."""
+    if not otp.available():
+        raise otp.unavailable()
+    if purpose == "register":
+        require_open_signups()
+    if purpose == "verify":
+        if user is None:
+            raise AppError("Please sign in to verify a phone number", code="unauthorized", status_code=401)
+        return user.id
+    return None
+
+
+@router.post("/otp/request")
+def request_otp(body: OtpRequestIn, user: OptionalUser, db: DB):
+    """Send a 6-digit code to the phone (purpose login, register, verify or reset). The answer is the same whether
+    or not an account uses the phone; limits: app/core/ratelimit.py and the daily cap in app/services/otp.py."""
+    user_id = _otp_preconditions(body.purpose, user)
+    return otp.request_code(db, body.phone, body.purpose, user_id=user_id)
+
+
+def _no_account() -> AppError:
+    return NotFound("No account has this verified phone number yet. Create an account, or sign in with your "
+                    "email and verify your phone from your account page.", code="no_account")
+
+
+def _verified_holder(db: Database, phone: str) -> User | None:
+    """The active account whose verified phone this is. Phone sign-in never reaches an account whose phone was
+    only typed in (never verified): that number may not be its owner's."""
+    holder = db.users.find_one({"phone": phone})
+    return holder if holder and holder.phone_verified_at is not None and holder.is_active else None
+
+
+def _release_unverified(db: Database, phone: str, keep: int | None = None) -> None:
+    """A code just proved who holds the phone, so another account that only typed it in (unverified) loses it."""
+    released = db.users.update_one({"phone": phone, "phone_verified_at": None, "_id": {"$ne": keep}},
+                                   {"$set": {"phone": None, "updated_at": utcnow()}})
+    if released:
+        log.info("an unverified phone was released from another account by a verified code")
+
+
+@router.post("/otp/verify")
+def verify_otp(body: OtpVerifyIn, request: Request, response: Response, user: OptionalUser, db: DB):
+    """Check the code, then act on its purpose:
+      * login: start a session on the account with this verified phone (the same cookie as a password sign-in).
+        Admins sign in with their password and second factor only.
+      * register: a customer account for the phone, with the P3.1 consent (checked before the code is spent).
+      * verify: set (or confirm) the signed-in user's phone. A new number ends every session (P2.4); this device
+        continues on a new one, and an admin signs in again.
+      * reset: a new password for the account with this verified phone; every session ends, this device signs in.
+    """
+    user_id = _otp_preconditions(body.purpose, user)
+    if body.purpose == "register":
+        check_consent(body.consent)
+    otp.verify_code(db, body.phone, body.purpose, body.code, user_id=user_id)
+    holder = _verified_holder(db, body.phone)
+    now = utcnow()
+
+    if body.purpose == "login":
+        if holder is None:
+            raise _no_account()
+        if holder.role == Role.ADMIN:
+            raise Forbidden("Admins sign in with their email, password and authenticator code.",
+                            code="password_required")
+        holder = _start_session(request, response, db, holder, {"last_login_at": now})
+        return user_out(holder, db)
+
+    if body.purpose == "reset":
+        if holder is None:
+            raise _no_account()
+        if holder.role == Role.ADMIN:
+            raise Forbidden("Admin passwords are reset by another admin with the operator command line.",
+                            code="admin_reset")
+        holder = _revoke_all(request, response, db, holder, {"password_hash": hash_password(body.new_password)},
+                             continue_here=True)
+        return user_out(holder, db)
+
+    if body.purpose == "register":
+        if holder is not None:
+            raise PHONE_TAKEN
+
+        def create() -> User:
+            _release_unverified(db, body.phone)
+            new = db.users.insert(User(name=body.name, phone=body.phone, phone_verified_at=now, password_hash="",
+                                       role=Role.CUSTOMER))
+            record_consents(db, new.id, body.consent)
+            return new
+
+        try:
+            new_user = db.transaction(create)
+        except DuplicateKeyError:
+            raise PHONE_TAKEN from None
+        new_user = _start_session(request, response, db, new_user, {"last_login_at": now})
+        return user_out(new_user, db)
+
+    # verify: the signed-in user's phone (_otp_preconditions refused a verify code without one)
+    if user is None:
+        raise _no_account()
+    if holder is not None and holder.id != user.id:
+        raise PHONE_TAKEN
+    if body.phone == user.phone:
+        db.users.set(user, phone_verified_at=now)
+        return user_out(user, db)
+    _release_unverified(db, body.phone, keep=user.id)
+    try:
+        user = _revoke_all(request, response, db, user, {"phone": body.phone, "phone_verified_at": now},
+                           continue_here=True)
+    except DuplicateKeyError:
+        raise PHONE_TAKEN from None
+    return _out_after_revoke(user, db)
 
 
 # ---------------------------------------------------------------- privacy rights (P3.2, app/services/privacy.py)
@@ -445,7 +587,7 @@ def delete_account(body: DeleteAccountIn, response: Response, user: CurrentUser,
     if user.role == Role.ADMIN:
         raise Forbidden("Admin accounts cannot delete themselves. Another admin removes the account with the "
                         "operator command line.", code="admin_self_delete")
-    if not verify_password(body.password, user.password_hash):
+    if not password_ok(body.password, user.password_hash):
         raise AppError("Your password is not right", code="wrong_password")
     try:
         result = request_deletion(db, user, cancel_open=body.cancel_open)

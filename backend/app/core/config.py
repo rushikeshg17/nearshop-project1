@@ -141,9 +141,73 @@ class Settings(BaseSettings):
     # Fulfillment defaults
     reservation_hold_minutes: int = 30
     request_response_minutes: int = 20  # shop must respond to a reservation request within this window
-    # Reviews (P3.5, plan section 8.2): only from a verified phone (User.phone_verified_at). Off until phone
-    # sign-in (P4.1) verifies phones; NEARSHOP_REVIEW_REQUIRES_VERIFIED_PHONE=true turns it on.
-    review_requires_verified_phone: bool = False
+    # Reviews (P3.5, plan section 8.2): only from a verified phone (User.phone_verified_at). On since P4.1
+    # wherever phone sign-in is live (a WhatsApp or SMS provider configured below, and otp_enabled), since only
+    # then can a customer verify a phone; off otherwise, so reviews keep working on an environment without a
+    # provider. NEARSHOP_REVIEW_REQUIRES_VERIFIED_PHONE=true or false overrides that either way.
+    review_requires_verified_phone: bool | None = None
+
+    # Phone one-time codes (P4.1, app/services/otp.py and app/services/messaging.py; plan sections 8.3 and 8.10).
+    # Phone sign-in is available only while otp_enabled holds and a provider is configured: WhatsApp (Meta's
+    # authentication template, the primary channel) and SMS through a DLT-registered sender and template (the
+    # fallback). Until then code requests answer 503 otp_unavailable and GET /api/auth/phone-signin reports it as
+    # unavailable. The console provider (codes written to the log) stands in for both, and only in development
+    # and test, where it is on by default; it can never be turned on anywhere else.
+    otp_enabled: bool = True
+    otp_console: bool | None = None
+    # The global daily cap on code sends (IST days). At 80% of it a warning event goes to the error tracker, once a
+    # day (the OTP-spend alert); beyond it code requests answer 503 otp_unavailable.
+    otp_daily_cap: int = 2000
+    # The site's domain on the SMS template's last line ("@<domain> #<code>"), which Android Chrome's WebOTP reads
+    # to fill the code in. It must match the text registered under DLT (B7) for this environment's site.
+    otp_webotp_domain: str = ""
+    # WhatsApp Cloud API (B8: Meta business verification and the approved authentication template, whose
+    # copy-code button carries the code). All three of the token, phone number id and template name are needed.
+    whatsapp_access_token: SecretStr = SecretStr("")
+    whatsapp_phone_number_id: str = ""
+    whatsapp_otp_template: str = ""
+    whatsapp_template_language: str = "en"
+    whatsapp_api_base: str = "https://graph.facebook.com"
+    whatsapp_api_version: str = "v21.0"
+    whatsapp_cost_inr: float = 0.13  # per authentication message (plan section 8.3: about ₹260 for 2,000)
+    # SMS through MSG91's flow API (B7: the DLT entity, sender header and OTP template; the flow template at MSG91
+    # holds that registered text and its code variable). The auth key and template id are needed.
+    sms_auth_key: SecretStr = SecretStr("")
+    sms_template_id: str = ""
+    sms_code_variable: str = "otp"
+    sms_api_url: str = "https://control.msg91.com/api/v5/flow"
+    sms_cost_inr: float = 0.295  # ₹0.25 plus 18% GST per message (plan section 8.3: about ₹590 for 2,000)
+
+    @field_validator("otp_daily_cap", mode="after")
+    @classmethod
+    def _check_otp_cap(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("NEARSHOP_OTP_DAILY_CAP must be 1 or more")
+        return value
+
+    @property
+    def whatsapp_configured(self) -> bool:
+        return bool(self.whatsapp_access_token.get_secret_value().strip() and self.whatsapp_phone_number_id.strip()
+                    and self.whatsapp_otp_template.strip())
+
+    @property
+    def sms_configured(self) -> bool:
+        return bool(self.sms_auth_key.get_secret_value().strip() and self.sms_template_id.strip())
+
+    @property
+    def otp_live(self) -> bool:
+        """Phone sign-in through a real provider: on, with WhatsApp or SMS configured."""
+        return self.otp_enabled and (self.whatsapp_configured or self.sms_configured)
+
+    @model_validator(mode="after")
+    def _default_otp(self) -> "Settings":
+        if self.otp_console is None:
+            self.otp_console = self.environment in ("development", "test")
+        elif self.otp_console and self.environment not in ("development", "test"):
+            raise ValueError("NEARSHOP_OTP_CONSOLE is allowed only in development and test: it writes codes to the log")
+        if self.review_requires_verified_phone is None:
+            self.review_requires_verified_phone = self.otp_live
+        return self
     # Completion codes (P3.5): completing a pickup needs the reservation code and delivering an order needs the
     # customer's 4-digit delivery code. On since P3.7, whose owner screens ask for the code; the frontend sends it
     # either way, so NEARSHOP_COMPLETION_CODES_REQUIRED=false is a safe switch back. Delivery codes are created

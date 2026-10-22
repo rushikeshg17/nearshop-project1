@@ -69,7 +69,8 @@ def made(db):
 
 def make_user(db, made, role: Role = Role.CUSTOMER, **consent) -> User:
     user = db.users.insert(User(name="Priya Rao", email=f"privacy-{uuid.uuid4().hex[:10]}@example.com",
-                                phone="9876500011", password_hash=hash_password(PASSWORD), role=role,
+                                phone=f"98{uuid.uuid4().int % 10 ** 8:08d}",  # one account per phone (P4.1)
+                                password_hash=hash_password(PASSWORD), role=role,
                                 home_lat=12.30123, home_lng=76.65123, home_label="Home"))
     made["users"].append(user.id)
     record_consents(db, user.id, ConsentIn(account_and_orders=True, age_18_plus=True, **consent))

@@ -12,8 +12,8 @@ live in the database, not only in application code:
 
   * `$jsonSchema` validators reject documents with missing fields, wrong types, unknown enum
     values, negative stock or prices, and out-of-range coordinates or ratings.
-  * unique indexes enforce one account per email, one listing per (shop, catalog item) and one
-    review per purchase.
+  * unique indexes enforce one account per email and one per phone, one listing per (shop, catalog
+    item) and one review per purchase.
   * every query the app runs is backed by an index declared here.
 
 How the relational model maps to documents
@@ -51,7 +51,7 @@ from app.models.enums import (
     Role,
     SaleSource,
 )
-from app.schemas.requests import CONSENT_PURPOSES
+from app.schemas.requests import CONSENT_PURPOSES, OTP_PURPOSES
 
 log = logging.getLogger(__name__)
 
@@ -105,11 +105,12 @@ MODERATION: dict[str, dict | str | list] = dict(
 )
 
 VALIDATORS: dict[str, dict] = {
+    # email is optional since P4.1 (migration 7): an account registered by phone has none, and leaves the field out.
     "users": schema(
-        ["name", "email", "password_hash", "role", "is_active", "created_at", "updated_at"],
-        name=STR, email={"bsonType": STR, "pattern": "^[^@\\s]+@[^@\\s]+$"}, phone=STR_N, password_hash=STR,
-        role=enum(Role), is_active=BOOL, last_login_at=DATE_N, home_lat=NUM_N, home_lng=NUM_N, home_label=STR_N,
-        created_at=DATE, updated_at=DATE,
+        ["name", "password_hash", "role", "is_active", "created_at", "updated_at"],
+        name=STR, email={"bsonType": STR, "pattern": "^[^@\\s]+@[^@\\s]+$"}, phone=STR_N, phone_verified_at=DATE_N,
+        password_hash=STR, role=enum(Role), is_active=BOOL, last_login_at=DATE_N, home_lat=NUM_N, home_lng=NUM_N,
+        home_label=STR_N, created_at=DATE, updated_at=DATE,
         # Revocable sessions and the admin second factor (P2.4, app/core/security.py). All optional: documents
         # written before them read the model's defaults.
         token_version={"bsonType": INT, "minimum": 0},
@@ -333,6 +334,40 @@ VALIDATORS: dict[str, dict] = {
         created_at=DATE, acknowledged_at=DATE_N, due_at=DATE, in_progress_at=DATE_N, resolved_at=DATE_N,
         resolved_by=INT_N, resolution={"bsonType": STR_N, "maxLength": 2000}, updated_at=DATE,
     ),
+    # Phone one-time codes (P4.1, app/services/otp.py; plan section 8.4). One code per phone and purpose: _id is a
+    # keyed hash of the two, so a new request replaces the last code. The code itself is stored only as a keyed hash
+    # (code_hash), never the phone (phone_hash). A code is valid until expires_at (5 minutes), for at most 5
+    # attempts, and once (used_at); the TTL index removes it 10 minutes after created_at. user_id: the signed-in
+    # user a verify code was sent for.
+    "otp_codes": {"$jsonSchema": {
+        "bsonType": "object",
+        "required": ["_id", "phone_hash", "purpose", "code_hash", "attempts", "created_at", "expires_at"],
+        "properties": {
+            "_id": {"bsonType": STR}, "phone_hash": {"bsonType": STR}, "purpose": {"enum": list(OTP_PURPOSES)},
+            "code_hash": {"bsonType": STR}, "user_id": {"bsonType": INT_N}, "attempts": {"bsonType": INT, "minimum": 0},
+            "created_at": {"bsonType": DATE}, "expires_at": {"bsonType": DATE}, "used_at": {"bsonType": DATE_N},
+        },
+    }},
+    # Every code send (P4.1): which channel, the cost estimate in rupees and the outcome (sent, failed, or capped
+    # when the daily cap refused it), against the keyed phone hash. Kept 30 days (TTL on at).
+    "otp_sends": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "phone_hash", "purpose", "outcome", "cost_estimate", "at"],
+        "properties": {
+            "phone_hash": {"bsonType": STR}, "purpose": {"enum": list(OTP_PURPOSES)},
+            "channel": {"enum": ["whatsapp", "sms", "console", None]},
+            "outcome": {"enum": ["sent", "failed", "capped"]}, "cost_estimate": NON_NEGATIVE,
+            "error": {"bsonType": STR_N, "maxLength": 80}, "at": {"bsonType": DATE},
+        },
+    }},
+    # The global daily cap's counter (P4.1): one document per IST day, _id YYYY-MM-DD, with the sends counted and
+    # when the 80% warning was reported (once a day). The TTL index removes it after expires_at.
+    "otp_daily": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "count", "expires_at"],
+        "properties": {
+            "_id": {"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}, "count": {"bsonType": INT, "minimum": 0},
+            "warned_at": {"bsonType": DATE_N}, "expires_at": {"bsonType": DATE},
+        },
+    }},
     # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
     "counters": {},
     "text_embeddings": {},
@@ -348,10 +383,21 @@ SEARCH_HISTORY_TTL = IndexModel([("created_at", ASCENDING)], expireAfterSeconds=
 NOTIFICATIONS_TTL = IndexModel([("created_at", ASCENDING)], expireAfterSeconds=NOTIFICATIONS_KEEP_SECONDS,
                                name="created_ttl_90d")
 IS_INT = {"$type": "number"}  # partial-index filter: "this optional reference is set"
+OTP_CODES_KEEP_SECONDS = 10 * 60  # otp_codes: removed 10 minutes after they were created (plan section 8.4)
+OTP_SENDS_KEEP_SECONDS = 30 * 24 * 60 * 60  # otp_sends: the send log is kept 30 days
+# One account per email and one per phone, among the accounts that have one (migration 7 built both; uq_email_set
+# replaced uq_email, which also counted a missing email as a value). Phones are stored as their 10 digits. The
+# filter is "a string after the empty one": it leaves out a missing or null value, and, unlike a $type filter, an
+# equality lookup ({"email": ...}, {"phone": ...}) implies it, so sign-in lookups still use these indexes.
+IS_SET = {"$gt": ""}
+EMAIL_INDEX = IndexModel([("email", ASCENDING)], unique=True, name="uq_email_set",
+                         partialFilterExpression={"email": IS_SET})
+PHONE_INDEX = IndexModel([("phone", ASCENDING)], unique=True, name="uq_phone", partialFilterExpression={"phone": IS_SET})
 
 INDEXES: dict[str, list[IndexModel]] = {
     "users": [
-        IndexModel([("email", A)], unique=True, name="uq_email"),
+        EMAIL_INDEX,
+        PHONE_INDEX,
         IndexModel([("role", A), ("created_at", D)], name="role_created"),
         # Deletions waiting for orders in flight (P3.2): the process_deletions job reads only these.
         IndexModel([("deletion_due_at", A)], name="deletion_due",
@@ -481,6 +527,9 @@ INDEXES: dict[str, list[IndexModel]] = {
                    partialFilterExpression={"user_id": IS_INT}),  # a signed-in user's own grievances
         IndexModel([("order_id", A)], name="order", partialFilterExpression={"order_id": IS_INT}),  # retention holds
     ],
+    "otp_codes": [IndexModel([("created_at", A)], expireAfterSeconds=OTP_CODES_KEEP_SECONDS, name="created_ttl_10m")],
+    "otp_sends": [IndexModel([("at", A)], expireAfterSeconds=OTP_SENDS_KEEP_SECONDS, name="at_ttl_30d")],
+    "otp_daily": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),
         IndexModel([("target_user_id", A), ("created_at", D)], name="target_created"),
