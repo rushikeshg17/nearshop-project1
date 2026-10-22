@@ -279,16 +279,18 @@ def test_the_owner_is_told_in_the_app_and_on_whatsapp(customer, owner_a, ids, re
     product = db.products.get(ids["tape"])
 
     note = db.notifications.find({"user_id": owner.id, "kind": "arrival_failure"}, sort=[("_id", -1)], limit=1)[0]
-    params = {"code": held["code"], "product": product.name, "quantity": product.quantity}
+    shown = product.quantity + held["quantity"]  # what the listing showed before the hold was taken
+    params = {"code": held["code"], "product": product.name, "quantity": shown}
     assert (note.title, note.body) == words.render("arrival_failure", language, params)
     assert note.title == f"Item not available for reservation {held['code']}"
-    assert note.body == f"The customer found {product.name} missing. NearShop showed {product.quantity} in stock."
+    assert note.body == f"The customer found {product.name} missing. NearShop showed {shown} in stock."
     assert note.link == f"/shop/inventory?focus={product.id}"  # straight to updating its stock
 
     [row] = list(db.mongo[whatsapp.OUTBOX].find({"user_id": owner.id}))
     assert row["kind"] == "arrival_failure" and row["template"] == "nearshop_shop_arrival_report"
     assert row["params"] == [note.title, note.body] and row["buttons"] == []
-    assert row["language"] == whatsapp.template_language(language)
+    # The message awaits the team's Kannada and its template has no kn version yet: every owner gets the en one.
+    assert row["language"] == whatsapp.template_language("en") == "en"
     assert row["subject"] == f"reservation:{held['code']}"
     assert whatsapp.send_due(Database(), client=whatsapp.FAKE)["sent"] == 1
     assert whatsapp.FAKE.sent[-1]["template"] == "nearshop_shop_arrival_report"

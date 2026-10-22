@@ -283,8 +283,10 @@ def _report_not_available(db: Database, res: Reservation, product: Product, shop
         reason=InventoryReason.ARRIVAL_FAILURE, actor_id=actor_id, created_at=now))
     db.products.set(product, stock_unconfirmed_at=now)
     changes.update(stock_held=False, closed_at=now, close_reason=NOT_AVAILABLE_ON_ARRIVAL, arrival_reported_at=now)
+    # The count the customer saw when reserving: the held units are no longer in product.quantity.
+    shown = product.quantity + (res.quantity if res.stock_held else 0)
     notify(db, shop.owner_id, "arrival_failure", link=f"/shop/inventory?focus={product.id}",
-           message="arrival_failure", params={"code": res.code, "product": product.name, "quantity": product.quantity})
+           message="arrival_failure", params={"code": res.code, "product": product.name, "quantity": shown})
 
 
 def expire_due(db: Database) -> int:

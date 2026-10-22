@@ -177,8 +177,9 @@ MESSAGES: dict[str, dict[str, tuple[str, str | None]]] = {
 
 # Messages whose Kannada text the team has not supplied yet. From P9.1 on, only Kannada written or approved by the
 # team is added here, never an implementer's draft; until then a Kannada-preference recipient gets the English text
-# (render falls back), and the WhatsApp template of the same kind waits for its kn approval
-# (docs/whatsapp-templates.md, "Kannada still to write"). Remove a key once its kn entry is added.
+# (render falls back), and the WhatsApp outbox row of the same kind uses the en template (whatsapp._row_language)
+# until its kn version is approved (docs/whatsapp-templates.md, "Kannada still to write"). Remove a key once its kn
+# entry is added and its kn template approved.
 AWAITING_KANNADA: frozenset[str] = frozenset({"arrival_failure"})
 
 # key -> language -> text: the WhatsApp bot's replies to shops (P4.4) and the fragments messages are built from.
