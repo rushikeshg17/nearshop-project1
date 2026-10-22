@@ -649,12 +649,12 @@
         "download": "Download my data"
       },
       "itemStatus": {
-        "REQUESTED": "waiting for the shop",
-        "CONFIRMED": "held for you",
+        "REQUESTED": "requested",
+        "CONFIRMED": "confirmed",
         "READY_FOR_PICKUP": "ready for pickup",
-        "PENDING": "waiting for the shop",
-        "SHOP_CONFIRMED": "confirmed",
-        "PREPARING": "being packed",
+        "PENDING": "pending",
+        "SHOP_CONFIRMED": "shop confirmed",
+        "PREPARING": "preparing",
         "OUT_FOR_DELIVERY": "out for delivery"
       },
       "deletion": {
