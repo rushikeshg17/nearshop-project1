@@ -11,6 +11,7 @@ import { Freshness, OpenBadge, Rating, StockPill, VerifiedMark } from "@/compone
 import { ProductThumb } from "@/components/common/product-thumb";
 import { EmptyState, ErrorState } from "@/components/common/states";
 import { ShopMap } from "@/components/map/shop-map";
+import { useI18n } from "@/components/providers";
 import { RatingSummary, ReviewList } from "@/components/shop/review-list";
 import { ShopAvatar } from "@/components/shop/shop-card";
 import { ShopTrust } from "@/components/shop/shop-trust";
@@ -20,7 +21,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useDebounce } from "@/hooks/use-debounce";
 import { useMeta } from "@/hooks/use-session";
 import { api, ApiError, recordLead } from "@/lib/api";
-import { formatDistance, formatPrice, travelHint } from "@/lib/format";
+import { formatDistance, formatNumber, formatPrice, travelTime, weekdayName } from "@/lib/format";
+import { plural, richText } from "@/lib/i18n";
 import { useLocation } from "@/lib/location";
 import type { Listing, Review, ShopDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -32,6 +34,7 @@ import { cn } from "@/lib/utils";
  * server could not reach the API; the page then loads entirely in the browser.
  */
 export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail | null }) {
+  const { t, language } = useI18n();
   const params = useSearchParams();
   const { data: meta } = useMeta();
   const { location, ready } = useLocation();
@@ -62,7 +65,16 @@ export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail 
     return (
       <div className="mx-auto max-w-3xl px-4 py-16">
         {gone ? (
-          <EmptyState icon={Store} title="Shop not found" description="It may have paused its listing." action={<Button asChild><Link href="/shops">Browse shops</Link></Button>} />
+          <EmptyState
+            icon={Store}
+            title={t("discovery.shop.notFoundTitle")}
+            description={t("discovery.shop.notFoundBody")}
+            action={
+              <Button asChild>
+                <Link href="/shops">{t("discovery.shop.browseShops")}</Link>
+              </Button>
+            }
+          />
         ) : (
           <ErrorState error={shop.error} onRetry={() => shop.refetch()} />
         )}
@@ -78,6 +90,8 @@ export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail 
     );
   }
   const counts = products.data?.category_counts ?? {};
+  const travel = travelTime(s.distance_km);
+  const fee = s.delivery_fee ? formatPrice(s.delivery_fee) : t("discovery.shop.free");
 
   return (
     <div className="mx-auto max-w-7xl px-4 pt-6 md:px-6 md:pt-10">
@@ -94,24 +108,49 @@ export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail 
               <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm">
                 <Rating value={s.rating_avg} count={s.rating_count} />
                 <OpenBadge isOpen={s.is_open} label={s.hours_label} />
-                <Freshness at={s.inventory_updated_at} prefix="Stock updated" />
+                <Freshness at={s.inventory_updated_at} prefix={t("discovery.shop.stockUpdated")} />
               </div>
             </div>
           </div>
           {s.description && <p className="mt-5 max-w-2xl text-sm leading-relaxed text-muted-foreground">{s.description}</p>}
           <dl className="mt-5 grid gap-3 text-sm sm:grid-cols-2">
-            <div className="flex gap-2"><MapPin className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><dd>{s.address_line}{s.pincode && `, ${s.pincode}`}{s.distance_km !== null && <span className="text-muted-foreground"> · {formatDistance(s.distance_km)}, {travelHint(s.distance_km)}</span>}</dd></div>
-            <div className="flex gap-2"><Clock className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><dd>{s.opening_hours}{s.closed_on && ` · closed ${s.closed_on}s`}</dd></div>
-            <div className="flex gap-2"><Footprints className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><dd>Pickup: items held {s.hold_minutes} min after confirming</dd></div>
+            <div className="flex gap-2">
+              <MapPin className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <dd>
+                {s.address_line}
+                {s.pincode && `, ${s.pincode}`}
+                {s.distance_km !== null && (
+                  <span className="text-muted-foreground">
+                    {` · ${formatDistance(s.distance_km)}`}
+                    {travel && `, ${t(`common.travel.${travel.mode}`, { minutes: travel.minutes })}`}
+                  </span>
+                )}
+              </dd>
+            </div>
+            <div className="flex gap-2"><Clock className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><dd>
+                {s.opening_hours}
+                {s.closed_on && ` · ${t("discovery.shop.closedOn", { day: weekdayName(s.closed_on, language) })}`}
+              </dd></div>
+            <div className="flex gap-2"><Footprints className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><dd>{t("discovery.shop.pickupHold", { minutes: s.hold_minutes })}</dd></div>
             <div className="flex gap-2">
               <Bike className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-              <dd>{s.offers_delivery ? `Delivers within ${s.delivery_radius_km} km · ${s.delivery_fee ? formatPrice(s.delivery_fee) : "free"}${s.free_delivery_above ? `, free above ${formatPrice(s.free_delivery_above)}` : ""}` : "Pickup only"}</dd>
+              <dd>
+                {!s.offers_delivery
+                  ? t("discovery.shop.pickupOnly")
+                  : s.free_delivery_above
+                    ? t("discovery.shop.deliversFreeAbove", {
+                        radius: s.delivery_radius_km,
+                        fee,
+                        threshold: formatPrice(s.free_delivery_above),
+                      })
+                    : t("discovery.shop.delivers", { radius: s.delivery_radius_km, fee })}
+              </dd>
             </div>
-            {s.established_year && <div className="flex gap-2"><Calendar className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><dd>Serving since {s.established_year}</dd></div>}
+            {s.established_year && <div className="flex gap-2"><Calendar className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><dd>{t("discovery.shop.servingSince", { year: s.established_year })}</dd></div>}
           </dl>
           <div className="mt-5 flex flex-wrap gap-2">
-            <Button asChild variant="outline" size="sm"><a href={`https://www.openstreetmap.org/directions?to=${s.lat}%2C${s.lng}`} target="_blank" rel="noreferrer" onClick={() => recordLead(s.id, "directions_tap")}><Navigation /> Directions</a></Button>
-            {s.phone && <Button asChild variant="outline" size="sm"><a href={`tel:${s.phone}`} onClick={() => recordLead(s.id, "call_tap")}><Phone /> Call</a></Button>}
+            <Button asChild variant="outline" size="sm"><a href={`https://www.openstreetmap.org/directions?to=${s.lat}%2C${s.lng}`} target="_blank" rel="noreferrer" onClick={() => recordLead(s.id, "directions_tap")}><Navigation /> {t("discovery.shop.directions")}</a></Button>
+            {s.phone && <Button asChild variant="outline" size="sm"><a href={`tel:${s.phone}`} onClick={() => recordLead(s.id, "call_tap")}><Phone /> {t("discovery.shop.call")}</a></Button>}
           </div>
         </div>
         <div className="h-56 overflow-hidden rounded-2xl border md:h-full md:min-h-60">
@@ -124,8 +163,13 @@ export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail 
         <section className="min-w-0">
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
-              <h2 className="text-xl font-semibold">On the shelf</h2>
-              <p className="text-sm text-muted-foreground">{s.listing_counts?.in_stock ?? 0} of {s.listing_counts?.total ?? 0} items in stock right now</p>
+              <h2 className="text-xl font-semibold">{t("discovery.shop.shelfTitle")}</h2>
+              <p className="text-sm text-muted-foreground">
+                {t(`discovery.shop.shelfCount.${plural(language, s.listing_counts?.total ?? 0)}`, {
+                  inStock: formatNumber(s.listing_counts?.in_stock ?? 0),
+                  total: formatNumber(s.listing_counts?.total ?? 0),
+                })}
+              </p>
             </div>
             {/* A native checkbox as a switch, styled like ui/switch, without Radix on first load (P2.9). */}
             <label className="flex cursor-pointer items-center gap-2 text-sm">
@@ -142,16 +186,16 @@ export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail 
                   className="pointer-events-none absolute top-[1.2px] left-px size-4 rounded-full bg-background transition-transform peer-checked:translate-x-[calc(100%-2px)] dark:bg-foreground dark:peer-checked:bg-primary-foreground"
                 />
               </span>
-              In stock only
+              {t("discovery.shop.inStockOnly")}
             </label>
           </div>
           <div className="relative mt-4">
             <Search className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input value={text} onChange={(e) => setText(e.target.value)} placeholder={`Search ${s.name}`} className="h-10 pl-9" />
+            <Input value={text} onChange={(e) => setText(e.target.value)} placeholder={t("discovery.shop.searchShop", { shop: s.name })} className="h-10 pl-9" />
           </div>
           {s.category_details.length > 1 && (
             <div className="mt-3 flex flex-wrap gap-2">
-              <button onClick={() => setCategory(null)} className={cn("rounded-full border px-3 py-1 text-sm", !category ? "border-primary bg-primary text-primary-foreground" : "hover:bg-accent")}>All</button>
+              <button onClick={() => setCategory(null)} className={cn("rounded-full border px-3 py-1 text-sm", !category ? "border-primary bg-primary text-primary-foreground" : "hover:bg-accent")}>{t("discovery.shop.all")}</button>
               {s.category_details.map((c) => (
                 <button key={c.slug} onClick={() => setCategory(c.slug)} className={cn("inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm", category === c.slug ? "border-primary bg-primary text-primary-foreground" : "hover:bg-accent")}>
                   <AppIcon name={c.icon} className="size-3.5" /> {c.name} {counts[c.slug] ? <span className="opacity-60 tabular">{counts[c.slug]}</span> : null}
@@ -176,18 +220,26 @@ export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail 
                 ))}
           </ul>
           {products.data && !products.data.items.length && (
-            <p className="mt-4 rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">Nothing matches here. <Link className="underline" href={`/search?q=${encodeURIComponent(text)}`}>Search all shops nearby</Link></p>
+            <p className="mt-4 rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+              {richText(t("discovery.shop.nothingMatches"), {
+                link: (
+                  <Link className="underline" href={`/search?q=${encodeURIComponent(text)}`}>
+                    {t("discovery.shop.searchAllShops")}
+                  </Link>
+                ),
+              })}
+            </p>
           )}
         </section>
 
         <aside className="space-y-6">
           <section className="rounded-3xl border bg-card p-5">
-            <h2 className="mb-3 font-semibold">Track record</h2>
+            <h2 className="mb-3 font-semibold">{t("discovery.shop.trackRecord")}</h2>
             <ShopTrust r={s.reliability} />
           </section>
           <section id="reviews" className="rounded-3xl border bg-card p-5">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="font-semibold">Reviews</h2>
+              <h2 className="font-semibold">{t("discovery.shop.reviews")}</h2>
               <RatingSummary avg={s.rating_avg} />
             </div>
             {reviews.data ? <ReviewList reviews={reviews.data.reviews} shopId={s.id} /> : <Skeleton className="h-40" />}

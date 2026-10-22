@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 
 import { Logo } from "@/components/brand/logo";
+import { useI18n } from "@/components/providers";
 import { NotificationsBell } from "@/components/site/notifications-bell";
 import { UserMenu } from "@/components/site/user-menu";
 import { Button } from "@/components/ui/button";
@@ -67,6 +68,7 @@ export function DashboardShell({
   children: React.ReactNode;
 }) {
   const { data: me } = useMe();
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   return (
     <div className="min-h-dvh bg-surface/60 lg:grid lg:grid-cols-[248px_1fr]">
@@ -76,12 +78,12 @@ export function DashboardShell({
           <p className="truncate text-sm font-semibold">{title}</p>
           {subtitle && <p className="truncate text-xs text-muted-foreground">{subtitle}</p>}
         </div>
-        <nav className="mt-4 flex-1" aria-label="Dashboard">
+        <nav className="mt-4 flex-1" aria-label={t("shell.dashboard.navLabel")}>
           <NavList items={items} />
         </nav>
         {publicHref && (
           <Link href={publicHref} className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-accent/60 hover:text-foreground">
-            <ExternalLink className="size-4" /> View public page
+            <ExternalLink className="size-4" /> {t("shell.dashboard.viewPublicPage")}
           </Link>
         )}
       </aside>
@@ -89,10 +91,10 @@ export function DashboardShell({
         <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b bg-background/85 px-4 backdrop-blur-xl md:px-6">
           <Sheet open={open} onOpenChange={setOpen}>
             <SheetTrigger asChild>
-              <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open menu"><Menu /></Button>
+              <Button variant="ghost" size="icon" className="lg:hidden" aria-label={t("shell.dashboard.openMenu")}><Menu /></Button>
             </SheetTrigger>
             <SheetContent side="left" className="w-72 p-4">
-              <SheetTitle className="sr-only">Menu</SheetTitle>
+              <SheetTitle className="sr-only">{t("shell.dashboard.menu")}</SheetTitle>
               <Logo />
               <p className="mt-6 px-3 text-sm font-semibold">{title}</p>
               <nav className="mt-3"><NavList items={items} onNavigate={() => setOpen(false)} /></nav>
@@ -100,7 +102,7 @@ export function DashboardShell({
           </Sheet>
           <p className="truncate text-sm font-semibold lg:hidden">{title}</p>
           <div className="ml-auto flex items-center gap-1">
-            <Button asChild variant="ghost" size="sm" className="hidden sm:inline-flex"><Link href="/">Customer view</Link></Button>
+            <Button asChild variant="ghost" size="sm" className="hidden sm:inline-flex"><Link href="/">{t("shell.dashboard.customerView")}</Link></Button>
             {me && <NotificationsBell />}
             {me && <UserMenu user={me} />}
           </div>
@@ -114,12 +116,13 @@ export function DashboardShell({
 
 /** Links to the privacy notice and terms (P3.1) and the grievance page (P3.8), shown on every owner and admin page. */
 export function LegalFooter({ className }: { className?: string }) {
+  const { t } = useI18n();
   return (
     <footer className={className}>
       <p className="flex flex-wrap gap-x-4 gap-y-1 border-t pt-4 text-xs text-muted-foreground">
-        <Link href="/privacy" className="hover:text-foreground">Privacy notice</Link>
-        <Link href="/terms" className="hover:text-foreground">Terms of use</Link>
-        <Link href="/grievance" className="hover:text-foreground">Grievances</Link>
+        <Link href="/privacy" className="hover:text-foreground">{t("shell.footer.privacy")}</Link>
+        <Link href="/terms" className="hover:text-foreground">{t("shell.footer.terms")}</Link>
+        <Link href="/grievance" className="hover:text-foreground">{t("shell.footer.grievances")}</Link>
       </p>
     </footer>
   );

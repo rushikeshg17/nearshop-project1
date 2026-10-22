@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import zlib from "node:zlib";
 
 import { type APIRequestContext, type Browser, expect, type Page, test as base } from "@playwright/test";
@@ -39,6 +41,29 @@ const CLIENT_HEADER = { "X-NearShop-Client": "web" };
 const VALID_GSTIN = "27AAPFU0939F1ZV";
 const BAD_GSTIN = "27AAPFU0939F1ZX"; // the same with a wrong check character
 const DAY = 86_400_000;
+
+/** The interface text for a message key in the project's language, as the site shows it: a key that is absent or
+ * empty in that language's file falls back to the English text (src/lib/i18n.ts), and {name} placeholders are
+ * filled in. So the assertions hold in every language on the CI list, before and after its text arrives. */
+function message(language: string, key: string, values: Record<string, string> = {}) {
+  const lookup = (code: string) => {
+    let node: unknown = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "src", "messages", `${code}.json`), "utf8"));
+    for (const part of key.split(".")) node = (node as Record<string, unknown> | undefined)?.[part];
+    return typeof node === "string" && node ? node : null;
+  };
+  const text = lookup(language) ?? lookup("en");
+  if (text === null) throw new Error(`No message ${key}`);
+  return text.replace(/\{(\w+)\}/g, (whole, name: string) => values[name] ?? whole);
+}
+
+/** A date as the owner shell's formatDay writes it, in the project's language. It is formatted in the page, so the
+ * browser's own locale data writes it exactly as the site does (Node's can differ for Kannada). */
+function formatDay(page: Page, ms: number, language: string) {
+  return page.evaluate(
+    ([at, locale]) => new Date(at).toLocaleDateString(locale, { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" }),
+    [ms, `${language}-IN`] as const,
+  );
+}
 
 type Verification = {
   status: string;
@@ -135,8 +160,10 @@ async function openForSubmission(admin: APIRequestContext, owner: APIRequestCont
   return shop;
 }
 
-/** Fills in and sends the "Verify your shop" form, checking the inline GSTIN error on the way. */
-async function submitEvidence(page: Page) {
+/** Fills in and sends the "Verify your shop" form, checking the inline GSTIN error on the way. The type, number,
+ * photo and error labels come from components/shop/shop-form-fields.tsx, which is not in the message files yet, so
+ * they are English in every language; move them to message() when that file is translated. */
+async function submitEvidence(page: Page, language: string) {
   const section = page.locator("section#verify");
   await expect(section).toBeVisible();
   await section.getByRole("radio", { name: /^GSTIN/ }).click();
@@ -150,7 +177,7 @@ async function submitEvidence(page: Page) {
   await expect(section.getByText("That GSTIN's last character does not match")).toHaveCount(0);
   await section.getByLabel(/^Photo of the certificate/).setInputFiles({ name: "certificate.png", mimeType: "image/png", buffer: photo([230, 230, 220]) });
   await section.getByLabel("Storefront photo showing your signboard").setInputFiles({ name: "storefront.png", mimeType: "image/png", buffer: photo([200, 60, 40]) });
-  await section.getByRole("button", { name: "Submit for verification" }).click();
+  await section.getByRole("button", { name: message(language, "owner.settings.verify.submit") }).click();
 }
 
 async function adminContext(browser: Browser, baseURL: string | undefined) {
@@ -161,7 +188,7 @@ async function adminContext(browser: Browser, baseURL: string | undefined) {
   return context;
 }
 
-test("an owner submits KYC evidence, an admin rejects and then approves it, and the banner follows", async ({ page, browser }, testInfo) => {
+test("an owner submits KYC evidence, an admin rejects and then approves it, and the banner follows", async ({ page, browser, language }, testInfo) => {
   test.skip(
     !ADMIN_EMAIL || !ADMIN_PASSWORD || !ADMIN_TOTP,
     "Needs an admin with a second factor: set NEARSHOP_E2E_ADMIN_EMAIL, NEARSHOP_E2E_ADMIN_PASSWORD and NEARSHOP_E2E_ADMIN_TOTP (see the comment at the top).",
@@ -175,9 +202,9 @@ test("an owner submits KYC evidence, an admin rejects and then approves it, and 
   // 1. The owner submits; the banner says it is waiting, usually within 2 working days.
   await page.goto("/shop/settings");
   await expect(banner).toBeVisible();
-  await submitEvidence(page);
+  await submitEvidence(page, language);
   await expect(banner).toHaveAttribute("data-status", "submitted");
-  await expect(banner).toContainText("usually within 2 working days");
+  await expect(banner).toContainText(message(language, "owner.verification.submitted.body"));
   await expect(page.request.get(`/api/shops/${shop.slug}`).then((r) => r.status())).resolves.toBe(404);
 
   // 2. The admin finds it in the queue, opens the evidence links, and rejects it with a reason.
@@ -199,9 +226,9 @@ test("an owner submits KYC evidence, an admin rejects and then approves it, and 
   await page.goto("/shop");
   await expect(banner).toHaveAttribute("data-status", "rejected");
   await expect(banner).toContainText(reason);
-  await banner.getByRole("link", { name: "Resubmit" }).click();
+  await banner.getByRole("link", { name: message(language, "owner.verification.rejected.action") }).click();
   await expect(page).toHaveURL(/\/shop\/settings#verify$/);
-  await submitEvidence(page);
+  await submitEvidence(page, language);
   await expect(banner).toHaveAttribute("data-status", "submitted");
 
   // 4. The admin records the phone call-back if needed, and approves.
@@ -217,7 +244,9 @@ test("an owner submits KYC evidence, an admin rejects and then approves it, and 
 
   // 5. The owner's banner goes away (verified for 12 months, so no renewal yet), and customers see the shop again.
   await page.reload();
-  await expect(page.getByTestId("verification-summary")).toContainText("Verified until");
+  const approved = await getJson<Verification>(page.request, "/api/owner/verification");
+  const until = await formatDay(page, Date.parse(approved.verified_until!), language);
+  await expect(page.getByTestId("verification-summary")).toContainText(message(language, "owner.settings.verify.summary.verifiedUntil", { date: until }));
   await expect(banner).toHaveCount(0);
   await expect(page.request.get(`/api/shops/${shop.slug}`).then((r) => r.status())).resolves.toBe(200);
 });
@@ -245,23 +274,26 @@ async function withVerificationDates(page: Page, verifiedUntil: number) {
   });
 }
 
-test("a shop within 30 days of verified_until shows the renewal banner", async ({ page }) => {
+test("a shop within 30 days of verified_until shows the renewal banner", async ({ page, language }) => {
   await signInOwner(page.request);
   const until = Date.now() + 20 * DAY;
   await withVerificationDates(page, until);
   await page.goto("/shop");
   const banner = page.getByTestId("verification-banner");
   await expect(banner).toHaveAttribute("data-status", "renew");
-  const date = new Date(until).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" });
-  await expect(banner).toContainText(`Renew your verification by ${date}`);
-  await expect(banner.getByRole("link", { name: "Renew" })).toHaveAttribute("href", "/shop/settings#verify");
+  await expect(banner).toContainText(message(language, "owner.verification.renew.title", { date: await formatDay(page, until, language) }));
+  await expect(banner.getByRole("link", { name: message(language, "owner.verification.renew.action") })).toHaveAttribute(
+    "href",
+    "/shop/settings#verify",
+  );
 });
 
-test("a shop past verified_until is told it is hidden until renewed", async ({ page }) => {
+test("a shop past verified_until is told it is hidden until renewed", async ({ page, language }) => {
   await signInOwner(page.request);
-  await withVerificationDates(page, Date.now() - 2 * DAY);
+  const until = Date.now() - 2 * DAY;
+  await withVerificationDates(page, until);
   await page.goto("/shop");
   const banner = page.getByTestId("verification-banner");
   await expect(banner).toHaveAttribute("data-status", "expired");
-  await expect(banner).toContainText("hidden from customers until it is renewed");
+  await expect(banner).toContainText(message(language, "owner.verification.expired.body", { date: await formatDay(page, until, language) }));
 });

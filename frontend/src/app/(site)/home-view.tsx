@@ -20,6 +20,7 @@ import Link from "next/link";
 import { AppIcon } from "@/components/common/app-icon";
 import { Freshness, StockPill } from "@/components/common/indicators";
 import { ProductThumb } from "@/components/common/product-thumb";
+import { useI18n } from "@/components/providers";
 import { ShopCard } from "@/components/shop/shop-card";
 import { LocationPicker } from "@/components/site/location-picker";
 import { SearchBox } from "@/components/site/search-box";
@@ -28,24 +29,31 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useMeta } from "@/hooks/use-session";
 import { api } from "@/lib/api";
 import { formatDistance, formatNumber, formatPrice } from "@/lib/format";
+import { plural } from "@/lib/i18n";
 import { useLocation } from "@/lib/location";
 import type { SearchResponse, ShopBrief } from "@/lib/types";
 import { cn, revealFocused } from "@/lib/utils";
 
-const QUICK = ["phone charger", "PVC elbow joint", "school shoes", "9W LED bulb", "umbrella", "bike engine oil"];
+// Example searches, in the interface language (discovery.home.quick in the message files).
+const QUICK = ["charger", "elbow", "shoes", "bulb", "umbrella", "oil"] as const;
+
+// The query behind the hero's live results, shown as typed: the panel shows what the search returns for it, so it is
+// the query itself, not a message to translate.
+const DEMO_QUERY = "fast charger";
 
 // Entrance animations are CSS (tw-animate-css), not an animation library, so none of it is first-load
 // JavaScript (P2.9). The hero's heading and text are not animated: they are the page's largest paint.
 const ENTER = "animate-in fade-in fill-mode-both duration-500 ease-out";
 
 export function HomeView() {
+  const { t, language } = useI18n();
   const { data: meta } = useMeta();
   const { location, radiusKm, ready } = useLocation();
 
   const live = useQuery({
     queryKey: ["home-live", location?.lat, location?.lng],
     queryFn: () =>
-      api.get<SearchResponse>("/search", { q: "fast charger", lat: location!.lat, lng: location!.lng, radius_km: 6, page_size: 3 }),
+      api.get<SearchResponse>("/search", { q: DEMO_QUERY, lat: location!.lat, lng: location!.lng, radius_km: 6, page_size: 3 }),
     enabled: ready,
     staleTime: 5 * 60_000,
   });
@@ -67,18 +75,17 @@ export function HomeView() {
             </div>
             <h1 className="text-[2.6rem] leading-[1.02] font-semibold sm:text-6xl lg:text-[3.6rem] xl:text-7xl"
             >
-              Find it nearby.
-              <span className="block text-muted-foreground">Skip the five-shop hunt.</span>
+              {t("discovery.home.heroTitle")}
+              <span className="block text-muted-foreground">{t("discovery.home.heroSubtitle")}</span>
             </h1>
             <p className="mt-5 max-w-xl text-base text-muted-foreground md:text-lg"
             >
-              See which shops around you have it on the shelf right now, what they charge, and how fresh that stock count is.
-              Reserve it and walk in, or let the shop deliver.
+              {t("discovery.home.heroBody")}
             </p>
             <div className="mt-8 max-w-xl">
-              <SearchBox size="lg" placeholder="Try 'phone charging adapter' or 'tap leaking'" />
+              <SearchBox size="lg" placeholder={t("discovery.home.searchPlaceholder")} />
               <div className="mt-4 flex flex-wrap gap-2">
-                {QUICK.map((q) => (
+                {QUICK.map((key) => t(`discovery.home.quick.${key}`)).map((q) => (
                   <Link
                     key={q}
                     href={`/search?q=${encodeURIComponent(q)}`}
@@ -92,9 +99,12 @@ export function HomeView() {
             {/* Always laid out, invisible until the city's numbers arrive, so nothing below it moves (P2.9). */}
             <dl className={cn("mt-10 flex flex-wrap gap-x-8 gap-y-3 text-sm", !meta && "invisible")} aria-hidden={!meta}>
               {[
-                [meta ? formatNumber(meta.stats.shops) : "00", `local shops in ${meta?.city.name ?? "your city"}`],
-                [meta ? formatNumber(meta.stats.in_stock) : "0,000", "items in stock right now"],
-                ["0", "delivery riders needed"],
+                [
+                  meta ? formatNumber(meta.stats.shops) : "00",
+                  meta ? t("discovery.home.statShopsIn", { city: meta.city.name }) : t("discovery.home.statShopsHere"),
+                ],
+                [meta ? formatNumber(meta.stats.in_stock) : "0,000", t("discovery.home.statItems")],
+                ["0", t("discovery.home.statRiders")],
               ].map(([n, l], i) => (
                 <div key={i} className="flex items-baseline gap-2">
                   <dt className="font-heading text-2xl font-semibold tabular">{n}</dt>
@@ -111,9 +121,15 @@ export function HomeView() {
             <div className="relative rounded-3xl border bg-card/90 p-4 shadow-lift backdrop-blur">
               <div className="flex items-center gap-2 rounded-xl border bg-background px-3 py-2.5 text-sm">
                 <Search className="size-4 text-muted-foreground" />
-                <span>fast charger</span>
+                {/* i18n-allow: the demo search's query as the customer would type it, and what the API is asked for */}
+                <span>{DEMO_QUERY}</span>
                 <span className="ml-auto text-xs text-muted-foreground">
-                  {live.data ? `${live.data.total} items · ${live.data.shops.length} shops` : "searching..."}
+                  {live.data
+                    ? `${t(`discovery.home.demoItems.${plural(language, live.data.total)}`, { count: formatNumber(live.data.total) })} · ${t(
+                        `discovery.home.demoShops.${plural(language, live.data.shops.length)}`,
+                        { count: formatNumber(live.data.shops.length) },
+                      )}`
+                    : t("discovery.home.searching")}
                 </span>
               </div>
               <ul className="mt-3 space-y-2">
@@ -130,7 +146,8 @@ export function HomeView() {
                             <p className="truncate text-sm font-semibold">{g.name}</p>
                             <p className="mt-0.5 truncate text-xs text-muted-foreground">
                               {g.best_offer.shop.name} · {formatDistance(g.best_offer.shop.distance_km)}
-                              {g.shop_count > 1 && ` · +${g.shop_count - 1} more shops`}
+                              {g.shop_count > 1 &&
+                                ` · ${t(`discovery.home.moreShops.${plural(language, g.shop_count - 1)}`, { count: formatNumber(g.shop_count - 1) })}`}
                             </p>
                             <div className="mt-1.5 flex items-center gap-2">
                               <StockPill status={g.best_offer.stock_status} quantity={g.best_offer.quantity} compact />
@@ -144,7 +161,7 @@ export function HomeView() {
               </ul>
               <div className="mt-3 flex items-center justify-between rounded-xl bg-brand-soft px-3 py-2.5 text-sm text-brand-ink">
                 <span className="inline-flex items-center gap-2 font-medium">
-                  <Footprints className="size-4" /> Reserve now, pick up in 30 min
+                  <Footprints className="size-4" /> {t("discovery.home.reserveBanner")}
                 </span>
                 <ArrowRight className="size-4" />
               </div>
@@ -157,8 +174,8 @@ export function HomeView() {
       <section className="mx-auto max-w-7xl px-4 pt-14 md:px-6">
         <div className="mb-6 flex items-end justify-between">
           <div>
-            <h2 className="text-2xl font-semibold md:text-3xl">Browse by what you need</h2>
-            <p className="mt-1 text-muted-foreground">The everyday things that are hard to find online and easy to find nearby.</p>
+            <h2 className="text-2xl font-semibold md:text-3xl">{t("discovery.home.browseTitle")}</h2>
+            <p className="mt-1 text-muted-foreground">{t("discovery.home.browseBody")}</p>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -180,7 +197,7 @@ export function HomeView() {
                   </span>
                   <span>
                     <span className="block font-medium">{c.name}</span>
-                    <span className="text-xs text-muted-foreground tabular">{formatNumber(c.in_stock_listings ?? 0)} in stock</span>
+                    <span className="text-xs text-muted-foreground tabular">{t("discovery.home.categoryInStock", { count: formatNumber(c.in_stock_listings ?? 0) })}</span>
                   </span>
                 </Link>
               </div>
@@ -195,12 +212,14 @@ export function HomeView() {
       <section className="mx-auto max-w-7xl px-4 pt-16 md:px-6">
         <div className="mb-6 flex items-end justify-between gap-4">
           <div>
-            <h2 className="text-2xl font-semibold md:text-3xl">Shops near {location?.label ?? "you"}</h2>
-            <p className="mt-1 text-muted-foreground">Sorted by distance. The freshness line tells you how recently they counted their shelves.</p>
+            <h2 className="text-2xl font-semibold md:text-3xl">
+              {location?.label ? t("discovery.home.shopsNear", { place: location.label }) : t("discovery.home.shopsNearYou")}
+            </h2>
+            <p className="mt-1 text-muted-foreground">{t("discovery.home.shopsBody")}</p>
           </div>
           <Button asChild variant="outline" className="hidden rounded-full sm:inline-flex">
             <Link href="/shops">
-              See map <ArrowRight />
+              {t("discovery.home.seeMap")} <ArrowRight />
             </Link>
           </Button>
         </div>
@@ -216,23 +235,25 @@ export function HomeView() {
       {/* ---------------------------------------------------------------- how it works */}
       <section id="how" className="mx-auto max-w-7xl px-4 pt-20 md:px-6">
         <div className="max-w-2xl">
-          <h2 className="text-2xl font-semibold md:text-3xl">Check the shelf before you leave home</h2>
-          <p className="mt-2 text-muted-foreground">
-            Pickup is the default because you get to see it before you pay. Delivery is there when the shop offers it, handled by the shop itself.
-          </p>
+          <h2 className="text-2xl font-semibold md:text-3xl">{t("discovery.home.howTitle")}</h2>
+          <p className="mt-2 text-muted-foreground">{t("discovery.home.howBody")}</p>
         </div>
         <div className="mt-8 grid gap-4 md:grid-cols-3">
-          {[
-            { icon: PackageSearch, title: "Search the way you talk", body: "Type 'charging adapter' or 'tap leaking'. NearShop understands meaning, not just exact product names.", tag: "AI search" },
-            { icon: ClipboardCheck, title: "Reserve in one tap", body: "The shop confirms and sets it aside for 30 minutes. You get a pickup code and a live countdown.", tag: "No payment upfront" },
-            { icon: Footprints, title: "Walk in, check, pay", body: "Inspect it at the counter and pay there. If the shop delivers, cash on delivery works too.", tag: "Pickup or delivery" },
-          ].map((s, i) => (
-            <div key={s.title} className="relative rounded-2xl border bg-card p-6">
+          {(
+            [
+              { key: "search", icon: PackageSearch },
+              { key: "reserve", icon: ClipboardCheck },
+              { key: "pay", icon: Footprints },
+            ] as const
+          ).map((s, i) => (
+            <div key={s.key} className="relative rounded-2xl border bg-card p-6">
               <span aria-hidden className="absolute top-6 right-6 font-heading text-4xl font-semibold text-muted-foreground/75 tabular">0{i + 1}</span>
               <s.icon className="size-6 text-brand" />
-              <h3 className="mt-4 text-lg font-semibold">{s.title}</h3>
-              <p className="mt-1.5 text-sm text-muted-foreground">{s.body}</p>
-              <span className="mt-4 inline-flex rounded-full bg-muted px-2.5 py-1 text-xs font-medium">{s.tag}</span>
+              <h3 className="mt-4 text-lg font-semibold">{t(`discovery.home.steps.${s.key}.title`)}</h3>
+              <p className="mt-1.5 text-sm text-muted-foreground">{t(`discovery.home.steps.${s.key}.body`)}</p>
+              <span className="mt-4 inline-flex rounded-full bg-muted px-2.5 py-1 text-xs font-medium">
+                {t(`discovery.home.steps.${s.key}.tag`)}
+              </span>
             </div>
           ))}
         </div>
@@ -244,36 +265,36 @@ export function HomeView() {
           <div className="grid gap-10 p-8 md:p-12 lg:grid-cols-[1.1fr_1fr]">
             <div>
               <span className="inline-flex items-center gap-2 rounded-full bg-primary-foreground/10 px-3 py-1 text-xs font-medium">
-                <Store className="size-3.5" /> For shop owners
+                <Store className="size-3.5" /> {t("discovery.home.owners.badge")}
               </span>
-              <h2 className="mt-4 text-3xl font-semibold md:text-4xl">Your shelf, online by this evening.</h2>
-              <p className="mt-3 max-w-lg text-primary-foreground/70">
-                Pick products from a ready catalogue, set your price and count. Customers nearby find you, reserve, and walk in ready to buy.
-              </p>
+              <h2 className="mt-4 text-3xl font-semibold md:text-4xl">{t("discovery.home.owners.title")}</h2>
+              <p className="mt-3 max-w-lg text-primary-foreground/70">{t("discovery.home.owners.body")}</p>
               <div className="mt-8 flex flex-wrap gap-3">
                 <Button asChild size="lg" className="h-11 rounded-full bg-brand px-6 text-brand-foreground hover:bg-brand/90">
                   <Link href="/register/shop">
-                    List your shop free <ArrowRight />
+                    {t("discovery.home.owners.listFree")} <ArrowRight />
                   </Link>
                 </Button>
                 <Button asChild size="lg" variant="ghost" className="h-11 rounded-full px-5 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground">
-                  <Link href="/login?next=/shop">See the dashboard</Link>
+                  <Link href="/login?next=/shop">{t("discovery.home.owners.seeDashboard")}</Link>
                 </Button>
               </div>
             </div>
             <ul className="grid gap-3 sm:grid-cols-2">
-              {[
-                { icon: BellRing, t: "Reservation alerts", d: "Confirm or decline with one tap." },
-                { icon: TrendingUp, t: "Restock forecasts", d: "Know what will run out next week." },
-                { icon: BrainCircuit, t: "Local demand", d: "See what people nearby search for." },
-                { icon: ShieldCheck, t: "Earn trust", d: "Fresh stock counts rank you higher." },
-                { icon: Bike, t: "Your delivery, your rules", d: "Set radius, fee and free-delivery limit." },
-                { icon: Check, t: "No commission to start", d: "Pay at the counter, as always." },
-              ].map((f) => (
-                <li key={f.t} className="rounded-2xl bg-primary-foreground/[0.06] p-4">
+              {(
+                [
+                  { key: "alerts", icon: BellRing },
+                  { key: "forecasts", icon: TrendingUp },
+                  { key: "demand", icon: BrainCircuit },
+                  { key: "trust", icon: ShieldCheck },
+                  { key: "delivery", icon: Bike },
+                  { key: "commission", icon: Check },
+                ] as const
+              ).map((f) => (
+                <li key={f.key} className="rounded-2xl bg-primary-foreground/[0.06] p-4">
                   <f.icon className="size-5 text-brand" />
-                  <p className="mt-3 text-sm font-medium">{f.t}</p>
-                  <p className="mt-0.5 text-sm text-primary-foreground/60">{f.d}</p>
+                  <p className="mt-3 text-sm font-medium">{t(`discovery.home.owners.features.${f.key}.title`)}</p>
+                  <p className="mt-0.5 text-sm text-primary-foreground/60">{t(`discovery.home.owners.features.${f.key}.body`)}</p>
                 </li>
               ))}
             </ul>

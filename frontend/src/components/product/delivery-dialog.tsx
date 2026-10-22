@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { ResponsiveDialog } from "@/components/common/responsive-dialog";
 import { LocationPicker } from "@/components/site/location-picker";
 import { QuantityStepper } from "@/components/product/quantity-stepper";
+import { useI18n } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,12 +18,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { useMe } from "@/hooks/use-session";
 import { useDebounce } from "@/hooks/use-debounce";
 import { api } from "@/lib/api";
-import { formatDistance, formatPrice } from "@/lib/format";
+import { formatDistance, formatNumber, formatPrice } from "@/lib/format";
 import { useLocation } from "@/lib/location";
 import type { DeliveryQuote, Order, ProductDetail } from "@/lib/types";
 import { REFUND_POLICY_HREF, UPI_REFUND_DAYS } from "@/lib/upi";
 
 export function DeliveryDialog({ product, open, onOpenChange }: { product: ProductDetail; open: boolean; onOpenChange: (o: boolean) => void }) {
+  const { t } = useI18n();
   const router = useRouter();
   const qc = useQueryClient();
   const { data: me } = useMe();
@@ -52,7 +54,9 @@ export function DeliveryDialog({ product, open, onOpenChange }: { product: Produ
       }),
     onSuccess: (o) => {
       qc.invalidateQueries({ queryKey: ["product", product.id] });
-      toast.success(`Order ${o.code} sent to ${product.shop.name}`, { description: "Pay the shop when it arrives." });
+      toast.success(t("transactions.delivery.sent", { code: o.code, shop: product.shop.name }), {
+        description: t("transactions.delivery.sentBody"),
+      });
       onOpenChange(false);
       router.push(`/account/orders/${o.id}`);
     },
@@ -66,12 +70,14 @@ export function DeliveryDialog({ product, open, onOpenChange }: { product: Produ
     <ResponsiveDialog
       open={open}
       onOpenChange={onOpenChange}
-      title="Request delivery"
-      description={`${product.shop.name} delivers this themselves. Pay the shop on delivery, in cash or by UPI if it takes UPI.`}
+      title={t("transactions.delivery.title")}
+      description={t("transactions.delivery.description", { shop: product.shop.name })}
       footer={
         <Button size="lg" className="h-11 w-full" disabled={!canSubmit} onClick={() => place.mutate()}>
           {place.isPending ? <Loader2 className="animate-spin" /> : <Bike />}
-          Place order{q?.eligible && q.subtotal !== undefined ? ` · ${formatPrice((q.subtotal ?? 0) + (q.delivery_fee ?? 0))}` : ""}
+          {q?.eligible && q.subtotal !== undefined
+            ? t("transactions.delivery.placeOrderTotal", { price: formatPrice((q.subtotal ?? 0) + (q.delivery_fee ?? 0)) })
+            : t("transactions.delivery.placeOrder")}
         </Button>
       }
     >
@@ -79,57 +85,68 @@ export function DeliveryDialog({ product, open, onOpenChange }: { product: Produ
         <div className="flex items-center justify-between gap-4 rounded-xl bg-muted/60 p-3">
           <div className="min-w-0">
             <p className="truncate text-sm font-medium">{product.name}</p>
-            <p className="text-xs text-muted-foreground">{formatPrice(product.price)} each</p>
+            <p className="text-xs text-muted-foreground">{t("transactions.delivery.each", { price: formatPrice(product.price) })}</p>
           </div>
           <QuantityStepper value={qty} onChange={setQty} max={Math.max(1, Math.min(product.quantity, 20))} />
         </div>
 
         <div className="space-y-1.5">
-          <Label className="flex items-center gap-1.5"><MapPin className="size-3.5" /> Deliver near</Label>
+          <Label className="flex items-center gap-1.5"><MapPin className="size-3.5" /> {t("transactions.delivery.deliverNear")}</Label>
           <LocationPicker className="w-full justify-start" />
         </div>
 
         {quote.isLoading ? (
           <div className="h-16 animate-pulse rounded-xl bg-muted" />
         ) : q && !q.eligible ? (
-          <p className="rounded-xl bg-warning-soft p-3 text-sm text-warning-ink">{q.reason}. Try pickup instead, or change the delivery location.</p>
+          <p className="rounded-xl bg-warning-soft p-3 text-sm text-warning-ink">{t("transactions.delivery.ineligible", { reason: q.reason ?? "" })}</p>
         ) : q ? (
           <dl className="space-y-1.5 rounded-xl border p-3 text-sm">
-            <div className="flex justify-between"><dt className="text-muted-foreground">Items</dt><dd className="tabular">{formatPrice(q.subtotal ?? 0)}</dd></div>
+            <div className="flex justify-between"><dt className="text-muted-foreground">{t("transactions.delivery.items")}</dt><dd className="tabular">{formatPrice(q.subtotal ?? 0)}</dd></div>
             <div className="flex flex-wrap justify-between">
-              <dt className="text-muted-foreground">Delivery ({formatDistance(q.distance_km)})</dt>
-              <dd className="tabular">{q.delivery_fee ? formatPrice(q.delivery_fee) : "Free"}</dd>
+              <dt className="text-muted-foreground">{t("transactions.delivery.fee", { distance: formatDistance(q.distance_km) })}</dt>
+              <dd className="tabular">{q.delivery_fee ? formatPrice(q.delivery_fee) : t("transactions.delivery.free")}</dd>
               {/* A dd, not a p: a list of terms may hold only dt and dd (axe: definition-list; P2.10). */}
               {q.free_delivery_above && (q.delivery_fee ?? 0) > 0 && (
-                <dd className="mt-1.5 w-full text-xs text-muted-foreground">Free delivery on orders above {formatPrice(q.free_delivery_above)}</dd>
+                <dd className="mt-1.5 w-full text-xs text-muted-foreground">{t("transactions.delivery.freeAbove", { price: formatPrice(q.free_delivery_above) })}</dd>
               )}
             </div>
             <div className="flex justify-between border-t pt-1.5 font-semibold">
-              <dt>Pay on delivery</dt>
+              <dt>{t("transactions.delivery.payOnDelivery")}</dt>
               <dd className="tabular">{formatPrice((q.subtotal ?? 0) + (q.delivery_fee ?? 0))}</dd>
             </div>
           </dl>
         ) : null}
 
         <div className="space-y-1.5">
-          <Label htmlFor="addr">Full address</Label>
-          <Textarea id="addr" rows={2} value={address} onChange={(e) => setAddress(e.target.value)} placeholder="House no., street, landmark" />
+          <Label htmlFor="addr">{t("transactions.delivery.address")}</Label>
+          <Textarea
+            id="addr"
+            rows={2}
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+            placeholder={t("transactions.delivery.addressPlaceholder")}
+          />
         </div>
         <div className="grid grid-cols-[1fr_1.4fr] gap-3">
           <div className="space-y-1.5">
-            <Label htmlFor="phone">Phone</Label>
+            <Label htmlFor="phone">{t("transactions.delivery.phone")}</Label>
             <Input
               id="phone"
               inputMode="numeric"
               value={phone}
               onChange={(e) => setPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}
               aria-invalid={phone.length > 0 && !phoneOk}
-              placeholder="10 digits"
+              placeholder={t("transactions.delivery.phonePlaceholder")}
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="dnote">Note (optional)</Label>
-            <Input id="dnote" value={note} onChange={(e) => setNote(e.target.value.slice(0, 300))} placeholder="Call before coming" />
+            <Label htmlFor="dnote">{t("transactions.delivery.note")}</Label>
+            <Input
+              id="dnote"
+              value={note}
+              onChange={(e) => setNote(e.target.value.slice(0, 300))}
+              placeholder={t("transactions.delivery.notePlaceholder")}
+            />
           </div>
         </div>
 
@@ -137,13 +154,11 @@ export function DeliveryDialog({ product, open, onOpenChange }: { product: Produ
         <section aria-labelledby="delivery-policy-title" className="flex gap-2.5 rounded-xl border p-3 text-xs text-muted-foreground">
           <ReceiptText className="mt-0.5 size-4 shrink-0" />
           <div>
-            <h3 id="delivery-policy-title" className="text-sm font-medium text-foreground">Cancellation and refunds</h3>
+            <h3 id="delivery-policy-title" className="text-sm font-medium text-foreground">{t("transactions.policy.title")}</h3>
             <p className="mt-0.5">
-              Cancelling is free before dispatch: cancel it yourself until the shop starts packing, then ask the shop
-              to cancel it before it goes out. If you paid the shop directly by UPI and the order is cancelled, the shop
-              refunds you within {UPI_REFUND_DAYS} days under its agreement with NearShop.{" "}
+              {t("transactions.policy.deliveryBody", { days: formatNumber(UPI_REFUND_DAYS) })}{" "}
               <Link href={REFUND_POLICY_HREF} target="_blank" className="font-medium text-foreground underline underline-offset-4">
-                Read the cancellation and refund policy
+                {t("transactions.policy.link")}
               </Link>
             </p>
           </div>

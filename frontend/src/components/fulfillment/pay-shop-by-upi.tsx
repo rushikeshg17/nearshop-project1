@@ -3,8 +3,10 @@
 import { Smartphone } from "lucide-react";
 import Link from "next/link";
 
+import { useI18n } from "@/components/providers";
 import { Button } from "@/components/ui/button";
-import { formatPrice } from "@/lib/format";
+import { formatNumber, formatPrice } from "@/lib/format";
+import { richText } from "@/lib/i18n";
 import { REFUND_POLICY_HREF, UPI_REFUND_DAYS, upiPaymentLink, useUpiQr } from "@/lib/upi";
 
 /**
@@ -17,9 +19,10 @@ export function PayShopByUpi({ upiId, payeeName, amount, note, cash }: {
   payeeName: string;
   amount: number;
   note: string;
-  /** How cash works instead, for example "Or pay cash when it arrives." */
+  /** How cash works instead, in the interface language: transactions.upi.cashOnDelivery or cashAtCounter. */
   cash: string;
 }) {
+  const { t } = useI18n();
   const link = upiPaymentLink({ upiId, payeeName, amount, note });
   const qr = useUpiQr(link);
   return (
@@ -27,10 +30,9 @@ export function PayShopByUpi({ upiId, payeeName, amount, note, cash }: {
       <div className="flex items-start gap-3">
         <Smartphone className="mt-0.5 size-5 shrink-0 text-primary" />
         <div>
-          <h2 id="pay-upi-title" className="font-semibold">Pay the shop by UPI</h2>
+          <h2 id="pay-upi-title" className="font-semibold">{t("transactions.upi.title")}</h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            Pay {payeeName} {formatPrice(amount)} directly with any UPI app. The money goes straight to the shop: NearShop
-            never holds it. {cash}
+            {t("transactions.upi.body", { payee: payeeName, price: formatPrice(amount) })} {cash}
           </p>
         </div>
       </div>
@@ -39,7 +41,7 @@ export function PayShopByUpi({ upiId, payeeName, amount, note, cash }: {
           {qr ? (
             <svg
               role="img"
-              aria-label={`QR code to pay ${payeeName} ${formatPrice(amount)} by UPI`}
+              aria-label={t("transactions.upi.qrLabel", { payee: payeeName, price: formatPrice(amount) })}
               viewBox={`-4 -4 ${qr.size + 8} ${qr.size + 8}`}
               shapeRendering="crispEdges"
               className="size-40"
@@ -52,18 +54,23 @@ export function PayShopByUpi({ upiId, payeeName, amount, note, cash }: {
         </div>
         <div className="w-full min-w-0 space-y-3 text-sm">
           <Button asChild className="h-11 w-full sm:w-auto">
-            <a href={link}><Smartphone /> Pay {formatPrice(amount)} by UPI</a>
+            <a href={link}><Smartphone /> {t("transactions.upi.payButton", { price: formatPrice(amount) })}</a>
           </Button>
-          <p className="text-muted-foreground">On a computer or another phone? Scan the QR code with any UPI app.</p>
+          <p className="text-muted-foreground">{t("transactions.upi.scanHint")}</p>
           <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
-            <dt className="text-muted-foreground">UPI ID</dt>
+            <dt className="text-muted-foreground">{t("transactions.upi.upiId")}</dt>
             <dd className="break-all font-mono">{upiId}</dd>
-            <dt className="text-muted-foreground">Note</dt>
+            <dt className="text-muted-foreground">{t("transactions.upi.note")}</dt>
             <dd className="font-mono">{note}</dd>
           </dl>
           <p className="text-xs text-muted-foreground">
-            Show the shop the payment confirmation. If it is cancelled after you pay, the shop refunds you within{" "}
-            {UPI_REFUND_DAYS} days. <Link href={REFUND_POLICY_HREF} className="font-medium text-foreground underline underline-offset-4">Cancellation and refunds</Link>
+            {richText(t("transactions.upi.refund", { days: formatNumber(UPI_REFUND_DAYS) }), {
+              policy: (
+                <Link href={REFUND_POLICY_HREF} className="font-medium text-foreground underline underline-offset-4">
+                  {t("transactions.policy.title")}
+                </Link>
+              ),
+            })}
           </p>
         </div>
       </div>

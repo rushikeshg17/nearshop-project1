@@ -24,6 +24,7 @@ import { ProductThumb } from "@/components/common/product-thumb";
 import { EmptyState, ErrorState } from "@/components/common/states";
 import { StatusBadge } from "@/components/common/status";
 import { ShopMap } from "@/components/map/shop-map";
+import { useI18n } from "@/components/providers";
 import { ReviewList } from "@/components/shop/review-list";
 import { ShopTrust } from "@/components/shop/shop-trust";
 import { Button } from "@/components/ui/button";
@@ -31,7 +32,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useMe } from "@/hooks/use-session";
 import { api, ApiError, recordLead } from "@/lib/api";
-import { formatDistance, formatPrice, travelHint } from "@/lib/format";
+import { formatDistance, formatNumber, formatPrice, travelTime, weekdayName } from "@/lib/format";
+import { plural } from "@/lib/i18n";
 import { useLocation } from "@/lib/location";
 import type { ProductDetail, Recommendation } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -49,10 +51,11 @@ const preloadDelivery = { onPointerEnter: () => void loadDeliveryDialog(), onPoi
 
 /** Feedback for the first tap on slow 4G while a dialog's code is still on its way; it also stops repeated taps. */
 function DialogLoading() {
+  const { t } = useI18n();
   return (
     <div role="status" className="fixed inset-0 z-50 grid place-items-center bg-black/30">
       <span className="inline-flex items-center gap-2 rounded-full bg-card px-4 py-2 text-sm font-medium shadow-soft">
-        <Loader2 className="size-4 animate-spin text-brand" aria-hidden /> Opening…
+        <Loader2 className="size-4 animate-spin text-brand" aria-hidden /> {t("discovery.product.opening")}
       </span>
     </div>
   );
@@ -66,6 +69,7 @@ function DialogLoading() {
  * API; the page then loads entirely in the browser, as it did before server rendering.
  */
 export function ProductView({ id, initial }: { id: number; initial: ProductDetail | null }) {
+  const { t, language } = useI18n();
   const router = useRouter();
   const pathname = usePathname();
   const { location, ready } = useLocation();
@@ -127,8 +131,16 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
     return (
       <div className="mx-auto max-w-3xl px-4 py-16">
         {gone ? (
-          <EmptyState icon={PackageX} title="This listing is gone" description="The shop may have removed it. Search to find it elsewhere nearby."
-            action={<Button asChild><Link href="/search">Search nearby</Link></Button>} />
+          <EmptyState
+            icon={PackageX}
+            title={t("discovery.product.goneTitle")}
+            description={t("discovery.product.goneBody")}
+            action={
+              <Button asChild>
+                <Link href="/search">{t("discovery.product.searchNearby")}</Link>
+              </Button>
+            }
+          />
         ) : (
           <ErrorState error={q.error} onRetry={() => q.refetch()} />
         )}
@@ -142,10 +154,11 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
   const insight = p.price_insight;
   const shop = p.shop;
   const delivery = p.delivery_quote;
+  const travel = travelTime(shop.distance_km);
 
   return (
     <div className="mx-auto max-w-7xl px-4 pt-4 md:px-6 md:pt-8">
-      <nav aria-label="Breadcrumb" className="mb-5 flex items-center gap-1 text-sm text-muted-foreground">
+      <nav aria-label={t("discovery.product.breadcrumb")} className="mb-5 flex items-center gap-1 text-sm text-muted-foreground">
         <Link href={`/search?category=${p.category_detail.slug}`} className="hover:text-foreground">{p.category_detail.name}</Link>
         {p.subcategory && (
           <>
@@ -185,10 +198,15 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
 
           {/* compare */}
           <section id="compare">
-            <h2 className="text-xl font-semibold">Compare shops nearby</h2>
+            <h2 className="text-xl font-semibold">{t("discovery.product.compareTitle")}</h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              {live && (live.other_offers.length ? `${live.other_offers.length + 1} shops list this item.` : "Only this shop lists this item right now.")}
-              {insight?.median && ` Typical price ${formatPrice(insight.median)}.`}
+              {live &&
+                (live.other_offers.length
+                  ? t(`discovery.product.shopsList.${plural(language, live.other_offers.length + 1)}`, {
+                      count: formatNumber(live.other_offers.length + 1),
+                    })
+                  : t("discovery.product.onlyThisShop"))}
+              {insight?.median && ` ${t("discovery.product.typicalPrice", { price: formatPrice(insight.median) })}`}
             </p>
             {/* Nearby alternatives are sorted by distance from the visitor, so only the browser's fetch has them. */}
             {!live && !q.isError && <Skeleton className="mt-4 h-32 rounded-2xl" />}
@@ -197,10 +215,10 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-muted/40 hover:bg-muted/40">
-                      <TableHead>Shop</TableHead>
-                      <TableHead className="text-right">Price</TableHead>
-                      <TableHead className="hidden sm:table-cell">Stock</TableHead>
-                      <TableHead className="text-right">Distance</TableHead>
+                      <TableHead>{t("discovery.product.columns.shop")}</TableHead>
+                      <TableHead className="text-right">{t("discovery.product.columns.price")}</TableHead>
+                      <TableHead className="hidden sm:table-cell">{t("discovery.product.columns.stock")}</TableHead>
+                      <TableHead className="text-right">{t("discovery.product.columns.distance")}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -209,7 +227,7 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                         <TableCell className="max-w-48">
                           <Link href={`/product/${o.id}`} className="block truncate font-medium hover:underline">{o.shop.name}</Link>
                           <span className="flex items-center gap-2 text-xs text-muted-foreground">
-                            {i === 0 ? "You're viewing" : o.shop.locality}
+                            {i === 0 ? t("discovery.product.viewing") : o.shop.locality}
                             <Rating value={o.shop.rating_avg} count={o.shop.rating_count} showCount={false} />
                           </span>
                         </TableCell>
@@ -233,17 +251,17 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
           {recs.data && recs.data.items.length > 0 && (
             <section>
               <div className="flex items-center gap-2">
-                <h2 className="text-xl font-semibold">{recs.data.source === "apriori" ? "Often bought together" : `Popular in ${p.category_detail.name}`}</h2>
+                <h2 className="text-xl font-semibold">{recs.data.source === "apriori"
+                    ? t("discovery.product.boughtTogether")
+                    : t("discovery.product.popularIn", { category: p.category_detail.name })}</h2>
                 {recs.data.source === "apriori" && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-medium text-brand-ink">
-                    <Sparkles className="size-3" /> Market-basket AI
+                    <Sparkles className="size-3" /> {t("discovery.product.basketAi")}
                   </span>
                 )}
               </div>
               <p className="mt-1 text-sm text-muted-foreground">
-                {recs.data.source === "apriori"
-                  ? "Learned from what customers nearby buy in the same visit. Save a second trip."
-                  : "Bestsellers in this category near you."}
+                {recs.data.source === "apriori" ? t("discovery.product.boughtTogetherBody") : t("discovery.product.popularBody")}
               </p>
               {/* grid-cols-1 (minmax(0, 1fr)): a long name truncates instead of widening the page, which made a
                   phone zoom out and shift the layout (P2.9). */}
@@ -255,8 +273,8 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">{r.offer.name}</p>
                         <p className="truncate text-xs text-muted-foreground">
-                          {r.same_shop ? "Also at this shop" : `${r.offer.shop.name} · ${formatDistance(r.offer.shop.distance_km)}`}
-                          {r.confidence !== null && ` · ${Math.round(r.confidence * 100)}% of buyers`}
+                          {r.same_shop ? t("discovery.product.alsoAtShop") : `${r.offer.shop.name} · ${formatDistance(r.offer.shop.distance_km)}`}
+                          {r.confidence !== null && ` · ${t("discovery.product.buyersShare", { percent: Math.round(r.confidence * 100) })}`}
                         </p>
                       </div>
                       <span className="text-sm font-semibold tabular">{formatPrice(r.offer.price)}</span>
@@ -269,13 +287,13 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
 
           {/* reviews */}
           <section>
-            <h2 className="text-xl font-semibold">What customers say about {shop.name}</h2>
+            <h2 className="text-xl font-semibold">{t("discovery.product.reviewsTitle", { shop: shop.name })}</h2>
             <div className="mt-3">
-              <ReviewList rating={{ avg: shop.rating_avg }} reviews={p.reviews} shopId={shop.id} empty="No reviews yet. Reviews come only from completed pickups and deliveries." />
+              <ReviewList rating={{ avg: shop.rating_avg }} reviews={p.reviews} shopId={shop.id} empty={t("discovery.product.reviewsEmpty")} />
             </div>
             {shop.rating_count > p.reviews.length && (
               <Link href={`/shops/${shop.slug}#reviews`} className="mt-2 inline-flex items-center gap-1 text-sm font-medium hover:underline">
-                All {shop.rating_count} reviews <ArrowRight className="size-3.5" />
+                {t(`discovery.product.allReviews.${plural(language, shop.rating_count)}`, { count: formatNumber(shop.rating_count) })} <ArrowRight className="size-3.5" />
               </Link>
             )}
           </section>
@@ -295,12 +313,14 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
               <StockPill status={p.stock_status} quantity={p.quantity} />
               <Freshness at={p.stock_updated_at} />
             </div>
-            {p.sold_last_30d > 0 && <p className="mt-2 text-xs text-muted-foreground">{p.sold_last_30d} sold here in the last 30 days</p>}
+            {p.sold_last_30d > 0 && (
+              <p className="mt-2 text-xs text-muted-foreground">{t(`discovery.product.sold30d.${plural(language, p.sold_last_30d)}`, { count: formatNumber(p.sold_last_30d) })}</p>
+            )}
 
             {p.my_reservation ? (
               <Link href={`/account/reservations/${p.my_reservation.id}`} className="mt-5 flex items-center justify-between rounded-2xl bg-brand-soft p-4 text-brand-ink">
                 <span>
-                  <span className="block text-sm font-semibold">You reserved this · {p.my_reservation.code}</span>
+                  <span className="block text-sm font-semibold">{t("discovery.product.youReserved", { code: p.my_reservation.code })}</span>
                   <StatusBadge status={p.my_reservation.status} kind="reservation" className="mt-1 bg-card" />
                 </span>
                 <ArrowRight className="size-4" />
@@ -314,7 +334,7 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                   onClick={() => requireCustomer(openReserve)}
                   {...preloadReserve}
                 >
-                  <Footprints /> Reserve for pickup
+                  <Footprints /> {t("discovery.product.reserve")}
                 </Button>
                 <Button
                   size="lg"
@@ -324,20 +344,23 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                   onClick={() => requireCustomer(openDelivery)}
                   {...preloadDelivery}
                 >
-                  <Bike /> Request delivery
+                  <Bike /> {t("discovery.product.requestDelivery")}
                 </Button>
                 <p className="text-center text-xs text-muted-foreground">
                   {!isCustomer
-                    ? "Sign in with a customer account to reserve."
+                    ? t("discovery.product.hintCustomer")
                     : out
-                      ? "Out of stock here. Compare other shops below."
+                      ? t("discovery.product.hintOut")
                       : !shop.offers_delivery
-                        ? `Pickup only. Held ${shop.hold_minutes} min after the shop confirms.`
+                        ? t("discovery.product.hintPickupOnly", { minutes: shop.hold_minutes })
                         : delivery && !delivery.eligible
                           ? delivery.reason
                           : delivery
-                            ? `Delivery ${delivery.delivery_fee ? formatPrice(delivery.delivery_fee) : "free"} · ${formatDistance(delivery.distance_km)} away · Cash on delivery`
-                            : "Pay at the shop. No online payment."}
+                            ? t("discovery.product.hintDelivery", {
+                                fee: delivery.delivery_fee ? formatPrice(delivery.delivery_fee) : t("discovery.product.free"),
+                                distance: formatDistance(delivery.distance_km),
+                              })
+                            : t("discovery.product.hintPayAtShop")}
                 </p>
               </div>
             )}
@@ -354,7 +377,8 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                 <p className="mt-0.5 text-sm text-muted-foreground">{shop.address_line}</p>
                 {shop.opening_hours && (
                   <p className="mt-0.5 text-xs text-muted-foreground">
-                    Hours {shop.opening_hours}{shop.closed_on && ` · closed ${shop.closed_on}s`}
+                    {t("discovery.product.hours", { hours: shop.opening_hours })}
+                    {shop.closed_on && ` · ${t("discovery.product.closedOn", { day: weekdayName(shop.closed_on, language) })}`}
                   </p>
                 )}
               </div>
@@ -364,7 +388,8 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
               <OpenBadge isOpen={shop.is_open} label={shop.hours_label} />
               {shop.distance_km !== null && (
                 <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                  <MapPin className="size-3.5" /> <Distance km={shop.distance_km} /> · {travelHint(shop.distance_km)}
+                  <MapPin className="size-3.5" /> <Distance km={shop.distance_km} />
+                  {travel && ` · ${t(`common.travel.${travel.mode}`, { minutes: travel.minutes })}`}
                 </span>
               )}
             </div>
@@ -387,19 +412,21 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                   rel="noreferrer"
                   onClick={() => recordLead(shop.id, "directions_tap", p.id)}
                 >
-                  <Navigation /> Directions
+                  <Navigation /> {t("discovery.product.directions")}
                 </a>
               </Button>
               {shop.phone && (
                 <Button asChild variant="outline" size="sm">
-                  <a href={`tel:${shop.phone}`} onClick={() => recordLead(shop.id, "call_tap", p.id)}><Phone /> Call shop</a>
+                  <a href={`tel:${shop.phone}`} onClick={() => recordLead(shop.id, "call_tap", p.id)}>
+                    <Phone /> {t("discovery.product.callShop")}
+                  </a>
                 </Button>
               )}
             </div>
           </div>
 
           <div className="rounded-3xl border bg-card p-5">
-            <p className="mb-3 text-sm font-semibold">Why you can trust this listing</p>
+            <p className="mb-3 text-sm font-semibold">{t("discovery.product.trustTitle")}</p>
             <ShopTrust r={shop.reliability} />
           </div>
         </aside>
@@ -411,10 +438,12 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
           <div className="mx-auto flex max-w-md items-center gap-3">
             <div className="min-w-0">
               <p className="text-lg font-semibold tabular">{formatPrice(p.price)}</p>
-              <p className="truncate text-xs text-muted-foreground">{p.quantity} in stock · {shop.name}</p>
+              <p className="truncate text-xs text-muted-foreground">
+                {t("discovery.product.stickyStock", { count: formatNumber(p.quantity), shop: shop.name })}
+              </p>
             </div>
             <Button className="ml-auto h-11 rounded-xl bg-brand px-5 text-brand-foreground hover:bg-brand/90" onClick={() => requireCustomer(openReserve)} {...preloadReserve}>
-              <Footprints /> Reserve
+              <Footprints /> {t("discovery.product.reserveShort")}
             </Button>
           </div>
         </div>

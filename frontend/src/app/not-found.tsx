@@ -1,14 +1,20 @@
+import { cookies, headers } from "next/headers";
+
 import { LogoMark } from "@/components/brand/logo";
 import { buttonVariants } from "@/components/ui/button";
+import { requestI18n } from "@/lib/i18n";
 
 // Plain links and an inline icon, no next/link or lucide: this page sits at the root, so anything it imports
 // from the client is copied into a chunk every page loads (P2.9). A full page load is fine from a 404.
-export default function NotFound() {
+// A server component: its text is translated on the server (P7.10), so no translation code reaches that chunk. With
+// English the only language offered, the request is not read (src/lib/i18n.ts).
+export default async function NotFound() {
+  const { t } = await requestI18n({ cookies, headers });
   return (
     <div className="grid min-h-dvh place-items-center px-4">
       <div className="max-w-md text-center">
         {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- see above */}
-        <a href="/" className="inline-flex items-center justify-center gap-2 rounded-lg" aria-label="NearShop home">
+        <a href="/" className="inline-flex items-center justify-center gap-2 rounded-lg" aria-label={t("common.notFound.homeLabel")}>
           <LogoMark />
           <span className="font-heading text-[1.2rem] leading-none font-semibold tracking-tight">
             near<span className="text-brand">shop</span>
@@ -24,17 +30,17 @@ export default function NotFound() {
             <path d="M9.13 9.13a3 3 0 0 0 3.74 3.74" />
           </svg>
         </div>
-        <h1 className="mt-5 text-3xl font-semibold">This page isn&apos;t nearby</h1>
-        <p className="mt-2 text-muted-foreground">The link may be old, or the listing was removed. Try searching instead.</p>
+        <h1 className="mt-5 text-3xl font-semibold">{t("common.notFound.title")}</h1>
+        <p className="mt-2 text-muted-foreground">{t("common.notFound.body")}</p>
         <div className="mt-6 flex justify-center gap-2">
-          <a href="/search" className={buttonVariants()}>Search nearby</a>
+          <a href="/search" className={buttonVariants()}>{t("common.notFound.search")}</a>
           {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- see above */}
-          <a href="/" className={buttonVariants({ variant: "outline" })}>Home</a>
+          <a href="/" className={buttonVariants({ variant: "outline" })}>{t("common.notFound.home")}</a>
         </div>
         <p className="mt-10 flex justify-center gap-4 text-xs text-muted-foreground">
-          <a href="/privacy" className="hover:text-foreground">Privacy notice</a>
-          <a href="/terms" className="hover:text-foreground">Terms of use</a>
-          <a href="/grievance" className="hover:text-foreground">Grievances</a>
+          <a href="/privacy" className="hover:text-foreground">{t("shell.footer.privacy")}</a>
+          <a href="/terms" className="hover:text-foreground">{t("shell.footer.terms")}</a>
+          <a href="/grievance" className="hover:text-foreground">{t("shell.footer.grievances")}</a>
         </p>
       </div>
     </div>

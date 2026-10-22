@@ -8,11 +8,13 @@ import { AppIcon } from "@/components/common/app-icon";
 import { ProductThumb } from "@/components/common/product-thumb";
 import { ErrorState, ListSkeleton } from "@/components/common/states";
 import { PageTitle } from "@/components/dashboard/dashboard-shell";
+import { useI18n } from "@/components/providers";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
-import { formatPrice, timeAgo } from "@/lib/format";
+import { formatNumber, formatPrice, timeAgo } from "@/lib/format";
+import { type MessageKey, plural } from "@/lib/i18n";
 import type { ModelSummary, OwnerInsights } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -26,7 +28,23 @@ type GatedInsights = OwnerInsights & {
   search_rule?: { window_days: number; min_users: number };
 };
 
+// The progress labels the API sends (backend/app/services/analytics.py), in the interface language; a label not
+// listed here shows as the API sends it. The gate's reason is the API's sentence (it carries the counts and
+// windows), so it is shown as sent until the API localises it.
+const PROGRESS_LABELS: Record<string, MessageKey> = {
+  days: "owner.insights.gate.progress.days",
+  "days with a sale": "owner.insights.gate.progress.saleDays",
+  "units sold": "owner.insights.gate.progress.unitsSold",
+  "% better than same as last week": "owner.insights.gate.progress.betterThanLastWeek",
+  "multi-item purchases": "owner.insights.gate.progress.multiItemPurchases",
+  "verified shops": "owner.insights.gate.progress.verifiedShops",
+  "flags reviewed": "owner.insights.gate.progress.flagsReviewed",
+  "% upheld": "owner.insights.gate.progress.upheld",
+  people: "owner.insights.gate.progress.people",
+};
+
 function GateNotice({ gate, className }: { gate: Gate; className?: string }) {
+  const { t } = useI18n();
   return (
     <div className={cn("rounded-xl bg-muted/60 p-4 text-sm", className)} role="status">
       <p className="flex gap-2 text-muted-foreground"><Info className="mt-0.5 size-4 shrink-0" /> <span>{gate.reason}</span></p>
@@ -37,8 +55,8 @@ function GateNotice({ gate, className }: { gate: Gate; className?: string }) {
             return (
               <li key={p.label} className="text-xs">
                 <span className="flex justify-between gap-3 text-muted-foreground">
-                  <span>{p.label}</span>
-                  <span className="tabular">{p.have.toLocaleString("en-IN")} of {p.need.toLocaleString("en-IN")}</span>
+                  <span>{PROGRESS_LABELS[p.label] ? t(PROGRESS_LABELS[p.label]) : p.label}</span>
+                  <span className="tabular">{t("owner.insights.gate.haveOfNeed", { have: formatNumber(p.have), need: formatNumber(p.need) })}</span>
                 </span>
                 <span className="mt-1 block h-1.5 overflow-hidden rounded-full bg-background" aria-hidden="true">
                   <span className={cn("block h-full rounded-full", pct >= 100 ? "bg-success" : "bg-brand")} style={{ width: `${pct}%` }} />
@@ -53,21 +71,24 @@ function GateNotice({ gate, className }: { gate: Gate; className?: string }) {
 }
 
 function ModelNote({ m, children }: { m?: ModelSummary; children: React.ReactNode }) {
+  const { t, language } = useI18n();
   if (!m) return null;
   return (
     <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-      <BrainCircuit className="size-3.5 text-brand" /> {m.algorithm} · trained {timeAgo(m.trained_at)} · {children}
-      {m.uses_demo_data && <Badge variant="outline" className="h-5 text-[10px]">Demo data</Badge>}
+      <BrainCircuit className="size-3.5 text-brand" /> {t("owner.insights.modelNote", { algorithm: m.algorithm, ago: timeAgo(m.trained_at, undefined, language) })} · {children}
+      {m.uses_demo_data && <Badge variant="outline" className="h-5 text-[10px]">{t("owner.insights.demoData")}</Badge>}
     </p>
   );
 }
 
 export default function InsightsPage() {
+  const { t, language } = useI18n();
   const q = useQuery({ queryKey: ["owner", "insights"], queryFn: () => api.get<GatedInsights>("/owner/insights") });
   if (q.isError) return <ErrorState error={q.error} onRetry={() => q.refetch()} />;
   const d = q.data;
   if (!d) return <ListSkeleton rows={5} />;
   const demand = d.models.demand;
+  const daysLabel = (n: number) => t(`owner.insights.restock.days.${plural(language, n)}`, { count: formatNumber(n) });
   const gates = d.gates ?? {};
   const closed = (name: GateName): Gate | null => {
     const g = gates[name];
@@ -78,13 +99,13 @@ export default function InsightsPage() {
 
   return (
     <>
-      <PageTitle title="AI insights" description="What to restock, what people nearby are looking for, and which prices customers may question." />
+      <PageTitle title={t("owner.insights.title")} description={t("owner.insights.description")} />
 
       <section className="rounded-2xl border bg-card">
         <div className="border-b p-5">
-          <h2 className="flex items-center gap-2 text-lg font-semibold"><TrendingUp className="size-5 text-brand" /> Restock before you run out</h2>
+          <h2 className="flex items-center gap-2 text-lg font-semibold"><TrendingUp className="size-5 text-brand" /> {t("owner.insights.restock.title")}</h2>
           <ModelNote m={demand}>
-            {dm?.mae_7d !== undefined && <>average error {dm.mae_7d} units per week ({dm.improvement_pct}% better than &ldquo;same as last week&rdquo;)</>}
+            {dm?.mae_7d !== undefined && t("owner.insights.restock.error", { mae: formatNumber(dm.mae_7d), pct: formatNumber(dm.improvement_pct ?? 0) })}
           </ModelNote>
         </div>
         {demandGate ? (
@@ -93,12 +114,12 @@ export default function InsightsPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Product</TableHead>
-                <TableHead className="text-right">In stock</TableHead>
-                <TableHead className="text-right">Next 7 days</TableHead>
-                <TableHead className="text-right">Runs out in</TableHead>
-                <TableHead className="text-right">Suggested order</TableHead>
-                <TableHead className="hidden md:table-cell">Trend</TableHead>
+                <TableHead>{t("owner.insights.restock.product")}</TableHead>
+                <TableHead className="text-right">{t("owner.insights.restock.inStock")}</TableHead>
+                <TableHead className="text-right">{t("owner.insights.restock.next7")}</TableHead>
+                <TableHead className="text-right">{t("owner.insights.restock.runsOut")}</TableHead>
+                <TableHead className="text-right">{t("owner.insights.restock.suggested")}</TableHead>
+                <TableHead className="hidden md:table-cell">{t("owner.insights.restock.trend")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -110,16 +131,20 @@ export default function InsightsPage() {
                       <span className="max-w-60 truncate">{r.name}</span>
                     </Link>
                   </TableCell>
-                  <TableCell className="text-right tabular">{r.quantity}</TableCell>
-                  <TableCell className="text-right tabular">~{Math.round(r.predicted_7d)}</TableCell>
+                  <TableCell className="text-right tabular">{formatNumber(r.quantity)}</TableCell>
+                  <TableCell className="text-right tabular">~{formatNumber(Math.round(r.predicted_7d))}</TableCell>
                   <TableCell className={cn("text-right tabular", (r.days_to_stockout ?? 99) < 4 && "font-semibold text-destructive")}>
-                    {r.days_to_stockout === null ? "-" : r.quantity === 0 ? "Out now" : `${Math.max(0, Math.round(r.days_to_stockout))} days`}
+                    {r.days_to_stockout === null
+                      ? "-"
+                      : r.quantity === 0
+                        ? t("owner.insights.restock.outNow")
+                        : daysLabel(Math.max(0, Math.round(r.days_to_stockout)))}
                   </TableCell>
-                  <TableCell className="text-right font-medium tabular">{r.recommended_restock || "-"}</TableCell>
+                  <TableCell className="text-right font-medium tabular">{r.recommended_restock ? formatNumber(r.recommended_restock) : "-"}</TableCell>
                   <TableCell className="hidden md:table-cell">
                     <span className={cn("inline-flex items-center gap-1 text-xs", r.trend === "rising" ? "text-success-ink" : r.trend === "falling" ? "text-muted-foreground" : "")}>
                       {r.trend === "rising" ? <ArrowUpRight className="size-3.5" /> : r.trend === "falling" ? <ArrowDownRight className="size-3.5" /> : null}
-                      {r.trend} · {r.confidence} confidence
+                      {t("owner.insights.restock.trendLine", { trend: t(`owner.insights.restock.trends.${r.trend}`), confidence: t(`owner.insights.restock.confidence.${r.confidence}`) })}
                     </span>
                   </TableCell>
                 </TableRow>
@@ -127,46 +152,51 @@ export default function InsightsPage() {
             </TableBody>
           </Table>
         ) : (
-          <p className="p-6 text-sm text-muted-foreground">Nothing is at risk of running out in the next two weeks.</p>
+          <p className="p-6 text-sm text-muted-foreground">{t("owner.insights.restock.empty")}</p>
         )}
       </section>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <section className="rounded-2xl border bg-card p-5">
-          <h2 className="flex items-center gap-2 font-semibold"><Users className="size-4 text-brand" /> What people near you search for</h2>
-          <p className="mt-1 text-xs text-muted-foreground">Last {d.search_rule?.window_days ?? 30} days of searches near your shop. A search is shown only when {d.search_rule?.min_users ?? 5} or more people made it.</p>
+          <h2 className="flex items-center gap-2 font-semibold"><Users className="size-4 text-brand" /> {t("owner.insights.area.title")}</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t("owner.insights.area.hint", {
+              days: formatNumber(d.search_rule?.window_days ?? 30),
+              people: formatNumber(d.search_rule?.min_users ?? 5),
+            })}
+          </p>
           {areaGate ? <GateNotice gate={areaGate} className="mt-4" /> : (
           <ul className="mt-4 space-y-2">
             {d.area_demand.map((a) => (
               <li key={a.query} className="flex items-center justify-between gap-3 text-sm">
                 <span className="truncate capitalize">{a.query}</span>
                 <span className="flex shrink-0 items-center gap-2">
-                  <span className="text-muted-foreground tabular">{a.searches} searches</span>
-                  {a.you_stock_it ? <Badge variant="secondary">You stock it</Badge> : <Badge className="bg-warning-soft text-warning-ink">Opportunity</Badge>}
+                  <span className="text-muted-foreground tabular">{t(`owner.insights.area.searches.${plural(language, a.searches)}`, { count: formatNumber(a.searches) })}</span>
+                  {a.you_stock_it ? <Badge variant="secondary">{t("owner.insights.area.youStock")}</Badge> : <Badge className="bg-warning-soft text-warning-ink">{t("owner.insights.area.opportunity")}</Badge>}
                 </span>
               </li>
             ))}
-            {!d.area_demand.length && <li className="text-sm text-muted-foreground">No searches nearby yet.</li>}
+            {!d.area_demand.length && <li className="text-sm text-muted-foreground">{t("owner.insights.area.empty")}</li>}
           </ul>
           )}
         </section>
 
         <section className="rounded-2xl border bg-card p-5">
-          <h2 className="flex items-center gap-2 font-semibold"><SearchX className="size-4 text-brand" /> Searched nearby, found nowhere</h2>
-          <p className="mt-1 text-xs text-muted-foreground">Demand no shop in the area is meeting. Worth stocking?</p>
+          <h2 className="flex items-center gap-2 font-semibold"><SearchX className="size-4 text-brand" /> {t("owner.insights.missed.title")}</h2>
+          <p className="mt-1 text-xs text-muted-foreground">{t("owner.insights.missed.hint")}</p>
           {missedGate ? <GateNotice gate={missedGate} className="mt-4" /> : (
           <ul className="mt-4 flex flex-wrap gap-2">
             {d.missed_demand.map((m) => (
-              <li key={m.query} className="rounded-full border px-3 py-1 text-sm capitalize">{m.query} <span className="text-muted-foreground tabular">· {m.searches}</span></li>
+              <li key={m.query} className="rounded-full border px-3 py-1 text-sm capitalize">{m.query} <span className="text-muted-foreground tabular">· {formatNumber(m.searches)}</span></li>
             ))}
-            {!d.missed_demand.length && <li className="text-sm text-muted-foreground">Nothing unmet right now.</li>}
+            {!d.missed_demand.length && <li className="text-sm text-muted-foreground">{t("owner.insights.missed.empty")}</li>}
           </ul>
           )}
         </section>
 
         <section className="rounded-2xl border bg-card p-5">
-          <h2 className="flex items-center gap-2 font-semibold"><PackagePlus className="size-4 text-brand" /> Bought together, but you don&apos;t stock it</h2>
-          <ModelNote m={d.models.recommendations}>market-basket rules from nearby purchases</ModelNote>
+          <h2 className="flex items-center gap-2 font-semibold"><PackagePlus className="size-4 text-brand" /> {t("owner.insights.bundles.title")}</h2>
+          <ModelNote m={d.models.recommendations}>{t("owner.insights.bundles.note")}</ModelNote>
           {bundleGate ? <GateNotice gate={bundleGate} className="mt-4" /> : (
           <ul className="mt-4 divide-y">
             {d.bundle_gaps.map((g) => (
@@ -175,23 +205,23 @@ export default function InsightsPage() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{g.item.name}</p>
                   <p className="truncate text-xs text-muted-foreground">
-                    {Math.round(g.confidence * 100)}% of people buying {g.because_of} also buy this
+                    {t("owner.insights.bundles.alsoBuy", { pct: formatNumber(Math.round(g.confidence * 100)), item: g.because_of })}
                   </p>
                 </div>
                 {g.item.typical_price && <span className="text-xs text-muted-foreground tabular">{formatPrice(g.item.typical_price)}</span>}
               </li>
             ))}
-            {!d.bundle_gaps.length && <li className="text-sm text-muted-foreground">Your range already covers the common bundles.</li>}
+            {!d.bundle_gaps.length && <li className="text-sm text-muted-foreground">{t("owner.insights.bundles.empty")}</li>}
           </ul>
           )}
           {d.bundle_gaps.length > 0 && (
-            <Button asChild variant="outline" size="sm" className="mt-3"><Link href="/shop/catalog">Add from catalogue <ArrowRight /></Link></Button>
+            <Button asChild variant="outline" size="sm" className="mt-3"><Link href="/shop/catalog">{t("owner.insights.bundles.addFromCatalogue")} <ArrowRight /></Link></Button>
           )}
         </section>
 
         <section className="rounded-2xl border bg-card p-5">
-          <h2 className="flex items-center gap-2 font-semibold"><Scale className="size-4 text-brand" /> Prices customers may question</h2>
-          <ModelNote m={d.models.anomalies}>compared with other shops selling the same item</ModelNote>
+          <h2 className="flex items-center gap-2 font-semibold"><Scale className="size-4 text-brand" /> {t("owner.insights.prices.title")}</h2>
+          <ModelNote m={d.models.anomalies}>{t("owner.insights.prices.note")}</ModelNote>
           {flagGate ? <GateNotice gate={flagGate} className="mt-4" /> : (
           <ul className="mt-4 divide-y">
             {d.price_flags.map((f) => (
@@ -199,7 +229,11 @@ export default function InsightsPage() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{f.product.name}</p>
                   <p className="text-xs text-muted-foreground">
-                    Yours {formatPrice(f.price)} · typical {formatPrice(f.reference_price)} across {f.peer_count} shops
+                    {t(`owner.insights.prices.line.${plural(language, f.peer_count)}`, {
+                      price: formatPrice(f.price),
+                      reference: formatPrice(f.reference_price),
+                      count: formatNumber(f.peer_count),
+                    })}
                   </p>
                 </div>
                 <Badge className={f.direction === "high" ? "bg-warning-soft text-warning-ink" : "bg-info-soft text-info-ink"}>
@@ -207,10 +241,10 @@ export default function InsightsPage() {
                 </Badge>
               </li>
             ))}
-            {!d.price_flags.length && <li className="text-sm text-muted-foreground">Your prices are in line with shops nearby.</li>}
+            {!d.price_flags.length && <li className="text-sm text-muted-foreground">{t("owner.insights.prices.empty")}</li>}
           </ul>
           )}
-          <p className="mt-3 flex gap-1.5 text-xs text-muted-foreground"><Info className="mt-0.5 size-3.5 shrink-0" /> Flags are for your review only. NearShop never hides or penalises a listing automatically.</p>
+          <p className="mt-3 flex gap-1.5 text-xs text-muted-foreground"><Info className="mt-0.5 size-3.5 shrink-0" /> {t("owner.insights.prices.footnote")}</p>
         </section>
       </div>
     </>

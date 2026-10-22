@@ -1,0 +1,2204 @@
+{
+  "shell": {
+    "nav": {
+      "home": "",
+      "search": "",
+      "shops": "",
+      "aiLab": "",
+      "listShop": "",
+      "signIn": "",
+      "shopDashboard": "",
+      "myShop": "",
+      "activity": ""
+    },
+    "language": {
+      "label": ""
+    },
+    "tabBar": {
+      "label": ""
+    },
+    "footer": {
+      "tagline": "",
+      "shopHeading": "",
+      "searchNearby": "",
+      "browseShops": "",
+      "yourReservations": "",
+      "forShopsHeading": "",
+      "howItWorksHeading": "",
+      "pickupDelivery": "",
+      "legal": "",
+      "privacy": "",
+      "terms": "",
+      "grievances": "",
+      "mapCredit": "",
+      "demoData": ""
+    },
+    "userMenu": {
+      "trigger": "",
+      "reservations": "",
+      "viewShopPage": "",
+      "adminConsole": "",
+      "priceReview": "",
+      "theme": "",
+      "themeLight": "",
+      "themeDark": "",
+      "themeSystem": "",
+      "signOut": ""
+    },
+    "dashboard": {
+      "navLabel": "",
+      "openMenu": "",
+      "menu": "",
+      "customerView": "",
+      "viewPublicPage": ""
+    },
+    "skipToContent": "",
+    "phoneBanner": {
+      "region": "",
+      "text": "",
+      "link": "",
+      "dismiss": ""
+    },
+    "homeLabel": "",
+    "themeToggle": "",
+    "demoBanner": ""
+  },
+  "common": {
+    "states": {
+      "retry": "",
+      "loading": ""
+    },
+    "searchBox": {
+      "placeholder": "",
+      "label": "",
+      "clear": "",
+      "submit": "",
+      "recentAndPopular": "",
+      "popularNearYou": "",
+      "searchFor": "",
+      "category": ""
+    },
+    "travel": {
+      "walk": "",
+      "ride": ""
+    },
+    "status": {
+      "reservation": {
+        "REQUESTED": "",
+        "CONFIRMED": "",
+        "READY_FOR_PICKUP": "",
+        "COMPLETED": "",
+        "REJECTED": "",
+        "CANCELLED": "",
+        "EXPIRED": ""
+      },
+      "order": {
+        "PENDING": "",
+        "SHOP_CONFIRMED": "",
+        "PREPARING": "",
+        "OUT_FOR_DELIVERY": "",
+        "DELIVERED": "",
+        "CANCELLED": "",
+        "DELIVERY_FAILED": "",
+        "RETURNED_TO_SHOP": ""
+      },
+      "timeUp": "",
+      "hoursMinutes": ""
+    },
+    "progress": {
+      "label": "",
+      "reservationSteps": {
+        "REQUESTED": "",
+        "CONFIRMED": "",
+        "READY_FOR_PICKUP": "",
+        "COMPLETED": ""
+      },
+      "orderSteps": {
+        "PENDING": "",
+        "SHOP_CONFIRMED": "",
+        "PREPARING": "",
+        "OUT_FOR_DELIVERY": "",
+        "DELIVERED": ""
+      },
+      "events": {
+        "REQUESTED": "",
+        "CONFIRMED": "",
+        "READY_FOR_PICKUP": "",
+        "COMPLETED": "",
+        "REJECTED": "",
+        "CANCELLED": "",
+        "EXPIRED": "",
+        "PENDING": "",
+        "SHOP_CONFIRMED": "",
+        "PREPARING": "",
+        "OUT_FOR_DELIVERY": "",
+        "DELIVERED": "",
+        "DELIVERY_FAILED": "",
+        "RETURNED_TO_SHOP": ""
+      },
+      "actors": {
+        "you": "",
+        "customer": "",
+        "shop": "",
+        "system": "",
+        "admin": ""
+      },
+      "note": ""
+    },
+    "confirm": {
+      "keep": ""
+    },
+    "location": {
+      "change": "",
+      "set": "",
+      "current": "",
+      "cityCentre": "",
+      "km": "",
+      "panelTitle": "",
+      "useGps": "",
+      "radius": "",
+      "radiusLabel": "",
+      "searchAreasIn": "",
+      "searchAreas": "",
+      "noMatch": "",
+      "gpsFound": "",
+      "gpsUnsupported": "",
+      "gpsOutside": "",
+      "gpsDenied": "",
+      "gpsFailed": ""
+    },
+    "notifications": {
+      "title": "",
+      "unread": {
+        "one": "",
+        "other": ""
+      },
+      "markAllRead": "",
+      "empty": ""
+    },
+    "stock": {
+      "out": "",
+      "left": "",
+      "only": "",
+      "inStock": ""
+    },
+    "freshness": {
+      "updated": "",
+      "notConfirmed": "",
+      "stockUpdated": ""
+    },
+    "price": {
+      "offMrp": ""
+    },
+    "rating": {
+      "newShop": "",
+      "summary": {
+        "one": "",
+        "other": ""
+      }
+    },
+    "verified": {
+      "label": "",
+      "explanation": ""
+    },
+    "errorPage": {
+      "title": "",
+      "body": "",
+      "home": ""
+    },
+    "notFound": {
+      "homeLabel": "",
+      "title": "",
+      "body": "",
+      "search": "",
+      "home": ""
+    },
+    "apiErrors": {
+      "network": "",
+      "server_error": "",
+      "request_failed": "",
+      "unknown": "",
+      "unauthorized": "",
+      "rate_limited": "",
+      "signups_closed": "",
+      "shop_not_verified": "",
+      "consent_required": "",
+      "age_confirmation_required": "",
+      "insufficient_stock": "",
+      "duplicate_reservation": "",
+      "invalid_credentials": "",
+      "email_taken": "",
+      "otp_expired": "",
+      "otp_locked": "",
+      "otp_send_failed": "",
+      "otp_unavailable": "",
+      "phone_signin_required": "",
+      "account_inactive": "",
+      "duplicate_review": "",
+      "review_not_allowed": "",
+      "own_review": ""
+    },
+    "stockErrors": {
+      "outOfStock": "",
+      "onlyLeft": "",
+      "outOfStockOf": "",
+      "onlyLeftOf": ""
+    },
+    "shopCard": {
+      "open": "",
+      "closed": "",
+      "delivers": ""
+    },
+    "dialog": {
+      "close": ""
+    },
+    "quantity": {
+      "label": "",
+      "decrease": "",
+      "increase": ""
+    },
+    "map": {
+      "show": ""
+    },
+    "reviews": {
+      "stars": "",
+      "newShopHint": "",
+      "empty": "",
+      "verified": {
+        "pickup": "",
+        "delivery": ""
+      },
+      "itemAccuracy": "",
+      "delivery": "",
+      "replyFromShop": "",
+      "edited": "",
+      "status": {
+        "hidden": "",
+        "removed": ""
+      },
+      "report": "",
+      "reportReply": "",
+      "reportReviewLabel": "",
+      "reportReplyLabel": "",
+      "reported": "",
+      "reportDescription": "",
+      "cancel": "",
+      "sendReport": "",
+      "whatIsWrong": "",
+      "whatProblem": "",
+      "anythingElse": "",
+      "alreadyReported": "",
+      "thanks": "",
+      "reasons": {
+        "fake": {
+          "label": "",
+          "hint": ""
+        },
+        "abusive": {
+          "label": "",
+          "hint": ""
+        },
+        "personal_info": {
+          "label": "",
+          "hint": ""
+        },
+        "off_topic": {
+          "label": "",
+          "hint": ""
+        },
+        "other": {
+          "label": "",
+          "hint": ""
+        }
+      }
+    }
+  },
+  "discovery": {
+    "home": {
+      "heroTitle": "",
+      "heroSubtitle": "",
+      "heroBody": "",
+      "searchPlaceholder": "",
+      "quick": {
+        "charger": "",
+        "elbow": "",
+        "shoes": "",
+        "bulb": "",
+        "umbrella": "",
+        "oil": ""
+      },
+      "statShopsIn": "",
+      "statShopsHere": "",
+      "statItems": "",
+      "statRiders": "",
+      "demoItems": {
+        "one": "",
+        "other": ""
+      },
+      "demoShops": {
+        "one": "",
+        "other": ""
+      },
+      "searching": "",
+      "moreShops": {
+        "one": "",
+        "other": ""
+      },
+      "reserveBanner": "",
+      "browseTitle": "",
+      "browseBody": "",
+      "categoryInStock": "",
+      "shopsNear": "",
+      "shopsNearYou": "",
+      "shopsBody": "",
+      "seeMap": "",
+      "howTitle": "",
+      "howBody": "",
+      "steps": {
+        "search": {
+          "title": "",
+          "body": "",
+          "tag": ""
+        },
+        "reserve": {
+          "title": "",
+          "body": "",
+          "tag": ""
+        },
+        "pay": {
+          "title": "",
+          "body": "",
+          "tag": ""
+        }
+      },
+      "owners": {
+        "badge": "",
+        "title": "",
+        "body": "",
+        "listFree": "",
+        "seeDashboard": "",
+        "features": {
+          "alerts": {
+            "title": "",
+            "body": ""
+          },
+          "forecasts": {
+            "title": "",
+            "body": ""
+          },
+          "demand": {
+            "title": "",
+            "body": ""
+          },
+          "trust": {
+            "title": "",
+            "body": ""
+          },
+          "delivery": {
+            "title": "",
+            "body": ""
+          },
+          "commission": {
+            "title": "",
+            "body": ""
+          }
+        }
+      }
+    },
+    "search": {
+      "sort": {
+        "label": "",
+        "relevance": "",
+        "distance": "",
+        "priceAsc": "",
+        "priceDesc": ""
+      },
+      "filters": "",
+      "all": "",
+      "everythingNearby": "",
+      "checking": "",
+      "items": {
+        "one": "",
+        "other": ""
+      },
+      "shops": {
+        "one": "",
+        "other": ""
+      },
+      "summary": "",
+      "summaryOf": "",
+      "corrected": "",
+      "didYouMean": "",
+      "matched": "",
+      "matchedAlso": "",
+      "noShopsTitle": "",
+      "noShopsBody": "",
+      "nothingTitle": "",
+      "nothingBody": "",
+      "expand": "",
+      "clearFilters": "",
+      "showMore": "",
+      "pinOutOfStock": "",
+      "pinTitle": {
+        "one": "",
+        "other": ""
+      },
+      "close": "",
+      "delivers": "",
+      "matchingInStock": {
+        "one": "",
+        "other": ""
+      },
+      "matchingOutOfStock": "",
+      "openShop": "",
+      "list": "",
+      "map": ""
+    },
+    "result": {
+      "label": "",
+      "upTo": "",
+      "pickup": "",
+      "delivery": "",
+      "shopsHaveThis": {
+        "one": "",
+        "other": ""
+      },
+      "inStock": "",
+      "compareAll": "",
+      "freshness": {
+        "aging": {
+          "one": "",
+          "other": ""
+        },
+        "stale": ""
+      }
+    },
+    "product": {
+      "opening": "",
+      "breadcrumb": "",
+      "goneTitle": "",
+      "goneBody": "",
+      "searchNearby": "",
+      "compareTitle": "",
+      "shopsList": {
+        "one": "",
+        "other": ""
+      },
+      "onlyThisShop": "",
+      "typicalPrice": "",
+      "columns": {
+        "shop": "",
+        "price": "",
+        "stock": "",
+        "distance": ""
+      },
+      "viewing": "",
+      "boughtTogether": "",
+      "popularIn": "",
+      "basketAi": "",
+      "boughtTogetherBody": "",
+      "popularBody": "",
+      "alsoAtShop": "",
+      "buyersShare": "",
+      "reviewsTitle": "",
+      "reviewsEmpty": "",
+      "allReviews": {
+        "one": "",
+        "other": ""
+      },
+      "sold30d": {
+        "one": "",
+        "other": ""
+      },
+      "youReserved": "",
+      "reserve": "",
+      "requestDelivery": "",
+      "hintCustomer": "",
+      "hintOut": "",
+      "hintPickupOnly": "",
+      "hintDelivery": "",
+      "free": "",
+      "hintPayAtShop": "",
+      "hours": "",
+      "closedOn": "",
+      "directions": "",
+      "callShop": "",
+      "trustTitle": "",
+      "stickyStock": "",
+      "reserveShort": ""
+    },
+    "shop": {
+      "notFoundTitle": "",
+      "notFoundBody": "",
+      "browseShops": "",
+      "stockUpdated": "",
+      "closedOn": "",
+      "pickupHold": "",
+      "delivers": "",
+      "deliversFreeAbove": "",
+      "free": "",
+      "pickupOnly": "",
+      "servingSince": "",
+      "directions": "",
+      "call": "",
+      "shelfTitle": "",
+      "shelfCount": {
+        "one": "",
+        "other": ""
+      },
+      "inStockOnly": "",
+      "searchShop": "",
+      "all": "",
+      "nothingMatches": "",
+      "searchAllShops": "",
+      "trackRecord": "",
+      "reviews": ""
+    },
+    "trust": {
+      "inventoryUpdated": "",
+      "notYet": "",
+      "updateDays": {
+        "one": "",
+        "other": ""
+      },
+      "noUpdatesWeek": "",
+      "reservationsConfirmed": "",
+      "confirmedOf": "",
+      "newShop": "",
+      "acceptance": "",
+      "noRequests": "",
+      "typicalConfirmation": "",
+      "minutes": {
+        "one": "",
+        "other": ""
+      },
+      "noData": "",
+      "confirmationSub": "",
+      "rating": "",
+      "ratingValue": "",
+      "ratingPending": "",
+      "purchases": {
+        "one": "",
+        "other": ""
+      },
+      "purchasesAccuracy": {
+        "one": "",
+        "other": ""
+      },
+      "reviewsCompletedOnly": "",
+      "fulfilment": "",
+      "fulfilmentDelivered": {
+        "one": "",
+        "other": ""
+      },
+      "fulfilmentCancelled": {
+        "one": "",
+        "other": ""
+      }
+    },
+    "shops": {
+      "title": "",
+      "description": "",
+      "searchPlaceholder": "",
+      "sort": {
+        "distance": "",
+        "rating": "",
+        "fresh": ""
+      },
+      "all": "",
+      "emptyTitle": "",
+      "emptyBody": "",
+      "count": {
+        "one": "",
+        "other": ""
+      }
+    },
+    "filterSheet": {
+      "inStock": "",
+      "inStockHint": "",
+      "how": "",
+      "any": "",
+      "pickup": "",
+      "delivery": "",
+      "priceRange": "",
+      "min": "",
+      "max": "",
+      "minLabel": "",
+      "maxLabel": "",
+      "to": "",
+      "clearAll": ""
+    }
+  },
+  "auth": {
+    "layout": {
+      "back": "",
+      "pitchTitle": "",
+      "pitchBody": "",
+      "pillars": {
+        "search": {
+          "title": "",
+          "body": ""
+        },
+        "reserve": {
+          "title": "",
+          "body": ""
+        },
+        "pickUp": {
+          "title": "",
+          "body": ""
+        }
+      }
+    },
+    "common": {
+      "signIn": "",
+      "email": "",
+      "password": "",
+      "passwordHint": ""
+    },
+    "phone": {
+      "label": "",
+      "hint": "",
+      "empty": "",
+      "invalid": ""
+    },
+    "code": {
+      "label": "",
+      "sent": {
+        "whatsapp": "",
+        "sms": "",
+        "console": ""
+      },
+      "resendIn": "",
+      "resend": "",
+      "bySms": "",
+      "send": "",
+      "differentNumber": ""
+    },
+    "login": {
+      "loading": "",
+      "welcome": "",
+      "phoneIntro": "",
+      "emailIntro": "",
+      "createAccount": "",
+      "listShop": "",
+      "newHere": "",
+      "passwordPrompt": "",
+      "signInWithPassword": "",
+      "useEmail": "",
+      "until": "",
+      "showPassword": "",
+      "hidePassword": "",
+      "authCode": "",
+      "authCodeHint": "",
+      "signInWithPhone": "",
+      "verifyAndSignIn": "",
+      "useCode": ""
+    },
+    "verify": {
+      "loading": "",
+      "title": "",
+      "signInFirst": "",
+      "notYours": "",
+      "signOut": "",
+      "nothingTitle": "",
+      "verifiedTitle": "",
+      "adminBody": "",
+      "verifiedBody": "",
+      "verifiedBodyNoPhone": "",
+      "continue": "",
+      "unavailable": "",
+      "requiredTitle": "",
+      "requiredBody": "",
+      "warnBody": "",
+      "contactSupport": "",
+      "verify": ""
+    },
+    "signup": {
+      "loading": "",
+      "pausedTitle": "",
+      "pausedBody": "",
+      "searchNearby": ""
+    },
+    "consent": {
+      "legend": "",
+      "required": "",
+      "privacyLink": "",
+      "termsLink": "",
+      "age": "",
+      "ageHint": "",
+      "optional": "",
+      "whatsapp": {
+        "label": "",
+        "hint": ""
+      },
+      "personalised": {
+        "label": "",
+        "hint": ""
+      },
+      "measurement": {
+        "label": "",
+        "hint": ""
+      },
+      "needAgree": "",
+      "needAge": ""
+    },
+    "register": {
+      "title": "",
+      "phoneIntro": "",
+      "emailIntro": "",
+      "fullName": "",
+      "nameMissing": "",
+      "optional": "",
+      "phoneOptional": "",
+      "create": "",
+      "changeDetails": "",
+      "haveAccount": "",
+      "ownShop": "",
+      "listIt": ""
+    },
+    "shopSignup": {
+      "steps": {
+        "account": "",
+        "shop": "",
+        "location": "",
+        "hours": "",
+        "verify": ""
+      },
+      "stepOf": "",
+      "name": "",
+      "verifyNote": "",
+      "back": "",
+      "open": "",
+      "continue": "",
+      "alreadyListed": ""
+    },
+    "demo": {
+      "title": "",
+      "customer": "",
+      "owner": "",
+      "admin": ""
+    }
+  },
+  "transactions": {
+    "common": {
+      "yourActivity": "",
+      "quantityPrice": "",
+      "timeline": "",
+      "directions": "",
+      "call": ""
+    },
+    "reserve": {
+      "title": "",
+      "description": "",
+      "submitOne": "",
+      "submitMany": "",
+      "eachInStock": "",
+      "steps": {
+        "check": {
+          "title": "",
+          "body": ""
+        },
+        "held": {
+          "title": "",
+          "body": ""
+        },
+        "pay": {
+          "title": "",
+          "body": ""
+        }
+      },
+      "note": "",
+      "notePlaceholder": "",
+      "sent": "",
+      "sentBody": ""
+    },
+    "delivery": {
+      "title": "",
+      "description": "",
+      "placeOrder": "",
+      "placeOrderTotal": "",
+      "each": "",
+      "deliverNear": "",
+      "ineligible": "",
+      "items": "",
+      "fee": "",
+      "free": "",
+      "freeAbove": "",
+      "payOnDelivery": "",
+      "address": "",
+      "addressPlaceholder": "",
+      "phone": "",
+      "phonePlaceholder": "",
+      "note": "",
+      "notePlaceholder": "",
+      "sent": "",
+      "sentBody": ""
+    },
+    "account": {
+      "ownerTitle": "",
+      "ownerBody": "",
+      "goToDashboard": "",
+      "yourActivity": "",
+      "hi": "",
+      "hiThere": "",
+      "stats": {
+        "pickups": {
+          "one": "",
+          "other": ""
+        },
+        "deliveries": {
+          "one": "",
+          "other": ""
+        },
+        "shops": {
+          "one": "",
+          "other": ""
+        }
+      },
+      "inProgress": "",
+      "nothingHeld": "",
+      "nothingHeldBody": "",
+      "searchNearby": "",
+      "rateRecent": "",
+      "items": {
+        "one": "",
+        "other": ""
+      },
+      "rate": "",
+      "history": "",
+      "tabs": {
+        "all": "",
+        "pickups": "",
+        "deliveries": ""
+      },
+      "noPast": {
+        "deliveries": "",
+        "pickups": "",
+        "activity": ""
+      },
+      "nextTitle": "",
+      "nextBody": "",
+      "recentSearches": "",
+      "settingsTitle": "",
+      "settingsBody": "",
+      "privacyNotice": "",
+      "details": {
+        "title": "",
+        "saved": "",
+        "name": "",
+        "home": "",
+        "homePlaceholder": "",
+        "savedPoint": "",
+        "noPoint": "",
+        "useLocation": "",
+        "clearHome": "",
+        "save": ""
+      },
+      "choices": {
+        "title": "",
+        "required": ""
+      },
+      "purposes": {
+        "whatsapp": {
+          "title": "",
+          "description": ""
+        },
+        "personalised": {
+          "title": "",
+          "description": ""
+        },
+        "measurement": {
+          "title": "",
+          "description": ""
+        }
+      },
+      "nominee": {
+        "title": "",
+        "body": "",
+        "name": "",
+        "phone": "",
+        "phonePlaceholder": "",
+        "email": "",
+        "contactHint": "",
+        "save": "",
+        "replace": "",
+        "remove": "",
+        "saved": "",
+        "removed": ""
+      },
+      "devices": {
+        "title": "",
+        "thisDevice": "",
+        "lastUsed": "",
+        "revoke": "",
+        "revokeLabel": "",
+        "signedOut": "",
+        "everywhere": ""
+      },
+      "export": {
+        "title": "",
+        "body": "",
+        "preparing": "",
+        "download": ""
+      },
+      "itemStatus": {
+        "REQUESTED": "",
+        "CONFIRMED": "",
+        "READY_FOR_PICKUP": "",
+        "PENDING": "",
+        "SHOP_CONFIRMED": "",
+        "PREPARING": "",
+        "OUT_FOR_DELIVERY": ""
+      },
+      "deletion": {
+        "title": "",
+        "body": "",
+        "shopHidden": "",
+        "pickup": "",
+        "delivery": "",
+        "shop": "",
+        "scheduled": "",
+        "scheduledInFlight": "",
+        "cancelFirst": "",
+        "thenScheduled": "",
+        "thenImmediate": "",
+        "immediate": "",
+        "onTheirWay": "",
+        "cancelAndDelete": "",
+        "delete": "",
+        "confirmTitle": "",
+        "cannotUndo": "",
+        "password": "",
+        "keep": "",
+        "deleted": "",
+        "willDelete": ""
+      }
+    },
+    "reservation": {
+      "status": {
+        "REQUESTED": {
+          "title": "",
+          "body": ""
+        },
+        "CONFIRMED": {
+          "title": "",
+          "body": ""
+        },
+        "READY_FOR_PICKUP": {
+          "title": "",
+          "body": ""
+        },
+        "COMPLETED": {
+          "title": "",
+          "body": "",
+          "bodyCash": "",
+          "bodyUpi": ""
+        },
+        "REJECTED": {
+          "title": "",
+          "body": ""
+        },
+        "CANCELLED": {
+          "title": "",
+          "body": ""
+        },
+        "EXPIRED": {
+          "title": "",
+          "body": "",
+          "bodyHeld": ""
+        }
+      },
+      "cancelled": "",
+      "respondsWithin": "",
+      "heldFor": "",
+      "showAtCounter": "",
+      "pickupCodeHint": "",
+      "yourNote": "",
+      "cancelTitle": "",
+      "cancelBody": "",
+      "cancel": "",
+      "cancelReason": "",
+      "cancelReasonPlaceholder": "",
+      "rate": "",
+      "findElsewhere": "",
+      "pickupCodeHintUpi": ""
+    },
+    "order": {
+      "status": {
+        "PENDING": "",
+        "SHOP_CONFIRMED": "",
+        "PREPARING": "",
+        "OUT_FOR_DELIVERY": "",
+        "DELIVERED": "",
+        "CANCELLED": "",
+        "DELIVERY_FAILED": "",
+        "RETURNED_TO_SHOP": ""
+      },
+      "cancelled": "",
+      "reason": "",
+      "keepReady": "",
+      "deliveryCode": "",
+      "deliveryCodeHint": "",
+      "items": "",
+      "fee": "",
+      "free": "",
+      "paidOnDelivery": "",
+      "payOnDelivery": "",
+      "cancelTitle": "",
+      "cancelBody": "",
+      "cancel": "",
+      "cancelReason": "",
+      "rate": "",
+      "mapYou": "",
+      "mapAddress": "",
+      "callShop": "",
+      "keepReadyUpi": "",
+      "paidCash": "",
+      "paidUpi": "",
+      "payOnDeliveryUpi": ""
+    },
+    "review": {
+      "title": "",
+      "description": "",
+      "post": "",
+      "overall": "",
+      "accuracy": "",
+      "delivery": "",
+      "commentLabel": "",
+      "commentPlaceholder": "",
+      "stars": {
+        "one": "",
+        "other": ""
+      },
+      "thanks": "",
+      "rulesIntro": "",
+      "rules": {
+        "review_window_closed": "",
+        "account_too_new": "",
+        "review_not_allowed": "",
+        "phone_not_verified": "",
+        "duplicate_review": ""
+      },
+      "whyRefused": "",
+      "countsNote": ""
+    },
+    "activity": {
+      "pickup": "",
+      "delivery": "",
+      "shopHas": "",
+      "heldFor": ""
+    },
+    "policy": {
+      "title": "",
+      "reserveBody": "",
+      "deliveryBody": "",
+      "link": ""
+    },
+    "upi": {
+      "title": "",
+      "body": "",
+      "qrLabel": "",
+      "payButton": "",
+      "scanHint": "",
+      "upiId": "",
+      "note": "",
+      "refund": "",
+      "cashOnDelivery": "",
+      "cashAtCounter": ""
+    }
+  },
+  "owner": {
+    "shell": {
+      "notOwnerTitle": "",
+      "notOwnerBody": "",
+      "listShop": "",
+      "signIn": "",
+      "yourShop": "",
+      "nav": {
+        "overview": "",
+        "reservations": "",
+        "orders": "",
+        "inventory": "",
+        "import": "",
+        "catalog": "",
+        "insights": "",
+        "reviews": "",
+        "settings": ""
+      }
+    },
+    "verification": {
+      "reason": "",
+      "draft": {
+        "title": "",
+        "body": "",
+        "action": ""
+      },
+      "submitted": {
+        "title": "",
+        "body": ""
+      },
+      "rejected": {
+        "title": "",
+        "body": "",
+        "action": ""
+      },
+      "suspended": {
+        "title": "",
+        "body": "",
+        "action": ""
+      },
+      "renewalPending": {
+        "title": "",
+        "body": ""
+      },
+      "renew": {
+        "title": "",
+        "body": "",
+        "action": ""
+      },
+      "expired": {
+        "title": "",
+        "body": "",
+        "action": ""
+      }
+    },
+    "common": {
+      "active": "",
+      "history": "",
+      "nothingHere": "",
+      "quantityItem": "",
+      "table": {
+        "code": "",
+        "customer": "",
+        "status": "",
+        "total": ""
+      }
+    },
+    "overview": {
+      "greeting": {
+        "morning": "",
+        "afternoon": "",
+        "evening": ""
+      },
+      "stockUpdated": "",
+      "updateNow": "",
+      "viewAsCustomer": "",
+      "demoData": "",
+      "revenueToday": "",
+      "unitsSold": {
+        "one": "",
+        "other": ""
+      },
+      "last7Days": "",
+      "vsPreviousWeek": "",
+      "pickupsWaiting": "",
+      "newRequests": {
+        "one": "",
+        "other": ""
+      },
+      "lowOrOut": "",
+      "ofListings": {
+        "one": "",
+        "other": ""
+      },
+      "needsAttention": "",
+      "allReservations": "",
+      "noRequestsTitle": "",
+      "noRequestsBody": "",
+      "deliveriesInProgress": {
+        "one": "",
+        "other": ""
+      },
+      "sales30d": "",
+      "fromReviews": {
+        "one": "",
+        "other": ""
+      },
+      "readReviews": "",
+      "runningLow": "",
+      "restockPlan": "",
+      "runsOut": {
+        "one": "",
+        "other": ""
+      },
+      "noRecentSales": "",
+      "restock": "",
+      "wellStocked": "",
+      "topSellers": "",
+      "sold": "",
+      "noSales": "",
+      "autoRefresh": ""
+    },
+    "reservations": {
+      "title": "",
+      "description": "",
+      "emptyTitle": "",
+      "emptyBody": "",
+      "columns": {
+        "REQUESTED": {
+          "title": "",
+          "hint": ""
+        },
+        "CONFIRMED": {
+          "title": "",
+          "hint": ""
+        },
+        "READY_FOR_PICKUP": {
+          "title": "",
+          "hint": ""
+        }
+      },
+      "table": {
+        "item": "",
+        "updated": ""
+      }
+    },
+    "orders": {
+      "title": "",
+      "description": "",
+      "pickupOnlyTitle": "",
+      "pickupOnlyBody": "",
+      "setUpDelivery": "",
+      "emptyTitle": "",
+      "emptyBody": "",
+      "table": {
+        "items": "",
+        "when": ""
+      }
+    },
+    "queue": {
+      "done": {
+        "confirm": "",
+        "reject": "",
+        "ready": "",
+        "complete": "",
+        "prepare": "",
+        "dispatch": "",
+        "deliver": "",
+        "fail": "",
+        "return": "",
+        "cancel": "",
+        "completePaid": {
+          "cash": "",
+          "upi": ""
+        },
+        "deliverPaid": {
+          "cash": "",
+          "upi": ""
+        }
+      },
+      "code": {
+        "wrongPickup": "",
+        "wrongDelivery": "",
+        "deliveryDescription": "",
+        "pickupDescription": "",
+        "notYet": "",
+        "deliveryLabel": "",
+        "pickupLabel": "",
+        "deliveryPlaceholder": "",
+        "pickupPlaceholder": ""
+      },
+      "respondWithin": "",
+      "holdEndsIn": "",
+      "onShelf": "",
+      "reasonForCustomer": "",
+      "reservation": {
+        "confirm": "",
+        "ready": "",
+        "complete": "",
+        "completeTitle": "",
+        "declineTitle": "",
+        "declineBody": "",
+        "decline": "",
+        "declinePlaceholder": "",
+        "cancelTitle": "",
+        "cancelBody": "",
+        "cancelConfirm": "",
+        "cancelReason": "",
+        "cancelPlaceholder": "",
+        "noShow": ""
+      },
+      "order": {
+        "cod": "",
+        "note": "",
+        "openRoute": "",
+        "confirm": "",
+        "prepare": "",
+        "dispatch": "",
+        "deliver": "",
+        "deliverTitle": "",
+        "failTitle": "",
+        "failConfirm": "",
+        "failReason": "",
+        "failPlaceholder": "",
+        "couldNotDeliver": "",
+        "return": "",
+        "cancelTitle": "",
+        "cancelBody": "",
+        "cancelConfirm": "",
+        "decline": "",
+        "cancel": "",
+        "paidUpi": "",
+        "paidCash": "",
+        "payOnDelivery": "",
+        "cashOrUpi": ""
+      },
+      "payment": {
+        "legend": "",
+        "cash": "",
+        "cashHint": "",
+        "upi": "",
+        "upiHint": "",
+        "checkingUpi": "",
+        "addUpi": "",
+        "settingsLink": ""
+      }
+    },
+    "inventory": {
+      "title": "",
+      "description": "",
+      "importExcel": "",
+      "addFromCatalogue": "",
+      "newProduct": "",
+      "searchPlaceholder": "",
+      "tabs": {
+        "all": "",
+        "low_stock": "",
+        "out_of_stock": "",
+        "inactive": ""
+      },
+      "category": "",
+      "allCategories": "",
+      "sortLabel": "",
+      "sort": {
+        "name": "",
+        "stock_asc": "",
+        "stock_desc": "",
+        "price_asc": "",
+        "updated": ""
+      },
+      "noMatchTitle": "",
+      "noMatchBody": "",
+      "noProductsTitle": "",
+      "noProductsBody": "",
+      "openCatalogue": "",
+      "listings": {
+        "one": "",
+        "other": ""
+      },
+      "toast": {
+        "stockSet": "",
+        "priceUpdated": "",
+        "removed": "",
+        "listedAgain": "",
+        "photoUpdated": ""
+      },
+      "uploadPhotoFor": "",
+      "rupee": "",
+      "priceOf": "",
+      "decrease": "",
+      "stockOf": "",
+      "increase": "",
+      "save": "",
+      "recount": "",
+      "moreActions": "",
+      "editDetails": "",
+      "uploadPhoto": "",
+      "viewAsCustomer": "",
+      "removeFromShop": "",
+      "listAgain": "",
+      "removeTitle": "",
+      "removeBody": "",
+      "remove": ""
+    },
+    "catalog": {
+      "welcomeTitle": "",
+      "welcomeBody": "",
+      "title": "",
+      "description": "",
+      "searchPlaceholder": "",
+      "myCategories": "",
+      "select": "",
+      "alreadyListed": "",
+      "typicalHere": "",
+      "typical": "",
+      "mrp": "",
+      "rupee": "",
+      "yourPrice": "",
+      "qty": "",
+      "quantity": "",
+      "noMatch": "",
+      "selected": "",
+      "clear": "",
+      "add": {
+        "one": "",
+        "other": ""
+      },
+      "added": {
+        "one": "",
+        "other": ""
+      }
+    },
+    "import": {
+      "actions": {
+        "update": "",
+        "add_catalog": "",
+        "add_new": "",
+        "skip": ""
+      },
+      "noItems": "",
+      "doneToast": "",
+      "doneToastAdded": {
+        "one": "",
+        "other": ""
+      },
+      "doneTitle": "",
+      "doneBody": "",
+      "doneBodySkipped": "",
+      "doneAdded": {
+        "one": "",
+        "other": ""
+      },
+      "doneUpdated": {
+        "one": "",
+        "other": ""
+      },
+      "doneSkipped": {
+        "one": "",
+        "other": ""
+      },
+      "openInventory": "",
+      "importAnother": "",
+      "title": "",
+      "description": "",
+      "dropTitle": "",
+      "dropHint": "",
+      "chooseFile": "",
+      "steps": {
+        "export": {
+          "title": "",
+          "body": ""
+        },
+        "check": {
+          "title": "",
+          "body": ""
+        },
+        "import": {
+          "title": "",
+          "body": ""
+        }
+      },
+      "template": "",
+      "templateLink": "",
+      "chooseDifferent": "",
+      "checkTitle": "",
+      "checkDescription": {
+        "one": "",
+        "other": ""
+      },
+      "columnPair": "",
+      "fields": {
+        "name": "",
+        "quantity": "",
+        "price": "",
+        "mrp": "",
+        "brand": "",
+        "category": "",
+        "sku": ""
+      },
+      "badges": {
+        "update": {
+          "one": "",
+          "other": ""
+        },
+        "add": {
+          "one": "",
+          "other": ""
+        },
+        "skipped": {
+          "one": "",
+          "other": ""
+        },
+        "needPrice": {
+          "one": "",
+          "other": ""
+        }
+      },
+      "table": {
+        "row": "",
+        "item": "",
+        "whatHappens": "",
+        "qty": "",
+        "price": ""
+      },
+      "matched": "",
+      "issues": {
+        "checkMatch": "",
+        "typicalPrice": "",
+        "usingMrp": "",
+        "noQuantityUpdate": "",
+        "noQuantityAdd": "",
+        "priceMissing": ""
+      },
+      "whatToDo": "",
+      "category": "",
+      "categoryFor": "",
+      "quantityFor": "",
+      "pricePlaceholder": "",
+      "priceFor": "",
+      "needPrice": {
+        "one": "",
+        "other": ""
+      },
+      "nothingChanges": "",
+      "importCount": {
+        "one": "",
+        "other": ""
+      },
+      "tabs": {
+        "label": "",
+        "stock": "",
+        "sales": ""
+      },
+      "sales": {
+        "status": {
+          "matched": "",
+          "check": "",
+          "unmatched": "",
+          "invalid": ""
+        },
+        "fields": {
+          "date": "",
+          "item": "",
+          "quantity": "",
+          "bill": "",
+          "rate": "",
+          "amount": ""
+        },
+        "issues": {
+          "futureDate": "",
+          "noQuantity": "",
+          "return": "",
+          "lessThanOne": "",
+          "listedPrice": "",
+          "notListed": "",
+          "checkMatch": "",
+          "rounded": "",
+          "badDate": ""
+        },
+        "counts": {
+          "lines": {
+            "one": "",
+            "other": ""
+          },
+          "matched": {
+            "one": "",
+            "other": ""
+          },
+          "check": {
+            "one": "",
+            "other": ""
+          },
+          "unmatched": {
+            "one": "",
+            "other": ""
+          },
+          "invalid": {
+            "one": "",
+            "other": ""
+          },
+          "importLines": {
+            "one": "",
+            "other": ""
+          }
+        },
+        "doneToast": "",
+        "doneTitle": "",
+        "doneBody": "",
+        "doneBodyReplaced": "",
+        "importAnother": "",
+        "title": "",
+        "description": "",
+        "dropTitle": "",
+        "dropHint": "",
+        "steps": {
+          "export": {
+            "title": "",
+            "body": ""
+          },
+          "check": {
+            "title": "",
+            "body": ""
+          },
+          "import": {
+            "title": "",
+            "body": ""
+          }
+        },
+        "checkDescription": "",
+        "replaces": "",
+        "table": {
+          "import": "",
+          "date": "",
+          "item": "",
+          "match": "",
+          "bill": "",
+          "rate": ""
+        },
+        "includeRow": "",
+        "yourListing": "",
+        "nothingSaved": ""
+      }
+    },
+    "insights": {
+      "title": "",
+      "description": "",
+      "modelNote": "",
+      "demoData": "",
+      "restock": {
+        "title": "",
+        "error": "",
+        "product": "",
+        "inStock": "",
+        "next7": "",
+        "runsOut": "",
+        "suggested": "",
+        "trend": "",
+        "outNow": "",
+        "days": {
+          "one": "",
+          "other": ""
+        },
+        "trends": {
+          "rising": "",
+          "steady": "",
+          "falling": ""
+        },
+        "confidence": {
+          "low": "",
+          "medium": "",
+          "high": ""
+        },
+        "trendLine": "",
+        "empty": ""
+      },
+      "area": {
+        "title": "",
+        "hint": "",
+        "searches": {
+          "one": "",
+          "other": ""
+        },
+        "youStock": "",
+        "opportunity": "",
+        "empty": ""
+      },
+      "missed": {
+        "title": "",
+        "hint": "",
+        "empty": ""
+      },
+      "bundles": {
+        "title": "",
+        "note": "",
+        "alsoBuy": "",
+        "empty": "",
+        "addFromCatalogue": ""
+      },
+      "prices": {
+        "title": "",
+        "note": "",
+        "line": {
+          "one": "",
+          "other": ""
+        },
+        "empty": "",
+        "footnote": ""
+      },
+      "gate": {
+        "haveOfNeed": "",
+        "progress": {
+          "days": "",
+          "saleDays": "",
+          "unitsSold": "",
+          "betterThanLastWeek": "",
+          "multiItemPurchases": "",
+          "verifiedShops": "",
+          "flagsReviewed": "",
+          "upheld": "",
+          "people": ""
+        }
+      }
+    },
+    "settings": {
+      "title": "",
+      "description": "",
+      "shopPhoto": "",
+      "photoHint": "",
+      "about": "",
+      "pickupLabel": "",
+      "pickupHint": "",
+      "activeLabel": "",
+      "activeHint": "",
+      "save": "",
+      "toast": {
+        "savedReview": "",
+        "saved": "",
+        "photoUpdated": "",
+        "sentForVerification": ""
+      },
+      "confirm": {
+        "title": "",
+        "body": "",
+        "phoneRecheck": "",
+        "keepEditing": "",
+        "saveAndSend": ""
+      },
+      "verify": {
+        "title": "",
+        "titleRenew": "",
+        "intro": "",
+        "submit": "",
+        "submitRenewal": "",
+        "kycTypes": {
+          "gstin": "",
+          "udyam": "",
+          "trade_licence": ""
+        },
+        "number": "",
+        "evidence": "",
+        "reason": "",
+        "callBack": "",
+        "summary": {
+          "renewalPending": "",
+          "expired": "",
+          "verifiedUntil": "",
+          "renewFrom": "",
+          "switchedOff": "",
+          "submitted": "",
+          "rejected": "",
+          "suspended": "",
+          "draft": ""
+        }
+      },
+      "upi": {
+        "title": "",
+        "intro": "",
+        "idLabel": "",
+        "idPlaceholder": "",
+        "idHint": "",
+        "payeeLabel": "",
+        "payeePlaceholder": "",
+        "payeeHint": "",
+        "idError": "",
+        "payeeError": ""
+      }
+    },
+    "reviews": {
+      "title": "",
+      "description": "",
+      "emptyTitle": "",
+      "emptyBody": "",
+      "fromLatest": {
+        "one": "",
+        "other": ""
+      },
+      "ratingNote": "",
+      "toast": {
+        "updated": "",
+        "posted": ""
+      },
+      "yourReply": "",
+      "edited": "",
+      "reported": "",
+      "hiddenByAdmin": "",
+      "removedByAdmin": "",
+      "edit": "",
+      "editUntil": "",
+      "lockedReported": "",
+      "editWindow": {
+        "one": "",
+        "other": ""
+      },
+      "replyPublicly": "",
+      "editLabel": "",
+      "newLabel": "",
+      "placeholder": "",
+      "hint": {
+        "one": "",
+        "other": ""
+      },
+      "save": "",
+      "post": "",
+      "cancel": ""
+    },
+    "productForm": {
+      "toast": {
+        "updated": "",
+        "added": ""
+      },
+      "editTitle": "",
+      "addTitle": "",
+      "addDescription": "",
+      "saveChanges": "",
+      "addProduct": "",
+      "name": "",
+      "namePlaceholder": "",
+      "brand": "",
+      "category": "",
+      "choose": "",
+      "price": "",
+      "mrp": "",
+      "quantity": "",
+      "lowStock": "",
+      "unit": "",
+      "unitPlaceholder": "",
+      "sku": "",
+      "tags": "",
+      "tagsReplaces": "",
+      "tagsPlaceholder": "",
+      "description": ""
+    }
+  },
+  "support": {
+    "eyebrow": "",
+    "title": "",
+    "intro": "",
+    "categories": {
+      "order": "",
+      "shop_conduct": "",
+      "privacy": "",
+      "account": "",
+      "other": ""
+    },
+    "statuses": {
+      "open": "",
+      "acknowledged": "",
+      "in_progress": "",
+      "resolved": ""
+    },
+    "officer": {
+      "title": "",
+      "loadError": "",
+      "placeholder": "",
+      "name": "",
+      "email": "",
+      "phone": "",
+      "address": ""
+    },
+    "acknowledgement": {
+      "title": "",
+      "ticket": "",
+      "copy": "",
+      "copied": "",
+      "copyFailed": "",
+      "dates": "",
+      "another": ""
+    },
+    "file": {
+      "title": "",
+      "signedIn": "",
+      "signedOut": "",
+      "category": "",
+      "categoryPlaceholder": "",
+      "contact": "",
+      "contactPlaceholder": "",
+      "contactHint": "",
+      "code": "",
+      "optional": "",
+      "description": "",
+      "descriptionPlaceholder": "",
+      "submit": ""
+    },
+    "status": {
+      "received": "",
+      "inProgress": "",
+      "resolved": "",
+      "due": "",
+      "answer": ""
+    },
+    "lookup": {
+      "title": "",
+      "intro": "",
+      "ticket": "",
+      "contact": "",
+      "submit": ""
+    },
+    "mine": ""
+  },
+  "aiLab": {
+    "badge": "",
+    "title": "",
+    "intro": "",
+    "compare": {
+      "title": "",
+      "intro": "",
+      "query": "",
+      "submit": "",
+      "noResults": ""
+    },
+    "pipeline": {
+      "understand": {
+        "title": "",
+        "body": ""
+      },
+      "match": {
+        "title": "",
+        "body": ""
+      },
+      "locate": {
+        "title": "",
+        "body": ""
+      },
+      "filter": {
+        "title": "",
+        "body": ""
+      },
+      "rank": {
+        "title": "",
+        "body": ""
+      },
+      "step": ""
+    },
+    "models": {
+      "title": "",
+      "intro": "",
+      "training": "",
+      "queued": "",
+      "retrain": "",
+      "retrainQueued": "",
+      "demoData": "",
+      "notTrained": "",
+      "drivers": "",
+      "trained": "",
+      "notTrainedYet": ""
+    },
+    "metrics": {
+      "listingsIndexed": "",
+      "vectorSize": "",
+      "trainingSentences": "",
+      "vocabulary": "",
+      "mae": "",
+      "naiveMae": "",
+      "betterThanBaseline": "",
+      "r2": "",
+      "units": "",
+      "percent": "",
+      "baskets": "",
+      "rules": "",
+      "avgConfidence": "",
+      "avgLift": "",
+      "listingsCompared": "",
+      "itemGroups": "",
+      "isolated": "",
+      "flagged": ""
+    },
+    "languages": {
+      "all": "",
+      "other": "",
+      "en": "",
+      "kn": "",
+      "knLatn": "",
+      "te": "",
+      "teLatn": "",
+      "hi": "",
+      "hiLatn": "",
+      "misspelt": ""
+    },
+    "quality": {
+      "title": "",
+      "intro": "",
+      "dev": "",
+      "test": "",
+      "examples": "",
+      "runLine": "",
+      "unknownCommit": "",
+      "syntheticNote": "",
+      "loadFailed": "",
+      "notMeasured": "",
+      "captionDev": "",
+      "captionTest": "",
+      "language": "",
+      "queries": "",
+      "noResults": "",
+      "p95": "",
+      "ms": "",
+      "ndcg": "",
+      "recall": "",
+      "mrr": ""
+    },
+    "live": {
+      "title": "",
+      "intro": "",
+      "saveSnapshot": "",
+      "snapshotSaved": "",
+      "lastDays": "",
+      "ranking": "",
+      "lastSnapshot": "",
+      "loadFailed": "",
+      "caption": "",
+      "noResultsAll": "",
+      "measured": "",
+      "success": "",
+      "reformulated": "",
+      "firstClick": "",
+      "converted": "",
+      "n": "",
+      "notEnoughHistory": "",
+      "notEnough": ""
+    },
+    "shadow": {
+      "title": "",
+      "on": "",
+      "off": "",
+      "empty": "",
+      "caption": "",
+      "candidate": "",
+      "searchesDays": "",
+      "overlap": "",
+      "moreNoResults": "",
+      "clickInTop10": "",
+      "rankChange": "",
+      "p95": "",
+      "guardrails": "",
+      "difference": "",
+      "times": "",
+      "pass": "",
+      "fail": "",
+      "notApplicable": ""
+    },
+    "gate": {
+      "badge": "",
+      "shown": "",
+      "hidden": ""
+    }
+  },
+  "shopForm": {
+    "shopName": "",
+    "shopNamePlaceholder": "",
+    "tagline": "",
+    "optional": "",
+    "taglinePlaceholder": "",
+    "whatYouSell": "",
+    "upTo3": "",
+    "shopPhone": "",
+    "phonePlaceholder": "",
+    "gpsMoved": "",
+    "gpsFailed": "",
+    "street": "",
+    "streetPlaceholder": "",
+    "area": "",
+    "chooseArea": "",
+    "pincode": "",
+    "exactLocation": "",
+    "useGps": "",
+    "yourShop": "",
+    "shopLocation": "",
+    "mapHint": "",
+    "opens": "",
+    "closes": "",
+    "weeklyHoliday": "",
+    "days": {
+      "none": "",
+      "monday": "",
+      "tuesday": "",
+      "wednesday": "",
+      "thursday": "",
+      "friday": "",
+      "saturday": "",
+      "sunday": ""
+    },
+    "holdFor": "",
+    "minutes": "",
+    "deliverMyself": "",
+    "deliverHint": "",
+    "radius": "",
+    "radiusValue": "",
+    "fee": "",
+    "freeAbove": "",
+    "freePlaceholder": "",
+    "evidenceType": "",
+    "kycTypes": {
+      "gstin": {
+        "label": "",
+        "hint": ""
+      },
+      "udyam": {
+        "label": "",
+        "hint": ""
+      },
+      "trade_licence": {
+        "label": "",
+        "hint": ""
+      }
+    },
+    "numberLabel": "",
+    "noAadhaar": "",
+    "documentLicence": "",
+    "documentCertificate": "",
+    "documentMissing": "",
+    "storefront": "",
+    "storefrontMissing": "",
+    "kycErrors": {
+      "empty": "",
+      "aadhaar": "",
+      "gstinFormat": "",
+      "gstinCheck": "",
+      "udyamFormat": "",
+      "tradeLicenceFormat": ""
+    }
+  },
+  "pages": {
+    "site": {
+      "title": "",
+      "description": ""
+    },
+    "titles": {
+      "home": "",
+      "search": "",
+      "searchQuery": "",
+      "shops": "",
+      "product": "",
+      "shop": "",
+      "account": "",
+      "aiLab": "",
+      "grievance": "",
+      "privacy": "",
+      "terms": "",
+      "signIn": "",
+      "register": "",
+      "registerShop": "",
+      "verifyPhone": "",
+      "shopDashboard": "",
+      "catalog": "",
+      "inventory": ""
+    },
+    "descriptions": {
+      "aiLab": "",
+      "grievance": "",
+      "privacy": "",
+      "terms": ""
+    },
+    "legal": {
+      "draftTitle": "",
+      "draftBodyPrivacy": "",
+      "draftBodyTerms": "",
+      "language": "",
+      "version": "",
+      "dateNotStated": ""
+    },
+    "meta": {
+      "productTitle": "",
+      "productDescription": "",
+      "shopTitle": "",
+      "shopAddress": "",
+      "shopOpen": "",
+      "shopOpenClosed": "",
+      "shopRating": {
+        "one": "",
+        "other": ""
+      },
+      "shopCta": ""
+    }
+  }
+}

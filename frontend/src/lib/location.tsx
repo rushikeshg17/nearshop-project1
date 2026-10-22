@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import { useMeta } from "@/hooks/use-session";
+import type { Translate } from "@/lib/i18n";
 
 export type LocationSource = "gps" | "locality" | "city";
 
@@ -53,7 +54,9 @@ function distanceKm(a: { lat: number; lng: number }, b: { lat: number; lng: numb
   return 2 * 6371 * Math.asin(Math.sqrt(h));
 }
 
-export function LocationProvider({ children }: { children: React.ReactNode }) {
+/** t: the interface language's translator (Providers passes it): the labels of the GPS and city-centre locations and
+ * the GPS messages are in that language (P7.10). A locality's label is its name, as the city data spells it. */
+export function LocationProvider({ t, children }: { t: Translate; children: React.ReactNode }) {
   const { data: meta } = useMeta();
   const [stored, setStored] = useState<UserLocation | null>(null);
   const [radiusKm, setRadius] = useState(5);
@@ -75,7 +78,14 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
     [meta],
   );
 
-  const location = stored ?? fallback;
+  // The GPS and city-centre labels are named in the interface language when shown, whatever language they were
+  // stored in, so switching language renames them too.
+  const location = useMemo<UserLocation | null>(() => {
+    const raw = stored ?? fallback;
+    if (raw?.source === "gps") return { ...raw, label: t("common.location.current") };
+    if (raw?.source === "city" && meta) return { ...raw, label: t("common.location.cityCentre", { city: meta.city.name }) };
+    return raw;
+  }, [stored, fallback, meta, t]);
 
   const setLocation = useCallback((loc: UserLocation) => {
     setStored(loc);
@@ -88,7 +98,7 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const requestGps = useCallback(async () => {
-    if (!("geolocation" in navigator)) return { ok: false, message: "Location is not available in this browser" };
+    if (!("geolocation" in navigator)) return { ok: false, message: t("common.location.gpsUnsupported") };
     return new Promise<{ ok: boolean; message?: string }>((resolve) => {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
@@ -96,7 +106,7 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
           if (meta && distanceKm(here, meta.city.center) > MAX_DISTANCE_FROM_CITY_KM) {
             resolve({
               ok: false,
-              message: `You're outside ${meta.city.name}, where NearShop's shops are right now. Pick an area instead.`,
+              message: t("common.location.gpsOutside", { city: meta.city.name }),
             });
             return;
           }
@@ -106,12 +116,12 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
         (err) =>
           resolve({
             ok: false,
-            message: err.code === err.PERMISSION_DENIED ? "Location permission was denied" : "Couldn't get your location",
+            message: t(err.code === err.PERMISSION_DENIED ? "common.location.gpsDenied" : "common.location.gpsFailed"),
           }),
         { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 },
       );
     });
-  }, [meta, setLocation]);
+  }, [meta, setLocation, t]);
 
   const value = useMemo(
     () => ({ location, radiusKm, ready: hydrated && !!location, setLocation, setRadiusKm, requestGps }),

@@ -6,7 +6,9 @@ import type { MouseEvent } from "react";
 
 import { Distance, Freshness, Rating, StockPill } from "@/components/common/indicators";
 import { ProductThumb } from "@/components/common/product-thumb";
-import { formatDistance, formatPrice, travelHint } from "@/lib/format";
+import { useI18n } from "@/components/providers";
+import { formatDistance, formatNumber, formatPrice, travelTime } from "@/lib/format";
+import { plural } from "@/lib/i18n";
 import type { ResultGroup } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -15,8 +17,16 @@ import { cn } from "@/lib/utils";
 type StockFreshness = { band: "fresh" | "aging" | "stale"; label: string | null };
 
 function FreshnessLabel({ freshness }: { freshness: StockFreshness }) {
+  const { t, language } = useI18n();
   if (!freshness.label) return null;
   const stale = freshness.band === "stale";
+  // The API's label is English ("updated N days ago"); the text shown is the interface language's, with the same N.
+  const days = Number(/(\d+)/.exec(freshness.label)?.[1] ?? Number.NaN);
+  const text = stale
+    ? t("discovery.result.freshness.stale")
+    : Number.isFinite(days)
+      ? t(`discovery.result.freshness.aging.${plural(language, days)}`, { count: formatNumber(days) })
+      : t("discovery.result.freshness.stale");
   return (
     <span
       className={cn(
@@ -25,7 +35,7 @@ function FreshnessLabel({ freshness }: { freshness: StockFreshness }) {
       )}
     >
       <Clock3 className="size-3" aria-hidden />
-      {freshness.label.charAt(0).toUpperCase() + freshness.label.slice(1)}
+      {text}
     </span>
   );
 }
@@ -58,7 +68,9 @@ export function ResultCard({
   highlighted?: boolean;
   onHover?: (shopIds: number[] | null) => void;
 }) {
+  const { t, language } = useI18n();
   const best = group.best_offer;
+  const travel = travelTime(best.shop.distance_km);
   const freshness = (best as typeof best & { freshness?: StockFreshness }).freshness;
   const others = group.offers.filter((o) => o.id !== best.id).slice(0, 3);
   const outOfStock = group.in_stock_count === 0;
@@ -83,7 +95,7 @@ export function ResultCard({
         outOfStock && "opacity-80",
       )}
     >
-      <Link href={`/product/${best.id}`} {...opened(best.id)} className="flex gap-4 rounded-2xl p-4" aria-label={`${group.name}, from ${formatPrice(group.min_price)}`}>
+      <Link href={`/product/${best.id}`} {...opened(best.id)} className="flex gap-4 rounded-2xl p-4" aria-label={t("discovery.result.label", { name: group.name, price: formatPrice(group.min_price) })}>
         <ProductThumb icon={group.icon} imageUrl={group.image_url} thumbnailUrl={group.thumbnail_url} category={group.category} alt="" size="lg" className="max-sm:size-20" />
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
@@ -94,7 +106,7 @@ export function ResultCard({
             <div className="shrink-0 text-right">
               <p className="text-lg font-semibold tracking-tight tabular">{formatPrice(group.min_price)}</p>
               {group.max_price > group.min_price && (
-                <p className="text-xs text-muted-foreground tabular">up to {formatPrice(group.max_price)}</p>
+                <p className="text-xs text-muted-foreground tabular">{t("discovery.result.upTo", { price: formatPrice(group.max_price) })}</p>
               )}
             </div>
           </div>
@@ -109,18 +121,22 @@ export function ResultCard({
             <span className="truncate font-medium">{best.shop.name}</span>
             <span className="shrink-0 text-muted-foreground">·</span>
             <Distance km={best.shop.distance_km} className="shrink-0 text-sm" />
-            <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">({travelHint(best.shop.distance_km)})</span>
+            {travel && (
+              <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+                ({t(`common.travel.${travel.mode}`, { minutes: travel.minutes })})
+              </span>
+            )}
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <Rating value={best.shop.rating_avg} count={best.shop.rating_count} />
             {best.shop.offers_pickup && (
               <span className="inline-flex items-center gap-1">
-                <Footprints className="size-3.5" /> Pickup
+                <Footprints className="size-3.5" /> {t("discovery.result.pickup")}
               </span>
             )}
             {best.shop.offers_delivery && (
               <span className="inline-flex items-center gap-1">
-                <Bike className="size-3.5" /> Delivery
+                <Bike className="size-3.5" /> {t("discovery.result.delivery")}
               </span>
             )}
           </div>
@@ -130,8 +146,9 @@ export function ResultCard({
       {group.shop_count > 1 && (
         <div className="border-t px-4 py-2.5">
           <p className="mb-1.5 text-xs font-medium text-muted-foreground">
-            {group.shop_count} shops nearby have this
-            {group.in_stock_count < group.shop_count && ` · ${group.in_stock_count} in stock`}
+            {t(`discovery.result.shopsHaveThis.${plural(language, group.shop_count)}`, { count: formatNumber(group.shop_count) })}
+            {group.in_stock_count < group.shop_count &&
+              ` · ${t("discovery.result.inStock", { count: formatNumber(group.in_stock_count) })}`}
           </p>
           <ul className="flex flex-wrap gap-1.5">
             {others.map((o) => (
@@ -153,7 +170,7 @@ export function ResultCard({
             {group.shop_count > 4 && (
               <li>
                 <Link href={`/product/${best.id}#compare`} {...opened(best.id)} className="inline-flex items-center gap-0.5 rounded-full px-2 py-1 text-xs font-medium hover:bg-accent">
-                  Compare all <ChevronRight className="size-3" />
+                  {t("discovery.result.compareAll")} <ChevronRight className="size-3" />
                 </Link>
               </li>
             )}

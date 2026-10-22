@@ -5,12 +5,14 @@ import { Bell, CheckCheck } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
+import { useI18n } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useNow } from "@/hooks/use-debounce";
 import { api } from "@/lib/api";
-import { timeAgo } from "@/lib/format";
+import { formatNumber, timeAgo } from "@/lib/format";
+import { plural } from "@/lib/i18n";
 import type { Notification } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -18,6 +20,7 @@ export function NotificationsBell() {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const now = useNow(60_000);
+  const { t, language } = useI18n();
 
   // Polling keeps the badge honest without websockets. Also refreshes queues when something changes.
   const unread = useQuery({
@@ -51,7 +54,11 @@ export function NotificationsBell() {
       }}
     >
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon-lg" className="relative rounded-full" aria-label={`Notifications${count ? `, ${count} unread` : ""}`}>
+        <Button variant="ghost" size="icon-lg" className="relative rounded-full" aria-label={
+            count
+              ? t(`common.notifications.unread.${plural(language, count)}`, { count: formatNumber(count) })
+              : t("common.notifications.title")
+          }>
           <Bell className="size-[18px]" />
           {count > 0 && (
             <span className="absolute top-1 right-1 grid min-w-4 place-items-center rounded-full bg-brand px-1 text-[10px] leading-4 font-semibold text-brand-foreground tabular">
@@ -62,18 +69,18 @@ export function NotificationsBell() {
       </PopoverTrigger>
       <PopoverContent align="end" className="w-[min(92vw,380px)] p-0">
         <div className="flex items-center justify-between border-b px-4 py-3">
-          <p className="text-sm font-semibold">Notifications</p>
+          <p className="text-sm font-semibold">{t("common.notifications.title")}</p>
           {count > 0 && (
             <Button variant="ghost" size="xs" onClick={() => markRead.mutate(undefined)}>
-              <CheckCheck /> Mark all read
+              <CheckCheck /> {t("common.notifications.markAllRead")}
             </Button>
           )}
         </div>
         <ScrollArea className="max-h-[420px]">
           {list.isLoading ? (
-            <p className="p-6 text-center text-sm text-muted-foreground">Loading...</p>
+            <p className="p-6 text-center text-sm text-muted-foreground">{t("common.states.loading")}</p>
           ) : !list.data?.items.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">You&apos;re all caught up.</p>
+            <p className="p-8 text-center text-sm text-muted-foreground">{t("common.notifications.empty")}</p>
           ) : (
             <ul className="divide-y">
               {list.data.items.map((n) => (
@@ -91,7 +98,7 @@ export function NotificationsBell() {
                       <span className="block text-sm font-medium">{n.title}</span>
                       {n.body && <span className="mt-0.5 block text-sm text-muted-foreground">{n.body}</span>}
                       <span className="mt-1 block text-xs text-muted-foreground" suppressHydrationWarning>
-                        {timeAgo(n.created_at, now)}
+                        {timeAgo(n.created_at, now, language)}
                       </span>
                     </span>
                   </Link>

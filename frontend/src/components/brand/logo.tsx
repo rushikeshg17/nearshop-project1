@@ -1,4 +1,8 @@
+"use client";
+
 import Link from "next/link";
+
+import { useI18n } from "@/components/providers";
 
 import { cn } from "@/lib/utils";
 
@@ -23,9 +27,10 @@ export function LogoMark({ className }: { className?: string }) {
 }
 
 export function Logo({ className, href = "/", compact = false }: { className?: string; href?: string; compact?: boolean }) {
+  const { t } = useI18n();
   return (
     // Not prefetched (P2.9): the logo is on every page, see mobile-tab-bar.tsx.
-    <Link href={href} prefetch={false} className={cn("group inline-flex items-center gap-2 rounded-lg", className)} aria-label="NearShop home">
+    <Link href={href} prefetch={false} className={cn("group inline-flex items-center gap-2 rounded-lg", className)} aria-label={t("shell.homeLabel")}>
       <LogoMark className="transition-transform duration-300 ease-[var(--ease-out-quint)] group-hover:-rotate-6" />
       {!compact && (
         <span className="font-heading text-[1.2rem] leading-none font-semibold tracking-tight">

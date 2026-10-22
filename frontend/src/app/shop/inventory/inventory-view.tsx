@@ -13,6 +13,7 @@ import { EmptyState, ErrorState, ListSkeleton } from "@/components/common/states
 import { PageTitle } from "@/components/dashboard/dashboard-shell";
 import { ConfirmAction } from "@/components/fulfillment/confirm-action";
 import { ProductFormDialog } from "@/components/owner/product-form-dialog";
+import { useI18n } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -21,19 +22,18 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useDebounce } from "@/hooks/use-debounce";
 import { useMeta } from "@/hooks/use-session";
 import { api } from "@/lib/api";
-import { formatPrice } from "@/lib/format";
+import { formatNumber, formatPrice } from "@/lib/format";
+import { plural } from "@/lib/i18n";
 import type { Listing, OwnerListing } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Page = { items: OwnerListing[]; total: number; page: number; page_size: number };
-const STOCK_TABS = [
-  { value: "all", label: "All" },
-  { value: "low_stock", label: "Low" },
-  { value: "out_of_stock", label: "Out" },
-  { value: "inactive", label: "Removed" },
-];
+// The stock filter's values, each with its label (owner.inventory.tabs in src/messages).
+const STOCK_TABS = ["all", "low_stock", "out_of_stock", "inactive"] as const;
+const SORTS = ["name", "stock_asc", "stock_desc", "price_asc", "updated"] as const;
 
 export function InventoryView() {
+  const { t, language } = useI18n();
   const router = useRouter();
   const params = useSearchParams();
   const { data: meta } = useMeta();
@@ -63,13 +63,13 @@ export function InventoryView() {
   return (
     <>
       <PageTitle
-        title="Inventory"
-        description="Keep counts honest. Customers see how recently you updated, and fresh shops rank higher."
+        title={t("owner.inventory.title")}
+        description={t("owner.inventory.description")}
         action={
           <div className="flex flex-wrap gap-2">
-            <Button asChild variant="outline"><Link href="/shop/import"><FileSpreadsheet /> Import Excel</Link></Button>
-            <Button asChild variant="outline"><Link href="/shop/catalog"><Library /> Add from catalogue</Link></Button>
-            <Button onClick={() => setCreating(true)}><Plus /> New product</Button>
+            <Button asChild variant="outline"><Link href="/shop/import"><FileSpreadsheet /> {t("owner.inventory.importExcel")}</Link></Button>
+            <Button asChild variant="outline"><Link href="/shop/catalog"><Library /> {t("owner.inventory.addFromCatalogue")}</Link></Button>
+            <Button onClick={() => setCreating(true)}><Plus /> {t("owner.inventory.newProduct")}</Button>
           </div>
         }
       />
@@ -77,26 +77,22 @@ export function InventoryView() {
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <div className="relative min-w-56 flex-1">
           <Search className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search your products or SKU" className="h-9 pl-9" />
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t("owner.inventory.searchPlaceholder")} className="h-9 pl-9" />
         </div>
         <Tabs value={stock} onValueChange={(v) => setParam("stock", v)}>
-          <TabsList>{STOCK_TABS.map((t) => <TabsTrigger key={t.value} value={t.value}>{t.label}</TabsTrigger>)}</TabsList>
+          <TabsList>{STOCK_TABS.map((tab) => <TabsTrigger key={tab} value={tab}>{t(`owner.inventory.tabs.${tab}`)}</TabsTrigger>)}</TabsList>
         </Tabs>
         <Select value={category || "all"} onValueChange={(v) => setParam("category", v)}>
-          <SelectTrigger className="h-9 w-40" aria-label="Category"><SelectValue placeholder="Category" /></SelectTrigger>
+          <SelectTrigger className="h-9 w-40" aria-label={t("owner.inventory.category")}><SelectValue placeholder={t("owner.inventory.category")} /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All categories</SelectItem>
+            <SelectItem value="all">{t("owner.inventory.allCategories")}</SelectItem>
             {meta?.categories.map((c) => <SelectItem key={c.slug} value={c.slug}>{c.name}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={sort} onValueChange={(v) => setParam("sort", v === "name" ? null : v)}>
-          <SelectTrigger className="h-9 w-40" aria-label="Sort products"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="h-9 w-40" aria-label={t("owner.inventory.sortLabel")}><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="name">Name</SelectItem>
-            <SelectItem value="stock_asc">Lowest stock</SelectItem>
-            <SelectItem value="stock_desc">Highest stock</SelectItem>
-            <SelectItem value="price_asc">Price: low to high</SelectItem>
-            <SelectItem value="updated">Recently updated</SelectItem>
+            {SORTS.map((value) => <SelectItem key={value} value={value}>{t(`owner.inventory.sort.${value}`)}</SelectItem>)}
           </SelectContent>
         </Select>
       </div>
@@ -106,12 +102,14 @@ export function InventoryView() {
       ) : !list.data ? (
         <ListSkeleton rows={6} />
       ) : list.data.items.length === 0 ? (
-        <EmptyState icon={Package} title={q || stock !== "all" ? "No products match" : "No products yet"}
-          description={q || stock !== "all" ? "Try another search or filter." : "Add products from the ready catalogue in a couple of minutes."}
-          action={<Button asChild><Link href="/shop/catalog">Open catalogue</Link></Button>} />
+        <EmptyState icon={Package} title={q || stock !== "all" ? t("owner.inventory.noMatchTitle") : t("owner.inventory.noProductsTitle")}
+          description={q || stock !== "all" ? t("owner.inventory.noMatchBody") : t("owner.inventory.noProductsBody")}
+          action={<Button asChild><Link href="/shop/catalog">{t("owner.inventory.openCatalogue")}</Link></Button>} />
       ) : (
         <>
-          <p className="mb-2 text-xs text-muted-foreground">{list.data.total} listings</p>
+          <p className="mb-2 text-xs text-muted-foreground">
+            {t(`owner.inventory.listings.${plural(language, list.data.total)}`, { count: formatNumber(list.data.total) })}
+          </p>
           <ul className={cn("divide-y rounded-2xl border bg-card transition-opacity", list.isFetching && "opacity-70")}>
             {list.data.items.map((p) => (
               <InventoryRow key={p.id} p={p} focused={p.id === focus} onEdit={() => setEditing(p)} />
@@ -126,6 +124,7 @@ export function InventoryView() {
 }
 
 function InventoryRow({ p, focused, onEdit }: { p: OwnerListing; focused: boolean; onEdit: () => void }) {
+  const { t } = useI18n();
   const qc = useQueryClient();
   const ref = useRef<HTMLLIElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -148,42 +147,42 @@ function InventoryRow({ p, focused, onEdit }: { p: OwnerListing; focused: boolea
   const saveStock = useMutation({
     mutationFn: () => api.put<Listing>(`/owner/products/${p.id}/stock`, { quantity: qty }),
     onSuccess: () => {
-      toast.success(`${p.name}: stock set to ${qty}`);
+      toast.success(t("owner.inventory.toast.stockSet", { name: p.name, count: formatNumber(qty) }));
       invalidate();
     },
   });
   const savePrice = useMutation({
     mutationFn: () => api.patch(`/owner/products/${p.id}`, { price: Number(price) }),
     onSuccess: () => {
-      toast.success(`Price updated to ${formatPrice(Number(price))}`);
+      toast.success(t("owner.inventory.toast.priceUpdated", { price: formatPrice(Number(price)) }));
       invalidate();
     },
   });
   const remove = useMutation({
     mutationFn: () => api.delete(`/owner/products/${p.id}`),
     onSuccess: () => {
-      toast.success("Removed from your shop. Past orders keep their history.");
+      toast.success(t("owner.inventory.toast.removed"));
       invalidate();
     },
   });
   const restore = useMutation({
     mutationFn: () => api.patch(`/owner/products/${p.id}`, { is_active: true }),
     onSuccess: () => {
-      toast.success("Listed again");
+      toast.success(t("owner.inventory.toast.listedAgain"));
       invalidate();
     },
   });
   const upload = useMutation({
     mutationFn: (file: File) => api.upload(`/owner/products/${p.id}/image`, file),
     onSuccess: () => {
-      toast.success("Photo updated");
+      toast.success(t("owner.inventory.toast.photoUpdated"));
       invalidate();
     },
   });
 
   return (
     <li ref={ref} className={cn("flex flex-wrap items-center gap-x-4 gap-y-3 p-3 sm:flex-nowrap", focused && "bg-brand-soft/50", !p.is_active && "opacity-60")}>
-      <button type="button" onClick={() => fileRef.current?.click()} className="group relative shrink-0 rounded-lg" aria-label={`Upload photo for ${p.name}`}>
+      <button type="button" onClick={() => fileRef.current?.click()} className="group relative shrink-0 rounded-lg" aria-label={t("owner.inventory.uploadPhotoFor", { name: p.name })}>
         <ProductThumb icon={p.icon} imageUrl={p.image_url} thumbnailUrl={p.thumbnail_url} category={p.category} alt="" size="sm" />
         <span className="absolute inset-0 grid place-items-center rounded-lg bg-black/40 text-white opacity-0 transition-opacity group-hover:opacity-100"><Camera className="size-4" /></span>
       </button>
@@ -207,9 +206,9 @@ function InventoryRow({ p, focused, onEdit }: { p: OwnerListing; focused: boolea
               if (dirtyPrice) savePrice.mutate();
             }}
           >
-            <span className="text-sm text-muted-foreground">Rs</span>
+            <span className="text-sm text-muted-foreground">{t("owner.inventory.rupee")}</span>
             <Input value={price} onChange={(e) => setPrice(e.target.value.replace(/[^\d.]/g, ""))} onBlur={() => dirtyPrice && savePrice.mutate()}
-              inputMode="decimal" className="h-8 w-20 text-right tabular" aria-label={`Price of ${p.name}`} />
+              inputMode="decimal" className="h-8 w-20 text-right tabular" aria-label={t("owner.inventory.priceOf", { name: p.name })} />
           </form>
 
           <form
@@ -220,13 +219,13 @@ function InventoryRow({ p, focused, onEdit }: { p: OwnerListing; focused: boolea
             }}
           >
             <div className="flex items-center rounded-lg border">
-              <Button type="button" variant="ghost" size="icon-sm" onClick={() => setQty(Math.max(0, qty - 1))} aria-label="Decrease stock"><Minus /></Button>
+              <Button type="button" variant="ghost" size="icon-sm" onClick={() => setQty(Math.max(0, qty - 1))} aria-label={t("owner.inventory.decrease")}><Minus /></Button>
               <Input value={qty} onChange={(e) => setQty(Math.max(0, Number(e.target.value.replace(/\D/g, "")) || 0))} inputMode="numeric"
-                className="h-7 w-12 border-0 px-0 text-center tabular shadow-none focus-visible:ring-0" aria-label={`Stock of ${p.name}`} />
-              <Button type="button" variant="ghost" size="icon-sm" onClick={() => setQty(qty + 1)} aria-label="Increase stock"><Plus /></Button>
+                className="h-7 w-12 border-0 px-0 text-center tabular shadow-none focus-visible:ring-0" aria-label={t("owner.inventory.stockOf", { name: p.name })} />
+              <Button type="button" variant="ghost" size="icon-sm" onClick={() => setQty(qty + 1)} aria-label={t("owner.inventory.increase")}><Plus /></Button>
             </div>
             <Button type="submit" size="sm" variant={dirtyQty ? "default" : "outline"} disabled={saveStock.isPending} className="w-20">
-              {dirtyQty ? "Save" : "Recount"}
+              {dirtyQty ? t("owner.inventory.save") : t("owner.inventory.recount")}
             </Button>
           </form>
         </>
@@ -234,22 +233,22 @@ function InventoryRow({ p, focused, onEdit }: { p: OwnerListing; focused: boolea
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon-sm" aria-label={`More actions for ${p.name}`}><MoreHorizontal /></Button>
+          <Button variant="ghost" size="icon-sm" aria-label={t("owner.inventory.moreActions", { name: p.name })}><MoreHorizontal /></Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={onEdit}><Pencil /> Edit details</DropdownMenuItem>
-          <DropdownMenuItem onClick={() => fileRef.current?.click()}><Camera /> Upload photo</DropdownMenuItem>
-          <DropdownMenuItem asChild><Link href={`/product/${p.id}`}>View as customer</Link></DropdownMenuItem>
+          <DropdownMenuItem onClick={onEdit}><Pencil /> {t("owner.inventory.editDetails")}</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => fileRef.current?.click()}><Camera /> {t("owner.inventory.uploadPhoto")}</DropdownMenuItem>
+          <DropdownMenuItem asChild><Link href={`/product/${p.id}`}>{t("owner.inventory.viewAsCustomer")}</Link></DropdownMenuItem>
           <DropdownMenuSeparator />
           {p.is_active ? (
-            <DropdownMenuItem variant="destructive" onClick={() => setConfirmRemove(true)}><Trash2 /> Remove from shop</DropdownMenuItem>
+            <DropdownMenuItem variant="destructive" onClick={() => setConfirmRemove(true)}><Trash2 /> {t("owner.inventory.removeFromShop")}</DropdownMenuItem>
           ) : (
-            <DropdownMenuItem onClick={() => restore.mutate()}><Undo2 /> List again</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => restore.mutate()}><Undo2 /> {t("owner.inventory.listAgain")}</DropdownMenuItem>
           )}
         </DropdownMenuContent>
       </DropdownMenu>
-      <ConfirmAction open={confirmRemove} onOpenChange={setConfirmRemove} title={`Remove ${p.name}?`}
-        description="It disappears from search. Past orders and reviews keep their history." confirmLabel="Remove"
+      <ConfirmAction open={confirmRemove} onOpenChange={setConfirmRemove} title={t("owner.inventory.removeTitle", { name: p.name })}
+        description={t("owner.inventory.removeBody")} confirmLabel={t("owner.inventory.remove")}
         onConfirm={() => remove.mutate()} pending={remove.isPending} />
     </li>
   );
