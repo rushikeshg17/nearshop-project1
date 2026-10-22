@@ -471,7 +471,9 @@
           "other": ""
         },
         "stale": ""
-      }
+      },
+      "callOnly": "",
+      "callShop": ""
     },
     "product": {
       "opening": "",
@@ -525,7 +527,11 @@
       "callShop": "",
       "trustTitle": "",
       "stickyStock": "",
-      "reserveShort": ""
+      "reserveShort": "",
+      "callOnlyTitle": "",
+      "callOnlyBody": "",
+      "callOnlyNoPhone": "",
+      "callToCheck": ""
     },
     "shop": {
       "notFoundTitle": "",
@@ -1293,7 +1299,8 @@
         "deliverPaid": {
           "cash": "",
           "upi": ""
-        }
+        },
+        "cancelOutOfStock": ""
       },
       "code": {
         "wrongPickup": "",
@@ -1320,7 +1327,6 @@
         "decline": "",
         "declinePlaceholder": "",
         "cancelTitle": "",
-        "cancelBody": "",
         "cancelConfirm": "",
         "cancelReason": "",
         "cancelPlaceholder": "",
@@ -1360,6 +1366,15 @@
         "checkingUpi": "",
         "addUpi": "",
         "settingsLink": ""
+      },
+      "cancelWhy": {
+        "legend": "",
+        "outOfStock": "",
+        "outOfStockHint": "",
+        "customerAsked": "",
+        "customerAskedHint": "",
+        "other": "",
+        "otherHint": ""
       }
     },
     "inventory": {

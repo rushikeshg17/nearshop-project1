@@ -471,7 +471,9 @@
           "other": "Updated {count} days ago"
         },
         "stale": "Stock not confirmed recently"
-      }
+      },
+      "callOnly": "Call the shop to check",
+      "callShop": "Call {shop}"
     },
     "product": {
       "opening": "Opening…",
@@ -525,7 +527,11 @@
       "callShop": "Call shop",
       "trustTitle": "Why you can trust this listing",
       "stickyStock": "{count} in stock · {shop}",
-      "reserveShort": "Reserve"
+      "reserveShort": "Reserve",
+      "callOnlyTitle": "Call the shop to check",
+      "callOnlyBody": "Nobody has confirmed this item's stock for over two weeks, so it can't be reserved or delivered online. Call the shop before you go.",
+      "callOnlyNoPhone": "This shop has no phone number on NearShop. Visit the shop to check.",
+      "callToCheck": "Call to check"
     },
     "shop": {
       "notFoundTitle": "Shop not found",
@@ -1293,7 +1299,8 @@
         "deliverPaid": {
           "cash": "Delivered. Cash payment and sale recorded.",
           "upi": "Delivered. UPI payment and sale recorded."
-        }
+        },
+        "cancelOutOfStock": "Cancelled. The item was not put back in stock, and the listing shows as not confirmed until you update its stock."
       },
       "code": {
         "wrongPickup": "That is not this reservation's code. Check the code with the customer and try again.",
@@ -1320,7 +1327,6 @@
         "decline": "Decline",
         "declinePlaceholder": "e.g. Last piece just sold at the counter",
         "cancelTitle": "Cancel this reservation?",
-        "cancelBody": "Use this when the customer didn't show up. The item goes back into stock.",
         "cancelConfirm": "Cancel reservation",
         "cancelReason": "Reason",
         "cancelPlaceholder": "e.g. Customer did not come",
@@ -1360,6 +1366,15 @@
         "checkingUpi": "Checking whether your shop takes UPI",
         "addUpi": "To take UPI payments, add your UPI ID in {settings}.",
         "settingsLink": "Shop settings"
+      },
+      "cancelWhy": {
+        "legend": "Why are you cancelling?",
+        "outOfStock": "Out of stock after confirming",
+        "outOfStockHint": "The item is not put back in stock, and the listing shows as not confirmed until you update its stock.",
+        "customerAsked": "Customer asked to cancel",
+        "customerAskedHint": "The held stock goes back on the shelf.",
+        "other": "Other",
+        "otherHint": "Tell the customer why. The held stock goes back on the shelf."
       }
     },
     "inventory": {
