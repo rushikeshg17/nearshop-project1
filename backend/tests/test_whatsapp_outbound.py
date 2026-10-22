@@ -62,9 +62,11 @@ def outbox(ids, monkeypatch):
                         type(settings.whatsapp_webhook_verify_token)(VERIFY_TOKEN))
     db = Database()
     db.mongo[OUTBOX].delete_many({})
+    db.mongo[whatsapp.PENDING].delete_many({})
     whatsapp.FAKE.reset()
     yield db.mongo[OUTBOX]
     db.mongo[OUTBOX].delete_many({})
+    db.mongo[whatsapp.PENDING].delete_many({})
     db.mongo[jobs.LEASES].delete_many({"_id": jobs.SEND_NOTIFICATIONS_JOB})
     whatsapp.FAKE.reset()
 
@@ -410,8 +412,81 @@ def test_sent_and_failed_callbacks_are_recorded(people, outbox, client):
     [row] = rows(outbox)
     assert row["status"] == "failed" and row["error"] == "whatsapp_131026"
     assert row["wa_sent_at"] is not None and row["failed_at"] is not None
-    unknown = callback("wamid.nobody", "delivered")
+    # A message id no row has (yet) is held for the sender, not applied anywhere; an untracked status is unknown.
+    nobody = callback("wamid.nobody", "delivered")
+    assert client.post("/api/webhooks/whatsapp", content=nobody, headers=signed(nobody)).json()["held"] == 1
+    held = Database().mongo[whatsapp.PENDING].find_one({"_id": "wamid.nobody:delivered"})
+    assert held["message_id"] == "wamid.nobody" and held["expires_at"] > held["received_at"]
+    unknown = callback(row["message_id"], "deleted")
     assert client.post("/api/webhooks/whatsapp", content=unknown, headers=signed(unknown)).json()["unknown"] == 1
+
+
+def test_a_callback_before_the_message_id_is_saved_is_applied_when_it_is(people, outbox, client):
+    """Meta can call the webhook before the sender has written the message id the Cloud API returned."""
+    calls: list[dict] = []
+
+    class EagerMeta:
+        def send_template(self, phone, template, language, components):
+            delivery = whatsapp.FAKE.send_template(phone, template, language, components)
+            [row] = rows(outbox)
+            assert row["status"] == "sending" and row.get("message_id") is None
+            at = int(utcnow().replace(tzinfo=UTC).timestamp())
+            for status in ("sent", "delivered"):
+                body = callback(delivery.message_id, status, at)
+                calls.append(client.post("/api/webhooks/whatsapp", content=body, headers=signed(body)).json())
+            return delivery
+
+    queue_one(people)
+    assert whatsapp.send_due(Database(), client=EagerMeta())["sent"] == 1
+    assert [c["held"] for c in calls] == [1, 1]
+    [row] = rows(outbox)
+    assert row["status"] == "delivered" and row["wa_sent_at"] is not None and row["delivered_at"] is not None
+    assert row["seconds_to_delivered"] is not None and row["delivered_inferred"] is False
+    assert Database().mongo[whatsapp.PENDING].count_documents({}) == 0
+    # Meta's retry of the same callback is now a duplicate.
+    again = callback(row["message_id"], "delivered", int(row["delivered_at"].replace(tzinfo=UTC).timestamp()))
+    assert client.post("/api/webhooks/whatsapp", content=again, headers=signed(again)).json()["duplicate"] == 1
+
+
+def test_a_held_callback_is_applied_by_the_webhook_when_the_id_is_saved_in_between(people, outbox, monkeypatch):
+    """The other order: the webhook misses the row, the sender saves the id and finds nothing held, then the webhook
+    holds the callback. The webhook's second try finds the row."""
+    row = sent_row(people, outbox)
+    db = Database()
+    real_apply = whatsapp._apply
+    misses = []
+
+    def first_misses(db_, message_id, kind, at, code):
+        if not misses:
+            misses.append(1)
+            return "unknown"
+        return real_apply(db_, message_id, kind, at, code)
+
+    monkeypatch.setattr(whatsapp, "_apply", first_misses)
+    assert whatsapp.record_status(db, {"id": row["message_id"], "status": "delivered"}, utcnow()) == "recorded"
+    assert rows(outbox)[0]["status"] == "delivered"
+    assert db.mongo[whatsapp.PENDING].count_documents({}) == 0
+
+
+def test_read_without_delivered_records_a_delivered_time(people, outbox, client):
+    row = sent_row(people, outbox)
+    created = row["created_at"] - timedelta(minutes=1)
+    outbox.update_one({"_id": row["_id"]}, {"$set": {"created_at": created}})
+    read_at = created + timedelta(seconds=50)
+    read = callback(row["message_id"], "read", int(read_at.replace(tzinfo=UTC).timestamp()))
+    assert client.post("/api/webhooks/whatsapp", content=read, headers=signed(read)).json()["recorded"] == 1
+    [after] = rows(outbox)
+    assert after["status"] == "read" and after["delivered_at"] == after["read_at"]
+    assert after["delivered_inferred"] is True and after["seconds_to_delivered"] == pytest.approx(50, abs=1)
+    # A delivered callback arriving late replaces the time taken from read; one more is a duplicate.
+    delivered = callback(row["message_id"], "delivered", int((created + timedelta(seconds=20)).replace(
+        tzinfo=UTC).timestamp()))
+    assert client.post("/api/webhooks/whatsapp", content=delivered, headers=signed(delivered)).json()["recorded"] == 1
+    [final] = rows(outbox)
+    assert final["status"] == "read" and final["delivered_inferred"] is False
+    assert final["seconds_to_delivered"] == pytest.approx(20, abs=1)
+    assert client.post("/api/webhooks/whatsapp", content=delivered,
+                       headers=signed(delivered)).json()["duplicate"] == 1
 
 
 def test_a_signed_body_that_is_not_json_is_acknowledged(client):

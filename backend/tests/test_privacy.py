@@ -56,6 +56,7 @@ def made(db):
                       ("orders", {"$or": [{"customer_id": {"$in": users}}, {"shop_id": {"$in": shops}}]}),
                       ("reviews", {"$or": [{"customer_id": {"$in": users}}, {"shop_id": {"$in": shops}}]}),
                       ("notifications", {"user_id": {"$in": users}}),
+                      ("notification_outbox", {"user_id": {"$in": users}}),
                       ("search_history", {"user_id": {"$in": users}}),
                       ("consents", {"user_id": {"$in": users}}),
                       ("sales_history", {"shop_id": {"$in": shops}}),
@@ -347,6 +348,33 @@ def test_grievances_are_exported_without_the_resolver_and_unlinked_on_deletion(d
         assert all(g["contact"] == "9876500011" for g in kept)  # still answerable through the contact given
     finally:
         grievances.delete_many({"_id": {"$in": [-11, -12]}})
+
+
+def test_whatsapp_outbox_rows_are_exported_and_deleted_with_the_account(db, made):
+    user = make_user(db, made)
+    c = signed_in(user)
+    now = utcnow()
+    outbox = db.mongo["notification_outbox"]
+    base = {"user_id": user.id, "channel": "whatsapp", "template": "nearshop_order_status", "language": "en",
+            "buttons": [], "created_at": now, "next_attempt_at": now}
+    outbox.insert_many([
+        {**base, "_id": -21, "notification_id": -21, "kind": "order_preparing", "status": "queued", "attempts": 0,
+         "params": ["Order D-ABC123 is being prepared", "Your order is being packed."]},
+        {**base, "_id": -22, "notification_id": -22, "kind": "order_delivered", "status": "delivered",
+         "attempts": 1, "params": None, "message_id": "wamid.privacy.22", "sent_at": now, "delivered_at": now,
+         "cost_estimate": 0.1}])
+    try:
+        data = c.get("/api/me/export").json()
+        exported = {m["id"]: m for m in data["whatsapp_messages"]}
+        assert set(exported) == {-21, -22}
+        assert exported[-21]["params"][0] == "Order D-ABC123 is being prepared"
+        assert exported[-22]["status"] == "delivered"
+        assert all(k not in m for m in exported.values() for k in privacy.OUTBOX_INTERNAL)
+
+        assert c.post("/api/auth/delete", json={"password": PASSWORD}, headers=HEADERS).json() == {"status": "deleted"}
+        assert outbox.count_documents({"user_id": user.id}) == 0
+    finally:
+        outbox.delete_many({"_id": {"$in": [-21, -22]}})
 
 
 def test_export_of_500_records_takes_under_60_seconds(db, made, ids):

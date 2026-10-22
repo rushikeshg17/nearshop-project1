@@ -7,7 +7,8 @@ guard (the X-NearShop-Client header) does not apply: Meta's calls never send it.
   * POST /api/webhooks/whatsapp: status callbacks (sent, delivered, read, failed) for the notification outbox. The
     raw body must carry a valid X-Hub-Signature-256, the HMAC-SHA256 of the body keyed with the Meta app secret
     (NEARSHOP_WHATSAPP_APP_SECRET); otherwise 403 bad_signature, and nothing is read. Each status is recorded once
-    (app/services/whatsapp.py record_statuses), so Meta's retries and duplicates change nothing. A signed call
+    (app/services/whatsapp.py record_statuses), so Meta's retries and duplicates change nothing; one that comes
+    before the sender has saved its message id is held and applied when the id is saved. A signed call
     always gets 200, whatever it holds, so Meta does not retry it.
 
 The secret and the token come only from settings. Like every /api path, these are reached through the site's domain

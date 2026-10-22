@@ -35,6 +35,18 @@ failed statuses. record_statuses writes each one once on the row with that messa
 its time already set and changes nothing. The row keeps seconds_to_sent (from notify to the Cloud API's accept) and
 seconds_to_delivered (from notify to Meta's delivered time), the measures of the P4.3 acceptance target.
 
+Two gaps in those measures are closed here:
+
+  * A callback can arrive before the sender has saved the message id the Cloud API returned (Meta can call the
+    webhook within a second of accepting a message). Such a callback is held in whatsapp_status_pending (PENDING, for
+    PENDING_KEEP) and applied when the sender saves the id (apply_pending). The webhook holds it first and then tries
+    the row once more, and the sender saves the id first and then reads what is held, so whichever runs second sees
+    the other's write. A held callback whose message is not a notification (a sign-in code) is never applied, and the
+    TTL index removes it.
+  * Meta may report read without ever reporting delivered. A read message was delivered, so read sets delivered_at
+    (and seconds_to_delivered) to its own time when no delivered callback came, with delivered_inferred set. That is
+    an upper bound, so the delivery measures err on the slow side. A delivered callback arriving later replaces it.
+
 The failure alert
 -----------------
 Each sender run computes failure_rate: the rows marked failed in the last hour over the rows that finished (sent or
@@ -58,6 +70,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from app.core.config import Settings, settings
 from app.core.database import Database, utcnow
@@ -69,6 +82,8 @@ from app.services.messaging import Delivery, masked
 log = logging.getLogger("nearshop.whatsapp")
 
 OUTBOX = "notification_outbox"
+PENDING = "whatsapp_status_pending"  # status callbacks that came before their message id was saved
+PENDING_KEEP = timedelta(hours=1)
 CHANNEL = "whatsapp"
 CONSENT_PURPOSE = "whatsapp"  # the P3.1 consent purpose for WhatsApp messages
 RETRY_DELAYS = (timedelta(seconds=30), timedelta(minutes=2), timedelta(minutes=10))
@@ -86,6 +101,7 @@ STATUSES = ("queued", "sending", "sent", "delivered", "read", "failed", "cancell
 # A status callback's field on the row. "sent" is Meta's confirmation that it sent the message to WhatsApp; the row's
 # own sent_at is when the Cloud API accepted it.
 CALLBACK_FIELDS = {"sent": "wa_sent_at", "delivered": "delivered_at", "read": "read_at", "failed": "failed_at"}
+CALLBACK_ORDER = tuple(CALLBACK_FIELDS)  # the order held callbacks are applied in
 
 
 @dataclass(frozen=True)
@@ -319,6 +335,8 @@ def send_due(db: Database, client: WhatsAppClient | None = None, clock: Callable
                 "sent_at": done, "seconds_to_sent": _seconds(done, row["created_at"]), "error": None, "params": None,
                 "cost_estimate": round(delivery.cost_estimate, 4)},
                 "$unset": {"claimed_at": ""}})
+            if delivery.message_id:
+                apply_pending(db, delivery.message_id, done)
             counts["sent"] += 1
         else:
             counts[_attempt_failed(db, row, delivery.error or "failed", done)] += 1
@@ -389,31 +407,49 @@ def _statuses(payload: Any) -> list[dict[str, Any]]:
     return found
 
 
-def record_status(db: Database, status: dict[str, Any], now: datetime) -> str:
-    """Record one status callback on its outbox row, once. Returns recorded, duplicate, unknown (no row has the
-    message id, or the status is not one we track) or late (a failure after delivery: kept as delivered)."""
-    message_id, kind = status.get("id"), status.get("status")
-    if not isinstance(message_id, str) or not message_id or kind not in CALLBACK_FIELDS:
-        return "unknown"
+def _error_code(status: dict[str, Any]) -> str | None:
+    errors = status.get("errors") if isinstance(status.get("errors"), list) else []
+    code = next((e.get("code") for e in errors if isinstance(e, dict) and e.get("code") is not None), None)
+    return str(code)[:40] if code is not None else None
+
+
+def _unset(field: str) -> dict[str, Any]:
+    """Aggregation: the row's field is missing or null."""
+    return {"$eq": [{"$ifNull": [f"${field}", None]}, None]}
+
+
+def _status_if(current: list[str], new: str) -> dict[str, Any]:
+    return {"$cond": [{"$in": ["$status", current]}, new, "$status"]}
+
+
+_SECONDS_TO_DELIVERED = {"$set": {"seconds_to_delivered": {
+    "$max": [0, {"$divide": [{"$subtract": ["$delivered_at", "$created_at"]}, 1000]}]}}}
+
+
+def _apply(db: Database, message_id: str, kind: str, at: datetime, code: str | None) -> str:
+    """Write one status on the row with message_id, once: recorded, duplicate, late (a failure after delivery: kept
+    as delivered) or unknown (no row has the id yet)."""
     out = db.mongo[OUTBOX]
     field = CALLBACK_FIELDS[kind]
-    at = _callback_time(status.get("timestamp"), now)
-    new: dict[str, Any] = {field: at}
     match: dict[str, Any] = {"message_id": message_id, field: None}
+    stages: list[dict[str, Any]] = [{"$set": {field: at}}]
+    error = None
     if kind == "delivered":
-        new["seconds_to_delivered"] = {"$max": [0, {"$divide": [{"$subtract": [at, "$created_at"]}, 1000]}]}
-        new["status"] = {"$cond": [{"$in": ["$status", ["sending", "sent"]]}, "delivered", "$status"]}
+        # Also replaces a delivered time taken from a read callback (module docstring).
+        match = {"message_id": message_id, "$or": [{"delivered_at": None}, {"delivered_inferred": True}]}
+        stages = [{"$set": {"delivered_at": at, "delivered_inferred": False,
+                            "status": _status_if(["sending", "sent"], "delivered")}}, _SECONDS_TO_DELIVERED]
     elif kind == "read":
-        new["status"] = {"$cond": [{"$in": ["$status", ["sending", "sent", "delivered"]]}, "read", "$status"]}
+        stages = [{"$set": {"read_at": at, "status": _status_if(["sending", "sent", "delivered"], "read"),
+                            "delivered_inferred": {"$cond": [_unset("delivered_at"), True, "$delivered_inferred"]},
+                            "delivered_at": {"$ifNull": ["$delivered_at", at]}}}, _SECONDS_TO_DELIVERED]
     elif kind == "failed":
-        errors = status.get("errors") if isinstance(status.get("errors"), list) else []
-        code = next((e.get("code") for e in errors if isinstance(e, dict) and e.get("code") is not None), None)
-        new["error"] = f"whatsapp_{code}"[:80] if code is not None else "whatsapp_failed"
-        new["status"] = "failed"
+        error = f"whatsapp_{code}"[:80] if code is not None else "whatsapp_failed"
+        stages = [{"$set": {field: at, "error": error, "status": "failed"}}]
         match["status"] = {"$in": ["sending", "sent"]}  # a failure reported after delivery changes nothing
-    if out.update_one(match, [{"$set": new}]).modified_count:
-        if kind == "failed":
-            log.warning("WhatsApp message %s failed after it was sent: %s", message_id, new["error"])
+    if out.update_one(match, stages).modified_count:
+        if error:
+            log.warning("WhatsApp message %s failed after it was sent: %s", message_id, error)
         return "recorded"
     row = out.find_one({"message_id": message_id}, {"status": 1, field: 1})
     if row is None:
@@ -421,11 +457,53 @@ def record_status(db: Database, status: dict[str, Any], now: datetime) -> str:
     return "duplicate" if row.get(field) is not None else "late"
 
 
+def _hold(db: Database, message_id: str, kind: str, at: datetime, code: str | None, now: datetime) -> None:
+    try:
+        db.mongo[PENDING].update_one({"_id": f"{message_id}:{kind}"}, {"$setOnInsert": {
+            "message_id": message_id, "status": kind, "at": at, "error_code": code, "received_at": now,
+            "expires_at": now + PENDING_KEEP}}, upsert=True)
+    except DuplicateKeyError:  # the same callback held by a concurrent call
+        pass
+
+
+def apply_pending(db: Database, message_id: str, now: datetime | None = None) -> int:
+    """Apply the callbacks held for message_id (module docstring), in the order Meta sends them, and remove them.
+    The sender calls it right after it saves the id. Returns how many were held."""
+    held = sorted(db.mongo[PENDING].find({"message_id": message_id}),
+                  key=lambda h: CALLBACK_ORDER.index(h["status"]) if h.get("status") in CALLBACK_ORDER else 99)
+    for h in held:
+        if h.get("status") in CALLBACK_FIELDS:
+            _apply(db, message_id, h["status"], h.get("at") or now or utcnow(), h.get("error_code"))
+        db.mongo[PENDING].delete_one({"_id": h["_id"]})
+    return len(held)
+
+
+def record_status(db: Database, status: dict[str, Any], now: datetime) -> str:
+    """Record one status callback on its outbox row, once. Returns recorded, duplicate, late (a failure after
+    delivery: kept as delivered), held (no row has the message id yet: kept for the sender, module docstring) or
+    unknown (not a status we track)."""
+    message_id, kind = status.get("id"), status.get("status")
+    if not isinstance(message_id, str) or not message_id or len(message_id) > 256 or kind not in CALLBACK_FIELDS:
+        return "unknown"
+    at = _callback_time(status.get("timestamp"), now)
+    code = _error_code(status) if kind == "failed" else None
+    result = _apply(db, message_id, kind, at, code)
+    if result != "unknown":
+        return result
+    # Hold it, then try once more: the sender may have saved the id in between (module docstring).
+    _hold(db, message_id, kind, at, code, now)
+    result = _apply(db, message_id, kind, at, code)
+    if result == "unknown":
+        return "held"
+    db.mongo[PENDING].delete_one({"_id": f"{message_id}:{kind}"})
+    return result
+
+
 def record_statuses(db: Database, payload: Any, now: datetime | None = None) -> dict[str, int]:
     """Every status callback in a webhook call (Meta batches them), each recorded once. Messages from users (P4.4)
-    are not handled here. Returns how many were recorded, duplicate, late and unknown."""
+    are not handled here. Returns how many were recorded, duplicate, late, held and unknown."""
     now = now or utcnow()
-    counts = {"recorded": 0, "duplicate": 0, "late": 0, "unknown": 0}
+    counts = {"recorded": 0, "duplicate": 0, "late": 0, "held": 0, "unknown": 0}
     for status in _statuses(payload):
         counts[record_status(db, status, now)] += 1
     return counts

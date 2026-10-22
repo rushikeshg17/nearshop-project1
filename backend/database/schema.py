@@ -380,7 +380,8 @@ VALIDATORS: dict[str, dict] = {
     # recipient opted into, written in the notification's transaction, delivered by the send_notifications job. It
     # never holds the phone number; the template's variables (params) are cleared once the row is finished. Times
     # from notify (created_at) to the Cloud API's accept (seconds_to_sent) and to delivered (seconds_to_delivered).
-    # message_id is the Cloud API's id, which the status webhook names. Kept 30 days (TTL on created_at).
+    # message_id is the Cloud API's id, which the status webhook names. delivered_inferred: delivered_at was taken
+    # from a read callback because no delivered one came. Kept 30 days (TTL on created_at); deleted with the account.
     "notification_outbox": schema(
         ["notification_id", "user_id", "channel", "kind", "template", "language", "status", "attempts", "created_at",
          "next_attempt_at"],
@@ -392,7 +393,22 @@ VALIDATORS: dict[str, dict] = {
         message_id=STR_N, created_at=DATE, next_attempt_at=DATE, claimed_at=DATE_N, sent_at=DATE_N,
         wa_sent_at=DATE_N, delivered_at=DATE_N, read_at=DATE_N, failed_at=DATE_N, finished_at=DATE_N,
         seconds_to_sent=NUM_N, seconds_to_delivered=NUM_N, cost_estimate=NUM_N,
+        delivered_inferred={"bsonType": ["bool", "null"]},
     ),
+    # Status callbacks that came before the sender saved their message id (P4.3, app/services/whatsapp.py
+    # record_status): held here, one per message id and status, and applied once the id is saved. _id is
+    # "<message id>:<status>". No personal data: Meta's id, the status, its time and error code. The TTL index
+    # removes a row at expires_at (a callback for a message that is not a notification, such as a sign-in code,
+    # is never applied).
+    "whatsapp_status_pending": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "message_id", "status", "at", "received_at", "expires_at"],
+        "properties": {
+            "_id": {"bsonType": STR, "maxLength": 300}, "message_id": {"bsonType": STR, "maxLength": 256},
+            "status": {"enum": ["sent", "delivered", "read", "failed"]}, "at": {"bsonType": DATE},
+            "error_code": {"bsonType": STR_N, "maxLength": 40}, "received_at": {"bsonType": DATE},
+            "expires_at": {"bsonType": DATE},
+        },
+    }},
     # No validators: `counters` ({_id: collection name, seq}) and `text_embeddings` (binary vector cache).
     "counters": {},
     "text_embeddings": {},
@@ -564,6 +580,10 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("sent_at", A)], name="sent_at", sparse=True),
         IndexModel([("failed_at", A)], name="failed_at", sparse=True),
         IndexModel([("created_at", A)], expireAfterSeconds=OUTBOX_KEEP_SECONDS, name="created_ttl_30d"),
+    ],
+    "whatsapp_status_pending": [
+        IndexModel([("message_id", A)], name="message_id"),  # the sender's lookup once it saves an id
+        IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl"),
     ],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),

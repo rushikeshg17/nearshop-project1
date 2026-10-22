@@ -151,6 +151,8 @@ REVIEW_INTERNAL = ("decided_by", "decision_note", "report_count", "triaged_at", 
 REPLY_INTERNAL = ("decided_by", "decision_note", "report_count", "triaged_at", "author_id")
 # Which admin resolved a grievance (P3.8) is the team's record; the export shows the status and resolution.
 GRIEVANCE_INTERNAL = ("resolved_by",)
+# A WhatsApp outbox row (P4.3) in the export: what was sent and when, without the sender's bookkeeping.
+OUTBOX_INTERNAL = ("user_id", "buttons", "claimed_at", "next_attempt_at", "cost_estimate")
 
 
 def _review_out(doc: dict) -> dict:
@@ -190,6 +192,8 @@ def export_data(db: Database, user: User) -> dict:
         "review_reports": [_clean(d, ("reporter_id",)) for d in db.mongo["review_reports"].find(
             {"reporter_id": user.id}, sort=newest_first)],
         "notifications": find("notifications", {"user_id": user.id}),
+        "whatsapp_messages": [_clean(d, OUTBOX_INTERNAL) for d in db.mongo["notification_outbox"].find(
+            {"user_id": user.id}, sort=newest_first)],
         "grievances": [_clean(d, GRIEVANCE_INTERNAL) for d in db.mongo["grievances"].find(  # filed signed in
             {"user_id": user.id}, sort=newest_first)],
         "search_history": [_clean(d, ("user_id",)) for d in db.mongo["search_history"].find(
@@ -325,7 +329,7 @@ def request_deletion(db: Database, user: User, *, cancel_open: bool, now: dateti
 def anonymise(db: Database, user_id: int, now: datetime | None = None) -> None:
     """Remove the account's personal data in one transaction (plan section 8.5): the profile becomes
     "Deleted user" with no email, phone, password, home, nominee or sessions; optional consents are
-    withdrawn by new rows; notifications and search history are deleted; reviews keep their rating and lose
+    withdrawn by new rows; notifications, their WhatsApp outbox rows and search history are deleted; reviews keep their rating and lose
     their comment; review reports the user filed keep their reason and lose their note; reservations and orders stay for the shop without phone, address or note; sales lose the
     customer id. An owner's shops are hidden and their listings deactivated first."""
     now = now or utcnow()
@@ -349,6 +353,8 @@ def anonymise(db: Database, user_id: int, now: datetime | None = None) -> None:
         if withdrawn:
             db.mongo["consents"].insert_many(_consent_rows(db, user_id, withdrawn, now), session=db.session)
         db.notifications.delete_many({"user_id": user_id})
+        # Their WhatsApp outbox rows (P4.3): a queued one still holds the message text.
+        db.mongo["notification_outbox"].delete_many({"user_id": user_id}, session=db.session)
         db.search_history.delete_many({"user_id": user_id})
         db.reviews.update_many({"customer_id": user_id}, {"$set": {"comment": None}})
         # Reports the user filed (P3.6) stay, so a review's distinct-reporter count holds, without their note.
