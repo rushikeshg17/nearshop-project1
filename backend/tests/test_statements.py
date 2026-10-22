@@ -491,12 +491,143 @@ def test_owner_and_admin_endpoints(town, admin):
     summary = res.json()
     assert summary["built"] == 2 and summary["by_kind"] == {"shadow_bill": 2, "roi": 0}
     assert summary["sent"] == 2 and summary["failed"] == 0
+    # Delivery is measured over the active shops (the statements built), not over the statements sent.
+    assert summary["sent_pct"] == 100.0 and summary["delivered_pct"] == 0.0
     assert summary["replies"] == {"accurate": 2, "not_accurate": 1, "would_pay": 0, "not_now": 0}
     assert summary["answered_accurate"] == 1 and summary["accurate_share_pct"] == 50.0
     assert admin.get("/api/admin/statements").json()["month"] == KEY  # the latest month by default
     with TestClient(app) as c:
         login(c, owner.email)
         assert c.get("/api/admin/statements").status_code == 403
+
+
+# ---------------------------------------------------------------- review fixes
+
+
+def test_an_roi_statement_at_a_quarter_boundary_reports_the_quarter_that_ended_with_the_month(town):
+    db = town.db
+    owner = town.owner()
+    shop = town.shop(owner, "Quarter Shop")
+    customer = town.owner(phone=False)
+    # Paid from 1 Jan 2032 IST: the first quarter is January to March, which ends as March (the stated month) ends.
+    sub = plans.create_subscription(db, shop_ids=[shop.id], plan_code="growth", period="year", source="shop_paid",
+                                    actor=Actor(type="admin", id=1), reason="Paid for the test",
+                                    now=ist(2032, 1, 1, 0, 0))
+    for day in (5, 15, 25):
+        town.reserve(shop, customer, ist(2032, 2, day, 11))
+    town.reserve(shop, customer, ist(2032, 3, 20, 11))
+    town.reserve(shop, customer, ist(2032, 4, 1, 9))  # after the month: not in it
+    # By 10:30 IST on 1 Apr the subscriptions job has closed the quarter and started the next one.
+    plans.run_jobs(db, BUILD_AT)
+    assert plans.subscriptions(db).get(sub.id).quarters_done == 1
+    statements.build_month(db, YEAR, MONTH, BUILD_AT)
+    st = statement_of(db, shop)
+    assert st["kind"] == "roi"
+    g = st["guarantee"]
+    assert g["applies"] is True and g["customer_requests"] == 4 and g["met"] is True
+    p = statements.parts(st, shop.name, "en")
+    assert p["counts"].endswith(" Customer requests this quarter: 4.")
+    assert p["guarantee"].startswith(f"4 customer requests this quarter, {settings.plan_guarantee_min_requests} "
+                                     "needed: ")
+    # Mid-quarter, before the job closes anything, the same quarter is counted up to the month's end.
+    assert statements.guarantee_for_month(db, plans.subscriptions(db).get(sub.id), 2032, 4,
+                                          ist(2032, 5, 1, 10, 30))["customer_requests"] == 1
+
+
+def test_a_statement_cancelled_unsent_is_sent_again_by_template(town):
+    db = town.db
+    owner = town.owner()
+    shop = town.shop(owner, "Resend Shop")
+    # The owner wrote an hour before: the statement is routed in the window.
+    db.mongo[whatsapp.SESSIONS].insert_one({"_id": owner.id, "last_inbound_at": BUILD_AT - timedelta(hours=1),
+                                            "owner_inbound_at": BUILD_AT - timedelta(hours=1)})
+    statements.build_month(db, YEAR, MONTH, BUILD_AT)
+    st = statement_of(db, shop)
+    assert st["route"] == "in_window"
+    first = st["outbox_id"]
+    # The sender comes to it after the window closed.
+    db.mongo[whatsapp.OUTBOX].update_one({"_id": first}, {"$set": {"created_at": utcnow()}})
+    db.mongo[whatsapp.SESSIONS].update_one({"_id": owner.id}, {"$set": {
+        "last_inbound_at": utcnow() - timedelta(days=2), "owner_inbound_at": utcnow() - timedelta(days=2)}})
+    whatsapp.FAKE.reset()
+    assert whatsapp.send_due(db, client=whatsapp.FAKE)["cancelled"] == 1
+    assert db.mongo[whatsapp.OUTBOX].find_one({"_id": first})["error"] == "window_closed"
+    assert statements.sync_delivery(db) == 1
+    st = statement_of(db, shop)
+    assert st["outbox_id"] != first and st["route"] == "template" and st["delivery"] == "queued"
+    assert st["resends"] == 1
+    row = db.mongo[whatsapp.OUTBOX].find_one({"_id": st["outbox_id"]})
+    assert (row["template"], row["route"], row["status"]) == ("nearshop_shop_statement_free", "template", "queued")
+    assert row["buttons"] == [f"statement:{st['_id']}:{k}" for k in statements.REPLY_KINDS]
+    whatsapp.FAKE.reset()
+    assert whatsapp.send_due(db, client=whatsapp.FAKE)["sent"] == 1
+    [sent] = whatsapp.FAKE.sent
+    assert sent["template"] == "nearshop_shop_statement_free"
+    statements.sync_delivery(db)
+    assert statement_of(db, shop)["delivery"] == "sent"
+
+    # A row left unsent past STALE_AFTER is sent again too, but only RESEND_MAX times in all.
+    for n in range(2, statements.RESEND_MAX + 2):
+        row_id = statement_of(db, shop)["outbox_id"]
+        db.mongo[whatsapp.OUTBOX].update_one({"_id": row_id}, {"$set": {"status": "cancelled", "error": "stale"}})
+        db.mongo[statements.STATEMENTS].update_one({"_id": st["_id"]}, {"$set": {"delivery": "queued"}})
+        statements.sync_delivery(db)
+        after = statement_of(db, shop)
+        if n <= statements.RESEND_MAX:
+            assert after["resends"] == n and after["outbox_id"] != row_id and after["delivery"] == "queued"
+        else:
+            assert after["resends"] == statements.RESEND_MAX and after["outbox_id"] == row_id
+            assert after["delivery"] == "cancelled" and after["delivery_error"] == "stale"
+
+
+def test_sync_skips_old_statements_and_closes_those_whose_outbox_row_is_gone(town):
+    db = town.db
+    shops = [town.shop(town.owner(), f"Sync Shop {i}") for i in range(2)]
+    statements.build_month(db, YEAR, MONTH, BUILD_AT)
+    gone, old = (statement_of(db, s) for s in shops)
+    db.mongo[whatsapp.OUTBOX].delete_one({"_id": gone["outbox_id"]})  # removed by its TTL
+    db.mongo[statements.STATEMENTS].update_one({"_id": old["_id"]}, {"$set": {
+        "built_at": utcnow() - timedelta(days=statements.SYNC_DAYS + 1)}})
+    db.mongo[whatsapp.OUTBOX].update_one({"_id": old["outbox_id"]}, {"$set": {"status": "sent"}})
+    assert statements.sync_delivery(db) == 0
+    assert statement_of(db, shops[0])["delivery_final"] is True
+    assert statement_of(db, shops[1])["delivery"] == "queued"  # too old to sync: left as it was
+    assert db.mongo[statements.STATEMENTS].count_documents({
+        "_id": {"$in": [gone["_id"], old["_id"]]}, "delivery": "queued", "delivery_final": {"$ne": True},
+        "built_at": {"$gte": utcnow() - timedelta(days=statements.SYNC_DAYS)}}) == 0
+
+
+def test_delivered_pct_is_over_the_statements_built(town):
+    db = town.db
+    whatsapp_shop = town.shop(town.owner(), "Delivered Shop")
+    town.shop(town.owner(phone=False), "App Only Delivered Shop")  # in the app only: built, never sent
+    statements.build_month(db, YEAR, MONTH, BUILD_AT)
+    whatsapp.FAKE.reset()
+    assert whatsapp.send_due(db, client=whatsapp.FAKE)["sent"] == 1
+    db.mongo[whatsapp.OUTBOX].update_one({"_id": statement_of(db, whatsapp_shop)["outbox_id"]},
+                                         {"$set": {"status": "delivered"}})
+    summary = statements.admin_summary(db, KEY)
+    assert (summary["built"], summary["sent"], summary["delivered"]) == (2, 1, 1)
+    assert summary["sent_pct"] == 50.0 and summary["delivered_pct"] == 50.0
+    assert summary["delivered_of_sent_pct"] == 100.0
+
+
+def test_not_now_typed_to_an_roi_statement_goes_to_the_stock_bot(town):
+    db = town.db
+    owner = town.owner()
+    shop = town.shop(owner, "ROI Typed Shop")
+    plans.create_subscription(db, shop_ids=[shop.id], plan_code="growth", period="year", source="shop_paid",
+                              actor=Actor(type="admin", id=1), reason="Paid for the test", now=ist(2032, 3, 1, 9))
+    statements.build_month(db, YEAR, MONTH, BUILD_AT)
+    st = statement_of(db, shop)
+    assert st["kind"] == "roi"
+    at = BUILD_AT + timedelta(hours=1)
+    for words_typed in ("Not now", "I'd pay"):
+        reply = text(db, owner.phone, at, words_typed)
+        assert reply != "We could not find that statement for your shop."
+        assert reply.startswith("To update your stock on NearShop")
+    assert text(db, owner.phone, at, "Accurate") == "Thank you. We have recorded that your statement is accurate."
+    assert {r["kind"] for r in db.mongo[statements.REPLIES].find({"statement_id": st["_id"]})} == {"accurate"}
 
 
 # ---------------------------------------------------------------- the words

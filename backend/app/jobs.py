@@ -62,7 +62,8 @@ sends the previous IST month's statement to every active shop (app/services/stat
 before billing starts and for Free shops, an ROI statement for paying shops, through notify and the WhatsApp outbox);
 the month it ran for is kept in the lease's last_result (ran_for), like lead_counts, and a re-run skips every shop
 that has its statement, so none is sent twice. Every tick it also copies the outbox rows' delivery statuses onto
-the statements still queued or sent (sync_delivery): one indexed query when there are none.
+the statements still queued or sent, built in the last 40 days (sync_delivery), and sends again by template a
+statement the sender cancelled before sending it: one indexed query when there are none.
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -532,7 +533,7 @@ def statements(clock: Clock = utcnow) -> dict[str, Any]:
     year, month = service.statement_month(now)
     key = f"{year:04d}-{month:02d}"
     db = Database()
-    synced = service.sync_delivery(db)
+    synced = service.sync_delivery(db, now=now)
     last = (db.mongo[LEASES].find_one({"_id": STATEMENTS_JOB}, {"last_result": 1}) or {}).get("last_result") or {}
     if last.get("ok") is True and last.get("ran_for") == key:
         return {**{k: v for k, v in last.items() if k not in ("ok", "synced")}, "synced": synced}

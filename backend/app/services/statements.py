@@ -24,8 +24,10 @@ plan (plans.effective_plan) when the statement is built:
     the owner's billing page, where a P9.5 payment request for an advance (or, after billing starts, a plan) is made.
     A shop that already paid in advance is told when its plan starts instead, with no link.
   * roi: a shop whose plan has the roi_statement entitlement (Growth and above): the same counts with the quarter's
-    customer requests, the plan and its end date, and the quarter's outcome-guarantee progress
-    (plans.guarantee_progress).
+    customer requests, the plan and its end date, and the outcome-guarantee progress (guarantee_for_month) of the
+    paid quarter that holds the stated month's end, counted up to that end: by 10:00 on the 1st the subscriptions job
+    may already have closed a quarter that ended with the month, and the statement then reports that quarter, not
+    the new one.
 
 The statement, its in-app notification (notify, kind statement_free or statement_roi) and, when the owner can get
 WhatsApp, its outbox row are written in one transaction. The unique index on (shop_id, month) makes a re-run for the
@@ -40,8 +42,12 @@ inside it instead (route in_window, category service: no charge), which asks for
 owner without a verified phone or the WhatsApp consent gets the statement in the app only (delivery not_sent).
 
 Each statement keeps its delivery status: not_sent, queued, sent, delivered (or read), failed or cancelled.
-sync_delivery copies it from the outbox row on every tick of the statements job (the row itself is removed after 30
-days), and the admin summary syncs its month before counting.
+sync_delivery copies it from the outbox row on every tick of the statements job, for the statements built in the last
+SYNC_DAYS, newest first, and the admin summary syncs its month before counting. When the row is gone (outbox rows are
+removed after 30 days) the last status copied stands and the statement is no longer synced (delivery_final). A row
+the sender cancelled before sending it (RESEND_ERRORS: the window closed before an in-window message went, or the row
+was not sent within whatsapp.STALE_AFTER) is replaced with a new row by the approved template, up to RESEND_MAX
+times and within RESEND_WITHIN of the build (resends): a shop does not miss its month because of a late sender.
 
 Replies
 -------
@@ -52,14 +58,16 @@ that reply as its reason (REASON_MAX characters). I'd pay makes a P9.5 payment r
 (billing.create_request) and answers with NearShop's UPI ID, the amount and the request number to use as the note,
 and the billing page link; when no request can be made (billing not set up, or refused) it answers with the link.
 A reply typed inside the window (REPLY_WORDS, English or Kannada) answers the shop's latest statement built in the
-last REPLY_WINDOW.
+last REPLY_WINDOW, when that statement has the reply (an ROI statement has no I'd pay or Not now: the words then go
+to the stock bot like any other text).
 
 Views
 -----
 owner_statements gives the shop's statements by month with their counts, and the current month so far
 (GET /api/owner/statements); admin_summary gives, for a month, the statements built, sent, delivered and failed, the
 replies by kind, and the share of active shops (the statements built) whose answer was Accurate, the B25 readout
-measure (GET /api/admin/statements). A shop that answered both Accurate and Not accurate counts by its later answer.
+measure (GET /api/admin/statements). sent_pct and delivered_pct are over the statements built (the active shops),
+the release targets of 100% and 95%; delivered_of_sent_pct is over the statements sent. A shop that answered both Accurate and Not accurate counts by its later answer.
 """
 from __future__ import annotations
 
@@ -76,7 +84,7 @@ from app.core.database import Database, utcnow
 from app.core.errors import AppError, NotFound
 from app.models import Shop, User
 from app.models.billing import Actor, Period, PlanCode, SubscriptionStatus
-from app.models.core import live_shop_filter
+from app.models.core import live_shop_filter, months_after
 from app.services import billing, demand_report, leads, plans, whatsapp
 from app.services import notification_text as words
 from app.services.notifications import notify
@@ -110,6 +118,10 @@ REPLY_WINDOW = timedelta(days=35)
 KEEP_YEARS = leads.COUNTS_KEEP_YEARS  # business records, kept as long as the lead counts they state
 LINK = "/owner/statements"
 SYNC_BATCH = 500
+SYNC_DAYS = 40  # outbox rows live 30 days from their creation, and a resent row is created up to RESEND_WITHIN later
+RESEND_ERRORS = ("window_closed", "stale")  # cancelled by the sender before any attempt: sent again by template
+RESEND_MAX = 2
+RESEND_WITHIN = timedelta(days=3)
 # Seeded accounts: x@nearshop.demo and <shop>@shops.nearshop.demo (as app/ai/anomaly.py and admin_tasks.py).
 DEMO_EMAIL_PATTERN = r"@([^@]+\.)?nearshop\.demo$"
 # A demand item that names money is left out: a statement never states a rupee value beyond its price lines.
@@ -209,7 +221,7 @@ def compose(db: Database, shop: Shop, year: int, month: int, now: datetime) -> d
         "plan": None, "guarantee": None}
     if roi:
         sub = plans.subscriptions(db).get(effective["subscription_id"])
-        progress = plans.guarantee_progress(db, sub, now)
+        progress = guarantee_for_month(db, sub, year, month, now)
         doc["plan"] = {"code": effective["code"], "name": effective["name"], "ends_at": effective["ends_at"]}
         doc["guarantee"] = {k: progress[k] for k in ("applies", "customer_requests", "needed", "met", "credit_months")
                             if k in progress}
@@ -218,6 +230,30 @@ def compose(db: Database, shop: Shop, year: int, month: int, now: datetime) -> d
         if doc["price"] is not None and not doc["price"]["advance_paid"]:
             doc["pay_link"] = site_link(billing.BILLING_LINK)
     return doc
+
+
+def guarantee_for_month(db: Database, sub: Any, year: int, month: int, now: datetime) -> dict[str, Any]:
+    """The outcome-guarantee progress of the paid quarter that holds the end of the stated month, counted up to that
+    end (module docstring). When the subscriptions job has already moved the cursor past that quarter, it is the
+    quarter before the cursor's; when that quarter is no longer on the cursor (a new paid term began), the guarantee
+    is reported as not applying rather than as the new quarter's."""
+    _, month_end = leads.month_bounds(year, month)
+    until = min(month_end, now)
+    progress = plans.guarantee_progress(db, sub, until)
+    if not progress.get("applies"):
+        return progress
+    term = sub.paid_terms[0]
+    q_start = months_after(term.start, plans.QUARTER_MONTHS * sub.quarters_done)
+    if q_start < until:
+        return progress  # the cursor's quarter holds the month's end: counted up to it
+    if sub.quarters_done == 0:
+        return {"applies": False, "needed": progress["needed"]}
+    p_start = months_after(term.start, plans.QUARTER_MONTHS * (sub.quarters_done - 1))
+    if not p_start < until <= q_start:
+        return {"applies": False, "needed": progress["needed"]}
+    requests = plans.quarter_requests(db, sub.shop_ids, p_start, until)
+    return {**progress, "quarter_start": _iso(p_start), "quarter_end": _iso(q_start), "customer_requests": requests,
+            "met": requests >= progress["needed"]}
 
 
 def site_link(path: str) -> str:
@@ -345,13 +381,17 @@ def build_month(db: Database, year: int, month: int, now: datetime | None = None
     return result
 
 
-def sync_delivery(db: Database, month: str | None = None) -> int:
-    """Copy the outbox rows' statuses onto statements still queued or sent (module docstring). Returns how many
-    statements changed."""
-    match: dict[str, Any] = {"delivery": {"$in": list(OPEN_DELIVERY)}, "outbox_id": {"$ne": None}}
+def sync_delivery(db: Database, month: str | None = None, now: datetime | None = None) -> int:
+    """Copy the outbox rows' statuses onto statements still queued or sent, built in the last SYNC_DAYS, newest first
+    (module docstring); a statement whose row is gone is final, and one whose row the sender cancelled before sending
+    is sent again by template. Returns how many statements changed."""
+    now = now or utcnow()
+    match: dict[str, Any] = {"delivery": {"$in": list(OPEN_DELIVERY)}, "outbox_id": {"$ne": None},
+                             "delivery_final": {"$ne": True}, "built_at": {"$gte": now - timedelta(days=SYNC_DAYS)}}
     if month is not None:
         match["month"] = month
-    rows = list(db.mongo[STATEMENTS].find(match, {"outbox_id": 1, "delivery": 1}, limit=SYNC_BATCH))
+    rows = list(db.mongo[STATEMENTS].find(match, {"outbox_id": 1, "delivery": 1, "built_at": 1, "resends": 1},
+                                          sort=[("built_at", -1), ("_id", -1)], limit=SYNC_BATCH))
     if not rows:
         return 0
     outbox = {r["_id"]: r for r in db.mongo[whatsapp.OUTBOX].find(
@@ -360,9 +400,15 @@ def sync_delivery(db: Database, month: str | None = None) -> int:
     changed = 0
     for st in rows:
         row = outbox.get(st["outbox_id"])
-        if row is None:
-            continue  # removed after 30 days: the last status copied stands
+        if row is None:  # removed after 30 days: the last status copied stands, and is no longer synced
+            db.mongo[STATEMENTS].update_one({"_id": st["_id"], "outbox_id": st["outbox_id"]},
+                                            {"$set": {"delivery_final": True}})
+            continue
         status = FROM_OUTBOX.get(row.get("status"), st["delivery"])
+        if (status == "cancelled" and row.get("error") in RESEND_ERRORS and st.get("resends", 0) < RESEND_MAX
+                and now - st["built_at"] <= RESEND_WITHIN and resend(db, st["_id"], st["outbox_id"], now)):
+            changed += 1
+            continue
         fields = {"delivery": status, **{k: row.get(k) for k in ("sent_at", "delivered_at", "failed_at")
                                          if row.get(k) is not None}}
         if status in ("failed", "cancelled"):
@@ -371,6 +417,36 @@ def sync_delivery(db: Database, month: str | None = None) -> int:
                                            {"$set": fields}).modified_count and status != st["delivery"]:
             changed += 1
     return changed
+
+
+def resend(db: Database, statement_id: int, old_outbox_id: int, now: datetime) -> bool:
+    """A new outbox row for a statement whose row the sender cancelled before sending it (RESEND_ERRORS): the same
+    variables and buttons, by the approved template (the window may have closed), queued now. False when another run
+    did it first. The sender checks again that the owner can get WhatsApp."""
+
+    def write() -> bool:
+        st = db.mongo[STATEMENTS].find_one({"_id": statement_id, "outbox_id": old_outbox_id}, session=db.session)
+        old = db.mongo[whatsapp.OUTBOX].find_one({"_id": old_outbox_id}, session=db.session)
+        shop = db.shops.get(st["shop_id"]) if st is not None else None
+        if st is None or old is None or shop is None:
+            return False
+        kind = NOTIFICATION_KINDS[st["kind"]]
+        template = whatsapp.TEMPLATES[kind]
+        row_id = db.next_id(whatsapp.OUTBOX)
+        db.mongo[whatsapp.OUTBOX].insert_one({
+            "_id": row_id, "notification_id": old["notification_id"], "user_id": old["user_id"],
+            "channel": old["channel"], "kind": kind, "template": template.name, "language": old["language"],
+            "params": template_params(st, shop.name, st["language"]), "subject": f"statement:{statement_id}",
+            "route": whatsapp.ROUTE_TEMPLATE, "category": template.category,
+            "buttons": [f"{PAYLOAD_PREFIX}{statement_id}:{b}" for b in BUTTONS[st["kind"]]],
+            "status": "queued", "attempts": 0, "created_at": now, "next_attempt_at": now}, session=db.session)
+        db.mongo[STATEMENTS].update_one({"_id": statement_id}, {
+            "$set": {"outbox_id": row_id, "route": whatsapp.ROUTE_TEMPLATE, "delivery": "queued",
+                     "delivery_error": None},
+            "$inc": {"resends": 1}}, session=db.session)
+        return True
+
+    return db.transaction(write)
 
 
 # ---------------------------------------------------------------- replies
@@ -464,8 +540,10 @@ def answer_text(db: Database, owner: User, shop: Shop, message: str, now: dateti
     kind = _reply_word(message)
     if kind is not None:
         latest = db.mongo[STATEMENTS].find_one({"shop_id": shop.id, "built_at": {"$gte": now - REPLY_WINDOW}},
-                                               {"_id": 1}, sort=[("month", -1)])
-        if latest is not None:
+                                               {"_id": 1, "kind": 1}, sort=[("month", -1)])
+        # A reply the latest statement has no button for (I'd pay or Not now to an ROI statement) is not an answer
+        # to it: the text goes on like any other.
+        if latest is not None and kind in BUTTONS[latest["kind"]]:
             return answer(db, owner, shop, latest["_id"], kind, now)
     session = db.mongo[whatsapp.SESSIONS].find_one({"_id": owner.id}, {"statement_reason": 1}) or {}
     waiting = session.get("statement_reason")
@@ -537,8 +615,9 @@ def latest_month(db: Database) -> str | None:
 
 def admin_summary(db: Database, month: str) -> dict[str, Any]:
     """For a month: statements built (one per active shop), by kind and by delivery status (sent counts every
-    statement Meta accepted, delivered included), replies by kind, and the share of active shops whose answer was
-    Accurate (the B25 readout: at least 60%)."""
+    statement Meta accepted, delivered included), the shares of the statements built that were sent and delivered
+    (the release targets: 100% and 95%), replies by kind, and the share of active shops whose answer was Accurate
+    (the B25 readout: at least 60%)."""
     sync_delivery(db, month)
     rows = list(db.mongo[STATEMENTS].find({"month": month}, {"kind": 1, "delivery": 1}))
     by_delivery = {d: 0 for d in DELIVERY}
@@ -561,7 +640,9 @@ def admin_summary(db: Database, month: str) -> dict[str, Any]:
     sent = by_delivery["sent"] + by_delivery["delivered"]
     return {"month": month, "built": built, "by_kind": by_kind, "sent": sent, "delivered": by_delivery["delivered"],
             "failed": by_delivery["failed"], "by_delivery": by_delivery,
-            "delivered_pct": round(100 * by_delivery["delivered"] / sent, 1) if sent else None,
+            "sent_pct": round(100 * sent / built, 1) if built else None,
+            "delivered_pct": round(100 * by_delivery["delivered"] / built, 1) if built else None,
+            "delivered_of_sent_pct": round(100 * by_delivery["delivered"] / sent, 1) if sent else None,
             "replies": replies, "not_accurate_reasons": reasons, "answered_accurate": accurate,
             "accurate_share_pct": round(100 * accurate / built, 1) if built else None,
             "readout_target_pct": 60}

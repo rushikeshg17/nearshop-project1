@@ -774,7 +774,9 @@ VALIDATORS: dict[str, dict] = {
             "product_ids": {"bsonType": "array", "maxItems": 20, "items": {"bsonType": INT}}}}},
     # Monthly statements (P9.9, app/services/statements.py; plan section 8.18): one row per shop and IST month, the
     # counts it stated and its shadow-bill price or ROI plan lines; counts only, never a rupee value of the shop's sales.
-    # delivery mirrors its WhatsApp outbox row. Business records, kept 8 years like lead_counts (keep_until).
+    # delivery mirrors its WhatsApp outbox row (resends: rows sent again by template after the sender cancelled one
+    # unsent; delivery_final: the row is gone, so the status no longer changes). Business records, kept 8 years like
+    # lead_counts (keep_until).
     "statements": schema(
         ["shop_id", "owner_id", "month", "kind", "counts", "language", "delivery", "built_at", "keep_until"],
         shop_id=INT, owner_id=INT, month={"bsonType": STR, "pattern": "^\\d{4}-(0[1-9]|1[0-2])$"},
@@ -788,6 +790,7 @@ VALIDATORS: dict[str, dict] = {
         language={"enum": list(LANGUAGES)}, notification_id=INT_N, outbox_id=INT_N,
         route={"enum": ["template", "in_window", None]}, delivery={"enum": list(statements.DELIVERY)},
         delivery_error=STR_N, sent_at=DATE_N, delivered_at=DATE_N, failed_at=DATE_N, built_at=DATE, keep_until=DATE,
+        resends={"bsonType": INT, "minimum": 0}, delivery_final={"bsonType": [BOOL, "null"]},
     ),
     # The shops' replies to their statements (P9.9): each reply kind at most once per statement; a Not accurate reply
     # carries the reason the owner's next message gave, and an I'd pay reply the payment request it made.
