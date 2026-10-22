@@ -225,7 +225,10 @@
       "goneBody": "",
       "searchNearby": "",
       "compareTitle": "",
-      "shopsList": "",
+      "shopsList": {
+        "one": "",
+        "other": ""
+      },
       "onlyThisShop": "",
       "typicalPrice": "",
       "columns": {
@@ -244,8 +247,14 @@
       "buyersShare": "",
       "reviewsTitle": "",
       "reviewsEmpty": "",
-      "allReviews": "",
-      "sold30d": "",
+      "allReviews": {
+        "one": "",
+        "other": ""
+      },
+      "sold30d": {
+        "one": "",
+        "other": ""
+      },
       "youReserved": "",
       "reserve": "",
       "requestDelivery": "",
@@ -278,7 +287,10 @@
       "directions": "",
       "call": "",
       "shelfTitle": "",
-      "shelfCount": "",
+      "shelfCount": {
+        "one": "",
+        "other": ""
+      },
       "inStockOnly": "",
       "searchShop": "",
       "all": "",
@@ -290,7 +302,10 @@
     "trust": {
       "inventoryUpdated": "",
       "notYet": "",
-      "updateDays": "",
+      "updateDays": {
+        "one": "",
+        "other": ""
+      },
       "noUpdatesWeek": "",
       "reservationsConfirmed": "",
       "confirmedOf": "",
@@ -298,7 +313,10 @@
       "acceptance": "",
       "noRequests": "",
       "typicalConfirmation": "",
-      "minutes": "",
+      "minutes": {
+        "one": "",
+        "other": ""
+      },
       "noData": "",
       "confirmationSub": "",
       "rating": "",
@@ -313,7 +331,15 @@
         "other": ""
       },
       "reviewsCompletedOnly": "",
-      "fulfilment": ""
+      "fulfilment": "",
+      "fulfilmentDelivered": {
+        "one": "",
+        "other": ""
+      },
+      "fulfilmentCancelled": {
+        "one": "",
+        "other": ""
+      }
     }
   }
 }

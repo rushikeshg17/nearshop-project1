@@ -221,8 +221,9 @@ export function SearchView() {
         {/* AI hint / corrections */}
         {first?.corrected_from && (
           <p className="mt-3 animate-in text-sm duration-300 fade-in">
-            {richText(t("discovery.search.corrected", { original: first.corrected_from }), {
+            {richText(t("discovery.search.corrected"), {
               query: <span className="font-medium">{first.normalized_query}</span>,
+              original: first.corrected_from,
             })}
           </p>
         )}

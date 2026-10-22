@@ -22,7 +22,7 @@ import { useDebounce } from "@/hooks/use-debounce";
 import { useMeta } from "@/hooks/use-session";
 import { api, ApiError } from "@/lib/api";
 import { formatDistance, formatNumber, formatPrice, travelTime, weekdayName } from "@/lib/format";
-import { richText } from "@/lib/i18n";
+import { plural, richText } from "@/lib/i18n";
 import { useLocation } from "@/lib/location";
 import type { Listing, Review, ShopDetail } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -165,7 +165,7 @@ export function ShopView({ slug, initial }: { slug: string; initial: ShopDetail 
             <div>
               <h2 className="text-xl font-semibold">{t("discovery.shop.shelfTitle")}</h2>
               <p className="text-sm text-muted-foreground">
-                {t("discovery.shop.shelfCount", {
+                {t(`discovery.shop.shelfCount.${plural(language, s.listing_counts?.total ?? 0)}`, {
                   inStock: formatNumber(s.listing_counts?.in_stock ?? 0),
                   total: formatNumber(s.listing_counts?.total ?? 0),
                 })}

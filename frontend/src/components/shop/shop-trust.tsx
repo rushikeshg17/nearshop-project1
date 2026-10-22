@@ -28,7 +28,7 @@ export function ShopTrust({ r, className }: { r: Reliability; className?: string
       label: t("discovery.trust.inventoryUpdated"),
       value: r.inventory_updated_at ? timeAgo(r.inventory_updated_at, now, language) : t("discovery.trust.notYet"),
       sub: r.inventory_update_days_7d
-        ? t("discovery.trust.updateDays", { count: r.inventory_update_days_7d })
+        ? t(`discovery.trust.updateDays.${plural(language, r.inventory_update_days_7d)}`, { count: r.inventory_update_days_7d })
         : t("discovery.trust.noUpdatesWeek"),
       good: r.frequently_updated,
     },
@@ -54,7 +54,9 @@ export function ShopTrust({ r, className }: { r: Reliability; className?: string
       label: t("discovery.trust.typicalConfirmation"),
       value:
         r.median_response_minutes !== null
-          ? t("discovery.trust.minutes", { count: Math.max(1, r.median_response_minutes) })
+          ? t(`discovery.trust.minutes.${plural(language, Math.max(1, r.median_response_minutes))}`, {
+              count: Math.max(1, r.median_response_minutes),
+            })
           : t("discovery.trust.noData"),
       sub: t("discovery.trust.confirmationSub"),
       good: (r.median_response_minutes ?? 99) <= 10,
@@ -94,8 +96,12 @@ export function ShopTrust({ r, className }: { r: Reliability; className?: string
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Truck className="size-3.5" />
           {t("discovery.trust.fulfilment", {
-            delivered: formatNumber(r.orders_delivered_90d),
-            cancelled: formatNumber(r.shop_cancellations_90d),
+            delivered: t(`discovery.trust.fulfilmentDelivered.${plural(language, r.orders_delivered_90d)}`, {
+              count: formatNumber(r.orders_delivered_90d),
+            }),
+            cancelled: t(`discovery.trust.fulfilmentCancelled.${plural(language, r.shop_cancellations_90d)}`, {
+              count: formatNumber(r.shop_cancellations_90d),
+            }),
           })}
         </p>
       )}

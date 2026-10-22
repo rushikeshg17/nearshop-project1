@@ -33,6 +33,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useMe } from "@/hooks/use-session";
 import { api, ApiError } from "@/lib/api";
 import { formatDistance, formatNumber, formatPrice, travelTime, weekdayName } from "@/lib/format";
+import { plural } from "@/lib/i18n";
 import { useLocation } from "@/lib/location";
 import type { ProductDetail, Recommendation } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -201,7 +202,9 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
             <p className="mt-1 text-sm text-muted-foreground">
               {live &&
                 (live.other_offers.length
-                  ? t("discovery.product.shopsList", { count: formatNumber(live.other_offers.length + 1) })
+                  ? t(`discovery.product.shopsList.${plural(language, live.other_offers.length + 1)}`, {
+                      count: formatNumber(live.other_offers.length + 1),
+                    })
                   : t("discovery.product.onlyThisShop"))}
               {insight?.median && ` ${t("discovery.product.typicalPrice", { price: formatPrice(insight.median) })}`}
             </p>
@@ -290,7 +293,7 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
             </div>
             {shop.rating_count > p.reviews.length && (
               <Link href={`/shops/${shop.slug}#reviews`} className="mt-2 inline-flex items-center gap-1 text-sm font-medium hover:underline">
-                {t("discovery.product.allReviews", { count: formatNumber(shop.rating_count) })} <ArrowRight className="size-3.5" />
+                {t(`discovery.product.allReviews.${plural(language, shop.rating_count)}`, { count: formatNumber(shop.rating_count) })} <ArrowRight className="size-3.5" />
               </Link>
             )}
           </section>
@@ -311,7 +314,7 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
               <Freshness at={p.stock_updated_at} />
             </div>
             {p.sold_last_30d > 0 && (
-              <p className="mt-2 text-xs text-muted-foreground">{t("discovery.product.sold30d", { count: formatNumber(p.sold_last_30d) })}</p>
+              <p className="mt-2 text-xs text-muted-foreground">{t(`discovery.product.sold30d.${plural(language, p.sold_last_30d)}`, { count: formatNumber(p.sold_last_30d) })}</p>
             )}
 
             {p.my_reservation ? (

@@ -225,7 +225,10 @@
       "goneBody": "The shop may have removed it. Search to find it elsewhere nearby.",
       "searchNearby": "Search nearby",
       "compareTitle": "Compare shops nearby",
-      "shopsList": "{count} shops list this item.",
+      "shopsList": {
+        "one": "{count} shop lists this item.",
+        "other": "{count} shops list this item."
+      },
       "onlyThisShop": "Only this shop lists this item right now.",
       "typicalPrice": "Typical price {price}.",
       "columns": {
@@ -244,8 +247,14 @@
       "buyersShare": "{percent}% of buyers",
       "reviewsTitle": "What customers say about {shop}",
       "reviewsEmpty": "No reviews yet. Reviews come only from completed pickups and deliveries.",
-      "allReviews": "All {count} reviews",
-      "sold30d": "{count} sold here in the last 30 days",
+      "allReviews": {
+        "one": "All {count} review",
+        "other": "All {count} reviews"
+      },
+      "sold30d": {
+        "one": "{count} sold here in the last 30 days",
+        "other": "{count} sold here in the last 30 days"
+      },
       "youReserved": "You reserved this · {code}",
       "reserve": "Reserve for pickup",
       "requestDelivery": "Request delivery",
@@ -256,7 +265,7 @@
       "free": "free",
       "hintPayAtShop": "Pay at the shop. No online payment.",
       "hours": "Hours {hours}",
-      "closedOn": "closed {day}s",
+      "closedOn": "closed every {day}",
       "directions": "Directions",
       "callShop": "Call shop",
       "trustTitle": "Why you can trust this listing",
@@ -268,7 +277,7 @@
       "notFoundBody": "It may have paused its listing.",
       "browseShops": "Browse shops",
       "stockUpdated": "Stock updated",
-      "closedOn": "closed {day}s",
+      "closedOn": "closed every {day}",
       "pickupHold": "Pickup: items held {minutes} min after confirming",
       "delivers": "Delivers within {radius} km · {fee}",
       "deliversFreeAbove": "Delivers within {radius} km · {fee}, free above {threshold}",
@@ -278,7 +287,10 @@
       "directions": "Directions",
       "call": "Call",
       "shelfTitle": "On the shelf",
-      "shelfCount": "{inStock} of {total} items in stock right now",
+      "shelfCount": {
+        "one": "{inStock} of {total} item in stock right now",
+        "other": "{inStock} of {total} items in stock right now"
+      },
       "inStockOnly": "In stock only",
       "searchShop": "Search {shop}",
       "all": "All",
@@ -290,7 +302,10 @@
     "trust": {
       "inventoryUpdated": "Inventory updated",
       "notYet": "Not yet",
-      "updateDays": "on {count} of the last 7 days",
+      "updateDays": {
+        "one": "on {count} of the last 7 days",
+        "other": "on {count} of the last 7 days"
+      },
       "noUpdatesWeek": "No updates this week",
       "reservationsConfirmed": "Reservations confirmed",
       "confirmedOf": "{confirmed} of {requests}",
@@ -298,7 +313,10 @@
       "acceptance": "{percent}% in the last 90 days",
       "noRequests": "No requests yet",
       "typicalConfirmation": "Typical confirmation",
-      "minutes": "{count} min",
+      "minutes": {
+        "one": "{count} min",
+        "other": "{count} min"
+      },
       "noData": "No data",
       "confirmationSub": "from request to 'held for you'",
       "rating": "Customer rating",
@@ -313,7 +331,15 @@
         "other": "{count} verified purchases, accuracy {accuracy}"
       },
       "reviewsCompletedOnly": "Reviews come from completed purchases only",
-      "fulfilment": "{delivered} deliveries completed and {cancelled} cancelled by the shop in the last 90 days."
+      "fulfilment": "{delivered} and {cancelled} by the shop in the last 90 days.",
+      "fulfilmentDelivered": {
+        "one": "{count} delivery completed",
+        "other": "{count} deliveries completed"
+      },
+      "fulfilmentCancelled": {
+        "one": "{count} cancelled",
+        "other": "{count} cancelled"
+      }
     }
   }
 }
