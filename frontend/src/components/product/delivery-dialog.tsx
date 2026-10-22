@@ -1,7 +1,8 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bike, Loader2, MapPin } from "lucide-react";
+import { Bike, Loader2, MapPin, ReceiptText } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -19,6 +20,7 @@ import { api } from "@/lib/api";
 import { formatDistance, formatPrice } from "@/lib/format";
 import { useLocation } from "@/lib/location";
 import type { DeliveryQuote, Order, ProductDetail } from "@/lib/types";
+import { REFUND_POLICY_HREF, UPI_REFUND_DAYS } from "@/lib/upi";
 
 export function DeliveryDialog({ product, open, onOpenChange }: { product: ProductDetail; open: boolean; onOpenChange: (o: boolean) => void }) {
   const router = useRouter();
@@ -50,7 +52,7 @@ export function DeliveryDialog({ product, open, onOpenChange }: { product: Produ
       }),
     onSuccess: (o) => {
       qc.invalidateQueries({ queryKey: ["product", product.id] });
-      toast.success(`Order ${o.code} sent to ${product.shop.name}`, { description: "Pay cash when it arrives." });
+      toast.success(`Order ${o.code} sent to ${product.shop.name}`, { description: "Pay the shop when it arrives." });
       onOpenChange(false);
       router.push(`/account/orders/${o.id}`);
     },
@@ -65,7 +67,7 @@ export function DeliveryDialog({ product, open, onOpenChange }: { product: Produ
       open={open}
       onOpenChange={onOpenChange}
       title="Request delivery"
-      description={`${product.shop.name} delivers this themselves. Cash on delivery.`}
+      description={`${product.shop.name} delivers this themselves. Pay the shop on delivery, in cash or by UPI if it takes UPI.`}
       footer={
         <Button size="lg" className="h-11 w-full" disabled={!canSubmit} onClick={() => place.mutate()}>
           {place.isPending ? <Loader2 className="animate-spin" /> : <Bike />}
@@ -130,6 +132,21 @@ export function DeliveryDialog({ product, open, onOpenChange }: { product: Produ
             <Input id="dnote" value={note} onChange={(e) => setNote(e.target.value.slice(0, 300))} placeholder="Call before coming" />
           </div>
         </div>
+
+        {/* Shown before the order is placed (plan check 9.5). */}
+        <section aria-labelledby="delivery-policy-title" className="flex gap-2.5 rounded-xl border p-3 text-xs text-muted-foreground">
+          <ReceiptText className="mt-0.5 size-4 shrink-0" />
+          <div>
+            <h3 id="delivery-policy-title" className="text-sm font-medium text-foreground">Cancellation and refunds</h3>
+            <p className="mt-0.5">
+              Free cancellation before dispatch. If you paid the shop directly by UPI and the order is cancelled, the shop
+              refunds you within {UPI_REFUND_DAYS} days under its agreement with NearShop.{" "}
+              <Link href={REFUND_POLICY_HREF} target="_blank" className="font-medium text-foreground underline underline-offset-4">
+                Read the cancellation and refund policy
+              </Link>
+            </p>
+          </div>
+        </section>
       </div>
     </ResponsiveDialog>
   );

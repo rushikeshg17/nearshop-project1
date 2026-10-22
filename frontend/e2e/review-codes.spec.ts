@@ -9,11 +9,13 @@ import { type APIRequestContext, type Browser, expect, type Page, test as base }
  *    code dialog and the reservation stays open; the code from the customer's screen (typed without its R-, as the
  *    customer sees it) completes it.
  * 2. A confirmed delivery order shows its 4-digit delivery code on the customer's order page, and not on the
- *    owner's order card (nor in the owner's API response). Out for delivery, "Delivered, cash collected" with a
+ *    owner's order card (nor in the owner's API response). Out for delivery, "Delivered and paid" with a
  *    wrong code shows the error in the code dialog and the order stays out; the customer's code delivers it. If
  *    the test stops before that, the order is cancelled (or failed and returned) so the stock goes back.
  * 3. A shop review reported by 3 different users disappears from the shop page: two report through the API, the
  *    third through the report dialog on the page.
+ *
+ * The code dialog also asks how the customer paid (P6.2); these tests choose cash (upi-direct.spec.ts covers UPI).
  *
  * Runs against the seeded throwaway database of the frontend-quality CI job, with NEARSHOP_DEMO_PASSWORD, and with
  * sign-ups open (any environment but production): the seed has only one customer who can sign in, so the third test
@@ -100,6 +102,7 @@ test("completing a pickup needs the customer's code: a wrong one shows an error,
   const dialog = codeDialog(page);
   await expect(dialog).toBeVisible();
   const field = dialog.getByLabel("Pickup code");
+  await dialog.getByRole("radio", { name: /^Cash/ }).click();
   const wrong = reservation.code.endsWith("ZZZZZZ") ? "YYYYYY" : "ZZZZZZ";
   await field.fill(wrong);
   await dialog.getByRole("button", { name: "Picked up and paid" }).click();
@@ -111,7 +114,7 @@ test("completing a pickup needs the customer's code: a wrong one shows an error,
   await field.fill(reservation.code.replace(/^R-/, "").toLowerCase());
   await dialog.getByRole("button", { name: "Picked up and paid" }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.getByText("Completed. Sale recorded.")).toBeVisible();
+  await expect(page.getByText("Completed. Cash payment and sale recorded.")).toBeVisible();
   expect((await getJson<Reservation>(customer.request, `/api/reservations/${reservation.id}`)).status).toBe("COMPLETED");
   await customer.close();
 });
@@ -146,7 +149,7 @@ test("the delivery code shows on the customer's confirmed order, not on the owne
     await ownerPage.goto("/shop/orders");
     const card = ownerPage.getByRole("listitem").filter({ hasText: order.code });
     await expect(card).toBeVisible();
-    await expect(card.getByRole("button", { name: "Delivered, cash collected" }).or(card.getByRole("button", { name: "Start packing" })).first()).toBeVisible();
+    await expect(card.getByRole("button", { name: "Delivered and paid" }).or(card.getByRole("button", { name: "Start packing" })).first()).toBeVisible();
     await expect(card).not.toContainText("delivery code", { ignoreCase: true });
     for (const owned of await getJson<Order[]>(owner.request, "/api/owner/orders?scope=active")) {
       expect(owned).not.toHaveProperty("delivery_code");
@@ -157,20 +160,21 @@ test("the delivery code shows on the customer's confirmed order, not on the owne
     await post(owner.request, `/api/owner/orders/${order.id}/dispatch`);
     await ownerPage.reload();
     await expect(card).toBeVisible();
-    await card.getByRole("button", { name: "Delivered, cash collected" }).click();
+    await card.getByRole("button", { name: "Delivered and paid" }).click();
     const dialog = codeDialog(ownerPage);
     await expect(dialog).toBeVisible();
     const field = dialog.getByLabel("Delivery code");
+    await dialog.getByRole("radio", { name: /^Cash/ }).click();
     await field.fill(code === "0000" ? "1111" : "0000");
-    await dialog.getByRole("button", { name: "Delivered, cash collected" }).click();
+    await dialog.getByRole("button", { name: "Delivered and paid" }).click();
     await expect(dialog.getByRole("alert")).toContainText("That is not this order's delivery code");
     await expect(field).toHaveAttribute("aria-invalid", "true");
     expect((await getJson<Order>(page.request, `/api/orders/${order.id}`)).status).toBe("OUT_FOR_DELIVERY");
 
     await field.fill(code!);
-    await dialog.getByRole("button", { name: "Delivered, cash collected" }).click();
+    await dialog.getByRole("button", { name: "Delivered and paid" }).click();
     await expect(dialog).toBeHidden();
-    await expect(ownerPage.getByText("Delivered. Cash collected and sale recorded.")).toBeVisible();
+    await expect(ownerPage.getByText("Delivered. Cash payment and sale recorded.")).toBeVisible();
     expect((await getJson<Order>(page.request, `/api/orders/${order.id}`)).status).toBe("DELIVERED");
     delivered = true;
   } finally {
