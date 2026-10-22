@@ -9,6 +9,8 @@ import pytest
 from app.core.config import settings
 from app.core.database import Database
 from app.models import PriceAnomaly
+from app.schemas.serializers import listing
+from app.services import search as search_module
 from app.services.search import SearchParams, run_search
 from tests.conftest import CENTER, HEADERS
 
@@ -108,8 +110,9 @@ def test_customer_reservation_view_capped_owner_view_exact(customer, owner_a, id
             customer.post(f"/api/reservations/{r['id']}/cancel", json={}, headers=HEADERS)
 
 
-def _order(customer, ids, quantity: int):
-    body = {"items": [{"product_id": ids["tape"], "quantity": quantity}], "lat": CENTER[0], "lng": CENTER[1],
+def _order(customer, ids, *quantities: int):
+    """A delivery order for Shop A's tape, one line per quantity given."""
+    body = {"items": [{"product_id": ids["tape"], "quantity": q} for q in quantities], "lat": CENTER[0], "lng": CENTER[1],
             "address": "12 Temple Street, Agrahara", "phone": "9876543210"}
     return customer.post("/api/orders", json=body, headers=HEADERS)
 
@@ -121,6 +124,22 @@ def test_cap_enforced_on_reservations_and_order_lines(customer, ids):
         assert "call the shop" in res.json()["error"]["message"].lower()
         order = _order(customer, ids, CAP + 1)
         assert order.status_code == 422 and order.json()["error"]["code"] == "quantity_above_cap"
+        # Splitting the quantity over several lines of the same product does not get past the cap.
+        split = _order(customer, ids, CAP, CAP)
+        assert split.status_code == 422 and split.json()["error"]["code"] == "quantity_above_cap"
+
+
+def test_split_order_lines_count_together_for_stock(customer, ids):
+    with tape_stock(ids, 4):
+        order = _order(customer, ids, 3, 3)  # each line fits the 4 in stock; together they do not
+        assert order.status_code == 409 and order.json()["error"]["code"] == "insufficient_stock"
+        assert order.json()["error"]["message"] == "Not enough in stock for that quantity"
+
+
+def test_shop_settings_reject_null_exact_stock(owner_a, ids):
+    res = owner_a.patch("/api/owner/shop", json={"show_exact_stock": None}, headers=HEADERS)
+    assert res.status_code == 422
+    assert Database().shops.get(ids["shop_a"]).show_exact_stock is False
 
 
 def test_opted_in_shop_keeps_todays_limits(customer, owner_a, ids):
@@ -168,9 +187,10 @@ def test_owner_turns_on_exact_stock_in_settings(owner_a, client, ids):
     assert Database().shops.get(ids["shop_a"]).show_exact_stock is False
 
 
-def test_search_order_unchanged_by_bands(ids):
+def test_search_order_unchanged_by_bands(ids, monkeypatch):
     """Ranking reads the real stock, never the public count: groups, offers and pins come out in the same order and
-    with the same scores whether or not the shop shows exact counts, and the same as ranking by the real count."""
+    with the same scores as before the change (search serialising offers with the exact-count listing), and whether or
+    not the shop shows exact counts."""
     db = Database()
 
     def snapshot():
@@ -184,11 +204,16 @@ def test_search_order_unchanged_by_bands(ids):
 
     with tape_stock(ids, EXACT):
         capped = snapshot()
+        # Before P10.1, search serialised every offer with listing (exact counts); replay that code path.
+        with monkeypatch.context() as m:
+            m.setattr(search_module, "public_listing", lambda p, shop=None, *, seller=None: listing(p, shop))
+            before = snapshot()
     with tape_stock(ids, EXACT, exact=True):
         exact = snapshot()
+    assert capped == before
     assert capped == exact
     assert any(groups for groups, _ in capped)
-    # Pins count listings, not units: Shop A's 37 units of tape count once.
-    tape_pins = [pins for (groups, pins) in capped[:1]][0]
+    # Pins count listings, not units: Shop A's one tape listing with 37 units counts once.
+    tape_pins = capped[0][1]
     shop_a_pin = next(p for p in tape_pins if p[0] == ids["shop_a"])
-    assert shop_a_pin[1] < CAP
+    assert shop_a_pin[1] == 1 and shop_a_pin[2] == 1

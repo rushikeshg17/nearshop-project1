@@ -144,6 +144,14 @@ class ShopUpdateIn(_Strict):
     show_exact_stock: bool | None = None  # P10.1: show customers exact stock counts
     is_active: bool | None = None
 
+    @field_validator("show_exact_stock")
+    @classmethod
+    def _show_exact_stock_not_null(cls, v: bool | None) -> bool:
+        # Leave the field out to keep it unchanged; an explicit null would be stored and break loading the Shop.
+        if v is None:
+            raise ValueError("show_exact_stock must be true or false")
+        return v
+
 
 class ProductIn(_Strict):
     name: str = Field(min_length=2, max_length=200)

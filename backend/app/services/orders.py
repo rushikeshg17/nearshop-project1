@@ -122,8 +122,12 @@ def create_order(
     if not shop.is_live:  # not verified, or its approval has ended (P3.3, plan section 8.1)
         raise Conflict(SHOP_NOT_VERIFIED, code="shop_not_verified")
     # Public stock bands (P10.1): without the shop's exact-stock opt-in, a line asks for at most the public cap, and
-    # a shortage is reported without a count.
+    # a shortage is reported without a count. Lines for the same product are added up first, so splitting a quantity
+    # across several lines neither gets past the cap nor hides a combined shortage.
+    wanted: dict[int, tuple[Product, int]] = {}
     for p, qty in products:
+        wanted[p.id] = (p, wanted[p.id][1] + qty if p.id in wanted else qty)
+    for p, qty in wanted.values():
         check_public_cap(shop, qty)
         if p.quantity < qty:
             message = f"Only {p.quantity} of {p.name} in stock" if shop.show_exact_stock else NOT_ENOUGH_STOCK
