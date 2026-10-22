@@ -337,7 +337,7 @@ def test_search_insights_need_five_distinct_users_nearby_in_30_days(db, ids, cle
         + [search(105, days_ago=31)]  # outside the 30 days
         + [search(106, lat=shop.lat + 0.2, lng=shop.lng)])  # 22 km away, outside the shop's 3 km
     out = analytics.owner_insights(db, shop)
-    assert q not in [a["query"] for a in out["area_demand"]] and q not in [m["query"] for m in out["missed_demand"]]
+    assert q not in [a["query"] for a in out["area_demand"]]
     gate = out["gates"]["area_demand"]
     assert not gate["shown"] and gate["progress"] == [{"label": "people", "have": 4, "need": 5}]
     assert gate["reason"] == ("Not enough searches near you yet: 4 of 5 people searched for the same thing in the "
@@ -348,5 +348,7 @@ def test_search_insights_need_five_distinct_users_nearby_in_30_days(db, ids, cle
     db.search_history.insert(search(107))  # a fifth person
     out = analytics.owner_insights(db, shop)
     assert [a["searches"] for a in out["area_demand"] if a["query"] == q] == [8]
-    assert {"query": q, "searches": 8} in out["missed_demand"]
-    assert out["gates"]["area_demand"]["shown"] and out["gates"]["missed_demand"]["shown"]
+    assert out["gates"]["area_demand"]["shown"]
+    # Missed demand comes from the weekly demand report (P9.7, tests/test_demand_report.py), never from raw
+    # zero-result searches: switched off by default, it shows nothing and says why.
+    assert out["missed_demand"] == [] and out["gates"]["missed_demand"]["code"] == "disabled"

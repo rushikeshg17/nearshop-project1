@@ -13,6 +13,10 @@
     uv run python -m database.admin_tasks search-index drop [--production]
     uv run python -m database.admin_tasks consent-report --since 2027-01-17
     uv run python -m database.admin_tasks facilitated-sales --fy 2027-28
+    uv run python -m database.admin_tasks demand-audit status
+    uv run python -m database.admin_tasks demand-audit label
+    uv run python -m database.admin_tasks demand-audit failures
+    uv run python -m database.admin_tasks demand-audit build
 
 They act on the database in NEARSHOP_MONGODB_URI / NEARSHOP_MONGODB_DB, the same one the API uses,
 without wiping anything (the seed is the tool that replaces a database).
@@ -64,6 +68,14 @@ without wiping anything (the seed is the tool that replaces a database).
                    e-commerce sales (business model risk R22). The file goes to --out, by default
                    ~/.nearshop/reports/facilitated-sales-FY<fy>.csv (outside the repository), and is never
                    overwritten unless --force is given. It prints only the file path and the row count.
+  demand-audit     R5's audit of the "asked for near you" demand report (P9.7, app/services/demand_report.py).
+                   status (read-only): whether reports are shown or held and why, NEARSHOP_DEMAND_REPORT_ENABLED,
+                   and each audited week's labelled items and genuine share. label: shows the unlabelled audit
+                   items one at a time (query, matched item, category, band and shop id) and records R5's label:
+                   g genuine unmet demand, f search failure, j junk (s skips, q stops). failures (read-only): the
+                   possible search failures, queries dropped because the shop itself has a matching in-stock listing
+                   search did not find. build: builds this week's reports now, as the Monday job does (staging
+                   checks). Nothing printed is a user id, a demand key, a time or a location.
 
 Commands that write (backfill-thumbnails writes to the photo storage, not the database) show the
 database name and ask the operator to type it; anything else changes nothing. No command prints an email
@@ -829,6 +841,94 @@ def facilitated_sales(db: Database, start_year: int, path: Path | None = None, *
     return 0
 
 
+# ---------------------------------------------------------------- demand report audit (P9.7)
+AUDIT_KEYS = {"g": "genuine", "f": "search_failure", "j": "junk"}
+
+
+def demand_audit_status(db: Database, out: Out = print) -> int:
+    """Read-only: the report gate and every audited week."""
+    from app.services import demand_report
+
+    gate = demand_report.report_gate(db)
+    out(f"Demand report in database {db.mongo.name}: NEARSHOP_DEMAND_REPORT_ENABLED is "
+        f"{'on' if settings.demand_report_enabled else 'off'}.")
+    out("Reports are SHOWN to owners." if gate["shown"] else f"Reports are HELD ({gate['code']}): {gate['reason']}")
+    if gate["average_pct"] is not None:
+        out(f"Last {settings.demand_report_audit_weeks} complete audits average {gate['average_pct']:g}% genuine "
+            f"(needed: {settings.demand_report_min_precision_pct:g}%).")
+    weeks = demand_report.audit_weeks(db)
+    out(f"Audited weeks: {len(weeks)}")
+    for w in weeks:
+        share = f"{w['precision_pct']:g}% genuine" if w["complete"] else "incomplete"
+        out(f"  {w['week']}: {w['labelled']} of {w['items']} labelled, {w['genuine']} genuine, {share}")
+    out(f"Latest report week: {demand_report.latest_week(db) or 'none yet'}")
+    return 0
+
+
+def demand_audit_label(db: Database, ask: Ask = input, out: Out = print) -> int:
+    """Show each unlabelled audit item and record R5's label, after the typed confirmation."""
+    from app.services import demand_report
+
+    if demand_report.next_unlabelled(db) is None:
+        out("No unlabelled audit items. The weekly job draws the next sample on Monday.")
+        return 0
+    out(f"This records audit labels in database {db.mongo.name}.")
+    if not confirmed(db, ask, out):
+        return 1
+    labelled, skipped = 0, set()
+    while True:
+        item = db.mongo[demand_report.AUDITS].find_one({"label": None, "_id": {"$nin": list(skipped)}},
+                                                       sort=[("week", 1), ("_id", 1)])
+        if item is None:
+            break
+        match = item.get("item_name") or "no catalogue item"
+        out("")
+        out(f"[{item['week']}] \"{item['query']}\"  shop {item['shop_id']}  matched: {match}  category: "
+            f"{item.get('category') or 'none'}  people: {item['band']}")
+        try:
+            answer = ask("Label: g genuine, f search failure, j junk, s skip, q stop: ").strip().lower()
+        except EOFError:
+            answer = "q"
+        if answer == "q":
+            break
+        if answer == "s":
+            skipped.add(item["_id"])
+            continue
+        if answer not in AUDIT_KEYS:
+            out("Type g, f, j, s or q.")
+            continue
+        if demand_report.record_label(db, item["_id"], AUDIT_KEYS[answer]):
+            labelled += 1
+    out(f"Labelled {labelled} item(s).")
+    return 0
+
+
+def demand_audit_failures(db: Database, out: Out = print) -> int:
+    """Read-only: the possible search failures, newest week first."""
+    from app.services import demand_report
+
+    rows = demand_report.search_failures(db)
+    out(f"Possible search failures: {len(rows)}{' (the newest 100)' if len(rows) == 100 else ''}")
+    for r in rows:
+        out(f"  [{r['week']}] shop {r['shop_id']}  \"{r['query']}\"  its matching listings: "
+            f"{', '.join(str(i) for i in r['product_ids']) or 'none'}")
+    return 0
+
+
+def demand_audit_build(db: Database, ask: Ask = input, out: Out = print) -> int:
+    """Build this week's reports now (as the Monday job does), after the typed confirmation. Prints counts only."""
+    from app.services import demand_report
+
+    out(f"This builds this week's demand reports in database {db.mongo.name}, replacing any built this week.")
+    if not confirmed(db, ask, out):
+        return 1
+    result = demand_report.build_week(db)
+    out(f"Week {result['week']}: {result['shops']} shop(s), {result['kept']} item(s) kept, "
+        f"{result['search_failures']} possible search failure(s), {result['audit_sampled']} audit item(s) drawn.")
+    out("Dropped: " + ", ".join(f"{k} {v}" for k, v in result["dropped"].items()))
+    return 0
+
+
 # ---------------------------------------------------------------- command line
 def _retired_password_from_operator() -> str | None:
     """The old default, from the environment or hidden input, refused unless it matches the digest."""
@@ -872,6 +972,8 @@ def main(argv: list[str] | None = None, ask: Ask = input, out: Out = print) -> i
     sales.add_argument("--fy", type=financial_year, required=True, help="the financial year, such as 2027-28")
     sales.add_argument("--out", type=Path, help="the CSV file (default ~/.nearshop/reports/...)")
     sales.add_argument("--force", action="store_true", help="replace the file if it exists")
+    audit = sub.add_parser("demand-audit", help="R5's audit of the demand report (P9.7)")
+    audit.add_argument("action", choices=["status", "label", "failures", "build"])
     args = parser.parse_args(argv)
 
     db = Database()
@@ -901,6 +1003,10 @@ def main(argv: list[str] | None = None, ask: Ask = input, out: Out = print) -> i
         return backfill_thumbnails(db, ask, out, args.batch_size)
     if args.command == "consent-report":
         return consent_report(db, args.since, out)
+    if args.command == "demand-audit":
+        actions = {"status": lambda: demand_audit_status(db, out), "label": lambda: demand_audit_label(db, ask, out),
+                   "failures": lambda: demand_audit_failures(db, out), "build": lambda: demand_audit_build(db, ask, out)}
+        return actions[args.action]()
     if args.command == "facilitated-sales":
         return facilitated_sales(db, args.fy, args.out, force=args.force, out=out)
     return list_admins(db, out)

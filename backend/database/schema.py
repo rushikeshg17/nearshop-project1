@@ -54,6 +54,7 @@ from app.models.enums import (
 )
 from app.schemas.requests import CONSENT_PURPOSES, OTP_PURPOSES
 from app.services import billing, gateway
+from app.services.demand_report import DEMAND_AUDIT_LABELS, DEMAND_BANDS
 from app.services.leads import COUNT_FIELDS, LEAD_KINDS
 
 log = logging.getLogger(__name__)
@@ -167,6 +168,13 @@ MODERATION: dict[str, dict | str | list] = dict(
 
 # Billing (P9.5): an amount in paise, a GST state code, an actor, a party on a document, a count.
 PAISE = {"bsonType": INT, "minimum": 0}
+# The demand report (P9.7): a search's demand key (64 hex characters, or null), an ISO week and one report item.
+DEMAND_KEY = {"bsonType": STR_N, "pattern": "^[0-9a-f]{64}$"}
+ISO_WEEK = {"bsonType": STR, "pattern": "^\\d{4}-W(0[1-9]|[1-4]\\d|5[0-3])$"}
+DEMAND_ITEM = _closed(
+    ["query", "band"], query={"bsonType": STR, "minLength": 2, "maxLength": 60},
+    catalog_item_id={"bsonType": INT_N}, item_name={"bsonType": STR_N}, category={"bsonType": STR_N},
+    band={"enum": list(DEMAND_BANDS)})
 COUNT = {"bsonType": INT, "minimum": 0}
 STATE_CODE = {"bsonType": STR, "pattern": "^\\d{2}$"}
 GST_MODE = enum(billing.GstMode)
@@ -307,6 +315,7 @@ VALIDATORS: dict[str, dict] = {
     "search_history": schema(
         ["query", "normalized_query", "results_count", "created_at"],
         user_id=INT_N, query=STR, normalized_query=STR, results_count={"bsonType": INT, "minimum": 0},
+        in_stock_results={"bsonType": INT, "minimum": 0}, demand_key=DEMAND_KEY,
         location={"oneOf": [{"bsonType": "null"}, POINT]}, created_at=DATE,
     ),
     "sales_history": schema(
@@ -733,6 +742,31 @@ VALIDATORS: dict[str, dict] = {
         gateway_subscription_id=STR_N, payment_id=STR_N, outcome={"bsonType": STR, "minLength": 1},
         received_at=DATE,
     ),
+    # The "asked for near you" demand report (P9.7, app/services/demand_report.py; plan section 8.19): one row per
+    # verified live shop per ISO week. Each item is a query, the catalogue item or category it matched and a band of
+    # distinct people; never a user id, a demand key, a time or a location (additionalProperties: false).
+    "demand_reports": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "shop_id", "week", "items", "dropped"],
+        "additionalProperties": False, "properties": {
+            "_id": {"bsonType": INT}, "shop_id": {"bsonType": INT}, "week": ISO_WEEK,
+            "items": {"bsonType": "array", "maxItems": 500, "items": DEMAND_ITEM},
+            "dropped": {"bsonType": "object", "additionalProperties": {"bsonType": INT, "minimum": 0}}}}},
+    # R5's weekly audit sample (P9.7): kept items drawn city-wide, each labelled once by the demand-audit command.
+    "demand_audits": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "week", "shop_id", "query", "label"],
+        "additionalProperties": False, "properties": {
+            "_id": {"bsonType": INT}, "week": ISO_WEEK, "shop_id": {"bsonType": INT},
+            "query": {"bsonType": STR, "minLength": 2, "maxLength": 60}, "catalog_item_id": {"bsonType": INT_N},
+            "item_name": {"bsonType": STR_N}, "category": {"bsonType": STR_N}, "band": {"enum": list(DEMAND_BANDS)},
+            "label": {"enum": [None, *DEMAND_AUDIT_LABELS]}, "labelled_at": {"bsonType": DATE_N}}}},
+    # Possible search failures (P9.7): a query the report dropped because the shop itself has a matching in-stock
+    # listing that search did not find. Shown to R5 by the demand-audit command.
+    "demand_search_failures": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "week", "shop_id", "query", "product_ids"],
+        "additionalProperties": False, "properties": {
+            "_id": {"bsonType": INT}, "week": ISO_WEEK, "shop_id": {"bsonType": INT},
+            "query": {"bsonType": STR, "minLength": 2, "maxLength": 60},
+            "product_ids": {"bsonType": "array", "maxItems": 20, "items": {"bsonType": INT}}}}},
     "counters": {},
     "text_embeddings": {},
 }
@@ -862,6 +896,8 @@ INDEXES: dict[str, list[IndexModel]] = {
         SEARCH_HISTORY_TTL,
         IndexModel([("user_id", A), ("created_at", D)], name="user_created"),
         IndexModel([("location", GEOSPHERE)], name="location_2dsphere"),
+        # P9.7: forgetting one user's demand key (consent withdrawn, account deleted) without a collection scan.
+        IndexModel([("demand_key", A)], name="demand_key", partialFilterExpression={"demand_key": {"$type": "string"}}),
     ],
     "sales_history": [
         IndexModel([("shop_id", A), ("sold_at", D)], name="shop_sold"),
@@ -1010,6 +1046,18 @@ INDEXES: dict[str, list[IndexModel]] = {
     "gateway_events": [
         IndexModel([("event_id", A)], unique=True, name="uq_event_id"),  # each event processed once
         IndexModel([("received_at", D)], name="received_at"),
+    ],
+    # The demand report (P9.7, app/services/demand_report.py).
+    "demand_reports": [
+        IndexModel([("shop_id", A), ("week", A)], unique=True, name="uq_shop_week"),  # one row per shop per week
+        IndexModel([("week", A)], name="week"),
+    ],
+    "demand_audits": [
+        IndexModel([("week", A), ("shop_id", A), ("query", A)], unique=True, name="uq_week_shop_query"),
+        IndexModel([("label", A), ("week", A)], name="label_week"),  # the next unlabelled item
+    ],
+    "demand_search_failures": [
+        IndexModel([("week", A), ("shop_id", A), ("query", A)], unique=True, name="uq_week_shop_query"),
     ],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),
