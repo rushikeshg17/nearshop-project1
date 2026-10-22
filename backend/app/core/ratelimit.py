@@ -165,6 +165,7 @@ REVIEW_DAY = Rule("review_day", 5, DAY, (USER,))
 SEARCH_IP = Rule("search_ip", 120, MINUTE, (IP,), admin_exempt=True)
 SEARCH_SESSION = Rule("search_session", 30, MINUTE, (SESSION,), admin_exempt=True)
 SUGGEST_IP = Rule("suggest_ip", 240, MINUTE, (IP,), admin_exempt=True)
+SEARCH_CLICK_IP = Rule("search_click_ip", 120, MINUTE, (IP,))  # P5.6: the result card's click report
 SEARCH_COMPARE_IP = Rule("search_compare_ip", 10, MINUTE, (IP,))
 IMAGE_UPLOAD = Rule("image_upload", 30, HOUR, (USER,))
 IMPORT_PREVIEW = Rule("import_preview", 20, HOUR, (USER,))
@@ -174,8 +175,8 @@ CATALOG_READ = Rule("catalog_read", 300, MINUTE, (IP,))
 DEFAULT = Rule("default", 600, MINUTE, (IP,))
 
 # Later prompts add their rows here, with the plan section 8.3 limits: review report (P3.6), grievance
-# submission keyed by body("contact") (P3.8), OTP send and verify keyed by body("phone") (P4.1), search result
-# click (P5.6) and lead event (P9.2).
+# submission keyed by body("contact") (P3.8), OTP send and verify keyed by body("phone") (P4.1) and lead event
+# (P9.2).
 LIMITS: tuple[Row, ...] = (
     Row(("POST",), (LOGIN_ACCOUNT_IP, LOGIN_IP, LOGIN_ACCOUNT), route="/api/auth/login"),
     Row(("POST",), (PASSWORD_CHANGE_HOUR, PASSWORD_CHANGE_DAY), route="/api/auth/password"),
@@ -186,6 +187,7 @@ LIMITS: tuple[Row, ...] = (
     Row(("POST",), (REVIEW_DAY,), route="/api/reviews"),
     Row(("GET",), (SEARCH_IP, SEARCH_SESSION), route="/api/search"),
     Row(("GET",), (SUGGEST_IP,), route="/api/search/suggest"),
+    Row(("POST",), (SEARCH_CLICK_IP,), route="/api/search/click"),
     Row(("GET",), (SEARCH_COMPARE_IP,), route="/api/ai/search-compare"),
     Row(("POST",), (IMAGE_UPLOAD,), route="/api/owner/shop/image"),
     Row(("POST",), (IMAGE_UPLOAD,), route="/api/owner/products/{product_id}/image"),

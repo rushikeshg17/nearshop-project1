@@ -178,14 +178,17 @@ def _candidates(db: Database, p: SearchParams, norm: str, expanded: list[str], n
 
 
 def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: bool = True,
-               ranking: RankingConfig | None = None, cache: dict | None = None) -> dict:
+               ranking: RankingConfig | None = None, cache: dict | None = None, now: datetime | None = None) -> dict:
     """Search. `ranking` overrides the configured ranking config (the evaluation and tuning harnesses).
     `cache`, a dict kept by the caller across calls, memoises the fetch stage per query and filters, so a
-    tuning run can re-rank the same candidates under many configs; the live API never passes one."""
+    tuning run can re-rank the same candidates under many configs. The live API passes one only for a search it
+    shadows (P5.6, app/services/search_events.py), together with `now`, the time freshness is judged at
+    (search_now() by default), so the shadow ranking re-ranks exactly the listings and scores the customer's
+    search fetched."""
     cfg = ranking or settings.ranking
     norm = normalize_query(p.q) if p.q else ""
     expanded = expand_synonyms(norm) if norm else []
-    now = search_now()
+    now = now or search_now()
     if cache is None:
         shops, products, kw, local, sem = _candidates(db, p, norm, expanded, now)
     else:
@@ -306,7 +309,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
     # Nothing found but the query looks misspelled: show results for the correction instead of an empty page.
     if total == 0 and did_you_mean:
         corrected = run_search(db, replace(p, q=did_you_mean), user_id=user_id, log=log, ranking=ranking,
-                               cache=cache)
+                               cache=cache, now=now)
         if corrected["total"]:
             return {**corrected, "query": p.q, "corrected_from": p.q, "did_you_mean": None}
 

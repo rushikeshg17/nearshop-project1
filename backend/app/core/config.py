@@ -251,6 +251,13 @@ class Settings(BaseSettings):
     suggestion_window_days: int = 30
     suggestion_max_chars: int = 60
     suggestion_blocklist: str = ""
+    # Shadow ranking (P5.6, app/services/search_events.py; plan section 8.6): a sampled search_shadow_share (0 to
+    # 1) of the consented page-1 searches with a query is re-ranked after the response is sent, on the same fetched
+    # listings and scores, with the ranking config search_shadow_ranking_version, and both rankings are stored on
+    # the search event. Empty (the default) or a share of 0 turns it off. Customers always get the production
+    # ranking (search_ranking_version). A config passes the plan section 8.6 shadow guardrails before it serves.
+    search_shadow_ranking_version: str = ""
+    search_shadow_share: float = 0.0
 
     # Observability (app/core/observability.py). Error tracking is on only when sentry_dsn is set, from the
     # environment (Render: NEARSHOP_SENTRY_DSN, a sync: false secret), never from code. release is the git
@@ -362,6 +369,29 @@ class Settings(BaseSettings):
             raise ValueError(f"NEARSHOP_SEARCH_RANKING_VERSION must be one of {', '.join(RANKING_CONFIGS)}; "
                              f"got {value!r}")
         return value
+
+    @field_validator("search_shadow_ranking_version", mode="after")
+    @classmethod
+    def _check_shadow_ranking_version(cls, value: str) -> str:
+        value = value.strip()
+        if value and value not in RANKING_CONFIGS:
+            raise ValueError(f"NEARSHOP_SEARCH_SHADOW_RANKING_VERSION must be empty (off) or one of "
+                             f"{', '.join(RANKING_CONFIGS)}; got {value!r}")
+        return value
+
+    @field_validator("search_shadow_share", mode="after")
+    @classmethod
+    def _check_shadow_share(cls, value: float) -> float:
+        if not 0 <= value <= 1:
+            raise ValueError("NEARSHOP_SEARCH_SHADOW_SHARE must be between 0 and 1")
+        return value
+
+    @property
+    def shadow_ranking(self) -> RankingConfig | None:
+        """The shadow candidate ranking config, or None when shadow mode is off."""
+        if not self.search_shadow_ranking_version or self.search_shadow_share <= 0:
+            return None
+        return RANKING_CONFIGS.get(self.search_shadow_ranking_version)
 
     @field_validator("suggestion_min_users", mode="after")
     @classmethod

@@ -93,6 +93,60 @@ NON_NEGATIVE = {"bsonType": NUM, "minimum": 0}
 # database/seed/data/local_terms.json). Matched token for token by search's keyword stage.
 LOCAL_TERMS = {"bsonType": "array", "maxItems": 100, "items": {"bsonType": STR, "minLength": 1, "maxLength": 100}}
 
+
+def _closed(required: list[str], **properties: dict) -> dict:
+    """A sub-document that may hold only the named properties."""
+    return {"bsonType": "object", "required": required, "additionalProperties": False, "properties": properties}
+
+
+GROUP_KEY = {"bsonType": STR, "pattern": "^[cp][0-9]{1,18}$"}  # a result group: c<catalog item id> or p<listing id>
+SEARCH_ID = {"bsonType": STR, "pattern": "^[0-9a-f]{24}$"}
+EVENT_POSITION = {"bsonType": INT, "minimum": 1, "maximum": 1000}
+EVENT_TOP = {"bsonType": "array", "maxItems": 20, "items": GROUP_KEY}
+# Search events (P5.6): see the comment on "search_events" in VALIDATORS.
+SEARCH_EVENT_VALIDATOR = {"$jsonSchema": {
+    "bsonType": "object",
+    "required": ["_id", "created_at", "query", "redacted", "language", "sort", "filters", "radius_km", "lat", "lng",
+                 "results_count", "corrected", "ranking", "impressions", "clicks", "conversions"],
+    "additionalProperties": False,
+    "properties": {
+        "_id": SEARCH_ID,
+        "created_at": {"bsonType": DATE},
+        "query": {"bsonType": STR, "maxLength": 60},
+        "redacted": {"bsonType": BOOL},
+        "language": {"bsonType": STR, "minLength": 2, "maxLength": 8},
+        "category": {"bsonType": STR_N, "maxLength": 80},
+        "sort": {"enum": ["relevance", "distance", "price_asc", "price_desc"]},
+        "filters": _closed(["min_price", "max_price", "in_stock_only", "fulfillment"],
+                           min_price={"bsonType": NUM_N}, max_price={"bsonType": NUM_N},
+                           in_stock_only={"bsonType": BOOL}, fulfillment={"enum": ["pickup", "delivery", None]}),
+        "radius_km": NON_NEGATIVE,
+        "lat": {"bsonType": NUM, "minimum": -90, "maximum": 90},
+        "lng": {"bsonType": NUM, "minimum": -180, "maximum": 180},
+        "results_count": {"bsonType": INT, "minimum": 0},
+        "corrected": {"bsonType": BOOL},
+        "ranking": {"bsonType": STR, "minLength": 1, "maxLength": 40},
+        "impressions": {"bsonType": "array", "maxItems": 60, "items": _closed(
+            ["group", "listing", "position"], group=GROUP_KEY, listing={"bsonType": INT},
+            position={"bsonType": INT, "minimum": 1, "maximum": 60})},
+        "clicks": {"bsonType": "array", "maxItems": 50, "items": _closed(
+            ["group", "listing", "position", "at"], group=GROUP_KEY, listing={"bsonType": INT},
+            position=EVENT_POSITION, at={"bsonType": DATE})},
+        "conversions": {"bsonType": "array", "maxItems": 50, "items": _closed(
+            ["kind", "group", "position", "at"], kind={"enum": ["reservation", "order"]}, group=GROUP_KEY,
+            position=EVENT_POSITION, at={"bsonType": DATE})},
+        "previous_search_id": {"oneOf": [{"bsonType": "null"}, SEARCH_ID]},
+        "shadow": {"oneOf": [{"bsonType": "null"}, _closed(
+            ["label", "ranking", "keyword", "vector", "production_label", "top", "production_top", "results_count",
+             "production_results_count", "ms", "production_ms"],
+            label={"bsonType": STR, "maxLength": 200}, ranking={"bsonType": STR, "maxLength": 40},
+            keyword={"bsonType": STR, "maxLength": 80}, vector={"bsonType": STR, "maxLength": 120},
+            production_label={"bsonType": STR, "maxLength": 200}, top=EVENT_TOP, production_top=EVENT_TOP,
+            results_count={"bsonType": INT, "minimum": 0}, production_results_count={"bsonType": INT, "minimum": 0},
+            ms=NON_NEGATIVE, production_ms=NON_NEGATIVE)]},
+    },
+}}
+
 VALIDATORS: dict[str, dict] = {
     "users": schema(
         ["name", "email", "password_hash", "role", "is_active", "created_at", "updated_at"],
@@ -290,6 +344,13 @@ VALIDATORS: dict[str, dict] = {
                                        "properties": {
         "_id": {"enum": ["listings", "synonyms"]}, "version": POSITIVE_INT, "updated_at": {"bsonType": DATE},
     }}},
+    # Search interaction events (P5.6, app/services/search_events.py; plan sections 8.4 and 8.6): one document per
+    # search by a signed-in customer with the search-measurement consent. _id is a random search id. Nothing in it
+    # identifies a person: additionalProperties is false, so a user id, session id, IP address, user agent, phone,
+    # email, or reservation or order id can never be written. query is the normalised query only when it is 60
+    # characters or fewer and passes the P5.5 blocklist (otherwise "" with redacted true); lat and lng are rounded
+    # to 2 decimals. The TTL index on created_at deletes an event after 90 days.
+    "search_events": SEARCH_EVENT_VALIDATOR,
     # No validators: `counters` ({_id: collection name, seq}; also synonyms_version) and `text_embeddings`
     # (binary vector cache).
     "counters": {},
@@ -298,6 +359,7 @@ VALIDATORS: dict[str, dict] = {
 
 A, D = ASCENDING, DESCENDING
 ADMIN_AUDIT_KEEP_SECONDS = 365 * 24 * 60 * 60  # admin_audit rows are kept for one year
+SEARCH_EVENTS_KEEP_SECONDS = 90 * 24 * 60 * 60  # search_events are deleted 90 days after creation (P5.6)
 IS_INT = {"$type": "number"}  # partial-index filter: "this optional reference is set"
 
 INDEXES: dict[str, list[IndexModel]] = {
@@ -413,6 +475,13 @@ INDEXES: dict[str, list[IndexModel]] = {
     # that, because a new window has a new _id and a cooldown is checked against expires_at.
     "rate_limits": [IndexModel([("expires_at", A)], expireAfterSeconds=0, name="expires_ttl")],
     "synonyms": [IndexModel([("term", A)], unique=True, name="uq_term")],
+    "search_events": [
+        # Expiry, and the online metrics' window reads (created_at at or after a date).
+        IndexModel([("created_at", A)], expireAfterSeconds=SEARCH_EVENTS_KEEP_SECONDS, name="created_ttl_90d"),
+        # The shadow comparison: only shadowed searches.
+        IndexModel([("shadow.label", A), ("created_at", A)], name="shadow_label_created",
+                   partialFilterExpression={"shadow.label": {"$type": "string"}}),
+    ],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),
         IndexModel([("target_user_id", A), ("created_at", D)], name="target_created"),
