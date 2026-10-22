@@ -1,6 +1,7 @@
 """Operator tools for the credential lockdown (plan step 0-D). Run from backend/:
 
     uv run python -m database.admin_tasks report
+    uv run python -m database.admin_tasks demo-check
     uv run python -m database.admin_tasks rotate-demo
     uv run python -m database.admin_tasks deactivate-user 42
     uv run python -m database.admin_tasks list-admins
@@ -21,6 +22,10 @@ without wiping anything (the seed is the tool that replaces a database).
                    local Argon2 check; nothing signs in. The old password is not kept in the repo (only
                    its SHA-256, in database/seed/seed.py), so the report asks for it with hidden input,
                    or reads NEARSHOP_RETIRED_DEMO_PASSWORD, and checks it against that digest first.
+  demo-check       read-only (P7.1). Counts, in every collection of the database, the documents flagged
+                   is_demo (the seed's sales and the demand forecasts trained on them), and the users on the
+                   nearshop.demo domain or a subdomain of it. Exits 0 when both are 0, the state production must
+                   be in, and 1 otherwise. Prints counts only.
   rotate-demo      gives every account on the nearshop.demo domain (or a subdomain of it, such as
                    shops.nearshop.demo) its own random password and prints each one once, with the
                    account's id, role and name, for the team password manager.
@@ -231,6 +236,40 @@ def report(db: Database, retired_password: str | None, out: Out = print) -> int:
         else:
             out("RESULT: no demo account matches the old public default.")
     return 0
+
+
+# ---------------------------------------------------------------- demo-check
+# Users on the demo domain or a subdomain of it (as is_demo_email), matched in the database, case-insensitively.
+DEMO_EMAIL_PATTERN = r"@([^@]+\.)?" + DEMO_DOMAIN.replace(".", r"\.") + "$"
+
+
+def demo_counts(mongo: MongoDatabase) -> dict[str, int]:
+    """Synthetic data in a database: documents flagged is_demo, per collection (only those with any), and
+    users on the demo domain. Read-only; views and system collections are skipped."""
+    counts: dict[str, int] = {}
+    for info in mongo.list_collections(filter={"type": "collection"}):
+        name = info["name"]
+        if name.startswith("system."):
+            continue
+        n = mongo[name].count_documents({"is_demo": True})
+        if n:
+            counts[name] = n
+    return {"is_demo_documents": sum(counts.values()), **{f"is_demo.{k}": v for k, v in sorted(counts.items())},
+            "demo_users": mongo["users"].count_documents({"email": {"$regex": DEMO_EMAIL_PATTERN, "$options": "i"}})}
+
+
+def demo_check(db: Database, out: Out = print) -> int:
+    """Print the synthetic-data counts; 0 when the database holds none, 1 otherwise. Read-only."""
+    counts = demo_counts(db.mongo)
+    out(f"Database: {db.mongo.name}")
+    out(f"Documents flagged is_demo: {counts['is_demo_documents']}")
+    for key, n in counts.items():
+        if key.startswith("is_demo."):
+            out(f"  {key.removeprefix('is_demo.')}: {n}")
+    out(f"Users on {DEMO_DOMAIN}: {counts['demo_users']}")
+    clean = counts["is_demo_documents"] == 0 and counts["demo_users"] == 0
+    out("RESULT: no synthetic data." if clean else "RESULT: this database holds synthetic data.")
+    return 0 if clean else 1
 
 
 # ---------------------------------------------------------------- writes
@@ -710,6 +749,7 @@ def main(argv: list[str] | None = None, ask: Ask = input, out: Out = print) -> i
     parser = argparse.ArgumentParser(prog="python -m database.admin_tasks", description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("report", help="read-only exposure report; prints no email address")
+    sub.add_parser("demo-check", help="read-only: count is_demo documents and nearshop.demo users")
     sub.add_parser("rotate-demo", help="new random password for every nearshop.demo account")
     deactivate = sub.add_parser("deactivate-user", help="stop one user from signing in")
     deactivate.add_argument("user_id", type=int)
@@ -744,6 +784,8 @@ def main(argv: list[str] | None = None, ask: Ask = input, out: Out = print) -> i
         return search_index_create(db, api, args.tier, args.quantization, args.production, ask, out)
     if args.command == "report":
         return report(db, _retired_password_from_operator(), out)
+    if args.command == "demo-check":
+        return demo_check(db, out)
     if args.command == "rotate-demo":
         return rotate_demo(db, ask, out)
     if args.command == "deactivate-user":

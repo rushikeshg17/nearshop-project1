@@ -553,7 +553,7 @@ def test_the_totp_key_is_asked_for_by_both_api_services_and_documented():
     root = Path(__file__).resolve().parents[2]
     blueprint = yaml.safe_load((root / "render.yaml").read_text(encoding="utf-8"))
     web = [s for s in blueprint["services"] if s["type"] == "web"]
-    assert {s["name"] for s in web} == {"nearshop-api-staging", "nearshop-api"}
+    assert {s["name"] for s in web} == {"nearshop-api-staging", "nearshop-api", "nearshop-api-demo"}
     for service in web:
         assert {"key": "NEARSHOP_TOTP_KEY", "sync": False} in service["envVars"], service["name"]
     example = (root / "backend" / ".env.example").read_text(encoding="utf-8")

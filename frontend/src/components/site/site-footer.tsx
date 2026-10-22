@@ -1,8 +1,20 @@
+"use client";
+
 import Link from "next/link";
 
 import { Logo } from "@/components/brand/logo";
+import { useMe, useMeta } from "@/hooks/use-session";
 
+// What the footer shows depends on the deployment (P7.1), read from /api/meta:
+// - the sentence about generated data only while the API runs on it (NEARSHOP_DEMO_MODE: the demo deployment);
+// - the AI Lab link only where the lab is open to everyone (ai_lab_public: the demo and development), or to an
+//   admin, since production answers 404 to everyone else.
 export function SiteFooter() {
+  const { data: meta } = useMeta();
+  const { data: me } = useMe();
+  // ai_lab_public is new in the API's meta (P7.1); src/lib/types.ts does not declare it yet.
+  const labPublic = (meta as { ai_lab_public?: boolean } | undefined)?.ai_lab_public === true;
+  const showLab = labPublic || me?.role === "admin";
   return (
     <footer className="mt-24 border-t bg-surface/50 pb-24 md:pb-0">
       <div className="mx-auto grid max-w-7xl gap-10 px-4 py-12 md:grid-cols-[1.4fr_1fr_1fr_1fr] md:px-6">
@@ -30,14 +42,15 @@ export function SiteFooter() {
         <div>
           <p className="mb-3 text-sm font-semibold">How it works</p>
           <ul className="space-y-2 text-sm text-muted-foreground">
-            <li><Link href="/ai" className="hover:text-foreground">AI Lab</Link></li>
+            {showLab && <li><Link href="/ai" className="hover:text-foreground">AI Lab</Link></li>}
             <li><Link href="/#how" className="hover:text-foreground">Pickup and delivery</Link></li>
           </ul>
         </div>
       </div>
       <div className="border-t">
         <p className="mx-auto max-w-7xl px-4 py-5 text-xs text-muted-foreground md:px-6">
-          Map data from OpenStreetMap contributors. Demo data: shops, prices and sales are generated for demonstration.
+          Map data from OpenStreetMap contributors.
+          {meta?.demo_mode && " Demo data: shops, prices and sales are generated for demonstration."}
         </p>
       </div>
     </footer>

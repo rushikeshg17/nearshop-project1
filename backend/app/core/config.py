@@ -17,6 +17,8 @@ RateLimitMode = Literal["enforce", "log_only", "off"]
 EDGE_SECRET_MIN_LENGTH = 32
 # The deployed environments, served over https: the API refuses to start in them with cookie_secure false.
 SECURE_COOKIE_ENVIRONMENTS: tuple[str, ...] = ("staging", "production", "demo")
+# Where the AI Lab is open to everyone by default (Settings.ai_lab_public): the environments whose data is synthetic.
+AI_LAB_PUBLIC_ENVIRONMENTS: tuple[str, ...] = ("development", "test", "demo")
 
 
 @dataclass(frozen=True)
@@ -180,6 +182,11 @@ class Settings(BaseSettings):
     # The site runs on generated data: every site page shows a banner asking visitors not to enter
     # real personal details.
     demo_mode: bool = False
+    # The AI Lab (P7.1): whether its model cards, search evaluation and search comparison are open to everyone.
+    # Defaults to true in development, test and demo, where the data is synthetic, and false in staging and
+    # production, where /api/ai answers not found to anyone but an admin and admins see only the model cards
+    # trained on real data. NEARSHOP_AI_LAB_PUBLIC overrides the default either way.
+    ai_lab_public: bool | None = None
 
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
@@ -603,6 +610,8 @@ class Settings(BaseSettings):
             self.signups_open = self.environment != "production"
         if self.models_real_data_only is None:
             self.models_real_data_only = self.environment == "production"
+        if self.ai_lab_public is None:
+            self.ai_lab_public = self.environment in AI_LAB_PUBLIC_ENVIRONMENTS
         return self
 
     @field_validator("rate_limit_mode", mode="before")

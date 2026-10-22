@@ -2,15 +2,22 @@
 
 Retraining never runs in the API process (it would keep scikit-learn, pandas, gensim and mlxtend in
 the API's memory): POST /ai/retrain only queues a request, which the retrain cron job processes in
-its own process (app/jobs.py, app/ai/pipeline.py --cron). Nothing here imports app.ai.pipeline."""
-from fastapi import APIRouter, Query
+its own process (app/jobs.py, app/ai/pipeline.py --cron). Nothing here imports app.ai.pipeline.
+
+Who may see it (P7.1): everyone where NEARSHOP_AI_LAB_PUBLIC is true (development, test and the demo deployment,
+whose data is synthetic). Elsewhere (staging, production) every route here answers not found to anyone but an
+admin, and the model cards leave out every model whose last run was trained on demo data."""
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app import jobs
 from app.ai import search_eval as search_eval_mod
 from app.ai import word2vec_ref
 from app.ai.semantic_index import index
-from app.core.deps import DB, AdminUser
-from app.models import ModelRun
+from app.core.config import settings
+from app.core.deps import DB, AdminUser, OptionalUser
+from app.models import ModelRun, Role, User
 from app.schemas.serializers import iso
 from app.services.analytics import price_flag_review_counts, price_flags_precision_gate
 from app.services.loaders import with_category
@@ -19,6 +26,17 @@ from app.services.search import SearchParams, keyword_scores, run_search
 from app.utils.text import normalize_query
 
 router = APIRouter(prefix="/ai", tags=["ai"])
+
+
+def ai_lab_viewer(user: OptionalUser) -> User | None:
+    """The AI Lab's viewer: anyone while the lab is public, otherwise an admin only. Everyone else gets 404, as
+    for a page that does not exist, so a production visitor learns nothing about the lab."""
+    if settings.ai_lab_public or (user is not None and user.role == Role.ADMIN):
+        return user
+    raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
+
+
+AiLabViewer = Annotated[User | None, Depends(ai_lab_viewer)]
 
 MODEL_INFO = {
     "embeddings": {
@@ -79,8 +97,14 @@ def _card_gate(name: str, run: ModelRun | None, review_counts: tuple[int, int]) 
     return stored
 
 
+@router.get("/access")
+def access(_viewer: AiLabViewer):
+    """200 when this visitor may see the AI Lab, 404 otherwise: the site's /ai page asks before it renders."""
+    return {"public": bool(settings.ai_lab_public)}
+
+
 @router.get("/models")
-def models(db: DB):
+def models(db: DB, _viewer: AiLabViewer):
     runs, state, review_counts = db.gather(lambda: db.model_runs.find(sort=[("created_at", -1)], limit=200),
                                            lambda: jobs.retrain_state(db), lambda: price_flag_review_counts(db))
     latest: dict[str, ModelRun] = {}
@@ -89,6 +113,9 @@ def models(db: DB):
         latest.setdefault(r.name, r)
         history.setdefault(r.name, []).append({"at": iso(r.created_at), "n_samples": r.n_samples,
                                                "duration_ms": r.duration_ms})
+    # Outside the public lab, only real-data model cards: a model whose last run used demo data is left out.
+    shown = {name: info for name, info in MODEL_INFO.items()
+             if settings.ai_lab_public or name not in latest or not latest[name].uses_demo_data}
     return {
         # Read from retrain_requests, whichever process trains. training is true only while a request is
         # running (the page polls every 3 s while it is); queued, while one waits for the cron job's next
@@ -110,13 +137,13 @@ def models(db: DB):
              "runs": history.get(name, [])[:5],
              # Whether owners see the output (P7.3): null for a model they never see.
              "gate": _card_gate(name, latest.get(name), review_counts)}
-            for name, info in MODEL_INFO.items()
+            for name, info in shown.items()
         ],
     }
 
 
 @router.get("/search-eval")
-def search_eval(db: DB):
+def search_eval(db: DB, _viewer: AiLabViewer):
     """The latest search evaluation figures (app/ai/search_eval.py) for each split, or null for a split never
     measured: the newer of the latest search_eval run stored in this database and the committed
     backend/eval/published.json, which is what a deployed site shows (no run is ever stored in its database)."""
@@ -135,8 +162,9 @@ def retrain(user: AdminUser, db: DB):
 
 
 @router.get("/search-compare")
-def search_compare(db: DB, q: str = Query(..., min_length=2, max_length=120), limit: int = Query(6, ge=1, le=20)):
-    """Same query through each method, over all listings (no location filter), top unique items."""
+def search_compare(db: DB, _viewer: AiLabViewer, q: str = Query(..., min_length=2, max_length=120), limit: int = Query(6, ge=1, le=20)):
+    """Same query through each method, over all listings (no location filter), top unique items. Admin-only
+    outside the public lab (P7.1)."""
     norm = normalize_query(q)
     products = {p.id: p for p in with_category(
         db, db.products.find({"is_active": True}, projection={"description": 0, "specs": 0}))}

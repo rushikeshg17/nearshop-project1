@@ -2,6 +2,7 @@
 
     make seed                                                  # the local database (docker-compose.yml)
     uv run python -m database.seed.seed --confirm-db <database name>
+    uv run python -m database.seed.seed --catalogue-bootstrap --confirm-db <database name>
 
 It writes to the MongoDB database in NEARSHOP_MONGODB_URI / NEARSHOP_MONGODB_DB and REPLACES what is
 there, so it runs only when the environment guard in database/schema.py (check_reset_allowed) allows
@@ -18,6 +19,12 @@ What it creates (all demo data; sales are flagged is_demo=True so AI outputs say
   - 150 days of daily sales with weekday + monthly seasonality, plus co-purchase baskets
   - reservation / delivery history with realistic outcomes, status timelines and reviews
   - search history around the city, then trains every AI model
+
+Catalogue-bootstrap mode (--catalogue-bootstrap, P7.1) is the only mode allowed in staging and production. It
+writes reference data only: it upserts the categories and catalogue items (matched by slug) and their local
+terms, and never deletes, resets or creates anything else (no shops, users, sales or searches). It needs
+--confirm-db repeating the database name, and a database whose schema migrations have run
+(python -m database.migrate). docs/runbooks/demo-environment.md uses it to start production's fresh database.
 
 Demo logins use the password in NEARSHOP_DEMO_PASSWORD (backend/.env or the environment). There is
 no default: the seed stops before it touches any database unless that is a random value of at least
@@ -38,6 +45,8 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 import numpy as np
+from pymongo import ReturnDocument, UpdateOne
+from pymongo.database import Database as MongoDatabase
 
 from app.ai.pipeline import train_all
 from app.core.config import BACKEND_DIR, settings
@@ -182,12 +191,106 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m database.seed.seed",
                                      description="Replace the configured MongoDB database with the demo city.")
     parser.add_argument("--confirm-db", metavar="NAME",
-                        help="repeat the database name (NEARSHOP_MONGODB_DB) to confirm that it is wiped")
+                        help="repeat the database name (NEARSHOP_MONGODB_DB) to confirm that it is wiped, or "
+                             "with --catalogue-bootstrap, written to")
+    parser.add_argument("--catalogue-bootstrap", action="store_true",
+                        help="only upsert categories and catalogue items; never deletes (allowed in production)")
     return parser.parse_args(list(argv))
+
+
+# ------------------------------------------------------------ catalogue bootstrap (P7.1)
+def bootstrap_problem(db_name: str, confirm: str | None) -> str | None:
+    """Say why the catalogue bootstrap must not write to `db_name`, or return None when it may. Any environment
+    may run it, production included; the operator must repeat the database name. Pure."""
+    if not confirm:
+        return f"no confirmation given. Repeat the database name to write to it: --confirm-db {db_name}"
+    if confirm != db_name:
+        return f"the confirmation {confirm!r} does not match the database name {db_name!r}."
+    return None
+
+
+def _upsert_by_slug(mongo: MongoDatabase, collection: str, docs: list[dict]) -> tuple[int, int]:
+    """Upsert `docs` (each a full document without _id) by slug. A slug already present keeps its _id and has
+    the given fields set; a new slug gets the next id from counters. Never deletes. Returns (added, updated)."""
+    if not docs:
+        return 0, 0
+    coll = mongo[collection]
+    existing = {d["slug"] for d in coll.find({"slug": {"$in": [d["slug"] for d in docs]}}, {"slug": 1})}
+    new_slugs = [d["slug"] for d in docs if d["slug"] not in existing]
+    ids: dict[str, int] = {}
+    if new_slugs:
+        # The sequence continues past every id already in the collection (a restored database may lack counters).
+        top = coll.find_one({}, {"_id": 1}, sort=[("_id", -1)])
+        if top is not None and isinstance(top["_id"], int):
+            mongo["counters"].update_one({"_id": collection}, {"$max": {"seq": top["_id"]}}, upsert=True)
+        seq = mongo["counters"].find_one_and_update({"_id": collection}, {"$inc": {"seq": len(new_slugs)}},
+                                                    upsert=True, return_document=ReturnDocument.AFTER)["seq"]
+        ids = dict(zip(new_slugs, range(seq - len(new_slugs) + 1, seq + 1), strict=True))
+    ops = [UpdateOne({"slug": d["slug"]},
+                     {"$set": d, **({"$setOnInsert": {"_id": ids[d["slug"]]}} if d["slug"] in ids else {})},
+                     upsert=True)
+           for d in docs]
+    result = coll.bulk_write(ops, ordered=True)
+    return result.upserted_count, result.matched_count
+
+
+def bootstrap_catalogue(mongo: MongoDatabase, categories_data: list[dict] | None = None,
+                        catalog_data: list[dict] | None = None) -> dict[str, int]:
+    """Upsert the categories and catalogue items from data/categories.json and data/catalog.json (or the lists
+    given) by slug, then their local terms (data/local_terms.json). Never deletes and writes nothing else.
+    Returns how many were added and updated."""
+    categories_data = load("categories.json") if categories_data is None else categories_data
+    catalog_data = load("catalog.json") if catalog_data is None else catalog_data
+    icons = {c["slug"]: c["icon"] for c in categories_data}
+    cat_docs = []
+    for i, c in enumerate(categories_data):
+        doc = Category(slug=c["slug"], name=c["name"], icon=c["icon"], description=c.get("description"),
+                       color_hue=c.get("color_hue", 250), sort_order=i).to_mongo()
+        doc.pop("_id")
+        cat_docs.append(doc)
+    cats_added, cats_updated = _upsert_by_slug(mongo, "categories", cat_docs)
+    cat_ids = {d["slug"]: d["_id"] for d in mongo["categories"].find({}, {"slug": 1})}
+    item_docs = []
+    for item in catalog_data:
+        category = item["category"]
+        if category not in cat_ids:
+            raise SystemExit(f"Catalogue item {item['slug']!r} names unknown category {category!r}.")
+        doc = CatalogItem(
+            slug=item["slug"], name=item["name"], brand=item.get("brand"), category_id=cat_ids[category],
+            subcategory=item.get("subcategory"), unit=item.get("unit"), mrp=item.get("mrp"),
+            typical_price=item["typical_price"], description=item.get("description"), specs=item.get("specs") or {},
+            tags=item.get("tags") or [], icon=item.get("icon") or icons.get(category, "Package")).to_mongo()
+        doc.pop("_id")
+        item_docs.append(doc)
+    items_added, items_updated = _upsert_by_slug(mongo, "catalog_items", item_docs)
+    terms_items, _listings = apply_local_terms(mongo)
+    return {"categories_added": cats_added, "categories_updated": cats_updated, "catalog_items_added": items_added,
+            "catalog_items_updated": items_updated, "local_terms_items": terms_items}
+
+
+def run_catalogue_bootstrap(confirm: str | None) -> dict[str, int]:
+    """--catalogue-bootstrap. The confirmation is checked before any database handle exists; then the configured
+    database must already have its schema (its migrations recorded)."""
+    if problem := bootstrap_problem(settings.mongodb_db, confirm):
+        raise SystemExit(f"Catalogue bootstrap stopped; no database was touched. {problem}")
+    from database import migrate  # imports database.schema, as the seed does
+
+    db = Database()
+    if db.mongo[migrate.MIGRATIONS_COLLECTION].count_documents({}, limit=1) == 0:
+        raise SystemExit(f"Catalogue bootstrap stopped; nothing was written. Database {db.mongo.name!r} has no "
+                         "schema yet: run python -m database.migrate against it first.")
+    print(f"Catalogue bootstrap of MongoDB database '{db.mongo.name}' (upserts only; nothing is deleted)...")
+    counts = bootstrap_catalogue(db.mongo)
+    reset_category_cache()
+    print(json.dumps(counts))
+    return counts
 
 
 def main(argv: Sequence[str] = ()) -> None:
     args = parse_args(argv)
+    if args.catalogue_bootstrap:
+        run_catalogue_bootstrap(args.confirm_db)
+        return
     demo_password = settings.demo_password.get_secret_value()
     if problem := check_demo_password(demo_password):
         raise SystemExit(f"Seed stopped; no database was touched. {problem}")

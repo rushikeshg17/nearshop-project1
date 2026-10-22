@@ -36,4 +36,6 @@ def meta(db: DB):
         # Launch lockdown: the sign-up screens show a paused state, and site pages a demo-data banner.
         "signups_open": bool(settings.signups_open),
         "demo_mode": settings.demo_mode,
+        # Whether the AI Lab is open to everyone (P7.1); the footer links to it only then, or for an admin.
+        "ai_lab_public": bool(settings.ai_lab_public),
     }

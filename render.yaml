@@ -1,7 +1,9 @@
-# Render Blueprint for the NearShop API (the frontend is deployed on Vercel). Two web services and six
+# Render Blueprint for the NearShop API (the frontend is deployed on Vercel). Three web services and seven
 # cron jobs:
 #   nearshop-api-staging         tracks main     NEARSHOP_ENVIRONMENT=staging     Starter  (0.5 CPU, 512 MB)
 #   nearshop-api                 tracks release  NEARSHOP_ENVIRONMENT=production  Standard (1 CPU, 2 GB), always on
+#   nearshop-api-demo            tracks release  NEARSHOP_ENVIRONMENT=demo        Free (sleeps when idle), synthetic data
+#   nearshop-reseed-demo         tracks release  nightly: replaces the demo database with a freshly seeded city
 #   nearshop-backup-staging      tracks main     nightly off-site backup of the staging database
 #   nearshop-backup-production   tracks release  nightly off-site backup of the production database
 #   nearshop-archive-staging     tracks main     monthly: staging sales_history months older than 18 months, off-site
@@ -147,6 +149,10 @@ services:
         sync: false # secret: the production Atlas cluster's connection string
       - key: NEARSHOP_PROTECTED_HOSTS
         sync: false # the staging and production Atlas project domains, comma-separated
+      # P7.1 switches production to a fresh database, nearshop_prod (the name the seed and reset always refuse,
+      # NEARSHOP_PRODUCTION_MONGODB_DB), holding only the catalogue, and sets NEARSHOP_DEMO_MODE to false below.
+      # Both values change in one commit, made only after the steps in docs/runbooks/demo-environment.md
+      # (Switching production to real data): a Blueprint sync applies this file to production at once.
       - key: NEARSHOP_MONGODB_DB
         value: nearshop
       - key: NEARSHOP_COOKIE_SECURE
@@ -154,7 +160,7 @@ services:
       - key: NEARSHOP_SEED_CITY
         value: ballari
       # Launch lockdown (P0.2): sign-ups stay closed until launch, and the site shows a banner saying
-      # it runs on generated data.
+      # it runs on generated data. In production the AI Lab is admin-only (NEARSHOP_AI_LAB_PUBLIC unset: false).
       - key: NEARSHOP_SIGNUPS_OPEN
         value: "false"
       - key: NEARSHOP_DEMO_MODE
@@ -181,6 +187,97 @@ services:
       # Storage budget (P2.2): Atlas Flex, 5 GB (plan step 1-A). Set 512 while production is still on M0.
       - key: NEARSHOP_STORAGE_LIMIT_MB
         value: "5120"
+
+  # The demo (P7.1, docs/runbooks/demo-environment.md): the synthetic Ballari city for the research paper and the
+  # AI Lab, in its own M0 cluster and database (nearshop_demo), never staging's or production's. Free instance:
+  # acceptable for a demo; it sleeps after 15 idle minutes and wakes on the next request (about a minute). A free
+  # instance has no pre-deploy step, so the schema migrations run when nearshop-reseed-demo resets the database.
+  # Its own Vercel project points at it, with NEXT_PUBLIC_NEARSHOP_DEMO_MODE=true and NEARSHOP_INDEXING unset.
+  - type: web
+    name: nearshop-api-demo
+    runtime: python
+    plan: free
+    numInstances: 1
+    region: singapore
+    branch: release
+    rootDir: backend
+    buildCommand: >-
+      pip install uv && uv sync --frozen --no-dev &&
+      uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"
+    startCommand: uv run --no-dev uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /api/health
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: NEARSHOP_ENVIRONMENT
+        value: demo
+      - key: NEARSHOP_SECRET_KEY
+        sync: false # secret: the demo's own key, never staging's or production's
+      - key: NEARSHOP_MONGODB_URI
+        sync: false # secret: the demo M0 cluster's connection string, never staging's or production's
+      - key: NEARSHOP_PROTECTED_HOSTS
+        sync: false # the staging and production Atlas project domains: the reseed refuses both
+      - key: NEARSHOP_MONGODB_DB
+        value: nearshop_demo
+      - key: NEARSHOP_COOKIE_SECURE
+        value: "true"
+      - key: NEARSHOP_SEED_CITY
+        value: ballari
+      # The demo banner and footer sentence, the public AI Lab (NEARSHOP_AI_LAB_PUBLIC defaults to true in demo)
+      # and closed sign-ups: visitors use the demo accounts, so nobody is asked for real details.
+      - key: NEARSHOP_DEMO_MODE
+        value: "true"
+      - key: NEARSHOP_SIGNUPS_OPEN
+        value: "false"
+      # Admin second factor (P2.4): the demo's own key, without which every admin sign-in answers 503. The seeded
+      # admin has no second factor and cannot sign in; the demo's public accounts are the customer and the owner.
+      - key: NEARSHOP_TOTP_KEY
+        sync: false # secret: the demo's own Fernet key, never staging's or production's
+      # M0: 512 MB.
+      - key: NEARSHOP_STORAGE_LIMIT_MB
+        value: "512"
+
+  # Nightly reseed of the demo (P7.1): the seed resets nearshop_demo, writes the synthetic city and trains every
+  # model, so the demo accounts and the paper's figures start from the same state each day. It runs only with
+  # NEARSHOP_ENVIRONMENT=demo, never against a protected host or the production database name (the P1.1
+  # guard), and needs the demo password, which the demo accounts get. Cron jobs have no free plan; this one is
+  # billed only while it runs (a few minutes a night).
+  - type: cron
+    name: nearshop-reseed-demo
+    runtime: python
+    plan: 1c-2g # Standard: training needs more memory than Starter has
+    region: singapore
+    branch: release
+    rootDir: backend
+    schedule: "30 22 * * *" # 22:30 UTC, 04:00 IST
+    buildCommand: >-
+      pip install uv && uv sync --frozen --no-dev &&
+      uv run --no-dev python -c "from app.ai.embeddings import get_provider; get_provider()"
+    startCommand: uv run --no-dev python -m database.seed.seed --confirm-db "$NEARSHOP_MONGODB_DB"
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: NEARSHOP_ENVIRONMENT
+        value: demo
+      # The same database as the demo API, read from that service.
+      - key: NEARSHOP_MONGODB_URI
+        fromService:
+          type: web
+          name: nearshop-api-demo
+          envVarKey: NEARSHOP_MONGODB_URI
+      - key: NEARSHOP_PROTECTED_HOSTS
+        fromService:
+          type: web
+          name: nearshop-api-demo
+          envVarKey: NEARSHOP_PROTECTED_HOSTS
+      - key: NEARSHOP_MONGODB_DB
+        value: nearshop_demo
+      - key: NEARSHOP_SEED_CITY
+        value: ballari
+      - key: NEARSHOP_DEMO_PASSWORD
+        sync: false # secret: a random value of at least 16 characters, shared privately with the team
 
   # Nightly off-site backup of the staging database (P1.6, backend/database/backup.py): every collection as
   # gzipped BSON plus a manifest, in the private backup bucket under staging/<set id>/, then sets older than
