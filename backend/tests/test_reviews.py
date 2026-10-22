@@ -351,12 +351,13 @@ def test_the_owner_self_dealing_path_is_blocked_end_to_end(db, world):
     res = five_stars(sock, buy_and_complete(sock))
     assert res.status_code == 409 and res.json()["error"]["code"] == "account_too_new"
 
-    # 2. With the owner's own phone: since P4.1 (one account per phone) the second account cannot have it at all.
-    # With the shop's phone, whatever its age: the review is refused.
+    # 2. With the owner's own phone: since P4.1 (one account per phone) the second account cannot have it at all
+    # (the owner only typed it in, so the account is created without it). With the shop's phone, whatever its
+    # age: the review is refused.
     body = {"name": "Not The Owner", "email": f"rev-ownphone-{tag}@example.com", "password": "longenough1",
             "phone": OWNER_PHONE, "consent": {"account_and_orders": True, "age_18_plus": True}}
     res = TestClient(app).post("/api/auth/register", json=body, headers=HEADERS)
-    assert res.status_code == 409 and res.json()["error"]["code"] == "phone_taken"
+    assert res.status_code == 200 and res.json()["phone"] is None and res.json()["phone_not_saved"] is True
     phone_sock = register("phonesock", SHOP_PHONE)
     db.users.update_one({"email": f"rev-phonesock-{tag}@example.com"},
                         {"$set": {"created_at": utcnow() - timedelta(days=30)}})

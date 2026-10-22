@@ -338,7 +338,8 @@ VALIDATORS: dict[str, dict] = {
     # keyed hash of the two, so a new request replaces the last code. The code itself is stored only as a keyed hash
     # (code_hash), never the phone (phone_hash). A code is valid until expires_at (5 minutes), for at most 5
     # attempts, and once (used_at); the TTL index removes it 10 minutes after created_at. user_id: the signed-in
-    # user a verify code was sent for.
+    # user a verify or delete code was sent for. channel: the one it was sent through (a resend after an unused
+    # WhatsApp code goes by SMS first).
     "otp_codes": {"$jsonSchema": {
         "bsonType": "object",
         "required": ["_id", "phone_hash", "purpose", "code_hash", "attempts", "created_at", "expires_at"],
@@ -346,6 +347,7 @@ VALIDATORS: dict[str, dict] = {
             "_id": {"bsonType": STR}, "phone_hash": {"bsonType": STR}, "purpose": {"enum": list(OTP_PURPOSES)},
             "code_hash": {"bsonType": STR}, "user_id": {"bsonType": INT_N}, "attempts": {"bsonType": INT, "minimum": 0},
             "created_at": {"bsonType": DATE}, "expires_at": {"bsonType": DATE}, "used_at": {"bsonType": DATE_N},
+            "channel": {"enum": ["whatsapp", "sms", "console", None]},
         },
     }},
     # Every code send (P4.1): which channel, the cost estimate in rupees and the outcome (sent, failed, or capped

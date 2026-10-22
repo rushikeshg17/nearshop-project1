@@ -4,8 +4,12 @@
     channel; Meta prices authentication messages per message. The template's copy-code button carries the code,
     so the body parameter and the button's URL parameter are both the code.
   * SmsProvider: SMS through a DLT-registered sender header and template (B7), sent with MSG91's flow API. The
-    fallback, used when WhatsApp is not configured or a WhatsApp send fails. The registered text is otp_sms_text:
-    its last line is the WebOTP line Android Chrome reads to fill the code in ("@<site domain> #<code>").
+    fallback, used when WhatsApp is not configured, when a WhatsApp send fails, when the user asks for an SMS
+    (channel "sms" on the code request) and for a resend after an unused WhatsApp code (app/services/otp.py:
+    the Cloud API accepts a message to a number without WhatsApp and reports the failure only later, by
+    webhook). The registered text is otp_sms_text: its last line is the WebOTP line Android Chrome reads to
+    fill the code in ("@<site domain> #<code>"). MSG91 can answer HTTP 200 with {"type": "error"}: only
+    {"type": "success"} counts as sent.
   * ConsoleProvider: development and test only. It writes the code to the log and keeps the last messages in
     memory (ConsoleProvider.outbox), which the tests read. It is never used anywhere else (config.py refuses
     NEARSHOP_OTP_CONSOLE outside development and test).
@@ -93,7 +97,9 @@ transport: Transport = _post_json
 
 
 def _send(channel: str, url: str, payload: dict[str, Any], headers: dict[str, str], cost: float,
-          message_id: Callable[[dict[str, Any]], str | None]) -> Delivery:
+          message_id: Callable[[dict[str, Any]], str | None],
+          accepted: Callable[[dict[str, Any]], bool] = lambda reply: True) -> Delivery:
+    """One provider call. Sent only with a 2xx answer whose JSON body the provider's accepted() takes as sent."""
     try:
         status, reply = transport(url, payload, headers)
     except (OSError, TimeoutError) as exc:  # urllib's URLError is an OSError
@@ -102,6 +108,9 @@ def _send(channel: str, url: str, payload: dict[str, Any], headers: dict[str, st
     if not 200 <= status < 300:
         log.warning("%s send failed: HTTP %s", channel, status)
         return Delivery(False, channel, error=f"http_{status}")
+    if not accepted(reply):  # the reply's text is not logged: it may echo the number
+        log.warning("%s send refused by the provider: HTTP %s with an error reply", channel, status)
+        return Delivery(False, channel, error="rejected")
     return Delivery(True, channel, cost, message_id=message_id(reply))
 
 
@@ -135,8 +144,16 @@ class WhatsAppProvider:
         url = (f"{c.whatsapp_api_base.rstrip('/')}/{c.whatsapp_api_version.strip()}/"
                f"{c.whatsapp_phone_number_id.strip()}/messages")
         headers = {"Authorization": f"Bearer {c.whatsapp_access_token.get_secret_value().strip()}"}
-        return _send(self.channel, url, self.payload(phone, code), headers, c.whatsapp_cost_inr,
-                     lambda reply: next((m.get("id") for m in reply.get("messages", []) if isinstance(m, dict)), None))
+        return _send(self.channel, url, self.payload(phone, code), headers, c.whatsapp_cost_inr, _whatsapp_id,
+                     lambda reply: _whatsapp_id(reply) is not None)
+
+
+def _whatsapp_id(reply: dict[str, Any]) -> str | None:
+    """The message id of a Cloud API answer ({"messages": [{"id": "wamid..."}]}); an answer without one sent nothing."""
+    messages = reply.get("messages")
+    if not isinstance(messages, list):
+        return None
+    return next((m["id"] for m in messages if isinstance(m, dict) and m.get("id")), None)
 
 
 class SmsProvider:
@@ -155,8 +172,11 @@ class SmsProvider:
     def send_otp(self, phone: str, code: str) -> Delivery:
         c = self.config
         headers = {"authkey": c.sms_auth_key.get_secret_value().strip(), "accept": "application/json"}
+        # MSG91 answers {"type": "success", "message": "<request id>"}, or {"type": "error", "message": "<why>"},
+        # sometimes with HTTP 200.
         return _send(self.channel, c.sms_api_url, self.payload(phone, code), headers, c.sms_cost_inr,
-                     lambda reply: reply.get("request_id") or reply.get("message"))
+                     lambda reply: reply.get("request_id") or reply.get("message"),
+                     lambda reply: str(reply.get("type", "")).strip().lower() == "success")
 
 
 class ConsoleProvider:
@@ -181,14 +201,16 @@ class ConsoleProvider:
 
 
 def otp_providers(config: Settings = settings) -> list[OtpProvider]:
-    """The providers to try for a code, in order: WhatsApp, then SMS, whichever are configured (never in the test
-    environment); outside development and test nothing else. In development and test, with neither configured, the
-    console provider (when NEARSHOP_OTP_CONSOLE allows it, the default there). Empty: phone sign-in is
-    unavailable."""
+    """The providers to try for a code, in order: WhatsApp, then SMS, whichever are configured, while
+    config.otp_live holds (never in the test environment); outside development and test nothing else. In
+    development and test, with neither, the console provider (when NEARSHOP_OTP_CONSOLE allows it, the default
+    there). Empty: phone sign-in is unavailable."""
     if not config.otp_enabled:
         return []
     live: list[OtpProvider] = []
-    if config.environment != "test":  # the test suite never reaches a real provider, whatever backend/.env holds
+    # The test suite never reaches a real provider, whatever backend/.env holds; nor does any environment whose
+    # rate limiter is off (otp_live).
+    if config.environment != "test" and config.otp_live:
         if config.whatsapp_configured:
             live.append(WhatsAppProvider(config))
         if config.sms_configured:

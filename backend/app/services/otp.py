@@ -8,7 +8,13 @@ rupees and outcome), kept 30 days.
 
 Sending tries the providers of app/services/messaging.py in order (WhatsApp, then SMS; the console in development
 and test). Phone sign-in is available only while there is one (available()); otherwise every code request answers
-503 otp_unavailable, and GET /api/auth/phone-signin says so.
+503 otp_unavailable, and GET /api/auth/phone-signin says so. Live providers also need the rate limiter counting
+(settings.otp_live): its phone-code rules refuse even in log_only.
+
+The SMS fallback. WhatsApp's Cloud API accepts a message to a number that has no WhatsApp and reports the failure
+only later, by webhook, so a failed call is not the only reason to fall back. SMS goes first when the request asks
+for it (channel "sms": the screens' "send by SMS instead") and on a resend after a WhatsApp code that was never
+used (the code document remembers its channel); WhatsApp stays the fallback then.
 
 The answer to a code request never depends on whether an account uses the phone: a code is sent either way, and
 the purpose is checked against accounts only once a correct code proves the phone (app/api/routes/auth.py).
@@ -170,9 +176,20 @@ def _log_send(db: Database, phone: str, purpose: str, outcome: str, channel: str
 # ---------------------------------------------------------------- send and verify
 
 
-def request_code(db: Database, phone: str, purpose: str, *, user_id: int | None = None) -> dict[str, Any]:
+def _preferred_channel(earlier: dict[str, Any] | None, asked: str | None) -> str | None:
+    """The channel to try first: the one asked for, else SMS after an unused WhatsApp code (module docstring)."""
+    if asked:
+        return asked
+    if earlier and earlier.get("used_at") is None and earlier.get("channel") == "whatsapp":
+        return "sms"
+    return None
+
+
+def request_code(db: Database, phone: str, purpose: str, *, user_id: int | None = None,
+                 channel: str | None = None) -> dict[str, Any]:
     """Send a new code for (phone, purpose), replacing any earlier one. The answer is the same for every phone.
-    user_id: the signed-in user a verify code is for (only that user can then use it)."""
+    user_id: the signed-in user a verify or delete code is for (only that user can then use it). channel: the
+    channel to try first ("whatsapp" or "sms"), when it is configured; the others stay the fallback."""
     providers = messaging.otp_providers()
     if not providers:
         raise unavailable()
@@ -182,14 +199,17 @@ def request_code(db: Database, phone: str, purpose: str, *, user_id: int | None 
         _log_send(db, phone, purpose, "capped")
         raise
     code, doc_id, at = new_code(), code_id(phone, purpose), now()
-    db.mongo[CODES].replace_one({"_id": doc_id}, {
+    earlier = db.mongo[CODES].find_one_and_replace({"_id": doc_id}, {
         "phone_hash": phone_hash(phone), "purpose": purpose, "code_hash": code_hash(doc_id, code), "user_id": user_id,
-        "attempts": 0, "created_at": at, "expires_at": at + CODE_TTL, "used_at": None}, upsert=True)
-    for provider in providers:
+        "attempts": 0, "created_at": at, "expires_at": at + CODE_TTL, "used_at": None, "channel": None}, upsert=True)
+    first = _preferred_channel(earlier, channel)
+    for provider in sorted(providers, key=lambda p: p.channel != first):  # stable: the rest keep their order
         delivery = provider.send_otp(phone, code)
         _log_send(db, phone, purpose, "sent" if delivery.ok else "failed", delivery.channel, delivery.cost_estimate,
                   delivery.error)
         if delivery.ok:
+            db.mongo[CODES].update_one({"_id": doc_id, "code_hash": code_hash(doc_id, code)},
+                                       {"$set": {"channel": delivery.channel}})
             return {"ok": True, "channel": delivery.channel, "code_length": CODE_DIGITS,
                     "expires_in": int(CODE_TTL.total_seconds()), "resend_after": RESEND_AFTER_SECONDS}
     db.mongo[CODES].delete_one({"_id": doc_id, "code_hash": code_hash(doc_id, code)})  # nobody received it

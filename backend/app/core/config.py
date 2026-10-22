@@ -142,9 +142,11 @@ class Settings(BaseSettings):
     reservation_hold_minutes: int = 30
     request_response_minutes: int = 20  # shop must respond to a reservation request within this window
     # Reviews (P3.5, plan section 8.2): only from a verified phone (User.phone_verified_at). On since P4.1
-    # wherever phone sign-in is live (a WhatsApp or SMS provider configured below, and otp_enabled), since only
-    # then can a customer verify a phone; off otherwise, so reviews keep working on an environment without a
-    # provider. NEARSHOP_REVIEW_REQUIRES_VERIFIED_PHONE=true or false overrides that either way.
+    # wherever a customer can verify a phone: where phone sign-in is live (otp_live), and in development, where
+    # the console provider verifies phones. A decision that departs from the prompt's "turn it on": it stays off
+    # in staging, production and demo until a provider is configured there (B7, B8), since no customer could
+    # verify a phone before then and every review would be refused; and off in test, whose review tests turn it
+    # on where they test it. NEARSHOP_REVIEW_REQUIRES_VERIFIED_PHONE=true or false overrides that either way.
     review_requires_verified_phone: bool | None = None
 
     # Phone one-time codes (P4.1, app/services/otp.py and app/services/messaging.py; plan sections 8.3 and 8.10).
@@ -196,8 +198,11 @@ class Settings(BaseSettings):
 
     @property
     def otp_live(self) -> bool:
-        """Phone sign-in through a real provider: on, with WhatsApp or SMS configured."""
-        return self.otp_enabled and (self.whatsapp_configured or self.sms_configured)
+        """Phone sign-in through a real provider: on, with WhatsApp or SMS configured, and the rate limiter
+        counting (not NEARSHOP_RATE_LIMIT_MODE=off): its phone-code rules refuse even in log_only
+        (app/core/ratelimit.py), and without them a code is a few guesses away and the daily cap one caller's."""
+        return (self.otp_enabled and self.rate_limit_mode not in ("off", None)
+                and (self.whatsapp_configured or self.sms_configured))
 
     @model_validator(mode="after")
     def _default_otp(self) -> "Settings":
@@ -205,8 +210,6 @@ class Settings(BaseSettings):
             self.otp_console = self.environment in ("development", "test")
         elif self.otp_console and self.environment not in ("development", "test"):
             raise ValueError("NEARSHOP_OTP_CONSOLE is allowed only in development and test: it writes codes to the log")
-        if self.review_requires_verified_phone is None:
-            self.review_requires_verified_phone = self.otp_live
         return self
     # Completion codes (P3.5): completing a pickup needs the reservation code and delivering an order needs the
     # customer's 4-digit delivery code. On since P3.7, whose owner screens ask for the code; the frontend sends it
@@ -383,6 +386,14 @@ class Settings(BaseSettings):
         if self.rate_limit_mode is None:
             self.rate_limit_mode = {"staging": "log_only", "production": "log_only", "test": "off"}.get(
                 self.environment, "enforce")
+        return self
+
+    @model_validator(mode="after")
+    def _default_review_rule(self) -> "Settings":
+        # After the rate-limit default, which otp_live reads.
+        if self.review_requires_verified_phone is None:
+            self.review_requires_verified_phone = self.otp_live or (
+                self.environment == "development" and self.otp_enabled and bool(self.otp_console))
         return self
 
 

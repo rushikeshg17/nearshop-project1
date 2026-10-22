@@ -81,15 +81,23 @@ class ProfileUpdateIn(_Strict):
 
 # Phone one-time codes (P4.1, app/services/otp.py). login: sign in to the account with this verified phone;
 # register: create a customer account for it; verify: set or confirm the signed-in user's phone; reset: set a new
-# password for the account with this verified phone.
-OTP_PURPOSES: tuple[str, ...] = ("login", "register", "verify", "reset")
-OtpPurpose = Literal["login", "register", "verify", "reset"]
+# password for the account with this verified phone; delete: confirm deleting the signed-in account (POST
+# /api/auth/delete takes the code instead of a password, for an account registered by phone, which has none).
+OTP_PURPOSES: tuple[str, ...] = ("login", "register", "verify", "reset", "delete")
+OtpPurpose = Literal["login", "register", "verify", "reset"]  # the purposes POST /api/auth/otp/verify spends
+OtpRequestPurpose = Literal["login", "register", "verify", "reset", "delete"]
+OtpChannel = Literal["whatsapp", "sms"]
 OTP_CODE_PATTERN = r"^\d{6}$"
 
 
 class OtpRequestIn(_Strict):
+    """channel: the channel to try first, when it is configured (GET /api/auth/phone-signin lists them), with
+    the others as the fallback. Left out, WhatsApp goes first, except on a resend after an unused WhatsApp code,
+    when SMS does (app/services/otp.py)."""
+
     phone: str = Field(pattern=PHONE_PATTERN)
-    purpose: OtpPurpose
+    purpose: OtpRequestPurpose
+    channel: OtpChannel | None = None
 
 
 class OtpVerifyIn(_Strict):

@@ -48,9 +48,12 @@ key is stored only as an HMAC (keyed with NEARSHOP_SECRET_KEY), never as an addr
 database cannot be reached the request is served (fail open) and a warning is logged.
 
 NEARSHOP_RATE_LIMIT_MODE: enforce, log_only or off (config.py has the defaults). In log_only nothing is
-refused; a request that would have been gets rate_limited (the rules' names) and rate_limit_mode on its
-request log line, so the share of requests that would have been limited is the count of request lines with
-rate_limited divided by the count of request lines.
+refused, except by an always_enforce rule; a request that would have been gets rate_limited (the rules' names)
+and rate_limit_mode on its request log line, so the share of requests that would have been limited is the
+count of request lines with rate_limited divided by the count of request lines. always_enforce rules (the
+phone-code rules, P4.1) refuse in log_only too: they guard a code a few guesses from an account and money
+spent per send, which no measuring period may leave open. In off nothing is counted at all, so live phone
+codes are not offered then (config.py, otp_live).
 """
 from __future__ import annotations
 
@@ -153,6 +156,7 @@ class Rule:
     failures_only: bool = False
     cooldown: int = 0  # seconds the key is blocked once the limit is reached (failures_only rules)
     admin_exempt: bool = False
+    always_enforce: bool = False  # refuses in log_only too (module docstring)
 
 
 @dataclass(frozen=True)
@@ -197,11 +201,13 @@ GRIEVANCE_LOOKUP = Rule("grievance_lookup", 30, HOUR, (IP,))
 # Phone one-time codes (P4.1, app/services/otp.py). Sending: 1 per phone per 60 s, 5 per phone a day and 20 per IP a
 # day; verifying: 10 per phone an hour. Every request counts, whatever the answer, so the counts and the answers are
 # the same for a phone with an account and one without. The other two limits live in otp.py, not here: 5 attempts
-# per code (the code is locked after them) and the global daily cap, NEARSHOP_OTP_DAILY_CAP.
-OTP_SEND_PHONE = Rule("otp_send_phone", 1, MINUTE, (body("phone"),))
-OTP_SEND_PHONE_DAY = Rule("otp_send_phone_day", 5, DAY, (body("phone"),))
-OTP_SEND_IP_DAY = Rule("otp_send_ip_day", 20, DAY, (IP,))
-OTP_VERIFY_PHONE = Rule("otp_verify_phone", 10, HOUR, (body("phone"),))
+# per code (the code is locked after them) and the global daily cap, NEARSHOP_OTP_DAILY_CAP. All four refuse in
+# log_only too (always_enforce): without them a new code every few seconds gives 5 more guesses each time, and
+# one caller spends the whole daily cap.
+OTP_SEND_PHONE = Rule("otp_send_phone", 1, MINUTE, (body("phone"),), always_enforce=True)
+OTP_SEND_PHONE_DAY = Rule("otp_send_phone_day", 5, DAY, (body("phone"),), always_enforce=True)
+OTP_SEND_IP_DAY = Rule("otp_send_ip_day", 20, DAY, (IP,), always_enforce=True)
+OTP_VERIFY_PHONE = Rule("otp_verify_phone", 10, HOUR, (body("phone"),), always_enforce=True)
 CATALOG_READ = Rule("catalog_read", 300, MINUTE, (IP,))
 DEFAULT = Rule("default", 600, MINUTE, (IP,))
 
@@ -579,8 +585,14 @@ class EdgeRateLimitMiddleware:
             store, over, failure_counts = None, [], []
         if over:
             fields.update(rate_limited=",".join(rule.name for rule, _ in over), rate_limit_mode=mode)
-            if mode == "enforce":
-                await too_many_requests(max(retry for _, retry in over))(scope, receive, send)
+            refusing = over if mode == "enforce" else [(rule, retry) for rule, retry in over if rule.always_enforce]
+            if refusing:
+                if mode != "enforce":  # check() took nothing back (refuse=False); a refusal uses up nothing
+                    try:
+                        await anyio.to_thread.run_sync(lambda: store.undo([*counted, *failures], ts))
+                    except PyMongoError as exc:
+                        log.warning("refused request not taken back: %s", type(exc).__name__)
+                await too_many_requests(max(retry for _, retry in refusing))(scope, receive, send)
                 return
 
         if not failures or store is None:

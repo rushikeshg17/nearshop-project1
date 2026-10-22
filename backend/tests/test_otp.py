@@ -59,8 +59,9 @@ def api(ids):
         yield c
 
 
-def ask(c: TestClient, phone: str, purpose: str = "login", headers: dict | None = None):
-    return c.post("/api/auth/otp/request", json={"phone": phone, "purpose": purpose}, headers=headers or HEADERS)
+def ask(c: TestClient, phone: str, purpose: str = "login", headers: dict | None = None, **extra):
+    return c.post("/api/auth/otp/request", json={"phone": phone, "purpose": purpose, **extra},
+                  headers=headers or HEADERS)
 
 
 def check(c: TestClient, phone: str, code: str | None, purpose: str = "login", headers: dict | None = None, **extra):
@@ -311,12 +312,53 @@ def test_owners_sign_in_by_code_and_admins_keep_their_password_and_second_factor
         assert res.status_code == 403 and res.json()["error"]["code"] == "admin_reset"
 
 
-def test_email_registration_refuses_a_phone_already_in_use(api, db):
-    taken = email_user(db, new_phone())
+def email_signup(c: TestClient, phone: str):
     body = {"name": "Dup Phone", "email": f"otp-{uuid.uuid4().hex[:8]}@example.com", "password": "longenough1",
-            "phone": taken.phone, "consent": FULL_CONSENT}
-    res = api.post("/api/auth/register", json=body, headers=HEADERS)
+            "phone": phone, "consent": FULL_CONSENT}
+    return c.post("/api/auth/register", json=body, headers=HEADERS)
+
+
+def test_email_registration_refuses_a_phone_verified_on_an_active_account(api, db, monkeypatch):
+    taken = email_user(db, new_phone(), verified=True)
+    res = email_signup(api, taken.phone)
     assert res.status_code == 409 and res.json()["error"]["code"] == "phone_taken"
+    assert "code" in res.json()["error"]["message"]  # sign in to it with a code: that works
+    assert check(api, taken.phone, code_for(api, taken.phone), "login").status_code == 200
+
+    monkeypatch.setattr(settings, "otp_enabled", False)  # no codes here: the answer does not offer one
+    res = email_signup(api, taken.phone)
+    assert res.status_code == 409 and "code" not in res.json()["error"]["message"]
+
+
+def test_a_number_only_typed_in_does_not_lock_its_owner_out_of_email_registration(api, db):
+    phone = new_phone()
+    squatter = email_user(db, phone)  # typed in, never verified
+    with TestClient(main.app) as owner:
+        res = email_signup(owner, phone)
+        assert res.status_code == 200, res.text
+        assert res.json()["phone"] is None and res.json()["phone_not_saved"] is True
+        assert db.users.get(squatter.id).phone == phone
+        # The real owner takes the number with a verify code, which releases it from the other account.
+        res = check(owner, phone, code_for(owner, phone, "verify"), "verify")
+        assert res.status_code == 200 and res.json()["phone"] == phone
+    assert db.users.get(squatter.id).phone is None
+    # A number nobody holds is kept, and the answer has no notice.
+    res = email_signup(api, new_phone())
+    assert res.status_code == 200 and "phone_not_saved" not in res.json()
+
+
+def test_a_switched_off_account_is_named_to_whoever_proves_its_phone(api, db):
+    phone = new_phone()
+    held = email_user(db, phone, verified=True)
+    db.users.update_one({"_id": held.id}, {"$set": {"is_active": False}})
+    for purpose, extra in (("login", {}), ("reset", {"new_password": "a-new-password-1"}),
+                           ("register", {"name": "Second", "consent": FULL_CONSENT})):
+        res = check(api, phone, code_for(api, phone, purpose), purpose, **extra)
+        assert res.status_code == 403 and res.json()["error"]["code"] == "account_inactive", purpose
+    assert api.get("/api/auth/me").json() is None
+    # Email registration with the number goes ahead without it: the switched-off account keeps it.
+    res = email_signup(api, phone)
+    assert res.status_code == 200 and res.json()["phone_not_saved"] is True
 
 
 def test_a_phone_account_has_no_password_to_guess(db):
@@ -333,6 +375,9 @@ def test_a_phone_account_has_no_password_to_guess(db):
 
 def test_reviews_require_a_verified_phone_wherever_phone_sign_in_is_live():
     assert Settings(_env_file=None, environment="production").review_requires_verified_phone is False
+    # Development verifies phones through the console provider, so the rule is on there; test turns it on itself.
+    assert Settings(_env_file=None, environment="development").review_requires_verified_phone is True
+    assert Settings(_env_file=None, environment="test").review_requires_verified_phone is False
     live = Settings(_env_file=None, environment="production", whatsapp_access_token="t", whatsapp_phone_number_id="1",
                     whatsapp_otp_template="nearshop_code")
     assert live.otp_live and live.review_requires_verified_phone is True
@@ -470,6 +515,7 @@ def test_the_console_provider_is_refused_outside_development_and_test():
 
 def live_settings(monkeypatch, *, whatsapp=True, sms=True):
     monkeypatch.setattr(settings, "environment", "staging")
+    monkeypatch.setattr(settings, "rate_limit_mode", "log_only")  # staging's default; its OTP rules still refuse
     if whatsapp:
         monkeypatch.setattr(settings, "whatsapp_access_token", SecretStr("wa-token"))
         monkeypatch.setattr(settings, "whatsapp_phone_number_id", "1234567890")
@@ -483,7 +529,8 @@ def test_whatsapp_and_sms_payloads(monkeypatch):
     live_settings(monkeypatch)
     calls = []
     monkeypatch.setattr(messaging, "transport", lambda url, payload, headers: (
-        calls.append((url, payload, headers)) or (200, {"messages": [{"id": "wamid.1"}]})))
+        calls.append((url, payload, headers)) or (200, {"messages": [{"id": "wamid.1"}]} if "graph" in url
+                                                  else {"type": "success", "message": "r1"})))
 
     delivery = WhatsAppProvider().send_otp("9876512345", "123456")
     assert delivery == Delivery(True, "whatsapp", settings.whatsapp_cost_inr, message_id="wamid.1")
@@ -514,7 +561,7 @@ def test_a_failed_whatsapp_send_falls_back_to_sms_and_every_send_is_logged(api, 
 
     def transport(url, payload, headers):
         channels.append("whatsapp" if "graph.facebook.com" in url else "sms")
-        return (500, {}) if channels[-1] == "whatsapp" else (200, {"request_id": "r1"})
+        return (500, {}) if channels[-1] == "whatsapp" else (200, {"type": "success", "message": "r1"})
 
     monkeypatch.setattr(messaging, "transport", transport)
     assert api.get("/api/auth/phone-signin").json()["channels"] == ["whatsapp", "sms"]
@@ -536,6 +583,141 @@ def test_when_every_provider_fails_no_code_is_left_behind(api, db, monkeypatch):
     assert res.status_code == 503 and res.json()["error"]["code"] == "otp_send_failed"
     assert db.mongo[otp.CODES].count_documents({}) == 0
     assert db.mongo[otp.SENDS].find_one({})["error"] == "TimeoutError"
+
+
+def test_an_sms_error_reply_with_http_200_is_a_failed_send(api, db, monkeypatch):
+    live_settings(monkeypatch, whatsapp=False)
+    monkeypatch.setattr(messaging, "transport", lambda url, payload, headers: (
+        200, {"type": "error", "message": "Invalid template"}))
+    assert SmsProvider().send_otp("9876512345", "123456") == Delivery(False, "sms", error="rejected")
+    res = ask(api, new_phone())
+    assert res.status_code == 503 and res.json()["error"]["code"] == "otp_send_failed"
+    logged = db.mongo[otp.SENDS].find_one({"channel": "sms"})
+    assert logged["outcome"] == "failed" and logged["cost_estimate"] == 0 and logged["error"] == "rejected"
+    # A WhatsApp answer without a message id sent nothing either.
+    monkeypatch.setattr(messaging, "transport", lambda url, payload, headers: (200, {"error": {"code": 100}}))
+    live_settings(monkeypatch)
+    assert WhatsAppProvider().send_otp("9876512345", "123456").error == "rejected"
+
+
+def recording_transport(monkeypatch, channels: list):
+    def transport(url, payload, headers):
+        if "graph.facebook.com" in url:
+            channels.append("whatsapp")
+            return 200, {"messages": [{"id": "wamid.1"}]}  # accepted, even for a number without WhatsApp
+        channels.append("sms")
+        return 200, {"type": "success", "message": "r1"}
+
+    monkeypatch.setattr(messaging, "transport", transport)
+
+
+def test_sms_goes_first_when_asked_for_and_on_a_resend_after_an_unused_whatsapp_code(limited, db, monkeypatch):
+    api, clock = limited
+    live_settings(monkeypatch)
+    channels: list = []
+    recording_transport(monkeypatch, channels)
+    phone = new_phone()
+    email_user(db, phone, verified=True)
+
+    def resend(**extra) -> str:
+        clock.advance(MINUTE)  # 1 send per phone per minute
+        res = ask(api, phone, **extra)
+        assert res.status_code == 200, res.text
+        return res.json()["channel"]
+
+    assert resend() == "whatsapp"
+    # The WhatsApp code was never used (the number may have no WhatsApp): the resend goes by SMS.
+    assert resend() == "sms"
+    assert channels == ["whatsapp", "sms"]  # one send each: WhatsApp was not tried again first
+
+    # Asked for, either channel goes first; a channel that is not configured is passed over.
+    assert resend(channel="whatsapp") == "whatsapp"
+    assert resend(channel="sms") == "sms"
+    assert ask(api, new_phone(), channel="fax").status_code == 422
+    clock.advance(DAY)  # a new day for the 5-a-day limit
+    monkeypatch.setattr(settings, "sms_auth_key", SecretStr(""))
+    assert resend(channel="sms") == "whatsapp"
+
+    # After a WhatsApp code that was used, the next code goes by WhatsApp again.
+    live_settings(monkeypatch)
+    stored = db.mongo[otp.CODES].find_one({"_id": otp.code_id(phone, "login")})
+    assert stored["channel"] == "whatsapp"
+    db.mongo[otp.CODES].update_one({"_id": stored["_id"]}, {"$set": {"used_at": utcnow()}})
+    assert resend() == "whatsapp"
+
+
+def test_live_providers_need_the_rate_limiter_counting(api, monkeypatch):
+    live_settings(monkeypatch)
+    assert settings.otp_live and api.get("/api/auth/phone-signin").json()["available"] is True
+    monkeypatch.setattr(settings, "rate_limit_mode", "off")
+    assert not settings.otp_live
+    assert api.get("/api/auth/phone-signin").json()["available"] is False
+    res = ask(api, new_phone())
+    assert res.status_code == 503 and res.json()["error"]["code"] == "otp_unavailable"
+    assert not Settings(_env_file=None, environment="production", rate_limit_mode="off", sms_auth_key="k",
+                        sms_template_id="t").otp_live
+
+
+@pytest.fixture
+def log_only(limited, monkeypatch):
+    """The limiter in log_only, as staging and production run it by default."""
+    monkeypatch.setattr(settings, "rate_limit_mode", "log_only")
+    return limited
+
+
+def test_the_otp_limits_refuse_even_in_log_only(log_only, db):
+    api, clock = log_only
+    phone = new_phone()
+    assert ask(api, phone, headers=edge()).status_code == 200
+    assert_limited(ask(api, phone, headers=edge("203.0.113.11")), MINUTE)  # 1 per phone per minute
+    for n in range(4):
+        clock.advance(MINUTE)
+        assert ask(api, phone, headers=edge(f"203.0.113.{50 + n}")).status_code == 200
+    clock.advance(MINUTE)
+    assert_limited(ask(api, phone, headers=edge("203.0.113.60")), DAY)  # 5 per phone a day
+    assert db.mongo[otp.SENDS].count_documents({}) == 5  # the refused requests sent nothing
+    for _ in range(10):
+        assert check(api, phone, "123456", headers=edge()).status_code in (200, 400, 401, 429)
+    assert_limited(check(api, phone, "123456", headers=edge()), HOUR)  # 10 verifications per phone an hour
+    # Other rules still only log in log_only: 4 registrations from one IP in an hour (the limit is 3) pass.
+    for n in range(4):
+        res = api.post("/api/auth/register", headers=edge("198.51.100.90"),
+                       json={"name": "Log Only", "email": f"otp-lo-{uuid.uuid4().hex[:8]}@example.com",
+                             "password": "longenough1", "consent": FULL_CONSENT})
+        assert res.status_code == 200, (n, res.text)
+
+
+def test_a_phone_account_deletes_itself_with_a_code(db):
+    with TestClient(main.app) as c:
+        phone = new_phone()
+        body = register(c, phone)
+        assert c.post("/api/auth/delete", json={}, headers=HEADERS).status_code == 422
+        assert c.post("/api/auth/delete", json={"password": "anything"}, headers=HEADERS).json()["error"][
+            "code"] == "wrong_password"
+        # A code goes only to the account's own verified phone.
+        res = ask(c, new_phone(), "delete")
+        assert res.status_code == 400 and res.json()["error"]["code"] == "phone_not_verified"
+        # A login code for the same phone does not delete the account.
+        login_code = code_for(c, phone, "login")
+        res = c.post("/api/auth/delete", json={"code": login_code}, headers=HEADERS)
+        assert res.status_code == 400 and res.json()["error"]["code"] == "otp_expired"
+        res = c.post("/api/auth/delete", json={"code": code_for(c, phone, "delete")}, headers=HEADERS)
+        assert res.status_code == 200 and res.json() == {"status": "deleted"}
+    stored = db.users.get(body["id"])
+    assert stored.deleted_at is not None and stored.phone is None
+    with TestClient(main.app) as anonymous:
+        assert ask(anonymous, phone, "delete").status_code == 401
+        assert check(anonymous, phone, "123456", "delete").status_code == 422  # not a purpose /otp/verify spends
+
+
+def test_an_email_account_without_a_verified_phone_deletes_with_its_password_only(db):
+    user = email_user(db, new_phone())
+    with TestClient(main.app) as c:
+        login(c, user.email)
+        res = ask(c, user.phone, "delete")
+        assert res.status_code == 400 and res.json()["error"]["code"] == "phone_not_verified"
+        res = c.post("/api/auth/delete", json={"code": "123456"}, headers=HEADERS)
+        assert res.status_code == 400 and res.json()["error"]["code"] == "phone_not_verified"
 
 
 # ---------------------------------------------------------------- migration 7
