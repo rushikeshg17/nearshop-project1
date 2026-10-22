@@ -26,8 +26,10 @@ Every template has two body variables:
 | {{1}} | The notification's title, on one line | New reservation R-7KQ2MX |
 | {{2}} | The notification's text, on one line (at most 400 characters) | Asha wants 1 x Astral PTFE Thread Seal Tape. Confirm within 20 min. |
 
-Until P7.11 gives the notifications Kannada text, the variables are English, and the code sends the language in
-NEARSHOP_WHATSAPP_TEMPLATE_LANGUAGE (en). Submit both languages now so they are approved when P7.11 lands.
+Since P7.11 the variables are in the recipient's language (User.language, en or kn; the text comes from
+backend/app/services/notification_text.py). A Kannada-preference user is sent the kn version of the template; everyone
+else gets the language in NEARSHOP_WHATSAPP_TEMPLATE_LANGUAGE (en). Every template must be approved at Meta in both
+languages before Kannada is offered to users: until then a kn send is rejected and its outbox row marked failed.
 
 ## Notification templates
 
@@ -141,7 +143,8 @@ phone, NEARSHOP_GRIEVANCE_OFFICER_PHONE; without it, a pointer to Help on the we
 
 Replies are free-form text messages, sent only inside the shop's 24-hour customer-service window (they are answers to
 a message the shop has just sent, so Meta does not charge for them). A reply that would fall outside the window (a
-webhook call Meta retried a day later) is not sent. The bot's replies are in English; P7.11 adds Kannada.
+webhook call Meta retried a day later) is not sent. The bot's replies are in the owner's language (English or Kannada, from
+backend/app/services/notification_text.py, P7.11).
 
 What is stored: whatsapp_inbound keeps each message id, its type, the outcome and whether the reply went, never the
 number or the text, for 8 days (Meta retries for up to 7). whatsapp_sessions keeps, per owner, the time of their
@@ -191,7 +194,7 @@ Off by default. Nothing is sent until all of these are set on the environment (R
 | NEARSHOP_WHATSAPP_PHONE_NUMBER_ID | The sending number's id (also used by P4.1) |
 | NEARSHOP_WHATSAPP_APP_SECRET | The Meta app's secret: the webhook refuses every call without it |
 | NEARSHOP_WHATSAPP_WEBHOOK_VERIFY_TOKEN | A long random value, also typed into the webhook settings at Meta |
-| NEARSHOP_WHATSAPP_TEMPLATE_LANGUAGE | en until P7.11 |
+| NEARSHOP_WHATSAPP_TEMPLATE_LANGUAGE | The template language for users who have not chosen Kannada (en); Kannada users get kn |
 
 In development, NEARSHOP_WHATSAPP_NOTIFICATIONS=true without a token uses the fake client: messages are logged with
 the phone masked and nothing leaves the machine. The test suite always uses the fake client.

@@ -148,8 +148,10 @@ TEMPLATES: dict[str, Template] = {
         OrderStatus.DELIVERY_FAILED, OrderStatus.CANCELLED)},
 }
 
-# The Meta language code of the notification templates for each language a user can choose (P7.11). Every template in
-# docs/whatsapp-templates.md is approved in both; English keeps the code in NEARSHOP_WHATSAPP_TEMPLATE_LANGUAGE.
+# The Meta language code of the notification templates for each language a user can choose (P7.11). English keeps the
+# code in NEARSHOP_WHATSAPP_TEMPLATE_LANGUAGE. Precondition before Kannada is offered to users: every template in
+# docs/whatsapp-templates.md must be approved at Meta in kn as well; until then Meta rejects a kn send and the outbox
+# row is marked failed (the in-app notification is unaffected).
 KANNADA_TEMPLATE_LANGUAGE = "kn"
 
 
@@ -1028,14 +1030,6 @@ def stock_check_params(shop: dict[str, Any], stale: list[dict[str, Any]], now: d
     while len(body(cap)) > PARAM_MAX and cap > STOCK_CHECK_NAME_MIN:
         cap -= 1
     return {"shop": shop_name, "items": items(cap)}
-
-
-def stock_check_text(shop: dict[str, Any], stale: list[dict[str, Any]], now: datetime,
-                     language: str = "en") -> tuple[str, str]:
-    """The stock check's title and text ({{1}} and {{2}} of the template) in the language. How to reply is the
-    template body's own last line, so the text does not repeat it."""
-    title, body = words.render(STOCK_CHECK_KIND, language, stock_check_params(shop, stale, now, language))
-    return title, body or ""
 
 
 def send_stock_checks(db: Database, now: datetime | None = None, limit: int = BATCH) -> dict[str, Any]:

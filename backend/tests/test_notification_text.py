@@ -71,13 +71,20 @@ def test_every_reply_and_fragment_renders_in_both_languages(key):
 def test_a_term_parameter_is_rendered_in_the_recipients_language():
     assert words.render("order_delivery_code", "en", {"shop": Term("the_shop"), "delivery_code": "0427"})[1] == (
         "Your delivery code for the order from the shop is 0427: give it to the shop only when the order arrives.")
+    # Only that the Term is rendered in Kannada: the case ending's form awaits the team's review of the Kannada text.
     assert words.render("order_delivery_code", "kn", {"shop": Term("the_shop"), "delivery_code": "0427"})[1] \
-        .startswith("ಅಂಗಡಿ ನಿಂದ")
+        .startswith("ಅಂಗಡಿ")
 
 
 def test_user_text_in_a_parameter_is_never_formatted():
     title, body = words.render("reservation_rejected_reason", "kn", {"shop": "{shop}", "reason": "No {stock} today"})
     assert body == "No {stock} today" and title.startswith("{shop} ")
+
+
+def stock_check_text(shop, stale, now, language="en"):
+    """The stock check's title and text ({{1}} and {{2}}) as send_stock_checks renders them through notify()."""
+    title, body = words.render(whatsapp.STOCK_CHECK_KIND, language, whatsapp.stock_check_params(shop, stale, now, language))
+    return title, body or ""
 
 
 # ---------------------------------------------------------------- English, word for word as before P7.11
@@ -194,7 +201,7 @@ def test_english_bot_replies_are_unchanged():
     assert en["bot_choose_number"] == "Please reply with a number from 1 to 3, or 0."
     now = utcnow()
     stale = [{"name": "Tape", "quantity": 3, "stock_updated_at": now - timedelta(days=4)}]
-    assert whatsapp.stock_check_text({"name": None}, stale, now) == (
+    assert stock_check_text({"name": None}, stale, now) == (
         "Stock check for your shop", "Are these counts still right? Tape: 3 (counted 4 days ago)")
 
 
@@ -334,7 +341,7 @@ def test_the_stock_check_is_in_the_owners_language():
     now = utcnow()
     stale = [{"name": f"Listing {n} " + "with a very long descriptive name " * 3, "quantity": 100 + n,
               "stock_updated_at": now - timedelta(days=10 + n)} for n in range(whatsapp.STOCK_CHECK_ITEMS)]
-    title, body = whatsapp.stock_check_text({"name": "Sri Ganesh Hardware"}, stale, now, "kn")
+    title, body = stock_check_text({"name": "Sri Ganesh Hardware"}, stale, now, "kn")
     assert title == "Sri Ganesh Hardware ಸ್ಟಾಕ್ ಪರಿಶೀಲನೆ"
     assert len(body) <= whatsapp.PARAM_MAX and whatsapp._one_line(body) == body
     assert all(f"Listing {n}" in body and f": {100 + n} ({10 + n} ದಿನಗಳ ಹಿಂದೆ ಎಣಿಸಲಾಗಿದೆ)" in body

@@ -15,6 +15,7 @@ from app import jobs
 from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.models import InventoryEvent, InventoryReason, Product
+from app.services import notification_text as words
 from app.services import whatsapp
 from app.services.analytics import admin_overview
 from app.services.privacy import set_consent
@@ -461,7 +462,8 @@ def test_the_stock_check_text_fits_one_variable_and_shows_every_listing():
     now = utcnow()
     stale = [{"name": f"Listing {n} " + "with a very long descriptive name " * 3, "quantity": 100 + n,
               "stock_updated_at": now - timedelta(days=10 + n)} for n in range(whatsapp.STOCK_CHECK_ITEMS)]
-    title, body = whatsapp.stock_check_text({"name": "Sri Ganesh Hardware"}, stale, now)
+    title, body = words.render(whatsapp.STOCK_CHECK_KIND, "en",
+                               whatsapp.stock_check_params({"name": "Sri Ganesh Hardware"}, stale, now, "en"))
     assert title == "Stock check for Sri Ganesh Hardware"
     assert len(body) <= whatsapp.PARAM_MAX and whatsapp._one_line(body) == body  # never cut off at the end
     assert all(f"Listing {n}" in body and f": {100 + n} (counted {10 + n} days ago)" in body

@@ -16,8 +16,11 @@ Parameters are formatted with str.format: names in braces, with a format spec wh
 A Term parameter is a word from TEXTS rendered in the recipient's language. What a person typed (a reason, a
 listing's name, a shop's name) is passed as it is and never translated.
 
-The Kannada text is drafted to read naturally and must be reviewed by a native Kannada speaker on the team before
-Kannada is offered to users; the English is the text NearShop has always sent, word for word.
+The Kannada text is an implementer's draft, not yet text from the team: a native Kannada speaker on the team must
+review and replace it before Kannada is offered to users. One known pattern to fix in that review: case endings are
+written as separate words after a name ({shop} ನಿಂದ, {shop} ಗೆ, {shop} ನಲ್ಲಿ), which reads acceptably after a shop's own
+name but not after the fallback word (ಅಂಗಡಿ ನಿಂದ rather than ಅಂಗಡಿಯಿಂದ). The English is the text NearShop has always
+sent, word for word.
 """
 from __future__ import annotations
 
