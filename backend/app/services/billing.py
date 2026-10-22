@@ -12,9 +12,13 @@ Collections
     legal name, the address, the GST state code, the GSTIN when the payer is registered, and the contact user. A shop
     owner's account is made from the shop's name and address the first time it is needed; the owner can correct it.
   * payment_requests: what is to be paid. A unique number (NSP and six digits, the UPI payment note), the purpose
-    (plan; boost is reserved for P10.12), the plan version and period, the kind (advance before
+    (plan, or boost for a Boost pack, P10.12), the plan version and period, the kind (advance before
     NEARSHOP_BILLING_STARTS_ON, new, or renewal of the shop's active subscription), the amount before GST (the
-    founding price when the shop qualifies), the GST and the total. A new request for a shop cancels its open ones.
+    founding price when the shop qualifies), the GST and the total. A new request for a shop cancels its open ones
+    of the same purpose. A boost request (app/services/boost.py) names its pack (boost_pack_id); its plan code and
+    version are the shop's plan whose Boost discount was applied, its period month and its kind new. Paying it
+    activates the pack instead of a subscription (the payment's boost_pack_id, no subscription_id), and refunding it
+    ends the pack.
   * bank_credits: every credit seen on an uploaded statement (or entered by hand, or imported from the pilot ledger),
     unique by its UPI reference: unmatched (with the reason), matched, or returned to the payer.
   * billing_payments: a matched payment, with its request, credit, subscription and document, and its refund.
@@ -210,6 +214,7 @@ class PaymentRequest(Document, Timestamps):
     created_by: Actor
     reason: str | None = None  # why an admin made the request for the owner (AdminPaymentRequestIn)
     payment_id: int | None = None
+    boost_pack_id: int | None = None  # purpose boost (P10.12): the pack this request pays for
 
 
 class CreditStatus(StrEnum):
@@ -287,7 +292,8 @@ class Payment(Document):
     matched_by: Actor
     match: CreditSource
     reason: str
-    subscription_id: int
+    subscription_id: int | None = None  # None only for a Boost pack's payment (P10.12)
+    boost_pack_id: int | None = None
     document_id: int | None = None
     status: PaymentStatus = PaymentStatus.MATCHED
     refund: Refund | None = None
@@ -557,11 +563,32 @@ def create_request(db: Database, shop: Shop, *, plan_code: PlanCode | str, perio
     def write() -> PaymentRequest:
         req = _new_request(db, shop, account, _quote(db, shop, plan_code, period, now), actor, now)
         req.reason = reason
-        requests(db).update_many({"shop_id": shop.id, "status": RequestStatus.OPEN.value},
+        requests(db).update_many({"shop_id": shop.id, "status": RequestStatus.OPEN.value,
+                                  "purpose": Purpose.PLAN.value},
                                  {"$set": {"status": RequestStatus.CANCELLED.value, "updated_at": now}})
         return requests(db).insert(req)
 
     return db.transaction(write)
+
+
+def create_boost_request(db: Database, shop: Shop, *, amount_paise: int, plan_code: PlanCode | str,
+                         plan_version: int, boost_pack_id: int, actor: Actor, now: datetime) -> PaymentRequest:
+    """In the caller's transaction (app/services/boost.py buy): a payment request with the purpose boost for a Boost
+    pack's price after the plan discount. plan_code and plan_version are the shop's plan whose discount applied. The
+    shop's other open boost requests are cancelled (boost.buy ends their pending packs)."""
+    _require_configured()
+    account = account_for_owner(db, shop.owner_id, shop)
+    mode = gst_mode_at(now)
+    gst = gst_amount(amount_paise, mode)
+    req = PaymentRequest(
+        id=db.next_id(REQUESTS), billing_account_id=account.id, owner_id=shop.owner_id, shop_id=shop.id,
+        purpose=Purpose.BOOST, plan_code=PlanCode(plan_code), plan_version=plan_version, period=Period.MONTH,
+        kind=RequestKind.NEW, amount_paise=amount_paise, gst_mode=mode, gst_paise=gst, total_paise=amount_paise + gst,
+        created_by=actor, created_at=now, updated_at=now, boost_pack_id=boost_pack_id)
+    req.number = f"{REQUEST_PREFIX}{req.id:06d}"
+    requests(db).update_many({"shop_id": shop.id, "status": RequestStatus.OPEN.value, "purpose": Purpose.BOOST.value},
+                             {"$set": {"status": RequestStatus.CANCELLED.value, "updated_at": now}})
+    return requests(db).insert(req)
 
 
 def request_out(req: PaymentRequest) -> dict[str, Any]:
@@ -571,7 +598,7 @@ def request_out(req: PaymentRequest) -> dict[str, Any]:
             "kind": req.kind.value, "founding": req.founding, "amount_paise": req.amount_paise,
             "gst_mode": req.gst_mode.value, "gst_paise": req.gst_paise, "total_paise": req.total_paise,
             "status": req.status.value, "created_at": _iso(req.created_at), "payment_id": req.payment_id,
-            "created_by": req.created_by.type, "reason": req.reason,
+            "created_by": req.created_by.type, "reason": req.reason, "boost_pack_id": req.boost_pack_id,
             "pay_to": {"upi_id": settings.billing_upi_id, "payee_name": settings.billing_payee_name,
                        "amount": rupees(req.total_paise), "note": req.number}}
 
@@ -682,6 +709,12 @@ def _settle(db: Database, credit: BankCredit, req: PaymentRequest, *, actor: Act
     if mode != req.gst_mode:
         raise BillingRefused(f"The GST position changed since request {req.number} was made")
     note = f"Payment {req.number} ({credit.upi_reference}): {reason}"
+    if req.purpose == Purpose.BOOST:
+        from app.services import boost  # boost imports this module
+
+        pack = boost.activate_paid(db, req, now=now)
+        return _record_payment(db, credit, req, actor=actor, how=how, reason=reason, now=now, mode=mode,
+                               subscription_id=None, boost_pack_id=pack.id, description=boost.description(pack))
     sub: Subscription | None
     if req.kind == RequestKind.RENEWAL and req.subscription_id is not None:
         kind = RequestKind.RENEWAL
@@ -703,23 +736,37 @@ def _settle(db: Database, credit: BankCredit, req: PaymentRequest, *, actor: Act
     if sub is None or sub.price_paise != req.amount_paise:
         raise BillingRefused(f"The price of request {req.number} has changed (the founding offer may be full, or a "
                              f"new catalogue is in force)")
+    plan = plans.plans(db).get(sub.plan_id)
+    return _record_payment(db, credit, req, actor=actor, how=how, reason=reason, now=now, mode=mode,
+                           subscription_id=sub.id, boost_pack_id=None,
+                           description=_description(req, kind, plan.name if plan else req.plan_code.value, how))
+
+
+def _record_payment(db: Database, credit: BankCredit, req: PaymentRequest, *, actor: Actor, how: CreditSource,
+                    reason: str, now: datetime, mode: GstMode, subscription_id: int | None, boost_pack_id: int | None,
+                    description: str) -> Payment:
+    """_settle's last step, in its transaction: the payment, its document, the credit and the request marked, and the
+    owner's notice. subscription_id for a plan, boost_pack_id for a Boost pack (P10.12)."""
     pay = Payment(id=db.next_id(PAYMENTS), request_id=req.id, request_number=req.number,
                   billing_account_id=req.billing_account_id, shop_id=req.shop_id, credit_id=credit.id,
                   upi_reference=credit.upi_reference, amount_paise=credit.amount_paise, paid_at=credit.credited_at,
-                  matched_at=now, matched_by=actor, match=how, reason=reason, subscription_id=sub.id)
+                  matched_at=now, matched_by=actor, match=how, reason=reason, subscription_id=subscription_id,
+                  boost_pack_id=boost_pack_id)
     account = accounts(db).get(req.billing_account_id)
     if account is None:
         raise NotFound("Billing account not found")
-    plan = plans.plans(db).get(sub.plan_id)
     doc = _issue(db, DocType.TAX_INVOICE if mode == GstMode.REGISTERED else DocType.RECEIPT, payment=pay,
-                 recipient=_party(account),
-                 description=_description(req, kind, plan.name if plan else req.plan_code.value, how),
+                 recipient=_party(account), description=description,
                  taxable=req.amount_paise, split=gst_split(req.amount_paise, mode, account.state_code), issued_at=now,
                  payment_date=credit.credited_at)
     if doc.total_paise != credit.amount_paise:
         raise BillingRefused(f"The document's total {rupees(doc.total_paise)} is not the amount received")
     pay.document_id = doc.id
     payments(db).insert(pay)
+    if boost_pack_id is not None:
+        from app.services import boost  # boost imports this module
+
+        boost.record_payment(db, boost_pack_id, pay.id)
     credits(db).set(credit, status=CreditStatus.MATCHED, payment_id=pay.id, note=None,
                     request_number=credit.request_number or req.number)
     requests(db).set(req, status=RequestStatus.PAID, payment_id=pay.id, updated_at=now)
@@ -1018,6 +1065,11 @@ def refund_payment(db: Database, payment_id: int, *, reason: str, bank_reference
         original = documents(db).get(pay.document_id)
         if original is None:
             raise NotFound("The payment's document was not found")
+        if pay.boost_pack_id is not None:  # a Boost pack (P10.12): the pack ends; no subscription changes
+            from app.services import boost  # boost imports this module
+
+            boost.end_refunded(db, pay.boost_pack_id, now)
+            return _refund_tail(pay, original, None, False)
         others = payments(db).find({"subscription_id": pay.subscription_id, "status": PaymentStatus.MATCHED.value,
                                     "_id": {"$ne": pay.id}}, sort=[("_id", 1)])
         later = [p for p in others if p.id > pay.id]
@@ -1050,6 +1102,9 @@ def refund_payment(db: Database, payment_id: int, *, reason: str, bank_reference
                 return fields
 
             sub = plans._change(db, pay.subscription_id, "renewal_refunded", actor, note, now, apply)
+        return _refund_tail(pay, original, sub, partial)
+
+    def _refund_tail(pay: Payment, original: BillingDocument, sub: Subscription | None, partial: bool) -> Payment:
         doc_type = DocType.CREDIT_NOTE if original.type == DocType.TAX_INVOICE else DocType.REFUND_RECEIPT
         doc = _issue(db, doc_type, payment=pay, recipient=original.recipient,
                      description=f"Refund of {original.number}: {original.description}",
@@ -1060,9 +1115,12 @@ def refund_payment(db: Database, payment_id: int, *, reason: str, bank_reference
         req = requests(db).get(pay.request_id)
         if req is not None:
             requests(db).set(req, status=RequestStatus.REFUNDED, updated_at=now)
-            plan_now = (f"Your plan now runs until {plans._date(sub.ends_at)}." if partial and sub is not None
-                        and sub.ends_at > now else "Your shop is on the Free plan, with every stock tool and the "
-                        "same place in search.")
+            if pay.boost_pack_id is not None:
+                plan_now = "Your Boost pack has ended."
+            else:
+                plan_now = (f"Your plan now runs until {plans._date(sub.ends_at)}." if partial and sub is not None
+                            and sub.ends_at > now else "Your shop is on the Free plan, with every stock tool and the "
+                            "same place in search.")
             notify(db, req.owner_id, KIND_REFUNDED, "Payment refunded",
                    f"₹{rupees(pay.amount_paise)} for {pay.request_number} is being returned to your bank account "
                    f"(reference {bank_reference}). Your {doc.type.value.replace('_', ' ')} is {doc.number}. "
@@ -1261,6 +1319,7 @@ def payment_out(p: Payment) -> dict[str, Any]:
             "credit_id": p.credit_id, "upi_reference": p.upi_reference, "amount_paise": p.amount_paise,
             "paid_at": _iso(p.paid_at), "matched_at": _iso(p.matched_at), "matched_by": p.matched_by.model_dump(),
             "match": p.match.value, "reason": p.reason, "subscription_id": p.subscription_id,
+            "boost_pack_id": p.boost_pack_id,
             "document_id": p.document_id, "status": p.status.value,
             "refund": p.refund.model_dump(mode="json") if p.refund else None,
             "settled_at": _iso(p.settled_at), "settlement_id": p.settlement_id}

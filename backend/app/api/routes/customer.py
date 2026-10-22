@@ -12,10 +12,10 @@ from app.core.errors import Conflict, NotFound
 from app.models import Order, OrderStatus, Reservation, ReservationStatus, Review, Shop, User
 from app.schemas.requests import NotificationsReadIn, OrderIn, OrderQuoteIn, ReservationIn, ReviewIn, TransitionIn
 from app.schemas.serializers import notification_out, order_out, public_listing, reservation_out, shop_brief
+from app.services import boost, search_events
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
 from app.services import reviews as review_service
-from app.services import search_events
 from app.services.loaders import hydrate_orders, hydrate_reservations, timelines, with_shops
 from app.services.search import recent_searches
 from app.utils.geo import haversine_km
@@ -76,6 +76,7 @@ def create_reservation(body: ReservationIn, request: Request, user: CustomerUser
     r = reservation_service.create_reservation(db, user, body.product_id, body.quantity, body.note)
     # Search attribution (P5.6): off the request path, only with the search-measurement consent; never fails this.
     search_events.attribute(db, request, user, "reservation", [r.product_id])
+    boost.attribute(db, request, [r.product_id])  # Boost (P10.12): same browser session and IST day; never fails this
     return _res_json(db, [r], set(), with_events=True)[0]
 
 
@@ -129,6 +130,7 @@ def create_order(body: OrderIn, request: Request, user: CustomerUser, db: DB):
     o = order_service.create_order(db, user, [(i.product_id, i.quantity) for i in body.items], body.address,
                                    body.lat, body.lng, body.phone, body.note)
     search_events.attribute(db, request, user, "order", [i.product_id for i in body.items])  # as reservations
+    boost.attribute(db, request, [i.product_id for i in body.items])  # Boost (P10.12), as reservations
     return _order_json(db, [o], set(), with_events=True)[0]
 
 

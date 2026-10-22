@@ -11,6 +11,11 @@ fusion, grouping, filters and the ranking config are NearShop's own with every e
 Results are grouped by catalog item so a customer sees "Samsung 25W charger: 4 shops nearby
 from Rs 1,249" and can compare shops, instead of four near-identical cards.
 
+Boost (P10.12, app/services/boost.py): after ranking and paging, the first page of a search with a query or a category
+may carry one sponsored card under the response's sponsored key, with the position it is shown at. It is never part
+of groups, so the organic results, their order, scores and ratings are the same with or without Boost; with no pack
+serving, the response is exactly as before.
+
 Cost at city scale (P8.2; docs/perf/baseline.md)
 ------------------------------------------------
 A search reads the city in proportion to its radius, never more:
@@ -38,6 +43,7 @@ records this for sign-off.
 """
 from __future__ import annotations
 
+import logging
 import re
 import time
 from collections import defaultdict
@@ -57,6 +63,7 @@ from app.core.database import Database, utcnow
 from app.models import Product, SearchEvent, Shop
 from app.models.core import live_shop_filter
 from app.schemas.serializers import STALE_DAYS, freshness, media_url, public_listing, shop_brief, thumbnail_url
+from app.services import boost
 from app.services.loaders import categories, category_by_slug, with_categories, with_category
 from app.services.privacy import consent_granted
 from app.utils.geo import haversine_km, within_km
@@ -88,6 +95,7 @@ RANK_FIELDS = {"shop_id": 1, "catalog_item_id": 1, "category_id": 1, "price": 1,
 # Read, on top of RANK_FIELDS, only for the listings a page shows. Search results never show the description,
 # specs, keywords or local terms, so those are never fetched.
 DISPLAY_FIELDS = {"name": 1, "brand": 1, "unit": 1, "icon": 1, "mrp": 1, "low_stock_threshold": 1, "is_active": 1}
+_log = logging.getLogger(__name__)
 # What run_search reports as engine.keyword, per keyword engine (P5.7); the P5.6 shadow labels use the same names.
 KEYWORD_ENGINE_LABELS = {"text": "mongodb-text-index", "atlas_search": "atlas-search"}
 ATLAS_VECTOR_LABEL = "atlas-vector-search"
@@ -501,6 +509,9 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
                        for o in g["offers"] if (x := shown.get(o["_id"]))],
         })
 
+    # Boost (P10.12): at most one sponsored card, chosen after ranking and carried apart from the organic groups.
+    sponsored = _sponsored(db, p, norm, fetched, rows, relevance, len(page_groups), now, log, shop_json)
+
     # Map pins: every shop with at least one matching listing.
     pins: dict[int, dict] = {}
     for r in rows:
@@ -542,7 +553,52 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         "shops": sorted(pins.values(), key=lambda s: s["distance_km"]),
         "category_counts": dict(category_counts),
         "engine": {"semantic": semantic_label, "keyword": keyword_label, "ranking": cfg.version},
+        **({"sponsored": sponsored} if sponsored else {}),
     }
+
+
+def _sponsored(db: Database, p: SearchParams, norm: str, fetched: Fetched, rows: list[dict],
+               relevance: dict[int, float], organic_on_page: int, now: datetime, log: bool,
+               shop_json: Callable[[int], dict]) -> dict | None:
+    """The sponsored card for this page (Boost, P10.12; rules in app/services/boost.py), or None: only on the first
+    page of a search with a query or a category, never on a shop's own page. It is chosen among the candidate rows
+    left after the relevance cutoff and every filter, so it always matches the query and the filters, and it never
+    touches the organic groups: the response carries it under sponsored, with the position the screens show it at
+    (boost_slot_position, or right after the last organic group of a shorter page). A search run with log on counts
+    an impression for its pack. Any failure here only drops the card."""
+    if max(p.page, 1) != 1 or p.shop_id or not (norm or p.category) or not rows:
+        return None
+    try:
+        chosen = boost.choose(db, rows, relevance, now)
+        if chosen is None:
+            return None
+        pack, row = chosen
+        product = _shown(db, fetched, [row]).get(row["_id"])
+        if product is None:  # deleted since the fetch
+            return None
+        seller = fetched.shops[product.shop_id][0]
+        if log:
+            boost.count_impression(db, pack["_id"], product.shop_id)
+        key = f"c{product.catalog_item_id}" if product.catalog_item_id else f"p{product.id}"
+        return {
+            "position": min(settings.boost_slot_position, organic_on_page + 1),
+            "sponsored": True,
+            "label": boost.SPONSORED_LABEL,
+            "token": boost.token(pack["_id"], product.id),
+            "key": key,
+            "catalog_item_id": product.catalog_item_id,
+            "name": product.name,
+            "brand": product.brand,
+            "unit": product.unit,
+            "icon": product.icon,
+            "image_url": media_url(product.image_path),
+            "thumbnail_url": thumbnail_url(product.image_path),
+            "category": product.category.slug,
+            "listing": public_listing(product, shop_json(product.shop_id), now, seller=seller),
+        }
+    except Exception as exc:  # noqa: BLE001 - Boost never fails a search
+        _log.warning("sponsored card skipped: %s", type(exc).__name__)
+        return None
 
 
 def log_search(db: Database, user_id: int | None, p: SearchParams, norm: str, total: int) -> None:

@@ -604,6 +604,34 @@ class Settings(BaseSettings):
         return bool(self.autopay_key_id.strip() and self.autopay_key_secret.get_secret_value().strip()
                     and self.autopay_webhook_secret.get_secret_value().strip())
 
+    # Boost packs (P10.12, app/services/boost.py; plan section 8.22). Every figure is a business-model assumption under
+    # test, so each is a setting. Sales stay off until the decision B31 says yes: until boost_sales_enabled is on, the
+    # owner's buy endpoint answers 409 boost_sales_off (packs already paid for keep running).
+    boost_sales_enabled: bool = False
+    # The two packs: a price before GST (paise), a period in days and how many item groups (categories or catalogue
+    # items) it may name. The shop's plan discount (the boost_discount_pct entitlement: 25% on Growth and above) comes
+    # off the price.
+    boost_pack_price_paise: int = Field(49_900, ge=100)
+    boost_pack_days: int = Field(30, ge=1, le=366)
+    boost_pack_groups: int = Field(3, ge=1, le=10)
+    boost_festive_price_paise: int = Field(99_900, ge=100)
+    boost_festive_days: int = Field(30, ge=1, le=366)
+    boost_festive_groups: int = Field(3, ge=1, le=10)
+    # City eligibility, checked once per IST day: at least this many verified live shops, at least this many monthly
+    # active customers on every daily check of each of the last boost_customer_weeks weeks, and a median stock age of
+    # at most this many hours. Below any of them no pack is sold and active packs pause, with the days added back.
+    boost_min_verified_shops: int = Field(100, ge=0)
+    boost_min_monthly_customers: int = Field(3_000, ge=0)
+    boost_customer_weeks: int = Field(4, ge=1, le=12)
+    boost_max_median_stock_age_hours: float = Field(48.0, gt=0)
+    # The slot: the 1-based position of the one sponsored card on the first results page, and how recently its
+    # listing's stock must have been confirmed.
+    boost_slot_position: int = Field(3, ge=1, le=20)
+    boost_fresh_hours: int = Field(48, ge=1, le=24 * 7)
+    # How long a sponsored card's link token is accepted for a click (attribution itself needs the same browser
+    # session and the same IST day).
+    boost_token_minutes: int = Field(120, ge=5, le=24 * 60)
+
     @property
     def billing_holiday_list(self) -> list[date]:
         """NEARSHOP_BILLING_BANK_HOLIDAYS as dates (an entry that is not an ISO date is ignored)."""

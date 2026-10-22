@@ -42,7 +42,7 @@ from app.schemas.serializers import (
     shop_detail,
     thumbnail_url,
 )
-from app.services import analytics, billing, gateway, importer, plans
+from app.services import analytics, billing, boost, gateway, importer, plans
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
 from app.services import reviews as review_service
@@ -283,6 +283,42 @@ def cancel_autopay(shop: OwnerShop, user: OwnerUser, db: DB):
 def billing_document(document_id: int, shop: OwnerShop, db: DB):
     """One receipt, tax invoice, refund receipt or credit note, as issued."""
     return billing.owner_document(db, shop, document_id)
+
+
+# ------------------------------------------------------------------ Boost packs (P10.12, app/services/boost.py)
+
+
+class BoostGroupIn(BaseModel):
+    type: Literal["category", "item"]
+    id: int = Field(ge=1)
+
+
+class BoostPackIn(BaseModel):
+    kind: Literal["standard", "festive"] = "standard"
+    groups: list[BoostGroupIn] = Field(min_length=1, max_length=10)
+
+
+@router.get("/boost/eligibility")
+def boost_eligibility(shop: OwnerShop, db: DB):
+    """Whether the shop can buy a Boost pack now and why not (sales off until B31, the shop not live, or the city
+    below a threshold), the city's latest figures against the thresholds, and both packs' prices after the plan
+    discount."""
+    return boost.owner_eligibility(db, shop)
+
+
+@router.post("/boost/packs")
+def buy_boost(body: BoostPackIn, shop: OwnerShop, user: OwnerUser, db: DB):
+    """Buy a pack: a pending pack and its payment request (purpose boost). Pay it by UPI to NearShop's account with
+    the request number as the note; the pack starts when the payment is matched."""
+    pack, req = boost.buy(db, shop, kind=body.kind, groups=[(g.type, g.id) for g in body.groups],
+                          actor=Actor(type="owner", id=user.id))
+    return {"pack": boost.pack_out(pack), "payment_request": billing.request_out(req)}
+
+
+@router.get("/boost/packs")
+def my_boost_packs(shop: OwnerShop, db: DB):
+    """The shop's packs with each one's impressions, clicks and requests, per IST day and in total."""
+    return {"packs": boost.owner_packs(db, shop)}
 
 
 @router.get("/insights")

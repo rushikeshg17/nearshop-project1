@@ -53,7 +53,7 @@ from app.models.enums import (
     SaleSource,
 )
 from app.schemas.requests import CONSENT_PURPOSES, OTP_PURPOSES
-from app.services import billing, gateway
+from app.services import billing, boost, gateway
 from app.services.leads import COUNT_FIELDS, LEAD_KINDS
 
 log = logging.getLogger(__name__)
@@ -664,6 +664,7 @@ VALIDATORS: dict[str, dict] = {
         kind=enum(billing.RequestKind), subscription_id=INT_N, founding=BOOL, amount_paise=PAISE, gst_mode=GST_MODE,
         gst_paise=PAISE, total_paise=PAISE, status=enum(billing.RequestStatus), created_by=ACTOR, payment_id=INT_N,
         reason={"bsonType": STR_N, "maxLength": 500},  # an admin's reason for a request made for the owner
+        boost_pack_id=INT_N,  # purpose boost (P10.12): the Boost pack it pays for
         created_at=DATE, updated_at=DATE,
     ),
     # Every credit seen on a bank statement, entered by hand or imported from the pilot ledger; one per UPI reference.
@@ -676,14 +677,14 @@ VALIDATORS: dict[str, dict] = {
         alerted_at=DATE_N, returned={"bsonType": ["object", "null"]}, closed={"bsonType": ["object", "null"]},
         created_at=DATE,
     ),
-    # A matched payment, with its request, credit, subscription and document, and its refund.
+    # A matched payment, with its request, credit, subscription (or Boost pack, P10.12) and document, and its refund.
     "billing_payments": schema(
         ["request_id", "request_number", "billing_account_id", "shop_id", "credit_id", "upi_reference",
-         "amount_paise", "paid_at", "matched_at", "matched_by", "match", "reason", "subscription_id", "status"],
+         "amount_paise", "paid_at", "matched_at", "matched_by", "match", "reason", "status"],
         request_id=INT, request_number=STR, billing_account_id=INT, shop_id=INT, credit_id=INT, upi_reference=STR,
         amount_paise={"bsonType": INT, "minimum": 1}, paid_at=DATE, matched_at=DATE, matched_by=ACTOR,
         match=enum(billing.CreditSource), reason={"bsonType": STR, "minLength": 3, "maxLength": 500},
-        subscription_id=INT, document_id=INT_N, status=enum(billing.PaymentStatus),
+        subscription_id=INT_N, boost_pack_id=INT_N, document_id=INT_N, status=enum(billing.PaymentStatus),
         settled_at=DATE_N, settlement_id=STR_N,  # an Autopay debit's settlement by the gateway (P9.6)
         refund={"oneOf": [{"bsonType": "null"}, {"bsonType": "object", "required": [
             "at", "by", "reason", "bank_reference", "document_id"], "properties": {
@@ -733,6 +734,45 @@ VALIDATORS: dict[str, dict] = {
         gateway_subscription_id=STR_N, payment_id=STR_N, outcome={"bsonType": STR, "minLength": 1},
         received_at=DATE,
     ),
+    # Boost packs (P10.12, app/services/boost.py; plan section 8.22): a shop's paid sponsored slot. Amounts in paise
+    # before GST; groups are categories or catalogue items (at most 10, the settings allow fewer).
+    "boost_packs": schema(
+        ["shop_id", "owner_id", "city", "kind", "groups", "days", "list_price_paise", "discount_pct", "amount_paise",
+         "plan_code", "status", "period_requests", "requests_total", "make_good_used", "paused_seconds", "created_at",
+         "updated_at"],
+        shop_id=INT, owner_id=INT, city={"bsonType": STR, "maxLength": 100}, kind=enum(boost.PackKind),
+        groups={"bsonType": "array", "minItems": 1, "maxItems": 10, "items": _closed(
+            ["type", "id", "name"], type=enum(boost.GroupType), id={"bsonType": INT},
+            name={"bsonType": STR, "maxLength": 200})},
+        days={"bsonType": INT, "minimum": 1, "maximum": 366}, list_price_paise=PAISE,
+        discount_pct={"bsonType": INT, "minimum": 0, "maximum": 100}, amount_paise=PAISE, plan_code=STR,
+        payment_request_id=INT_N, payment_request_number=STR_N, payment_id=INT_N, status=enum(boost.PackStatus),
+        paid_at=DATE_N, period_start=DATE_N, ends_at=DATE_N, period_requests=COUNT, requests_total=COUNT,
+        make_good_used=BOOL, paused_at=DATE_N, resume_status={"enum": [None, *(s.value for s in boost.PackStatus)]},
+        pause_reason=STR_N, paused_seconds=COUNT, ended_at=DATE_N,
+        end_reason={"enum": [None, "period_over", "replaced", "refunded"]}, created_at=DATE, updated_at=DATE,
+    ),
+    # Impressions, clicks and requests per pack and IST day (P10.12): counts only, nothing that names a customer.
+    "boost_stats": {"$jsonSchema": {
+        "bsonType": "object", "required": ["_id", "pack_id", "shop_id", "day"], "additionalProperties": False,
+        "properties": {
+            "_id": {"bsonType": STR, "maxLength": 40}, "pack_id": {"bsonType": INT}, "shop_id": {"bsonType": INT},
+            "day": {"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+            **{f: COUNT for f in boost.STAT_FIELDS},
+        },
+    }},
+    # The daily city eligibility check (P10.12): one row per city key and IST day, _id "<city>:<YYYY-MM-DD>".
+    "boost_city_days": {"$jsonSchema": {
+        "bsonType": "object", "additionalProperties": False,
+        "required": ["_id", "city", "name", "day", "verified_shops", "monthly_customers", "checked_at"],
+        "properties": {
+            "_id": {"bsonType": STR, "maxLength": 120}, "city": {"bsonType": STR, "maxLength": 100},
+            "name": {"bsonType": STR, "maxLength": 100},
+            "day": {"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"}, "verified_shops": COUNT,
+            "monthly_customers": COUNT, "median_stock_age_hours": {"bsonType": [*NUM, "null"], "minimum": 0},
+            "checked_at": {"bsonType": DATE},
+        },
+    }},
     "counters": {},
     "text_embeddings": {},
 }
@@ -998,6 +1038,14 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("payment_id", A)], name="payment"),
     ],
     "bank_statements": [IndexModel([("uploaded_at", D)], name="uploaded_at")],
+    # Boost (P10.12, app/services/boost.py).
+    "boost_packs": [
+        IndexModel([("shop_id", A), ("status", A), ("ends_at", A)], name="shop_status_ends"),  # the slot, the owner
+        IndexModel([("status", A), ("ends_at", A)], name="status_ends"),  # end_periods and the daily pause check
+        IndexModel([("payment_request_id", A)], name="payment_request"),
+    ],
+    "boost_stats": [IndexModel([("pack_id", A), ("day", A)], name="pack_day")],
+    "boost_city_days": [IndexModel([("city", A), ("day", A)], name="city_day")],
     # UPI Autopay (P9.6, app/services/gateway.py).
     "autopay_mandates": [
         IndexModel([("gateway_subscription_id", A)], unique=True, name="uq_gateway_subscription"),  # webhook events
