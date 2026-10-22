@@ -33,6 +33,7 @@ class EmbeddingModelSpec:
     passage_prefix: str = ""
     sem_floor: float = 0.22
     sem_ceil: float = 0.62
+    dim: int = 384  # the vector length, which the Atlas Vector Search index declares (P5.7)
 
 
 # The cosine scale search ranks on: the calibration of all-MiniLM-L6-v2 (the sem_floor and sem_ceil of the r1
@@ -48,10 +49,11 @@ EMBEDDING_MODELS: dict[str, EmbeddingModelSpec] = {
     "sentence-transformers/all-MiniLM-L6-v2": EmbeddingModelSpec(),
     # P5.3 candidates (multilingual); calibration not tuned.
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": EmbeddingModelSpec(),
-    "minishlab/potion-multilingual-128M": EmbeddingModelSpec(),
+    "minishlab/potion-multilingual-128M": EmbeddingModelSpec(dim=256),
     # Considered but not trialled (too large for the 2 GB instance; see docs/perf/embedding-models.md).
-    "sentence-transformers/paraphrase-multilingual-mpnet-base-v2": EmbeddingModelSpec(),
-    "intfloat/multilingual-e5-large": EmbeddingModelSpec(query_prefix="query: ", passage_prefix="passage: "),
+    "sentence-transformers/paraphrase-multilingual-mpnet-base-v2": EmbeddingModelSpec(dim=768),
+    "intfloat/multilingual-e5-large": EmbeddingModelSpec(query_prefix="query: ", passage_prefix="passage: ",
+                                                         dim=1024),
 }
 # The TF-IDF fallback (app/ai/embeddings.py) has no model name of its own in the setting.
 TFIDF_MODEL_NAME = "tfidf-char-svd"
@@ -102,6 +104,46 @@ RANKING_CONFIGS: dict[str, RankingConfig] = {
     "r1": RankingConfig(version="r1"),
 }
 DEFAULT_RANKING_VERSION = "r1"
+
+# Search engines (P5.7; app/ai/atlas_search.py, docs/search/engine-decision.md). The keyword stage runs on the
+# products text index (text) or Atlas Search (atlas_search); the vector stage on the in-process NumPy index
+# (in_process) or Atlas Vector Search (atlas_vector). Fusion, grouping, filters and the ranking config stay
+# NearShop's own whichever engines run.
+KeywordEngine = Literal["text", "atlas_search"]
+VectorEngine = Literal["in_process", "atlas_vector"]
+KEYWORD_ENGINES: tuple[str, ...] = get_args(KeywordEngine)
+VECTOR_ENGINES: tuple[str, ...] = get_args(VectorEngine)
+# Where customers' results come from. Until engine-decision.md recommends a switch and a later release step
+# serves it, staging and production keep these defaults: a candidate runs there only in shadow mode (P5.6).
+DEFAULT_ENGINES_ENVIRONMENTS: tuple[str, ...] = ("staging", "production")
+
+
+@dataclass(frozen=True)
+class EnginePair:
+    """The keyword and vector engines one search runs on."""
+
+    keyword: str = "text"
+    vector: str = "in_process"
+
+    @classmethod
+    def parse(cls, value: str) -> "EnginePair":
+        """A pair written as NEARSHOP_SEARCH_SHADOW_ENGINES holds it: keyword engine, comma, vector engine."""
+        parts = [p.strip() for p in value.split(",")]
+        if len(parts) != 2 or parts[0] not in KEYWORD_ENGINES or parts[1] not in VECTOR_ENGINES:
+            raise ValueError(f"an engine pair is a keyword engine ({' or '.join(KEYWORD_ENGINES)}) and a vector "
+                             f"engine ({' or '.join(VECTOR_ENGINES)}), comma-separated; got {value!r}")
+        return cls(parts[0], parts[1])
+
+    def __str__(self) -> str:
+        return f"{self.keyword},{self.vector}"
+
+    @property
+    def uses_atlas(self) -> bool:
+        return self.keyword == "atlas_search" or self.vector == "atlas_vector"
+
+
+DEFAULT_ENGINES = EnginePair()
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=BACKEND_DIR / ".env", env_prefix="NEARSHOP_", extra="ignore")
@@ -258,6 +300,14 @@ class Settings(BaseSettings):
     # ranking (search_ranking_version). A config passes the plan section 8.6 shadow guardrails before it serves.
     search_shadow_ranking_version: str = ""
     search_shadow_share: float = 0.0
+    # Search engines (P5.7, EnginePair above). The serving engines must keep their defaults (text, in_process) in
+    # staging and production. search_shadow_engines is an engine pair for shadow mode, "keyword,vector" such as
+    # atlas_search,in_process: the sampled share (search_shadow_share) is also fetched with those engines after the
+    # response, ranked with the shadow ranking config (or the production one when that is empty), and its top 20
+    # is stored on the event. Empty (the default) turns it off.
+    search_keyword_engine: KeywordEngine = "text"
+    search_vector_engine: VectorEngine = "in_process"
+    search_shadow_engines: str = ""
 
     # Observability (app/core/observability.py). Error tracking is on only when sentry_dsn is set, from the
     # environment (Render: NEARSHOP_SENTRY_DSN, a sync: false secret), never from code. release is the git
@@ -386,11 +436,46 @@ class Settings(BaseSettings):
             raise ValueError("NEARSHOP_SEARCH_SHADOW_SHARE must be between 0 and 1")
         return value
 
+    @field_validator("search_shadow_engines", mode="after")
+    @classmethod
+    def _check_shadow_engines(cls, value: str) -> str:
+        value = value.strip()
+        if value:
+            try:
+                EnginePair.parse(value)
+            except ValueError as exc:
+                raise ValueError(f"NEARSHOP_SEARCH_SHADOW_ENGINES must be empty (off) or {exc}") from None
+        return value
+
+    @model_validator(mode="after")
+    def _check_serving_engines(self) -> "Settings":
+        if self.environment in DEFAULT_ENGINES_ENVIRONMENTS and self.search_engines != DEFAULT_ENGINES:
+            raise ValueError(f"NEARSHOP_SEARCH_KEYWORD_ENGINE and NEARSHOP_SEARCH_VECTOR_ENGINE keep their defaults "
+                             f"(text, in_process) in {self.environment}: an Atlas engine runs there only in shadow "
+                             f"mode (NEARSHOP_SEARCH_SHADOW_ENGINES), until a release step serves it "
+                             f"(docs/search/engine-decision.md)")
+        return self
+
+    @property
+    def search_engines(self) -> EnginePair:
+        """The engines customers' searches run on."""
+        return EnginePair(self.search_keyword_engine, self.search_vector_engine)
+
+    @property
+    def shadow_engines(self) -> EnginePair | None:
+        """The shadow engine pair, or None when it is not set or shadow mode is off (a share of 0)."""
+        if not self.search_shadow_engines or self.search_shadow_share <= 0:
+            return None
+        return EnginePair.parse(self.search_shadow_engines)
+
     @property
     def shadow_ranking(self) -> RankingConfig | None:
-        """The shadow candidate ranking config, or None when shadow mode is off."""
-        if not self.search_shadow_ranking_version or self.search_shadow_share <= 0:
+        """The shadow candidate ranking config, or None when shadow mode is off. With only a shadow engine pair set,
+        the candidate ranks with the production config."""
+        if self.search_shadow_share <= 0:
             return None
+        if not self.search_shadow_ranking_version:
+            return self.ranking if self.shadow_engines is not None else None
         return RANKING_CONFIGS.get(self.search_shadow_ranking_version)
 
     @field_validator("suggestion_min_users", mode="after")

@@ -2,7 +2,8 @@
 
 Many shops list the same item, so vectors are cached per unique text in the `text_embeddings`
 collection (`_id` = "<model>:<sha256 of text>") and only new texts are embedded. With a few
-thousand listings a NumPy matrix product is fast enough; Atlas Vector Search can replace this later.
+thousand listings a NumPy matrix product is fast enough. Atlas Vector Search is the candidate replacement
+(P5.7, below; docs/search/engine-decision.md).
 Because the key starts with the model name, several models' vectors coexist and switching
 NEARSHOP_EMBEDDING_MODEL (P5.3) only embeds what the new model has not seen.
 
@@ -26,6 +27,14 @@ A full rebuild still runs on the first search, after mark_dirty (a retrain, a mo
 harness) and nightly: once the last full build is older than the latest NIGHTLY_REBUILD_AT (UTC), a search
 starts it in a background thread and searches keep using the current matrix until it is done. It also catches
 any write that changed a listing without bumping the version.
+
+Atlas Vector Search (P5.7)
+--------------------------
+While the vector engine or the shadow engine pair is atlas_vector (app/core/config.py), each full build and each
+incremental refresh also keeps the listing_vectors collection in step, which the Atlas Vector Search index reads
+(app/ai/atlas_search.py): one document per active listing with its shop, the model, its text_embeddings key and
+the same vector the matrix holds, reused from text_embeddings. Only documents that changed are written, and those
+of listings no longer active are deleted. With the default engines nothing is written there.
 """
 from __future__ import annotations
 
@@ -38,17 +47,20 @@ from datetime import datetime, timedelta
 from datetime import time as clock_time
 
 import numpy as np
-from bson.binary import Binary
+from bson.binary import Binary, BinaryVectorDtype
+from pymongo import DeleteMany, ReplaceOne
 from pymongo.errors import BulkWriteError
 
+from app.ai.atlas_search import VECTOR_COLLECTION
 from app.ai.embeddings import EmbeddingProvider, get_provider
 from app.core import cache_version
-from app.core.config import SEARCH_SIMILARITY_SCALE, embedding_spec
+from app.core.config import SEARCH_SIMILARITY_SCALE, embedding_spec, settings
 from app.core.database import Database, utcnow
 
 log = logging.getLogger(__name__)
 
 TEXT_FIELDS = {"name": 1, "brand": 1, "keywords": 1, "description": 1}
+ROW_FIELDS = {**TEXT_FIELDS, "shop_id": 1}  # listing_vectors also holds each listing's shop
 OVERLAP = timedelta(seconds=120)
 NIGHTLY_REBUILD_AT = clock_time(21, 30)  # UTC: 03:00 IST, after the nightly retrain slot (app/jobs.py)
 NIGHTLY_RETRY_SECONDS = 600.0  # a nightly rebuild that failed is tried again this much later
@@ -123,6 +135,50 @@ def vectors(db: Database, provider: EmbeddingProvider, texts: list[str]) -> np.n
                 if any(e.get("code") != DUPLICATE_KEY for e in exc.details.get("writeErrors", [])):
                     raise
     return np.vstack([found[cache_key(provider.name, t)] for t in texts]).astype(np.float32, copy=False)
+
+
+def listing_vectors_needed() -> bool:
+    """Whether listing_vectors must follow the listings: the vector engine, or the shadow pair's, is atlas_vector."""
+    shadow = settings.shadow_engines
+    return settings.search_engines.vector == "atlas_vector" or (shadow is not None and shadow.vector == "atlas_vector")
+
+
+def sync_listing_vectors(db: Database, rows: list[dict], texts: list[str], matrix: np.ndarray, model: str, *,
+                         removed: list[int] | None = None, full: bool = False) -> dict[str, int]:
+    """Bring listing_vectors in line with these active listings (rows, their texts and their vectors, in order).
+    A full sync also deletes every other document; an incremental one deletes the listings in `removed`. A document
+    is rewritten only when its text key (model and text) or shop changed. Returns what was written and deleted."""
+    coll = db.mongo[VECTOR_COLLECTION]
+    ids = [r["_id"] for r in rows]
+    found = coll.find({} if full else {"_id": {"$in": ids}}, {"key": 1, "shop_id": 1})
+    current = {d["_id"]: (d.get("key"), d.get("shop_id")) for d in found}
+    now = utcnow()
+    ops: list = []
+    for row, text, vec in zip(rows, texts, matrix, strict=True):
+        key = cache_key(model, text)
+        if current.get(row["_id"]) == (key, row["shop_id"]):
+            continue
+        ops.append(ReplaceOne({"_id": row["_id"]}, {
+            "product_id": row["_id"], "shop_id": row["shop_id"], "is_active": True, "model": model, "key": key,
+            "vector": Binary.from_vector([float(x) for x in vec], BinaryVectorDtype.FLOAT32), "updated_at": now,
+        }, upsert=True))
+    written = len(ops)
+    gone = sorted(set(current) - set(ids)) if full else sorted(set(removed or []) - set(ids))
+    if gone:
+        ops.append(DeleteMany({"_id": {"$in": gone}}))
+    for i in range(0, len(ops), VECTOR_BATCH):
+        coll.bulk_write(ops[i:i + VECTOR_BATCH], ordered=False)
+    return {"written": written, "deleted": len(gone)}
+
+
+def _sync_quietly(db: Database, rows: list[dict], texts: list[str], matrix: np.ndarray, model: str, **kw) -> None:
+    """sync_listing_vectors when it is needed; a failure is logged and never fails a search."""
+    if not listing_vectors_needed():
+        return
+    try:
+        sync_listing_vectors(db, rows, texts, matrix, model, **kw)
+    except Exception as exc:  # the next full build tries again
+        log.warning("semantic index: listing_vectors not updated: %s", exc)
 
 
 @dataclass(frozen=True)
@@ -203,10 +259,11 @@ class SemanticIndex:
 
     def _full(self, db: Database, version: int) -> Snapshot:
         started = utcnow()
-        rows = db.products.find_raw({"is_active": True}, TEXT_FIELDS, sort=[("_id", 1)])
+        rows = db.products.find_raw({"is_active": True}, ROW_FIELDS, sort=[("_id", 1)])
         texts = [_row_text(r) for r in rows]
         provider = get_provider(fallback_corpus=texts)
         matrix = vectors(db, provider, texts)
+        _sync_quietly(db, rows, texts, matrix, provider.name, full=True)
         self.full_builds += 1
         return Snapshot(np.array([r["_id"] for r in rows], dtype=np.int64), matrix, provider.name, db.mongo.name,
                         version, started - OVERLAP, started, time.time())
@@ -216,12 +273,15 @@ class SemanticIndex:
         provider = get_provider()
         if provider.name != snap.provider_name:  # the model setting changed: every vector changes
             return self._full(db, version)
-        rows = db.products.find_raw({"updated_at": {"$gte": snap.since}}, {**TEXT_FIELDS, "is_active": 1},
+        rows = db.products.find_raw({"updated_at": {"$gte": snap.since}}, {**ROW_FIELDS, "is_active": 1},
                                     sort=[("_id", 1)])
         active = [r for r in rows if r.get("is_active")]
         keep = ~np.isin(snap.product_ids, np.array([r["_id"] for r in rows], dtype=np.int64))
         ids = np.concatenate([snap.product_ids[keep], np.array([r["_id"] for r in active], dtype=np.int64)])
-        matrix = np.vstack([snap.matrix[keep], vectors(db, provider, [_row_text(r) for r in active])])
+        texts = [_row_text(r) for r in active]
+        fresh = vectors(db, provider, texts)
+        _sync_quietly(db, active, texts, fresh, provider.name, removed=[r["_id"] for r in rows if not r.get("is_active")])
+        matrix = np.vstack([snap.matrix[keep], fresh])
         order = np.argsort(ids, kind="stable")
         self.refreshes += 1
         return Snapshot(ids[order], matrix[order], provider.name, snap.db_name, version, started - OVERLAP,

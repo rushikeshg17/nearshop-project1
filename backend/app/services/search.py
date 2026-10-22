@@ -4,6 +4,10 @@
           -> location filter (2dsphere index + Haversine) -> availability / price / fulfilment filters
           -> hybrid relevance + proximity ranking -> group listings of the same item -> results
 
+The keyword and semantic stages each run on the engine settings choose (P5.7; app/ai/atlas_search.py): the text
+index or Atlas Search, and the in-process vector index or Atlas Vector Search. The defaults are today's engines;
+fusion, grouping, filters and the ranking config are NearShop's own with every engine.
+
 Results are grouped by catalog item so a customer sees "Samsung 25W charger: 4 shops nearby
 from Rs 1,249" and can compare shops, instead of four near-identical cards.
 """
@@ -17,9 +21,10 @@ from functools import lru_cache
 
 from rapidfuzz import fuzz, process
 
+from app.ai import atlas_search
 from app.ai.semantic_index import OVERLAP, index, nightly_slot
 from app.core import cache_version
-from app.core.config import SEARCH_SIMILARITY_SCALE, RankingConfig, settings
+from app.core.config import SEARCH_SIMILARITY_SCALE, EnginePair, RankingConfig, settings
 from app.core.database import Database, utcnow
 from app.models import Product, SearchEvent, Shop
 from app.schemas.serializers import STALE_DAYS, freshness, listing, shop_brief
@@ -39,6 +44,9 @@ W_LOCAL_TERM = settings.ranking.w_local_term
 SEM_FLOOR, SEM_CEIL = SEARCH_SIMILARITY_SCALE.sem_floor, SEARCH_SIMILARITY_SCALE.sem_ceil
 # Search results never show these, so they are not fetched.
 LISTING_FIELDS = {"description": 0, "specs": 0}
+# What run_search reports as engine.keyword, per keyword engine (P5.7); the P5.6 shadow labels use the same names.
+KEYWORD_ENGINE_LABELS = {"text": "mongodb-text-index", "atlas_search": "atlas-search"}
+ATLAS_VECTOR_LABEL = "atlas-vector-search"
 
 # Stock freshness (P7.4; bands and multipliers in app/schemas/serializers.py): a group's score is multiplied by
 # the freshness multiplier of its freshest offer, and the in-stock-only filter leaves out listings whose stock was
@@ -93,19 +101,34 @@ def nearby_shops(db: Database, lat: float, lng: float, radius_km: float, fulfill
     return out
 
 
+def _completions(db: Database, tokens: list[str]) -> list[str]:
+    """Prefix-match the word being typed, so "chargi" still finds "charger": the text index matches whole (stemmed)
+    words, so the partial word is completed from the catalogue vocabulary."""
+    last = tokens[-1] if tokens else ""
+    if len(last) < 3:
+        return []
+    return sorted(w for w in _vocabulary(db) if w.startswith(last) and w != last)[:8]
+
+
 def keyword_scores(db: Database, terms: list[str]) -> dict[int, float]:
     """Text-index relevance over name/brand/keywords/description (weights 10/6/4/1). Higher = better."""
     tokens = search_tokens(terms)
     if not tokens:
         return {}
-    # Prefix-match the word being typed, so "chargi" still finds "charger": the text index matches
-    # whole (stemmed) words, so the partial word is completed from the catalogue vocabulary.
-    last = tokens[-1]
-    if len(last) >= 3:
-        tokens += sorted(w for w in _vocabulary(db) if w.startswith(last) and w != last)[:8]
+    tokens += _completions(db, tokens)
     rows = db.products.find_raw({"$text": {"$search": " ".join(dict.fromkeys(tokens))}},
                                 {"score": {"$meta": "textScore"}})
     return {r["_id"]: r["score"] for r in rows}
+
+
+def atlas_keyword_scores(db: Database, norm: str, shop_ids: list[int]) -> dict[int, float]:
+    """Atlas Search relevance (P5.7) over the same fields and weights, for the listings in shop_ids, on the text
+    index's scale. Synonyms come from the index's synonym mapping (the search_synonyms source), not from the
+    expanded terms; the word being typed is completed as for the text index."""
+    words = search_tokens(norm.split())
+    if not words:
+        return {}
+    return atlas_search.keyword_scores(db, words, _completions(db, words), shop_ids)
 
 
 def _local_term_candidates(norm: str) -> list[str]:
@@ -142,20 +165,43 @@ def local_term_scores(db: Database, norm: str, w_local_term: float | None = None
     return out
 
 
-def _keyword_stage(db: Database, norm: str, expanded: list[str]) -> tuple[dict[int, float], dict[int, int]]:
-    """Text-index scores, and the number of local terms each listing matched (weighted later, by the ranking
-    config)."""
-    kw = keyword_scores(db, norm.split() + expanded)
+def _keyword_stage(db: Database, norm: str, expanded: list[str], engine: str = "text",
+                   shop_ids: list[int] | None = None) -> tuple[dict[int, float], dict[int, int]]:
+    """Keyword scores from the chosen engine, and the number of local terms each listing matched (weighted later,
+    by the ranking config). Atlas Search is asked only about the listings of shop_ids."""
+    if engine == "atlas_search":
+        kw = atlas_keyword_scores(db, norm, shop_ids or [])
+    else:
+        kw = keyword_scores(db, norm.split() + expanded)
     return kw, {pid: round(bonus) for pid, bonus in local_term_scores(db, norm, 1.0).items()}
+
+
+def _vector_stage(db: Database, norm: str, engine: str, shop_ids: list[int]) -> dict[int, float]:
+    if engine == "atlas_vector":
+        return atlas_search.vector_scores(db, norm, shop_ids)
+    return index.query(db, norm)
+
+
+def engine_labels(engines: EnginePair) -> tuple[str, str]:
+    """engine.keyword and engine.semantic as a search with these engines reports them."""
+    keyword = KEYWORD_ENGINE_LABELS[engines.keyword]
+    if engines.vector == "atlas_vector":
+        from app.ai.semantic_index import get_provider
+
+        return keyword, f"{ATLAS_VECTOR_LABEL}:{get_provider().name}"
+    return keyword, index.provider_name or "loading"
 
 
 def _norm_sem(sim: float, cfg: RankingConfig) -> float:
     return min(max((sim - cfg.sem_floor) / (cfg.sem_ceil - cfg.sem_floor), 0.0), 1.0)
 
 
-def _candidates(db: Database, p: SearchParams, norm: str, expanded: list[str], now: datetime) -> tuple:
+def _candidates(db: Database, p: SearchParams, norm: str, expanded: list[str], now: datetime,
+                engines: EnginePair | None = None) -> tuple:
     """Everything run_search fetches, none of it touched by the ranking config: the shops in radius, the
-    listings that pass the filters, keyword scores, local-term match counts and semantic similarities."""
+    listings that pass the filters, keyword scores, local-term match counts and semantic similarities, the last
+    two from the chosen engines (settings.search_engines by default)."""
+    engines = engines or settings.search_engines
     category = category_by_slug(db, p.category)
     shops = nearby_shops(db, p.lat, p.lng, p.radius_km, p.fulfillment, p.shop_id)
 
@@ -169,33 +215,37 @@ def _candidates(db: Database, p: SearchParams, norm: str, expanded: list[str], n
         query["quantity"] = {"$gt": 0}
         query["stock_updated_at"] = {"$gte": now - timedelta(days=STALE_DAYS)}
     # Listings, keyword scores and semantic scores are independent: fetch them side by side.
+    shop_ids = list(shops)
     products, (kw, local), sem = db.gather(
         lambda: with_category(db, db.products.find(query, projection=LISTING_FIELDS)) if shops else [],
-        lambda: _keyword_stage(db, norm, expanded) if norm else ({}, {}),
-        lambda: index.query(db, norm) if norm else {},
+        lambda: _keyword_stage(db, norm, expanded, engines.keyword, shop_ids) if norm else ({}, {}),
+        lambda: _vector_stage(db, norm, engines.vector, shop_ids) if norm else {},
     )
     return shops, products, kw, local, sem
 
 
 def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: bool = True,
-               ranking: RankingConfig | None = None, cache: dict | None = None, now: datetime | None = None) -> dict:
+               ranking: RankingConfig | None = None, cache: dict | None = None, now: datetime | None = None,
+               engines: EnginePair | None = None) -> dict:
     """Search. `ranking` overrides the configured ranking config (the evaluation and tuning harnesses).
     `cache`, a dict kept by the caller across calls, memoises the fetch stage per query and filters, so a
     tuning run can re-rank the same candidates under many configs. The live API passes one only for a search it
     shadows (P5.6, app/services/search_events.py), together with `now`, the time freshness is judged at
     (search_now() by default), so the shadow ranking re-ranks exactly the listings and scores the customer's
-    search fetched."""
+    search fetched. `engines` overrides the configured engines (P5.7: the evaluation harness and the shadow engine
+    pair); the cache keeps each engine pair's fetch apart."""
     cfg = ranking or settings.ranking
+    engines = engines or settings.search_engines
     norm = normalize_query(p.q) if p.q else ""
     expanded = expand_synonyms(norm) if norm else []
     now = now or search_now()
     if cache is None:
-        shops, products, kw, local, sem = _candidates(db, p, norm, expanded, now)
+        shops, products, kw, local, sem = _candidates(db, p, norm, expanded, now, engines)
     else:
         key = (norm, p.lat, p.lng, p.radius_km, p.category, p.min_price, p.max_price, p.in_stock_only,
-               p.fulfillment, p.shop_id, now if p.in_stock_only else None)
+               p.fulfillment, p.shop_id, now if p.in_stock_only else None, engines)
         if key not in cache:
-            cache[key] = _candidates(db, p, norm, expanded, now)
+            cache[key] = _candidates(db, p, norm, expanded, now, engines)
         shops, products, kw, local, sem = cache[key]
     if local:
         kw = dict(kw)
@@ -309,7 +359,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
     # Nothing found but the query looks misspelled: show results for the correction instead of an empty page.
     if total == 0 and did_you_mean:
         corrected = run_search(db, replace(p, q=did_you_mean), user_id=user_id, log=log, ranking=ranking,
-                               cache=cache, now=now)
+                               cache=cache, now=now, engines=engines)
         if corrected["total"]:
             return {**corrected, "query": p.q, "corrected_from": p.q, "did_you_mean": None}
 
@@ -319,6 +369,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
                             results_count=total, lat=round(p.lat, 3), lng=round(p.lng, 3))
         db.background(lambda: Database(db.mongo.name).search_history.insert(event))
 
+    keyword_label, semantic_label = engine_labels(engines)
     return {
         "query": p.q,
         "normalized_query": norm,
@@ -333,8 +384,7 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         "groups": page_rows,
         "shops": sorted(pins.values(), key=lambda s: s["distance_km"]),
         "category_counts": dict(category_counts),
-        "engine": {"semantic": index.provider_name or "loading", "keyword": "mongodb-text-index",
-                   "ranking": cfg.version},
+        "engine": {"semantic": semantic_label, "keyword": keyword_label, "ranking": cfg.version},
     }
 
 
@@ -527,22 +577,33 @@ def _top_queries(db: Database, match: dict, limit: int) -> list[str]:
     return [r["_id"] for r in rows if isinstance(r["_id"], str) and suggestion_allowed(r["_id"])][:limit]
 
 
-def suggestions(db: Database, q: str, limit: int = 8) -> dict:
+def _suggested_items(db: Database, norm: str, limit: int, keyword_engine: str) -> list[dict]:
+    """Catalogue items for suggestions: the Atlas autocomplete index when the keyword engine is atlas_search (P5.7),
+    otherwise a substring match on the name and a prefix match on the brand. Raw documents."""
+    if keyword_engine == "atlas_search":
+        return atlas_search.autocomplete_items(db, norm, limit)
+    contains = {"$regex": re.escape(norm), "$options": "i"}
+    starts = {"$regex": f"^{re.escape(norm)}", "$options": "i"}
+    return db.catalog_items.find_raw({"$or": [{"name": contains}, {"brand": starts}]},
+                                     {"name": 1, "brand": 1, "icon": 1, "category_id": 1}, limit=limit)
+
+
+def suggestions(db: Database, q: str, limit: int = 8, engines: EnginePair | None = None) -> dict:
     norm = normalize_query(q)
     if len(norm) < 2:
         return {"queries": [], "items": [], "categories": []}
-    contains = {"$regex": re.escape(norm), "$options": "i"}
-    starts = {"$regex": f"^{re.escape(norm)}", "$options": "i"}
+    keyword_engine = (engines or settings.search_engines).keyword
     cats = categories(db)
     queries, items = db.gather(
         # Anchored, case-sensitive prefix on normalised (lower-case) text: served by the index.
         lambda: _top_queries(db, {"normalized_query": {"$regex": f"^{re.escape(norm)}"}}, 4),
-        lambda: db.catalog_items.find({"$or": [{"name": contains}, {"brand": starts}]}, limit=limit),
+        lambda: _suggested_items(db, norm, limit, keyword_engine),
     )
     return {
         "queries": queries,
-        "items": [{"id": i.id, "name": i.name, "brand": i.brand, "icon": i.icon,
-                   "category": cats[i.category_id].slug if i.category_id in cats else None} for i in items],
+        "items": [{"id": i["_id"], "name": i["name"], "brand": i.get("brand"), "icon": i.get("icon", "Package"),
+                   "category": cats[i["category_id"]].slug if i.get("category_id") in cats else None}
+                  for i in items],
         "categories": [{"slug": c.slug, "name": c.name, "icon": c.icon} for c in cats.values()
                        if norm in c.name.lower()],
     }

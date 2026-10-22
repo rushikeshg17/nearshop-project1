@@ -39,8 +39,10 @@ Shadow mode
 With NEARSHOP_SEARCH_SHADOW_RANKING_VERSION set and NEARSHOP_SEARCH_SHADOW_SHARE above 0, that share of the
 measured page-1 searches with a query is re-ranked after the response, on the same fetched listings and scores
 (run_search's cache), with the production config and with the candidate. Both top 20s are stored on the event,
-under a label naming the config version and the keyword and vector engines (P5.7 adds engine candidates).
-Customers always get the production ranking.
+under a label naming the config version and the keyword and vector engines. With NEARSHOP_SEARCH_SHADOW_ENGINES set
+(P5.7), the candidate is that engine pair: both rankings are then fetched afresh, the production one on the serving
+engines and the candidate on the pair (with the shadow config, or the production one when none is set), so their
+times compare like for like. Customers always get the production ranking.
 """
 from __future__ import annotations
 
@@ -63,7 +65,7 @@ from typing import Any
 from fastapi import Request, Response
 from rapidfuzz import fuzz
 
-from app.core.config import RankingConfig, settings
+from app.core.config import EnginePair, RankingConfig, settings
 from app.core.database import Database, utcnow
 from app.models import ModelRun, Role, User
 from app.schemas.serializers import iso
@@ -497,26 +499,34 @@ def engine_label(ranking: str, keyword: str, vector: str) -> str:
 
 def shadow_rank(db: Database, p: SearchParams, sp: SearchPlan, engine: dict) -> dict:
     """Re-rank the search's fetched listings and scores (sp.cache) with the production config and the candidate,
-    top SHADOW_TOP groups each, with the time each re-ranking took."""
+    top SHADOW_TOP groups each, with the time each re-ranking took. With a shadow engine pair (P5.7), both are
+    fetched afresh instead: production on the serving engines, the candidate on the pair."""
     assert sp.shadow is not None
     top = replace(p, page=1, page_size=SHADOW_TOP)
     production = settings.ranking
+    pair = settings.shadow_engines
 
-    def ranked(cfg: RankingConfig) -> tuple[dict, float]:
+    def ranked(cfg: RankingConfig, engines: EnginePair | None = None, cache: dict | None = None) -> tuple[dict, float]:
         started = time.perf_counter()
-        out = run_search(db, top, log=False, ranking=cfg, cache=sp.cache, now=sp.now)
+        out = run_search(db, top, log=False, ranking=cfg, cache=cache, now=sp.now, engines=engines)
         return out, (time.perf_counter() - started) * 1000
 
-    prod, prod_ms = ranked(production)
-    cand, cand_ms = ranked(sp.shadow)
-    keyword = str(engine.get("keyword") or KEYWORD_ENGINE)
-    vector = str(engine.get("semantic") or "unknown")
+    if pair is None:
+        prod, prod_ms = ranked(production, cache=sp.cache)
+        cand, cand_ms = ranked(sp.shadow, cache=sp.cache)
+        keyword = prod_keyword = str(engine.get("keyword") or KEYWORD_ENGINE)
+        vector = prod_vector = str(engine.get("semantic") or "unknown")
+    else:
+        prod, prod_ms = ranked(production, settings.search_engines, {})
+        cand, cand_ms = ranked(sp.shadow, pair, {})
+        prod_keyword, prod_vector = str(prod["engine"]["keyword"]), str(prod["engine"]["semantic"])
+        keyword, vector = str(cand["engine"]["keyword"]), str(cand["engine"]["semantic"])
     return {
         "label": engine_label(sp.shadow.version, keyword, vector),
         "ranking": sp.shadow.version,
         "keyword": keyword,
         "vector": vector,
-        "production_label": engine_label(production.version, keyword, vector),
+        "production_label": engine_label(production.version, prod_keyword, prod_vector),
         "top": [g["key"] for g in cand["groups"]][:SHADOW_TOP],
         "production_top": [g["key"] for g in prod["groups"]][:SHADOW_TOP],
         "results_count": int(cand["total"]),
@@ -835,6 +845,7 @@ def online_report(db: Database) -> dict:
     """What the admin view shows: the online metrics and the shadow comparison."""
     return {**online_metrics(db), "shadow": shadow_comparison(db),
             "shadow_settings": {"candidate": settings.search_shadow_ranking_version or None,
+                                "engines": settings.search_shadow_engines or None,
                                 "share": settings.search_shadow_share}}
 
 

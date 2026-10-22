@@ -6,6 +6,10 @@
     uv run python -m database.admin_tasks list-admins
     uv run python -m database.admin_tasks create-admin --name "Asha Rao" --email asha@example.com
     uv run python -m database.admin_tasks backfill-thumbnails
+    uv run python -m database.admin_tasks search-index plan --tier M0
+    uv run python -m database.admin_tasks search-index create --tier Flex [--quantization scalar] [--production]
+    uv run python -m database.admin_tasks search-index status --tier Flex
+    uv run python -m database.admin_tasks search-index drop [--production]
 
 They act on the database in NEARSHOP_MONGODB_URI / NEARSHOP_MONGODB_DB, the same one the API uses,
 without wiping anything (the seed is the tool that replaces a database).
@@ -32,6 +36,16 @@ without wiping anything (the seed is the tool that replaces a database).
                    the database in batches (--batch-size, default 100). It never changes the database and
                    skips every photo whose thumbnail exists, so it is safe to run again; at the end it
                    prints how many photos still lack one and the median thumbnail size.
+  search-index     the Atlas Search and Atlas Vector Search indexes of P5.7 (app/ai/atlas_search.py;
+                   docs/search/engine-decision.md), the only way to make or remove them on staging and production.
+                   plan (read-only): each index's definition size against the 3 KB limit and its synonym
+                   mappings, and the index count against the tier's limit (--tier: M0 allows 3, Flex 10).
+                   create: fills the synonym source (search_synonyms) and listing_vectors, then builds the
+                   missing indexes. It refuses to go above the tier's limit or NearShop's 3, and in production it
+                   needs --production and runs only from 21:00 to 06:00 IST. status (read-only): every search and
+                   vector index of the database, with its state, against the tier's limit. drop: removes the 3
+                   indexes and empties search_synonyms and listing_vectors (--production in production).
+                   --quantization scalar builds the vector index with scalar quantization (default none).
 
 Commands that write (backfill-thumbnails writes to the photo storage, not the database) show the
 database name and ask the operator to type it; anything else changes nothing. No command prints an email
@@ -49,13 +63,16 @@ import statistics
 import sys
 from collections import Counter
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime, time
 
 from pydantic import EmailStr, TypeAdapter, ValidationError
 from pymongo import UpdateOne
-from pymongo.errors import DuplicateKeyError
+from pymongo.database import Database as MongoDatabase
+from pymongo.errors import DuplicateKeyError, OperationFailure
+from pymongo.operations import SearchIndexModel
 from pymongo.results import BulkWriteResult
 
+from app.ai import atlas_search
 from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.core.errors import AppError
@@ -72,6 +89,7 @@ from app.core.security import (
 )
 from app.models import Role, User
 from app.services import media
+from app.utils.hours import IST
 from database.seed.seed import RETIRED_DEMO_PASSWORD_SHA256
 
 DEMO_DOMAIN = "nearshop.demo"  # admin@, priya@, owner@nearshop.demo and <shop>@shops.nearshop.demo
@@ -441,6 +459,186 @@ def backfill_thumbnails(db: Database, ask: Ask = input, out: Out = print, batch_
     return 1 if counts["unreadable"] or counts["failed"] else 0
 
 
+# ---------------------------------------------------------------- Atlas Search indexes (P5.7)
+PRODUCTION_WINDOW_IST = (time(21, 0), time(6, 0))  # create and drop on production only from 21:00 to 06:00 IST
+
+
+class SearchIndexApi:
+    """The search-index commands of one database, through PyMongo. Tests pass a fake with the same methods."""
+
+    def __init__(self, mongo: MongoDatabase):
+        self.mongo = mongo
+
+    def list(self) -> list[dict]:
+        """Every search and vector index of every collection in the database: collection, name, type, status and
+        whether it is queryable. Raises OperationFailure on a MongoDB without a search process."""
+        out = []
+        for name in sorted(self.mongo.list_collection_names()):
+            if name.startswith("system."):
+                continue
+            for ix in self.mongo[name].list_search_indexes():
+                out.append({"collection": name, "name": ix.get("name"), "type": ix.get("type", "search"),
+                            "status": ix.get("status"), "queryable": bool(ix.get("queryable"))})
+        return out
+
+    def create(self, spec: atlas_search.IndexSpec) -> None:
+        self.mongo[spec.collection].create_search_index(
+            SearchIndexModel(definition=spec.definition, name=spec.name, type=spec.type))
+
+    def drop(self, collection: str, name: str) -> None:
+        self.mongo[collection].drop_search_index(name)
+
+
+def in_production_window(now: datetime) -> bool:
+    """Whether a naive UTC time falls between 21:00 and 06:00 IST."""
+    ist = now.replace(tzinfo=UTC).astimezone(IST).time()
+    start, end = PRODUCTION_WINDOW_IST
+    return ist >= start or ist < end
+
+
+def _listed(api: SearchIndexApi, out: Out) -> list[dict] | None:
+    try:
+        return api.list()
+    except OperationFailure as exc:
+        out(f"This MongoDB cannot list search indexes (it has no search process, or the user lacks the right): "
+            f"{exc.details.get('errmsg') if exc.details else exc}")
+        return None
+
+
+def search_index_plan(api: SearchIndexApi, tier: str | None, quantization: str = "none", out: Out = print) -> int:
+    """Read-only: the definitions' sizes and synonym mappings, and the index count against the tier's limit."""
+    plan = atlas_search.index_plan(quantization=quantization)
+    out(f"Index plan ({len(plan)} indexes; NearShop allows {atlas_search.PLAN_MAX_INDEXES}):")
+    for spec in plan:
+        out(f"  {spec.name} on {spec.collection} ({spec.type}): definition {spec.size} bytes of "
+            f"{atlas_search.MAX_DEFINITION_BYTES}, {spec.synonym_mappings} synonym mapping(s)")
+    problems = atlas_search.plan_problems(plan)
+    for p in problems:
+        out(f"  PROBLEM: {p}")
+    existing = _listed(api, out)
+    if existing is not None:
+        ours = {spec.name for spec in plan}
+        others = [ix for ix in existing if ix["name"] not in ours]
+        total = len(others) + len(plan)
+        for t, limit in sorted(atlas_search.TIER_INDEX_LIMITS.items()):
+            if tier in (None, t):
+                verdict = "within" if total <= limit else "OVER"
+                out(f"After create: {total} search and vector indexes ({len(others)} others), {verdict} {t}'s "
+                    f"limit of {limit}.")
+    return 1 if problems else 0
+
+
+def search_index_status(api: SearchIndexApi, tier: str | None, out: Out = print) -> int:
+    """Read-only: every search and vector index with its state, and the count against the tier's limit."""
+    existing = _listed(api, out)
+    if existing is None:
+        return 1
+    out(f"Search and vector indexes: {len(existing)}")
+    for ix in existing:
+        out(f"  {ix['name']} on {ix['collection']} ({ix['type']}): {ix['status']}, "
+            f"{'queryable' if ix['queryable'] else 'not queryable'}")
+    over = False
+    for t, limit in sorted(atlas_search.TIER_INDEX_LIMITS.items()):
+        if tier in (None, t):
+            over |= tier == t and len(existing) > limit
+            out(f"{len(existing)} of {t}'s limit of {limit}{' (OVER)' if len(existing) > limit else ''}.")
+    return 1 if over else 0
+
+
+def _production_refusal(production_flag: bool, now: datetime) -> str | None:
+    if settings.environment != "production":
+        return None
+    if not production_flag:
+        return "This is production: add --production to change its search indexes."
+    if not in_production_window(now):
+        return "On production, search indexes change only from 21:00 to 06:00 IST."
+    return None
+
+
+def fill_listing_vectors(db: Database, out: Out) -> None:
+    """listing_vectors for every active listing, reusing text_embeddings (embedding only texts it lacks)."""
+    from app.ai import semantic_index
+
+    rows = db.products.find_raw({"is_active": True}, semantic_index.ROW_FIELDS, sort=[("_id", 1)])
+    texts = [semantic_index._row_text(r) for r in rows]
+    provider = semantic_index.get_provider(fallback_corpus=texts)
+    matrix = semantic_index.vectors(db, provider, texts)
+    done = semantic_index.sync_listing_vectors(db, rows, texts, matrix, provider.name, full=True)
+    out(f"listing_vectors: {len(rows)} active listings ({provider.name}), {done['written']} written, "
+        f"{done['deleted']} deleted.")
+
+
+def search_index_create(db: Database, api: SearchIndexApi, tier: str, quantization: str = "none",
+                        production: bool = False, ask: Ask = input, out: Out = print,
+                        now: datetime | None = None, fill: Callable[[Database, Out], None] | None = None) -> int:
+    """Build the missing indexes of the plan, after the typed confirmation. Refuses: a plan that breaks the limits,
+    more indexes than the tier allows, and production without --production or outside 21:00 to 06:00 IST."""
+    from app.services import synonyms
+
+    if problem := _production_refusal(production, now or utcnow()):
+        out(f"{problem} No index was created.")
+        return 1
+    if tier not in atlas_search.TIER_INDEX_LIMITS:
+        out(f"--tier must be one of {', '.join(atlas_search.TIER_INDEX_LIMITS)}. No index was created.")
+        return 1
+    plan = atlas_search.index_plan(quantization=quantization)
+    if problems := atlas_search.plan_problems(plan):
+        out(f"The index plan breaks a limit ({'; '.join(problems)}). No index was created.")
+        return 1
+    existing = _listed(api, out)
+    if existing is None:
+        out("No index was created.")
+        return 1
+    names = {ix["name"] for ix in existing}
+    missing = [spec for spec in plan if spec.name not in names]
+    limit = atlas_search.TIER_INDEX_LIMITS[tier]
+    if len(existing) + len(missing) > limit:
+        out(f"Refusing: {len(existing)} search and vector indexes exist and {len(missing)} more would make "
+            f"{len(existing) + len(missing)}, above {tier}'s limit of {limit}. No index was created.")
+        return 1
+    if not missing:
+        out("Every index of the plan exists already; nothing to create. Run status to see their state.")
+        return 0
+    out(f"This fills search_synonyms and listing_vectors and creates {len(missing)} index(es) "
+        f"({', '.join(spec.name for spec in missing)}) in database {db.mongo.name} on {tier}.")
+    if not confirmed(db, ask, out):
+        return 1
+    count = synonyms.regenerate_source(db, force=True)
+    out(f"search_synonyms: {count} explicit mapping(s) from the active synonym entries.")
+    if any(spec.collection == atlas_search.VECTOR_COLLECTION for spec in missing):
+        (fill or fill_listing_vectors)(db, out)
+    for spec in missing:
+        api.create(spec)
+        out(f"  created {spec.name} on {spec.collection}; Atlas builds it in the background")
+    out("Run search-index status until each is READY and queryable, and record its output in the release log.")
+    return 0
+
+
+def search_index_drop(db: Database, api: SearchIndexApi, production: bool = False, ask: Ask = input,
+                      out: Out = print, now: datetime | None = None) -> int:
+    """Remove the plan's indexes, and empty search_synonyms and listing_vectors, after the typed confirmation."""
+    if problem := _production_refusal(production, now or utcnow()):
+        out(f"{problem} Nothing was dropped.")
+        return 1
+    existing = _listed(api, out)
+    if existing is None:
+        out("Nothing was dropped.")
+        return 1
+    ours = {spec.name: spec.collection for spec in atlas_search.index_plan()}
+    present = [ix for ix in existing if ix["name"] in ours]
+    out(f"This drops {len(present)} search index(es) and empties search_synonyms and listing_vectors in database "
+        f"{db.mongo.name}.")
+    if not confirmed(db, ask, out):
+        return 1
+    for ix in present:
+        api.drop(ix["collection"], ix["name"])
+        out(f"  dropped {ix['name']} on {ix['collection']}")
+    for name in (atlas_search.SYNONYM_COLLECTION, atlas_search.VECTOR_COLLECTION):
+        removed = db.mongo[name].delete_many({}).deleted_count
+        out(f"  {name}: {removed} document(s) removed")
+    return 0
+
+
 # ---------------------------------------------------------------- command line
 def _retired_password_from_operator() -> str | None:
     """The old default, from the environment or hidden input, refused unless it matches the digest."""
@@ -469,9 +667,29 @@ def main(argv: list[str] | None = None, ask: Ask = input, out: Out = print) -> i
     create.add_argument("--email", required=True)
     backfill = sub.add_parser("backfill-thumbnails", help="create missing photo thumbnails; safe to run again")
     backfill.add_argument("--batch-size", type=int, default=THUMBNAIL_BATCH)
+    search_index = sub.add_parser("search-index", help="Atlas Search and Vector Search indexes (P5.7)")
+    search_index.add_argument("action", choices=["plan", "create", "status", "drop"])
+    search_index.add_argument("--tier", choices=sorted(atlas_search.TIER_INDEX_LIMITS),
+                              help="the cluster's Atlas tier (required by create)")
+    search_index.add_argument("--quantization", choices=atlas_search.QUANTIZATIONS, default="none",
+                              help="the vector index's quantization (plan and create)")
+    search_index.add_argument("--production", action="store_true",
+                              help="required to create or drop on production (21:00 to 06:00 IST only)")
     args = parser.parse_args(argv)
 
     db = Database()
+    if args.command == "search-index":
+        api = SearchIndexApi(db.mongo)
+        if args.action == "plan":
+            return search_index_plan(api, args.tier, args.quantization, out)
+        if args.action == "status":
+            return search_index_status(api, args.tier, out)
+        if args.action == "drop":
+            return search_index_drop(db, api, args.production, ask, out)
+        if args.tier is None:
+            out("search-index create needs --tier (M0 or Flex).")
+            return 1
+        return search_index_create(db, api, args.tier, args.quantization, args.production, ask, out)
     if args.command == "report":
         return report(db, _retired_password_from_operator(), out)
     if args.command == "rotate-demo":

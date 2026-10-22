@@ -13,6 +13,14 @@ the active entries in memory and re-reads them when either version changes, so a
 API process within 5 seconds, and immediately in the process that made it. When the database cannot be read,
 search keeps the entries the process already has; a process that has none yet searches without synonyms and
 tries again after RETRY_SECONDS rather than CHECK_SECONDS.
+
+Atlas Search's synonym source (P5.7)
+------------------------------------
+The Atlas Search products index reads its one synonym mapping from the search_synonyms collection
+(app/ai/atlas_search.py): one explicit mapping per active entry, whose input is the term and whose synonyms are the
+term and its expansions. Every save regenerates it (regenerate_source) while an Atlas keyword engine is configured,
+serving or in the shadow pair, or the collection already holds mappings; the search-index create command
+(database/admin_tasks.py) fills it before it builds the index, and drop empties it. Inactive entries are left out.
 """
 from __future__ import annotations
 
@@ -25,7 +33,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
 
-from pymongo import ReturnDocument
+from pymongo import DeleteMany, ReplaceOne, ReturnDocument
 from pymongo.database import Database as MongoDatabase
 from pymongo.errors import DuplicateKeyError
 
@@ -205,9 +213,55 @@ def _bump(db: Database) -> None:
 
 
 def _changed(db: Database) -> None:
-    """After a committed write: every process re-reads the entries within 5 seconds, this one at once."""
+    """After a committed write: every process re-reads the entries within 5 seconds, this one at once, and the
+    Atlas Search synonym source is regenerated when it is in use."""
     cache_version.bump(db.mongo, cache_version.SYNONYMS)
     cache.invalidate(db.mongo.name)
+    try:
+        regenerate_source(db)
+    except Exception as exc:  # the entry is saved; the next save, or search-index create, regenerates the source
+        log.error("synonyms: the Atlas Search synonym source was not regenerated: %s", exc)
+
+
+# ---------------------------------------------------------------- Atlas Search synonym source (P5.7)
+
+
+def source_documents(mongo: MongoDatabase) -> list[dict[str, Any]]:
+    """The search_synonyms documents for the active entries: explicit mappings, in id order."""
+    from app.ai.atlas_search import MAX_SYNONYM_DOCUMENTS
+
+    docs = [{"_id": d["_id"], "mappingType": "explicit", "input": [d["term"]],
+             "synonyms": [d["term"], *d["expansions"]]}
+            for d in mongo[COLLECTION].find({"active": True}, {"term": 1, "expansions": 1}).sort("_id", 1)]
+    if len(docs) > MAX_SYNONYM_DOCUMENTS:
+        raise SynonymInvalid(f"{len(docs)} active entries; an Atlas synonym source holds at most "
+                             f"{MAX_SYNONYM_DOCUMENTS}.")
+    return docs
+
+
+def source_needed() -> bool:
+    """Whether an Atlas keyword engine is configured: serving, or in the shadow engine pair."""
+    from app.core.config import settings
+
+    shadow = settings.shadow_engines
+    return settings.search_engines.keyword == "atlas_search" or (
+        shadow is not None and shadow.keyword == "atlas_search")
+
+
+def regenerate_source(db: Database, *, force: bool = False) -> int | None:
+    """Rewrite search_synonyms from the active entries, when an Atlas keyword engine is configured, the collection
+    already holds mappings, or `force`. Returns the number of mappings, or None when nothing was needed. Mappings
+    are replaced and stale ones deleted in one ordered bulk write, so the source is never empty in between."""
+    from app.ai.atlas_search import SYNONYM_COLLECTION
+
+    source = db.mongo[SYNONYM_COLLECTION]
+    if not (force or source_needed() or source.find_one({}, {"_id": 1}) is not None):
+        return None
+    docs = source_documents(db.mongo)
+    ops: list = [ReplaceOne({"_id": d["_id"]}, d, upsert=True) for d in docs]
+    ops.append(DeleteMany({"_id": {"$nin": [d["_id"] for d in docs]}}))
+    source.bulk_write(ops, ordered=True)
+    return len(docs)
 
 
 def list_entries(db: Database, q: str | None = None) -> dict[str, Any]:

@@ -27,6 +27,23 @@ and the git commit in its metrics.
 Because no run can be stored in a deployed database, --publish also writes each split's figures to the
 committed file backend/eval/published.json, which the AI Lab's endpoint reads on every deployment.
 
+Engines (P5.7; app/ai/atlas_search.py, docs/search/engine-decision.md)
+---------------------------------------------------------------------
+--keyword-engine (text or atlas_search) and --vector-engine (in_process or atlas_vector) run any engine pair on
+either split; the defaults are the configured engines. Each run also records, overall and per language:
+
+  - the autocomplete hit rate: for the first 3 and the first 5 characters of each query with a grade-3 item, a hit
+    when a grade-3 item is among the top 8 suggested items (suggestions, with the run's keyword engine);
+  - database operations per search (every command the driver sends during run_search, counted by a command
+    listener on the harness's own client; handshakes, pings and authentication are not counted);
+  - the process's resident memory after the run and its peak, and the database's storage (documents and
+    indexes; Atlas does not report search index sizes to the driver: read them in the Atlas UI).
+
+--scale N copies the seed catalogue across synthetic shops until the evaluation database holds N active listings
+(50,000 for city scale), once per evaluation database. Like the seed, it runs only where the P1.1 environment
+guard (database/schema.py, check_reset_allowed) allows a seed: development, test and demo, never staging or
+production. The guard decides, not the database's or the cluster's name.
+
 This module changes no ranking: it only calls run_search.
 """
 from __future__ import annotations
@@ -35,9 +52,12 @@ import argparse
 import hashlib
 import json
 import math
+import random
+import resource
 import secrets
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -45,9 +65,10 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import SecretStr
-from pymongo.errors import DuplicateKeyError
+from pymongo import MongoClient, monitoring
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
-from app.core.config import BACKEND_DIR, settings
+from app.core.config import BACKEND_DIR, KEYWORD_ENGINES, VECTOR_ENGINES, EnginePair, settings
 from app.core.database import Database, utcnow
 from app.schemas.serializers import iso
 
@@ -71,6 +92,11 @@ FINGERPRINT_GLOBS = (
 PUBLISHED_PATH = EVAL_DIR / "published.json"  # committed figures the deployed AI Lab shows (--publish)
 EVAL_ENVIRONMENTS = ("development", "test")  # a local MongoDB only (database/schema.py, LOCAL_HOSTS)
 METRIC_KEYS = ("ndcg@10", "recall@20", "mrr", "zero_result_rate", "latency_p95_ms")
+AUTOCOMPLETE_PREFIXES = (3, 5)
+AUTOCOMPLETE_TOP = 8
+EXACT_GRADE = 3
+SCALE_SEED = 5007  # the synthetic shops' placement is reproducible
+SCALE_JITTER_DEG = 0.02  # a synthetic shop sits within about 2 km of the shop it copies
 
 
 class LabelError(ValueError):
@@ -100,6 +126,7 @@ class QueryOutcome:
     ndcg: float = 0.0
     recall: float = 0.0
     rr: float = 0.0
+    db_ops: int | None = None  # database commands run_search sent (None: not counted)
 
 
 # ---------------------------------------------------------------- labels
@@ -232,6 +259,7 @@ def _mean(values: list[float]) -> float | None:
 def summarise(outcomes: Sequence[QueryOutcome]) -> dict[str, Any]:
     scored = [o for o in outcomes if o.has_relevant_in_radius]
     p95 = percentile([o.latency_ms for o in outcomes])
+    ops = [float(o.db_ops) for o in outcomes if o.db_ops is not None]
     return {
         "queries": len(outcomes),
         "scored_queries": len(scored),
@@ -240,6 +268,7 @@ def summarise(outcomes: Sequence[QueryOutcome]) -> dict[str, Any]:
         "mrr": _mean([o.rr for o in scored]),
         "zero_result_rate": _mean([1.0 if o.total == 0 else 0.0 for o in scored]),
         "latency_p95_ms": round(p95, 1) if p95 is not None else None,
+        "db_ops_per_search": _mean(ops),
     }
 
 
@@ -253,6 +282,32 @@ def aggregate(outcomes: Sequence[QueryOutcome]) -> dict[str, Any]:
         "overall": summarise(outcomes),
         "by_language": {lang: summarise(by_lang[lang]) for lang in sorted(by_lang, key=lambda x: order.get(x, 99))},
     }
+
+
+def autocomplete_cases(q: LabelledQuery) -> list[str]:
+    """The prefixes of one query that the autocomplete hit rate tries: its first 3 and first 5 characters, each only
+    when the query is that long, and only for a query with a grade-3 item."""
+    if not any(g >= EXACT_GRADE for g in q.judgments.values()):
+        return []
+    return [q.text[:n] for n in AUTOCOMPLETE_PREFIXES if len(q.text) >= n]
+
+
+def autocomplete_hit(q: LabelledQuery, suggested: Sequence[int]) -> bool:
+    """A hit when a grade-3 item is among the top AUTOCOMPLETE_TOP suggested items."""
+    return any(q.judgments.get(i, 0) >= EXACT_GRADE for i in list(suggested)[:AUTOCOMPLETE_TOP])
+
+
+def autocomplete_rates(rows: Sequence[tuple[str, bool]]) -> dict[str, Any]:
+    """Hit rates from (language, hit) pairs, one per prefix tried: overall and per language, in LANGUAGES order."""
+    def rate(hits: list[bool]) -> dict[str, Any]:
+        return {"prefixes": len(hits), "hit_rate": _mean([1.0 if h else 0.0 for h in hits])}
+
+    by_lang: dict[str, list[bool]] = {}
+    for lang, hit in rows:
+        by_lang.setdefault(lang, []).append(hit)
+    order = {lang: n for n, lang in enumerate(LANGUAGES)}
+    return {"overall": rate([h for _, h in rows]),
+            "by_language": {lang: rate(by_lang[lang]) for lang in sorted(by_lang, key=lambda x: order.get(x, 99))}}
 
 
 def compare(current: Mapping[str, Any], baseline: Mapping[str, Any] | None,
@@ -347,14 +402,51 @@ def available_items(db: Database, q: LabelledQuery) -> set[int]:
     return {r["catalog_item_id"] for r in rows}
 
 
+class CommandCounter(monitoring.CommandListener):
+    """Counts the database commands a client sends, apart from handshakes, pings, authentication and session ends.
+    Each counts as an operation on Atlas's operations-per-second bands."""
+
+    IGNORED = frozenset({"hello", "ismaster", "isMaster", "ping", "buildinfo", "buildInfo", "saslStart",
+                         "saslContinue", "authenticate", "endSessions", "getnonce"})
+
+    def __init__(self) -> None:
+        self.count = 0
+        self._lock = threading.Lock()
+
+    def started(self, event: monitoring.CommandStartedEvent) -> None:
+        if event.command_name not in self.IGNORED:
+            with self._lock:
+                self.count += 1
+
+    def succeeded(self, event: monitoring.CommandSucceededEvent) -> None:
+        pass
+
+    def failed(self, event: monitoring.CommandFailedEvent) -> None:
+        pass
+
+
+def install_command_counter() -> CommandCounter:
+    """Give the app a client of its own with a command counter (the evaluation process only). Database handles
+    created afterwards use it."""
+    from app.core import database
+
+    counter = CommandCounter()
+    database.client = MongoClient(settings.mongodb_uri, appname="nearshop-eval", serverSelectionTimeoutMS=15000,
+                                  retryWrites=True, tz_aware=False, event_listeners=[counter])
+    return counter
+
+
 def evaluate(db: Database, queries: Sequence[LabelledQuery], *, ranking: Any = None, cache: dict | None = None,
-             available: dict[str, set[int]] | None = None, prepare: bool = True) -> list[QueryOutcome]:
+             available: dict[str, set[int]] | None = None, prepare: bool = True, engines: EnginePair | None = None,
+             counter: CommandCounter | None = None) -> list[QueryOutcome]:
     """Run every query through run_search (unlogged) and score it.
 
     ranking: a RankingConfig to rank with instead of the configured one (P5.5). cache and available let the
     tuning harness (app/ai/search_tuning.py) run many configs over one prepared set: cache is run_search's
     fetch-stage memo, available the judged items in radius per query id (filled in when missing), and
     prepare=False skips rebuilding the semantic index and the warm-up. Latency is not meaningful with a cache.
+    engines: the engine pair to search with (the configured one when None). counter: the command counter of the
+    client db uses (install_command_counter), to count each search's database operations.
     """
     from app.ai.semantic_index import index
     from app.services.search import SearchParams, reset_vocabulary, run_search
@@ -367,18 +459,116 @@ def evaluate(db: Database, queries: Sequence[LabelledQuery], *, ranking: Any = N
         index.ensure(db)
         reset_vocabulary()
         if queries:  # warm-up, untimed: the vocabulary and caches load on the first search
-            run_search(db, params(queries[0]), log=False, ranking=ranking)
+            run_search(db, params(queries[0]), log=False, ranking=ranking, engines=engines)
     avail = {} if available is None else available
     out = []
     for q in queries:
+        ops_before = counter.count if counter is not None else 0
         started = time.perf_counter()
-        res = run_search(db, params(q), log=False, ranking=ranking, cache=cache)
+        res = run_search(db, params(q), log=False, ranking=ranking, cache=cache, engines=engines)
         latency = (time.perf_counter() - started) * 1000
+        ops = counter.count - ops_before if counter is not None else None
         ranked = [g["catalog_item_id"] for g in res["groups"]]
         if q.query_id not in avail:
             avail[q.query_id] = available_items(db, q)
-        out.append(score_query(q, ranked, res["total"], latency, avail[q.query_id]))
+        outcome = score_query(q, ranked, res["total"], latency, avail[q.query_id])
+        outcome.db_ops = ops
+        out.append(outcome)
     return out
+
+
+def evaluate_autocomplete(db: Database, queries: Sequence[LabelledQuery],
+                          engines: EnginePair | None = None) -> dict[str, Any]:
+    """The autocomplete hit rate (autocomplete_cases, autocomplete_hit), overall and per language."""
+    from app.services.search import suggestions
+
+    rows = []
+    for q in queries:
+        for prefix in autocomplete_cases(q):
+            items = suggestions(db, prefix, limit=AUTOCOMPLETE_TOP, engines=engines)["items"]
+            rows.append((q.lang, autocomplete_hit(q, [i["id"] for i in items])))
+    return autocomplete_rates(rows)
+
+
+def resources(db: Database) -> dict[str, Any]:
+    """This process's resident memory now and at its peak, in MB, and the database's storage: documents and indexes
+    (search indexes not included: Atlas does not report their size to the driver)."""
+    from app.services.analytics import collection_sizes
+
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    peak_mb = peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024  # bytes on macOS, KB on Linux
+    try:
+        import psutil
+
+        rss_mb: float | None = psutil.Process().memory_info().rss / (1024 * 1024)
+    except Exception:  # psutil missing: the peak is still known
+        rss_mb = None
+    try:
+        sizes = collection_sizes(db.mongo)
+        data = sum(c["data_bytes"] for c in sizes)
+        index_bytes = sum(c["index_bytes"] for c in sizes)
+        storage: dict[str, Any] = {"data_mb": round(data / 2**20, 1), "index_mb": round(index_bytes / 2**20, 1),
+                                   "total_mb": round((data + index_bytes) / 2**20, 1),
+                                   "search_indexes": "not reported to the driver; read them in the Atlas UI"}
+    except PyMongoError as exc:
+        storage = {"error": str(exc)[:200]}
+    listings = db.products.count({"is_active": True})
+    return {"rss_mb_after_load": round(rss_mb, 1) if rss_mb is not None else None, "peak_rss_mb": round(peak_mb, 1),
+            "active_listings": listings, "storage": storage}
+
+
+# ---------------------------------------------------------------- the scale option
+
+
+def scale_problem(db: Database) -> str | None:
+    """Why the catalogue must not be scaled in this database, or None: the P1.1 guard for a seed."""
+    from database import schema
+
+    return schema.reset_problem(db.mongo.name, db.mongo.name, client=db.mongo.client)
+
+
+def scale_listings(db: Database, target: int) -> int:
+    """Copy the seed's shops and their active listings, as synthetic shops near the shops they copy, until the
+    database holds `target` active listings. Returns the number of listings added (0 when it holds that many).
+    Refused (ValueError) where the P1.1 guard does not allow a seed."""
+    from app.ai.semantic_index import index
+    from app.core import cache_version
+
+    if problem := scale_problem(db):
+        raise ValueError(f"Scaling refused; nothing was written. {problem}")
+    have = db.products.count({"is_active": True})
+    need = target - have
+    if need <= 0:
+        return 0
+    shops = db.shops.find_raw({"is_active": True}, sort=[("_id", 1)])
+    by_shop: dict[int, list[dict]] = {}
+    for row in db.products.find_raw({"is_active": True}, sort=[("_id", 1)]):
+        by_shop.setdefault(row["shop_id"], []).append(row)
+    templates = [s for s in shops if by_shop.get(s["_id"])]
+    if not templates:
+        raise ValueError("No shop with active listings to copy: seed the database first.")
+    rng = random.Random(SCALE_SEED)
+    now = utcnow()
+    added = n = 0
+    while added < need:
+        template = templates[n % len(templates)]
+        n += 1
+        listings = by_shop[template["_id"]][: need - added]
+        shop_id = db.next_id("shops")
+        lng, lat = template["location"]["coordinates"]
+        shop = {**template, "_id": shop_id, "slug": f"{template['slug']}-scale-{shop_id}",
+                "name": f"{template['name']} (synthetic {shop_id})",
+                "location": {"type": "Point", "coordinates": [lng + rng.uniform(-SCALE_JITTER_DEG, SCALE_JITTER_DEG),
+                                                              lat + rng.uniform(-SCALE_JITTER_DEG, SCALE_JITTER_DEG)]},
+                "created_at": now, "updated_at": now}
+        ids = db.next_ids("products", len(listings))
+        db.shops.raw.insert_one(shop)
+        db.products.raw.insert_many([{**row, "_id": pid, "shop_id": shop_id, "created_at": now, "updated_at": now}
+                                     for pid, row in zip(ids, listings, strict=True)], ordered=False)
+        added += len(listings)
+    cache_version.bump(db.mongo, cache_version.LISTINGS)
+    index.mark_dirty()
+    return added
 
 
 def git_commit() -> tuple[str, bool]:
@@ -417,12 +607,15 @@ def record_run(db: Database, *, split: str, result: Mapping[str, Any], queries: 
 
 
 def run_split(db: Database, split: str, *, queries_dir: Path = EVAL_DIR, store: bool = True,
-              snapshot: str = "") -> dict[str, Any]:
+              snapshot: str = "", engines: EnginePair | None = None,
+              counter: CommandCounter | None = None) -> dict[str, Any]:
     path = split_path(split, queries_dir)
     queries = load_queries(path)
     started = time.time()
-    outcomes = evaluate(db, queries)
-    result = aggregate(outcomes)
+    engines = engines or settings.search_engines
+    outcomes = evaluate(db, queries, engines=engines, counter=counter)
+    result = {**aggregate(outcomes), "engines": {"keyword": engines.keyword, "vector": engines.vector},
+              "autocomplete": evaluate_autocomplete(db, queries, engines), "resources": resources(db)}
     commit, dirty = git_commit()
     stored = None
     if store:
@@ -493,14 +686,27 @@ def _fmt(value: float | None, digits: int = 3) -> str:
 def summary_markdown(runs: Sequence[Mapping[str, Any]], notes: Sequence[str] = ()) -> str:
     lines = ["## Search evaluation", ""]
     for run in runs:
-        lines += [f"**{run['split']} split** at {str(run['commit'])[:10]}{' (uncommitted changes)' if run.get('commit_dirty') else ''}",
-                  "", "| Language | Queries | Scored | nDCG@10 | Recall@20 | MRR | Zero-result | p95 ms |",
-                  "|---|---:|---:|---:|---:|---:|---:|---:|"]
+        engines = run.get("engines") or {}
+        engine_note = f", engines {engines['keyword']} + {engines['vector']}" if engines else ""
+        lines += [f"**{run['split']} split** at {str(run['commit'])[:10]}{' (uncommitted changes)' if run.get('commit_dirty') else ''}"
+                  f"{engine_note}",
+                  "", "| Language | Queries | Scored | nDCG@10 | Recall@20 | MRR | Zero-result | p95 ms | Ops/search |"
+                  " Autocomplete |",
+                  "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+        auto = run.get("autocomplete") or {}
+        auto_rows = {"All": auto.get("overall") or {}, **(auto.get("by_language") or {})}
         rows = [("All", run["overall"]), *run["by_language"].items()]
         for name, m in rows:
             lines.append(f"| {name} | {m['queries']} | {m['scored_queries']} | {_fmt(m['ndcg@10'])} | "
                          f"{_fmt(m['recall@20'])} | {_fmt(m['mrr'])} | {_fmt(m['zero_result_rate'])} | "
-                         f"{_fmt(m['latency_p95_ms'], 0)} |")
+                         f"{_fmt(m['latency_p95_ms'], 0)} | {_fmt(m.get('db_ops_per_search'), 1)} | "
+                         f"{_fmt((auto_rows.get(name) or {}).get('hit_rate'))} |")
+        if res := run.get("resources"):
+            storage = res.get("storage") or {}
+            lines += ["", f"Memory: {_fmt(res.get('rss_mb_after_load'), 0)} MB resident after the run, "
+                          f"{_fmt(res.get('peak_rss_mb'), 0)} MB peak. Storage: {storage.get('total_mb', '-')} MB "
+                          f"(documents and indexes, without search indexes) for {res.get('active_listings')} active "
+                          f"listings."]
         lines.append("")
     lines += [f"- {n}" for n in notes]
     return "\n".join(lines).rstrip() + "\n"
@@ -521,7 +727,17 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p.add_argument("--baseline", type=Path, help="a JSON file from --output on main; fail if dev nDCG@10 drops "
                                                  "by more than --max-drop against it")
     p.add_argument("--max-drop", type=float, default=MAX_DEV_DROP)
+    p.add_argument("--keyword-engine", choices=KEYWORD_ENGINES, help="text or atlas_search (default: the setting)")
+    p.add_argument("--vector-engine", choices=VECTOR_ENGINES, help="in_process or atlas_vector (default: the setting)")
+    p.add_argument("--scale", type=int, help="copy the seed catalogue across synthetic shops up to this many active "
+                                             "listings first (once per evaluation database; 50000 for city scale)")
     return p.parse_args(list(argv))
+
+
+def atlas_search_rank_fusion(server_version: str) -> str:
+    from app.ai.atlas_search import rank_fusion_problem
+
+    return rank_fusion_problem(server_version) or "supported."
 
 
 def main(argv: Sequence[str] = ()) -> int:
@@ -537,10 +753,26 @@ def main(argv: Sequence[str] = ()) -> int:
     splits = list(SPLITS) if args.split == "all" else [args.split]
     for split in splits:  # bad labels stop the run before anything is seeded
         load_queries(split_path(split, args.queries_dir))
+    engines = EnginePair(args.keyword_engine or settings.search_keyword_engine,
+                         args.vector_engine or settings.search_vector_engine)
+    # This process only: the semantic index keeps listing_vectors in step while the vector engine is atlas_vector.
+    settings.search_keyword_engine, settings.search_vector_engine = engines.keyword, engines.vector  # type: ignore[assignment]
+    counter = install_command_counter()
     db = Database()
     snapshot = ensure_snapshot(db, rebuild=args.rebuild)
-    runs = [run_split(db, s, queries_dir=args.queries_dir, store=not args.no_store, snapshot=snapshot) for s in splits]
     notes, ok = [], True
+    if args.scale:
+        try:
+            added = scale_listings(db, args.scale)
+        except ValueError as exc:
+            print(f"Search evaluation stopped. {exc}", file=sys.stderr)
+            return 2
+        notes.append(f"Scaled to {args.scale} active listings ({added} added in this run).")
+    if engines == EnginePair("atlas_search", "atlas_vector"):
+        version = db.mongo.client.server_info().get("version", "unknown")
+        notes.append(f"Fusion inside the database ($rankFusion) not run: {atlas_search_rank_fusion(version)}")
+    runs = [run_split(db, s, queries_dir=args.queries_dir, store=not args.no_store, snapshot=snapshot,
+                      engines=engines, counter=counter) for s in splits]
     if "test" in splits:
         notes.append("The test split runs once per tuning cycle, on the final version of a change (backend/eval/README.md).")
     if args.baseline:
