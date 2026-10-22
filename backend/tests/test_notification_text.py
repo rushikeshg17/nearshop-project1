@@ -41,6 +41,12 @@ def placeholders(template: str | None) -> set[str]:
 @pytest.mark.parametrize("key", sorted(MESSAGES))
 def test_every_message_renders_in_both_languages_with_its_parameters(key):
     entry = MESSAGES[key]
+    if key in words.AWAITING_KANNADA:
+        # The team's Kannada is still awaited (P9.1): English only, and a Kannada reader gets the English text.
+        assert set(entry) == {"en"}, "a message with its Kannada added leaves AWAITING_KANNADA"
+        assert words.render(key, "kn", PARAMS) == words.render(key, "en", PARAMS)
+        assert "{" not in words.render(key, "en", PARAMS)[0] + (words.render(key, "en", PARAMS)[1] or "")
+        return
     assert set(entry) == set(words.LANGUAGES), "every message has every language"
     for language in words.LANGUAGES:
         title, body = entry[language]

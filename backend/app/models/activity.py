@@ -38,6 +38,9 @@ class Reservation(Document, Timestamps):
     close_reason: str | None = None
     payment_method: str | None = None
     payment_status: str | None = None
+    # When the customer reported the item "Not available when I arrived" (P9.1); close_reason is then
+    # not_available_on_arrival. Check 10.5 and the business-model gates count these.
+    arrival_reported_at: datetime | None = None
 
     customer: User | None = Field(default=None, exclude=True)
     shop: Shop | None = Field(default=None, exclude=True)

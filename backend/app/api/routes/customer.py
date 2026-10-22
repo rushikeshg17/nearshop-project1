@@ -113,6 +113,15 @@ def cancel_reservation(reservation_id: int, body: TransitionIn, user: CustomerUs
     return _res_json(db, [r], set(), with_events=True)[0]
 
 
+@router.post("/reservations/{reservation_id}/not-available")
+def report_not_available(reservation_id: int, user: CustomerUser, db: DB):
+    """"Not available when I arrived" (P9.1, plan section 8.17): on the customer's own CONFIRMED or READY_FOR_PICKUP
+    reservation, once. It closes the reservation without putting the held units back and unconfirms the listing."""
+    r = _own_reservation(db, user, reservation_id)
+    r = reservation_service.transition(db, r.id, reservation_service.NOT_AVAILABLE, user)
+    return _res_json(db, [r], set(), with_events=True)[0]
+
+
 # ------------------------------------------------------------------ delivery orders
 
 @router.post("/orders/quote")

@@ -71,7 +71,15 @@ from app.core.config import SEARCH_SIMILARITY_SCALE, EnginePair, RankingConfig, 
 from app.core.database import Database, utcnow
 from app.models import Product, SearchEvent, Shop
 from app.models.core import live_shop_filter
-from app.schemas.serializers import STALE_DAYS, freshness, media_url, public_listing, shop_brief, thumbnail_url
+from app.schemas.serializers import (
+    STALE_DAYS,
+    confirmed_at,
+    freshness,
+    media_url,
+    public_listing,
+    shop_brief,
+    thumbnail_url,
+)
 from app.services import boost
 from app.services.loaders import categories, category_by_slug, with_categories, with_category
 from app.services.privacy import consent_granted
@@ -100,7 +108,7 @@ MAX_FULL_READS = MAX_PAGE_SIZE * (1 + OFFERS_SHOWN)
 # Read for every listing in radius that passes the filters: relevance, grouping, group scores (stock, distance,
 # freshness), prices, category counts, map pins and the group's photo.
 RANK_FIELDS = {"shop_id": 1, "catalog_item_id": 1, "category_id": 1, "price": 1, "quantity": 1,
-               "stock_updated_at": 1, "image_path": 1}
+               "stock_updated_at": 1, "stock_unconfirmed_at": 1, "image_path": 1}
 # Read, on top of RANK_FIELDS, only for the listings a page shows. Search results never show the description,
 # specs, keywords or local terms, so those are never fetched.
 DISPLAY_FIELDS = {"name": 1, "brand": 1, "unit": 1, "icon": 1, "mrp": 1, "low_stock_threshold": 1, "is_active": 1}
@@ -111,7 +119,7 @@ ATLAS_VECTOR_LABEL = "atlas-vector-search"
 
 # Stock freshness (P7.4; bands and multipliers in app/schemas/serializers.py): a group's score is multiplied by
 # the freshness multiplier of its freshest offer, and the in-stock-only filter leaves out listings whose stock was
-# last confirmed more than STALE_DAYS ago. Freshness is judged at search_now(): the current time, unless the
+# last confirmed more than STALE_DAYS ago or unconfirmed by an arrival report (P9.1). Freshness is judged at search_now(): the current time, unless the
 # evaluation harness fixed the clock to its snapshot's seeding time (set_clock), so a reused snapshot's listings
 # do not go stale as it ages.
 _clock: datetime | None = None
@@ -332,9 +340,10 @@ def _candidates(db: Database, p: SearchParams, norm: str, expanded: list[str], n
     if p.min_price is not None or p.max_price is not None:
         query["price"] = {**({"$gte": p.min_price} if p.min_price is not None else {}),
                           **({"$lte": p.max_price} if p.max_price is not None else {})}
-    if p.in_stock_only:  # in stock, and confirmed within STALE_DAYS (P7.4)
+    if p.in_stock_only:  # in stock, confirmed within STALE_DAYS (P7.4) and not unconfirmed by an arrival report (P9.1)
         query["quantity"] = {"$gt": 0}
         query["stock_updated_at"] = {"$gte": now - timedelta(days=STALE_DAYS)}
+        query["stock_unconfirmed_at"] = None
     # The listing rows, the keyword scores and the vector stage's query are independent: fetched side by side. The
     # semantic similarities are then computed for the listings fetched, and only for them.
     shop_ids = list(shops)
@@ -355,8 +364,10 @@ def fetch_ms(cache: dict) -> float:
 
 def _freshness_multiplier(pool: list[dict], now: datetime) -> float:
     """The freshness multiplier of the freshest offer in pool (P7.4): the multiplier only falls with age, so it is
-    the multiplier of the latest stock confirmation; an offer never confirmed counts as stale."""
-    latest = max((x["stock_updated_at"] for x in pool if x.get("stock_updated_at")), default=None)
+    the multiplier of the latest stock confirmation; an offer never confirmed, or unconfirmed by an arrival report
+    (P9.1), counts as stale."""
+    latest = max((at for x in pool if (at := confirmed_at(x.get("stock_updated_at"), x.get("stock_unconfirmed_at")))),
+                 default=None)
     return freshness(latest, now)["multiplier"]
 
 
@@ -550,8 +561,9 @@ def run_search(db: Database, p: SearchParams, user_id: int | None = None, log: b
         # Logged after the response is on its way: analytics must not make search slower. in_stock_results (P9.7):
         # the matching listings inside the radius that are in stock as the in-stock filter means it (P7.4).
         fresh_since = now - timedelta(days=STALE_DAYS)
-        in_stock = sum(1 for r in rows if r["quantity"] > 0 and r.get("stock_updated_at")
-                       and r["stock_updated_at"] >= fresh_since)
+        in_stock = sum(1 for r in rows if r["quantity"] > 0
+                       and (at := confirmed_at(r.get("stock_updated_at"), r.get("stock_unconfirmed_at")))
+                       and at >= fresh_since)
         db.background(lambda: log_search(Database(db.mongo.name), user_id, p, norm, total, in_stock))
 
     keyword_label, semantic_label = engine_labels(engines)

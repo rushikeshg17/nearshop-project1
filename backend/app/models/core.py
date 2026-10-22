@@ -383,6 +383,10 @@ class Product(Document, Timestamps):
     low_stock_threshold: int = 5
     is_active: bool = True
     stock_updated_at: datetime = Field(default_factory=utcnow)
+    # Set when a customer reports the item was not there on arrival (P9.1, plan section 8.17); while set, the listing
+    # is banded, labelled and filtered as stock not confirmed recently, whatever stock_updated_at says. The shop's next
+    # stock count of any kind (web app, import or WhatsApp; app/services/inventory.py) clears it.
+    stock_unconfirmed_at: datetime | None = None
 
     shop: Shop | None = Field(default=None, exclude=True)
     category: Category | None = Field(default=None, exclude=True)

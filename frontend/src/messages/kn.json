@@ -1025,7 +1025,15 @@
       "cancelReasonPlaceholder": "",
       "rate": "",
       "findElsewhere": "",
-      "pickupCodeHintUpi": ""
+      "pickupCodeHintUpi": "",
+      "notAvailable": {
+        "action": "",
+        "title": "",
+        "body": "",
+        "confirm": "",
+        "done": "",
+        "closedBody": ""
+      }
     },
     "order": {
       "status": {

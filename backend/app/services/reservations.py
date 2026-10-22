@@ -6,10 +6,15 @@
 
 Stock is held when the shop confirms (so the unit is physically set aside) and returned
 to stock if the reservation is cancelled or expires. Completing records how the customer paid (P6.1).
+
+A customer who finds a CONFIRMED or READY_FOR_PICKUP item missing reports it instead of cancelling (action
+not_available, P9.1, plan section 8.17): the reservation is CANCELLED with close_reason not_available_on_arrival, the
+hold ends without putting the units back (they were never there), an arrival_failure inventory event with delta 0 is
+written, the listing is unconfirmed until the shop next counts it, and the owner is told.
 """
 import logging
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from pymongo.errors import DuplicateKeyError
 
@@ -17,7 +22,9 @@ from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.core.errors import AppError, Conflict, Forbidden, InvalidTransition, NotFound
 from app.models import (
+    InventoryEvent,
     InventoryReason,
+    Product,
     Reservation,
     Role,
     SaleSource,
@@ -52,6 +59,10 @@ def check_public_cap(shop: Shop, quantity: int) -> None:
         raise AppError(f"You can ask for up to {cap} at a time online. Call the shop for more",
                        code="quantity_above_cap", status_code=422)
 
+# The customer's "Not available when I arrived" report (P9.1): its action and the close_reason it records.
+NOT_AVAILABLE = "not_available"
+NOT_AVAILABLE_ON_ARRIVAL = "not_available_on_arrival"
+
 # (from_status, action) -> (to_status, who may do it)
 TRANSITIONS: dict[tuple[RS, str], tuple[RS, set[str]]] = {
     (RS.REQUESTED, "confirm"): (RS.CONFIRMED, {"owner"}),
@@ -61,9 +72,11 @@ TRANSITIONS: dict[tuple[RS, str], tuple[RS, set[str]]] = {
     (RS.CONFIRMED, "ready"): (RS.READY_FOR_PICKUP, {"owner"}),
     (RS.CONFIRMED, "complete"): (RS.COMPLETED, {"owner"}),
     (RS.CONFIRMED, "cancel"): (RS.CANCELLED, {"customer", "owner"}),
+    (RS.CONFIRMED, NOT_AVAILABLE): (RS.CANCELLED, {"customer"}),
     (RS.CONFIRMED, "expire"): (RS.EXPIRED, {"system"}),
     (RS.READY_FOR_PICKUP, "complete"): (RS.COMPLETED, {"owner"}),
     (RS.READY_FOR_PICKUP, "cancel"): (RS.CANCELLED, {"customer", "owner"}),
+    (RS.READY_FOR_PICKUP, NOT_AVAILABLE): (RS.CANCELLED, {"customer"}),
     (RS.READY_FOR_PICKUP, "expire"): (RS.EXPIRED, {"system"}),
 }
 
@@ -180,10 +193,18 @@ def _transition(db: Database, reservation_id: int, action: str, user: User | Non
     shop = db.shops.get(res.shop_id)
     actor = _actor_for(user, res, shop.owner_id)
     key = (res.status, action)
+    if action == NOT_AVAILABLE and res.arrival_reported_at is not None:
+        raise InvalidTransition("You have already reported this item as not available")
+    if action == NOT_AVAILABLE and key not in TRANSITIONS:
+        raise InvalidTransition("You can report an item as not available only while the shop is holding it for you")
     if key not in TRANSITIONS:
         raise InvalidTransition(f"Cannot {action} a reservation that is {res.status.replace('_', ' ').lower()}")
     to_status, actors = TRANSITIONS[key]
-    if actor not in actors and actor != "admin":
+    if action == NOT_AVAILABLE:
+        # Only the customer who stood at the counter can say the item was missing, and only once (P9.1).
+        if actor != "customer":
+            raise Forbidden("Only the customer can report that the item was not available")
+    elif actor not in actors and actor != "admin":
         raise Forbidden(f"Only the {' or '.join(sorted(actors))} can {action} this reservation")
     if action == "complete" and settings.completion_codes_required and not code_matches(code, res.code):
         raise Conflict("Enter the reservation code the customer shows you" if not (code or "").strip()
@@ -213,10 +234,15 @@ def _transition(db: Database, reservation_id: int, action: str, user: User | Non
                      basket_id=res.code, customer_id=res.customer_id)
         notify(db, res.customer_id, "reservation_completed", link=f"/account/reservations/{res.id}",
                message="reservation_completed", params={"shop": shop.name})
+    elif action == NOT_AVAILABLE:
+        _report_not_available(db, res, product, shop, actor_id, now, changes)
+        reason = None  # the timeline shows the status; close_reason and arrival_reported_at record the report
     else:  # reject / cancel / expire
         if res.stock_held:
             change_stock(db, product, res.quantity, InventoryReason.RESERVATION_RELEASE, actor_id)
         close_reason = (reason or "").strip() or None
+        if close_reason == NOT_AVAILABLE_ON_ARRIVAL:  # reserved for the arrival report, never typed in
+            close_reason = reason = None
         changes.update(stock_held=False, closed_at=now, close_reason=close_reason)
         if action == "reject":
             # The owner's reason, as typed, is the body when there is one.
@@ -245,6 +271,22 @@ def _transition(db: Database, reservation_id: int, action: str, user: User | Non
     record_event(db, entity="reservation", entity_id=res.id, shop_id=res.shop_id, from_status=from_status,
                  to_status=to_status, actor_role=actor, actor_id=actor_id, note=reason)
     return res
+
+
+def _report_not_available(db: Database, res: Reservation, product: Product, shop: Shop, actor_id: int | None,
+                          now: datetime, changes: dict) -> None:
+    """The customer's arrival report (P9.1, plan section 8.17), inside the transition's transaction. The hold ends
+    without the units going back on the shelf: the count stays as it is, and an arrival_failure event with delta 0
+    records the report. The listing is unconfirmed until the shop's next stock count clears it."""
+    db.inventory_events.insert(InventoryEvent(
+        product_id=product.id, shop_id=product.shop_id, delta=0, quantity_after=product.quantity,
+        reason=InventoryReason.ARRIVAL_FAILURE, actor_id=actor_id, created_at=now))
+    db.products.set(product, stock_unconfirmed_at=now)
+    changes.update(stock_held=False, closed_at=now, close_reason=NOT_AVAILABLE_ON_ARRIVAL, arrival_reported_at=now)
+    # The count the customer saw when reserving: the held units are no longer in product.quantity.
+    shown = product.quantity + (res.quantity if res.stock_held else 0)
+    notify(db, shop.owner_id, "arrival_failure", link=f"/shop/inventory?focus={product.id}",
+           message="arrival_failure", params={"code": res.code, "product": product.name, "quantity": shown})
 
 
 def expire_due(db: Database) -> int:
