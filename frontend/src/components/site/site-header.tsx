@@ -14,7 +14,7 @@ import { SearchBox } from "@/components/site/search-box";
 import { ThemeToggle } from "@/components/site/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { useMe, useMeta } from "@/hooks/use-session";
-import { isLanguage, LANGUAGES } from "@/lib/i18n";
+import { isLanguage } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 // Signed-in only, and the session is read in the browser: the menus (Radix dropdown and popover) load after
@@ -28,12 +28,14 @@ const UserMenu = dynamic(() => import("@/components/site/user-menu").then((m) =>
   loading: () => <div className="size-9" />,
 });
 
-/** The interface language: a native select (no menu script on the first load, the phone's own picker), each
+/** The interface language, when the build offers more than one: a native select (no menu script on the first load, the phone's own picker), each
  * language in its own name and script. Under the sm breakpoint only its icon shows, a 44 px target; the select
  * covers the whole control. Choosing re-renders the page in that language without a full reload. */
 export function LanguageSwitch({ className }: { className?: string }) {
-  const { t, selected, setLanguage } = useI18n();
-  const current = LANGUAGES.find((l) => l.code === selected) ?? LANGUAGES[0];
+  const { t, selected, languages, setLanguage } = useI18n();
+  const current = languages.find((l) => l.code === selected) ?? languages[0];
+  // Only English offered (src/lib/i18n.ts): nothing to switch to.
+  if (languages.length < 2 || !current) return null;
   return (
     <div
       className={cn(
@@ -53,7 +55,7 @@ export function LanguageSwitch({ className }: { className?: string }) {
         }}
         className="absolute inset-0 size-full cursor-pointer appearance-none rounded-full opacity-0"
       >
-        {LANGUAGES.map((l) => (
+        {languages.map((l) => (
           <option key={l.code} value={l.code} lang={l.htmlLang}>
             {l.name}
           </option>

@@ -22,13 +22,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useSignOut } from "@/hooks/use-session";
 import { initials } from "@/lib/format";
-import { isLanguage, LANGUAGES } from "@/lib/i18n";
+import { isLanguage } from "@/lib/i18n";
 import type { User } from "@/lib/types";
 
 export function UserMenu({ user }: { user: User }) {
   const signOut = useSignOut();
   const { theme, setTheme } = useTheme();
-  const { t, selected, setLanguage } = useI18n();
+  const { t, selected, languages, setLanguage } = useI18n();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -106,25 +106,28 @@ export function UserMenu({ user }: { user: User }) {
             </DropdownMenuRadioGroup>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <Languages /> {t("shell.language.label")}
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent>
-            <DropdownMenuRadioGroup
-              value={selected}
-              onValueChange={(code) => {
-                if (isLanguage(code)) setLanguage(code);
-              }}
-            >
-              {LANGUAGES.map((l) => (
-                <DropdownMenuRadioItem key={l.code} value={l.code} lang={l.htmlLang}>
-                  {l.name}
-                </DropdownMenuRadioItem>
-              ))}
-            </DropdownMenuRadioGroup>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
+        {/* Only when the build offers more than English (src/lib/i18n.ts). */}
+        {languages.length > 1 && (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <Languages /> {t("shell.language.label")}
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              <DropdownMenuRadioGroup
+                value={selected}
+                onValueChange={(code) => {
+                  if (isLanguage(code)) setLanguage(code);
+                }}
+              >
+                {languages.map((l) => (
+                  <DropdownMenuRadioItem key={l.code} value={l.code} lang={l.htmlLang}>
+                    {l.name}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={signOut} variant="destructive">
           <LogOut /> {t("shell.userMenu.signOut")}

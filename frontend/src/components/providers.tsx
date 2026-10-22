@@ -30,6 +30,8 @@ export type I18n = {
   info: Language;
   /** The language the visitor last chose: shown by the switches while the page re-renders in it. */
   selected: LanguageCode;
+  /** The languages the switches offer (src/lib/i18n.ts, servableLanguages). With one, the switches are hidden. */
+  languages: readonly Language[];
   t: Translate;
   /** Remember the choice (the nearshop_lang cookie) and re-render the page in it, without a full reload. */
   setLanguage: (code: LanguageCode) => void;
@@ -44,70 +46,18 @@ export function useI18n(): I18n {
   return i18n;
 }
 
-/** The script font of the active language (src/app/layout.tsx), kept off the page's load entirely. Until it is
- * used, the script's characters show in the phone's own font for it (every Android phone has a Kannada one, itself
- * Noto Sans Kannada), so text is never blocked or missing. The visitor's first tap or key press downloads it
- * without using it, and the first one after it has arrived adds it to the body font's family list, in a task of its
- * own so the tap's own response paints first. It is removed when the language changes.
- *
- * Why not on load (P2.9 budgets, which must pass in every language, plan section 8.16): the lab counts every
- * request that finishes before the largest contentful paint, so the font named in the first paint added 150 ms
- * (28 KB) to 450 ms (the 91 KB variable file) to the lab LCP of the budget pages. And any web font that finishes
- * loading after that paint makes Chrome lay all text out again: on the search page the result titles re-wrap and
- * the lab takes that as a new, late largest paint (seconds later). After an input, the largest paint is final, and
- * a layout shift within 0.5 s of it does not count. */
-function useScriptFont(fontStack: string | null, sample: string) {
-  useEffect(() => {
-    if (!fontStack) return;
-    const root = document.documentElement;
-    let state: "idle" | "loading" | "loaded" = "idle";
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const stop = () => {
-      window.removeEventListener("pointerdown", onInput, true);
-      window.removeEventListener("keydown", onInput, true);
-    };
-    function onInput() {
-      if (state === "loaded") {
-        stop();
-        timer = setTimeout(() => root.style.setProperty("--font-geist-sans", fontStack), 0);
-      } else if (state === "idle") {
-        state = "loading";
-        document.fonts.load(`1em ${fontStack}`, sample).then(
-          () => {
-            if (!cancelled) state = "loaded";
-          },
-          () => {
-            if (!cancelled) state = "idle"; // not downloaded (offline): the phone's own font stays; try again later
-          },
-        );
-      }
-    }
-    window.addEventListener("pointerdown", onInput, true);
-    window.addEventListener("keydown", onInput, true);
-    return () => {
-      cancelled = true;
-      stop();
-      clearTimeout(timer);
-      root.style.removeProperty("--font-geist-sans");
-    };
-  }, [fontStack, sample]);
-}
-
 function I18nProvider({
   language,
+  languages,
   messages,
-  fontStack,
   children,
 }: {
   language: LanguageCode;
-  messages: Messages;
-  fontStack: string | null;
+  languages: readonly LanguageCode[];
+  messages: Partial<Messages>;
   children: React.ReactNode;
 }) {
   const info = languageInfo(language);
-  // The language's own name is in its script: enough text to fetch that script's part of the font.
-  useScriptFont(fontStack, info.name);
   const router = useRouter();
   const [, startTransition] = useTransition();
   const [selected, setSelected] = useOptimistic(language);
@@ -121,8 +71,36 @@ function I18nProvider({
       router.refresh();
     });
   };
-  const value: I18n = { language, info, selected, t: createTranslator(messages), setLanguage };
-  return <I18nContext value={value}>{children}</I18nContext>;
+  const value: I18n = {
+    language,
+    info,
+    selected,
+    languages: languages.map(languageInfo),
+    t: createTranslator(messages),
+    setLanguage,
+  };
+  return (
+    <I18nMessagesContext value={messages}>
+      <I18nContext value={value}>{children}</I18nContext>
+    </I18nMessagesContext>
+  );
+}
+
+const I18nMessagesContext = createContext<Partial<Messages>>({});
+
+/** Adds message areas for a part of the site, from that route's server layout, so the browser gets a screen's
+ * strings only on that screen's pages (Providers sends only the shell, CLIENT_AREAS in src/lib/i18n.ts):
+ *   const { messages } = await requestI18n({ cookies, headers });
+ *   return <I18nAreas messages={pickAreas(messages, ["discovery"])}>{children}</I18nAreas>;
+ */
+export function I18nAreas({ messages, children }: { messages: Partial<Messages>; children: React.ReactNode }) {
+  const parent = useI18n();
+  const merged = { ...use(I18nMessagesContext), ...messages };
+  return (
+    <I18nMessagesContext value={merged}>
+      <I18nContext value={{ ...parent, t: createTranslator(merged) }}>{children}</I18nContext>
+    </I18nMessagesContext>
+  );
 }
 
 // The toast viewport is not first-load JavaScript (P2.9): it mounts 2 s after the page has loaded, when the
@@ -220,14 +198,15 @@ function PhoneMigration() {
 
 export function Providers({
   language,
+  languages,
   messages,
-  fontStack,
   children,
 }: {
   language: LanguageCode;
-  messages: Messages;
-  /** The body font's family list with the active language's script font, or null when the body font covers it. */
-  fontStack: string | null;
+  /** The languages the switches offer. */
+  languages: readonly LanguageCode[];
+  /** The areas of the active language's messages that client components need on every page (the shell). */
+  messages: Partial<Messages>;
   children: React.ReactNode;
 }) {
   const [client] = useState(
@@ -252,14 +231,14 @@ export function Providers({
 
   return (
     <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-      <I18nProvider language={language} messages={messages} fontStack={fontStack}>
+      <I18nProvider language={language} languages={languages} messages={messages}>
         <QueryClientProvider client={client}>
           {/* No MotionConfig and no TooltipProvider on every page (P2.9): shared screens animate with CSS, which
               globals.css stops for the reduced-motion setting. That rule does not reach motion's JavaScript
               animations, so each screen that still uses motion wraps itself in its own MotionConfig with
               reducedMotion "user"; a screen that uses a Radix tooltip wraps it in its own TooltipProvider. */}
-          {/* usePathname inside, in a Suspense boundary (it kept pages prerendered before P7.5 made the root
-              layout render per request, for the language). */}
+          {/* usePathname inside, in a Suspense boundary, so pages stay prerendered (with English as the only
+              offered language the root layout does not read the request; src/lib/i18n.ts). */}
           <Suspense fallback={null}>
             <PhoneMigration />
           </Suspense>
