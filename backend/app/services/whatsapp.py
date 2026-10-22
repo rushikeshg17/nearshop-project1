@@ -63,9 +63,24 @@ new-reservation template runs that transition as the owner, noted "via WhatsApp"
 to the shop's listings with the importer's matcher and shown back, and applied with set_stock (reason
 whatsapp_update) when the owner replies Yes; an ambiguous line offers up to 3 candidates; any other number gets the
 support reply. Replies are free-form texts, sent only inside the sender's 24-hour service window. send_stock_checks,
-run by the stock_check job, sends each shop's daily stock check from its opening time. docs/whatsapp-templates.md
+run by the stock_check job, sends each shop's stock check from its opening time (P9.3 cadence below).
+docs/whatsapp-templates.md
 describes the conversation. The replies and the stock check are in the owner's language (P7.11: the catalogue in
 app/services/notification_text.py); a number that is not a shop's gets the English support reply.
+
+The stock-check cadence and its cost (P9.3; plan section 8.17)
+---------------------------------------------------------------
+Meta charges per template sent outside the recipient's 24-hour customer-service window and may class the stock check
+as marketing. So the check goes daily, at the shop's opening hour, only to an owner whose window will still be open
+WINDOW_MARGIN (30 minutes) later, as a free-form text inside it (route in_window, category service: no charge); every
+other shop with a stale listing gets the template once a week, at the opening hour of NEARSHOP_STOCK_CHECK_WEEKLY_DAY
+(Monday; the next day for a shop closed on it), route template, category utility. At most one check per shop per
+IST day, none on the shop's closed day (closed_on), none when no listing is older than 48 hours. The window is the
+owner's own: whatsapp_sessions keeps owner_inbound_at, the last message from the owner's verified phone (a message
+from the shop's call-back-verified number opens that number's window, not the owner's). Every outbox row records its
+route and the category it was sent under; Meta's status callbacks add the category, billable flag and pricing type
+Meta reports (meta_category, billable, pricing_type) and the cost those imply (cost_estimate), so the plan's section
+11 cost can be checked against what was actually charged.
 
 Message text is never logged: it can hold a customer's name or a delivery code. Phone numbers are logged masked.
 """
@@ -88,7 +103,7 @@ from zoneinfo import ZoneInfo
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
-from app.core.config import Settings, settings
+from app.core.config import WEEKDAYS, Settings, settings
 from app.core.database import Database, utcnow
 from app.core.errors import AppError
 from app.models import InventoryReason, Notification, Product, Reservation, Shop, User
@@ -126,11 +141,20 @@ CALLBACK_ORDER = tuple(CALLBACK_FIELDS)  # the order held callbacks are applied 
 @dataclass(frozen=True)
 class Template:
     """An approved utility template (docs/whatsapp-templates.md): its name at Meta, the role of the recipient it is
-    for, and the actions of its quick-reply buttons, in order."""
+    for, the actions of its quick-reply buttons, in order, and the category it is submitted under (Meta decides the
+    one it charges, which the status callbacks report: meta_category)."""
 
     name: str
     role: Role
     buttons: tuple[str, ...] = ()
+    category: str = "utility"
+
+
+# How an outbox row is sent (P9.3): as its template, or as a free-form text inside the recipient's open 24-hour
+# customer-service window (only the stock check, send_stock_checks). Each row records its route and category.
+ROUTE_TEMPLATE = "template"
+ROUTE_IN_WINDOW = "in_window"
+CATEGORY_SERVICE = "service"  # Meta's category for free-form messages inside the window: not charged
 
 
 _ORDER_STATUS = Template("nearshop_order_status", Role.CUSTOMER)
@@ -311,6 +335,7 @@ def enqueue(db: Database, note: Notification) -> int | None:
            # The template in the language notify() rendered the text in: the recipient's, read in this transaction.
            "language": template_language(user.get("language")),
            "params": [_one_line(note.title), _one_line(note.body)], "subject": subject,
+           "route": ROUTE_TEMPLATE, "category": template.category,
            "buttons": [f"{subject or f'notification:{note.id}'}:{action}" for action in template.buttons],
            "status": "queued", "attempts": 0, "created_at": created, "next_attempt_at": created}
     db.mongo[OUTBOX].insert_one(row, session=db.session)
@@ -385,8 +410,17 @@ def send_due(db: Database, client: WhatsAppClient | None = None, clock: Callable
             _finish(db, row["_id"], "cancelled", now, reason or "unreachable")
             counts["cancelled"] += 1
             continue
+        in_window = row.get("route") == ROUTE_IN_WINDOW
+        if in_window and not window_open(db, row["user_id"], now):
+            # Free-form messages are allowed only inside the window; it closed before the row was sent (P9.3).
+            _finish(db, row["_id"], "cancelled", now, "window_closed")
+            counts["cancelled"] += 1
+            continue
         try:
-            delivery = client.send_template(phone, row["template"], row["language"], components(row))
+            if in_window:
+                delivery = client.send_text(messaging.e164(phone), in_window_text(row))
+            else:
+                delivery = client.send_template(phone, row["template"], row["language"], components(row))
         except Exception as exc:  # a client must not raise, but one bad send must not stop the run
             delivery = Delivery(False, CHANNEL, error=type(exc).__name__)
         done = clock()
@@ -518,11 +552,48 @@ def _apply(db: Database, message_id: str, kind: str, at: datetime, code: str | N
     return "duplicate" if row.get(field) is not None else "late"
 
 
-def _hold(db: Database, message_id: str, kind: str, at: datetime, code: str | None, now: datetime) -> None:
+def _pricing(status: dict[str, Any]) -> dict[str, Any] | None:
+    """What a status callback says Meta charges for the message (P9.3): its pricing object's category (utility,
+    marketing, authentication or service), billable flag and type (regular, free_customer_service, ...)."""
+    pricing = status.get("pricing")
+    if not isinstance(pricing, dict):
+        return None
+    found: dict[str, Any] = {}
+    if isinstance(pricing.get("category"), str) and pricing["category"].strip():
+        found["meta_category"] = pricing["category"].strip().lower()[:40]
+    if isinstance(pricing.get("billable"), bool):
+        found["billable"] = pricing["billable"]
+    if isinstance(pricing.get("type"), str) and pricing["type"].strip():
+        found["pricing_type"] = pricing["type"].strip().lower()[:40]
+    return found or None
+
+
+def priced_cost(pricing: dict[str, Any]) -> float | None:
+    """The cost in rupees a callback's pricing implies (plan section 8.7 rates), or None when it does not say."""
+    if pricing.get("billable") is False or pricing.get("meta_category") == CATEGORY_SERVICE:
+        return 0.0
+    rates = {"utility": settings.whatsapp_utility_cost_inr, "marketing": settings.whatsapp_marketing_cost_inr,
+             "authentication": settings.whatsapp_cost_inr}
+    return rates.get(pricing.get("meta_category") or "")
+
+
+def _record_pricing(db: Database, message_id: str, pricing: dict[str, Any] | None) -> None:
+    """Write the category Meta reports, and the cost it implies, on the row with message_id (P9.3)."""
+    if not pricing:
+        return
+    fields = dict(pricing)
+    cost = priced_cost(pricing)
+    if cost is not None:
+        fields["cost_estimate"] = round(cost, 4)
+    db.mongo[OUTBOX].update_one({"message_id": message_id}, {"$set": fields})
+
+
+def _hold(db: Database, message_id: str, kind: str, at: datetime, code: str | None, now: datetime,
+          pricing: dict[str, Any] | None = None) -> None:
     try:
         db.mongo[PENDING].update_one({"_id": f"{message_id}:{kind}"}, {"$setOnInsert": {
             "message_id": message_id, "status": kind, "at": at, "error_code": code, "received_at": now,
-            "expires_at": now + PENDING_KEEP}}, upsert=True)
+            "expires_at": now + PENDING_KEEP, **({"pricing": pricing} if pricing else {})}}, upsert=True)
     except DuplicateKeyError:  # the same callback held by a concurrent call
         pass
 
@@ -535,6 +606,7 @@ def apply_pending(db: Database, message_id: str, now: datetime | None = None) ->
     for h in held:
         if h.get("status") in CALLBACK_FIELDS:
             _apply(db, message_id, h["status"], h.get("at") or now or utcnow(), h.get("error_code"))
+            _record_pricing(db, message_id, h.get("pricing"))
         db.mongo[PENDING].delete_one({"_id": h["_id"]})
     return len(held)
 
@@ -548,15 +620,18 @@ def record_status(db: Database, status: dict[str, Any], now: datetime) -> str:
         return "unknown"
     at = _callback_time(status.get("timestamp"), now)
     code = _error_code(status) if kind == "failed" else None
+    pricing = _pricing(status)
     result = _apply(db, message_id, kind, at, code)
     if result != "unknown":
+        _record_pricing(db, message_id, pricing)
         return result
     # Hold it, then try once more: the sender may have saved the id in between (module docstring).
-    _hold(db, message_id, kind, at, code, now)
+    _hold(db, message_id, kind, at, code, now, pricing)
     result = _apply(db, message_id, kind, at, code)
     if result == "unknown":
         return "held"
     db.mongo[PENDING].delete_one({"_id": f"{message_id}:{kind}"})
+    _record_pricing(db, message_id, pricing)
     return result
 
 
@@ -714,8 +789,10 @@ def _respond(db: Database, message: dict[str, Any], at: datetime, now: datetime)
         return "unknown_phone", support_reply(), at
     owner, shop = found
     language = owner.language
+    # owner_inbound_at: the owner's own phone's service window, the one the stock check can use (P9.3).
+    latest = {"last_inbound_at": at, **({"owner_inbound_at": at} if phone == owner.phone else {})}
     session = db.mongo[SESSIONS].find_one_and_update(
-        {"_id": owner.id}, {"$max": {"last_inbound_at": at}, "$set": {"updated_at": now}},
+        {"_id": owner.id}, {"$max": latest, "$set": {"updated_at": now}},
         upsert=True, return_document=ReturnDocument.AFTER)
     last_inbound = session.get("last_inbound_at") or at
     kind = message.get("type")
@@ -980,6 +1057,7 @@ STALE_STOCK = timedelta(hours=48)  # listings counted longer ago than this are l
 STOCK_CHECK_ITEMS = 5
 STOCK_CHECK_GRACE = timedelta(hours=3)  # sent from the opening time until this long after it
 STOCK_CHECK_KEEP = timedelta(days=3)
+WINDOW_MARGIN = timedelta(minutes=30)  # the window must stay open this long after the daily check (P9.3)
 DEFAULT_OPENING = dtime(9, 0)  # when a shop's opening hours cannot be read
 IST = ZoneInfo("Asia/Kolkata")
 _TIME_12H = re.compile(r"\b(\d{1,2})(?:[:.](\d{2}))?\s*([ap])\.?\s*m\b\.?", re.I)
@@ -1032,14 +1110,67 @@ def stock_check_params(shop: dict[str, Any], stale: list[dict[str, Any]], now: d
     return {"shop": shop_name, "items": items(cap)}
 
 
+def window_closes_at(db: Database, owner_id: int) -> datetime | None:
+    """When the owner's own phone's 24-hour service window closes: SERVICE_WINDOW after their last message from it
+    (owner_inbound_at, written by _respond), or None when there was none. A message from before the owner's phone was
+    last verified came from another number, or one not proven theirs, and opens nothing."""
+    session = db.mongo[SESSIONS].find_one({"_id": owner_id}, {"owner_inbound_at": 1})
+    last = session.get("owner_inbound_at") if session else None
+    if last is None:
+        return None
+    user = db.users.raw.find_one({"_id": owner_id}, {"phone_verified_at": 1})
+    verified = user.get("phone_verified_at") if user else None
+    if verified is None or verified > last:
+        return None
+    return last + SERVICE_WINDOW
+
+
+def window_open(db: Database, owner_id: int, now: datetime, margin: timedelta = timedelta(0)) -> bool:
+    """The owner's service window is open now and stays open for at least margin."""
+    closes = window_closes_at(db, owner_id)
+    return closes is not None and closes > now and closes - now >= margin
+
+
+def in_window_text(row: dict[str, Any]) -> str:
+    """The free-form text of an outbox row sent inside the window (P9.3): its title and text, as the template shows
+    them, then how to reply, in the recipient's language."""
+    title, body = ([*(row.get("params") or []), "-", "-"])[:2]
+    language = words.language_of(row.get("language"))
+    return f"NearShop: {title}.\n{body}\n\n{help_text(language)}"[:TEXT_MAX]
+
+
+def closed_weekday(closed_on: str | None) -> int | None:
+    """The weekday (Monday 0) a shop's closed_on names ("Sunday", "sundays", "Sun"), or None."""
+    text = (closed_on or "").strip().lower().rstrip(".")
+    for number, name in enumerate(WEEKDAYS):
+        if text and text in (name.lower(), name.lower() + "s", name[:3].lower()):
+            return number
+    return None
+
+
+def template_weekday(shop: dict[str, Any], config: Settings = settings) -> int:
+    """The weekday a shop without an open window gets the stock-check template (P9.3): the configured weekly day
+    (NEARSHOP_STOCK_CHECK_WEEKLY_DAY), or the day after when the shop is closed on it."""
+    day = WEEKDAYS.index(str(config.stock_check_weekly_day).strip().capitalize())
+    return (day + 1) % 7 if closed_weekday(shop.get("closed_on")) == day else day
+
+
 def send_stock_checks(db: Database, now: datetime | None = None, limit: int = BATCH) -> dict[str, Any]:
-    """The daily stock check (P4.4): from each active shop's opening time (IST) until STOCK_CHECK_GRACE after it, once
-    a day, the owner gets the stock-check template listing up to STOCK_CHECK_ITEMS active listings counted more than
-    48 hours ago, oldest first. It goes as a notification of kind stock_check (in the app and, through the outbox,
-    on WhatsApp), only to an owner the WhatsApp template can reach (verified phone and consent), and only while
-    WhatsApp is on here. A shop's day is claimed in whatsapp_stock_checks first, so it is considered once; a failure
-    after the claim releases it and raises, so a later tick tries the shop again. Returns
-    the counts of shops sent, fresh (nothing stale), unreachable and not due yet."""
+    """The stock check (P4.4, cadence P9.3; module docstring): from each active shop's opening time (IST) until
+    STOCK_CHECK_GRACE after it, a shop's day is claimed in whatsapp_stock_checks, once, and decided:
+
+      * closed: the shop's closed day (closed_on); nothing is sent;
+      * fresh: no active listing counted more than 48 hours ago;
+      * unreachable: the owner cannot get WhatsApp messages (verified phone and consent);
+      * in_window: the owner's own service window stays open for WINDOW_MARGIN or more: the check goes as a free-form
+        text inside it, every day;
+      * template: otherwise, on the shop's weekly day (template_weekday), the stock-check template;
+      * waiting: otherwise nothing today.
+
+    A check goes as a notification of kind stock_check (in the app and, through the outbox, on WhatsApp) listing up
+    to STOCK_CHECK_ITEMS of those listings, oldest first, and its outbox row records the route and category. Only
+    while WhatsApp is on here. A failure after the claim releases it and raises, so a later tick tries the shop again.
+    Returns the counts of shops sent (in_window plus template), and of each decision."""
     if get_client() is None:
         return {"enabled": False}
     from app.services.notifications import notify  # notifications -> this module
@@ -1047,43 +1178,71 @@ def send_stock_checks(db: Database, now: datetime | None = None, limit: int = BA
     now = now or utcnow()
     local = now.replace(tzinfo=UTC).astimezone(IST)
     day = local.date().isoformat()
-    counts = {"sent": 0, "fresh": 0, "unreachable": 0}
+    counts = {"sent": 0, ROUTE_IN_WINDOW: 0, ROUTE_TEMPLATE: 0, "fresh": 0, "unreachable": 0, "closed": 0,
+              "waiting": 0}
+    considered = 0
     done = {d["shop_id"] for d in db.mongo[STOCK_CHECKS].find({"day": day}, {"shop_id": 1})}
     template = TEMPLATES[STOCK_CHECK_KIND]
-    for shop in db.shops.find_raw({"is_active": True}, {"_id": 1, "owner_id": 1, "name": 1, "opening_hours": 1},
+    for shop in db.shops.find_raw({"is_active": True},
+                                  {"_id": 1, "owner_id": 1, "name": 1, "opening_hours": 1, "closed_on": 1},
                                   sort=[("_id", 1)]):
         if shop["_id"] in done:
             continue
         opens = datetime.combine(local.date(), opening_time(shop.get("opening_hours")), IST)
         if not opens <= local < opens + STOCK_CHECK_GRACE:
             continue
-        if sum(counts.values()) >= limit:
+        if considered >= limit:
             break
+        claim = f"{shop['_id']}:{day}"
         try:
-            db.mongo[STOCK_CHECKS].insert_one({"_id": f"{shop['_id']}:{day}", "shop_id": shop["_id"], "day": day,
+            db.mongo[STOCK_CHECKS].insert_one({"_id": claim, "shop_id": shop["_id"], "day": day,
                                                "at": now, "expires_at": now + STOCK_CHECK_KEEP})
         except DuplicateKeyError:
             continue
+        considered += 1
+        route = None
         try:
-            stale = db.products.find_raw(
-                {"shop_id": shop["_id"], "is_active": True, "stock_updated_at": {"$lt": now - STALE_STOCK}},
-                {"name": 1, "quantity": 1, "stock_updated_at": 1}, sort=[("stock_updated_at", 1), ("_id", 1)],
-                limit=STOCK_CHECK_ITEMS)
-            if not stale:
-                outcome = "fresh"
-            elif _recipient(db, shop["owner_id"], template)[0] is None:
-                outcome = "unreachable"
+            if closed_weekday(shop.get("closed_on")) == local.weekday():
+                decision = "closed"
             else:
-                params = stock_check_params(shop, stale, now, words.recipient_language(db, shop["owner_id"]))
-                db.transaction(lambda s=shop, p=params: notify(db, s["owner_id"], STOCK_CHECK_KIND,
-                                                               link="/shop/inventory", message=STOCK_CHECK_KIND,
-                                                               params=p))
-                outcome = "sent"
+                stale = db.products.find_raw(
+                    {"shop_id": shop["_id"], "is_active": True, "stock_updated_at": {"$lt": now - STALE_STOCK}},
+                    {"name": 1, "quantity": 1, "stock_updated_at": 1}, sort=[("stock_updated_at", 1), ("_id", 1)],
+                    limit=STOCK_CHECK_ITEMS)
+                if not stale:
+                    decision = "fresh"
+                elif _recipient(db, shop["owner_id"], template)[0] is None:
+                    decision = "unreachable"
+                elif window_open(db, shop["owner_id"], now, WINDOW_MARGIN):
+                    decision = route = ROUTE_IN_WINDOW
+                elif local.weekday() == template_weekday(shop):
+                    decision = route = ROUTE_TEMPLATE
+                else:
+                    decision = "waiting"
+                if route is not None:
+                    params = stock_check_params(shop, stale, now, words.recipient_language(db, shop["owner_id"]))
+                    db.transaction(lambda s=shop, p=params, r=route: _notify_stock_check(db, notify, s, p, r))
         except Exception:
             # Release the day's claim, so the next tick (still inside the grace period) tries this shop again
             # instead of skipping it for the rest of the day; the job run fails and is retried.
-            db.mongo[STOCK_CHECKS].delete_one({"_id": f"{shop['_id']}:{day}"})
+            db.mongo[STOCK_CHECKS].delete_one({"_id": claim})
             raise
-        db.mongo[STOCK_CHECKS].update_one({"_id": f"{shop['_id']}:{day}"}, {"$set": {"outcome": outcome}})
-        counts[outcome] += 1
+        outcome = "sent" if route else decision if decision in ("fresh", "unreachable") else None
+        db.mongo[STOCK_CHECKS].update_one({"_id": claim}, {"$set": {"outcome": outcome, "route": route,
+                                                                    "decision": decision}})
+        counts[decision] += 1
+        if route:
+            counts["sent"] += 1
     return {"enabled": True, "day": day, **counts}
+
+
+def _notify_stock_check(db: Database, notify: Callable[..., None], shop: dict[str, Any], params: dict[str, Any],
+                        route: str) -> None:
+    """Inside the transaction: the stock-check notification, and its outbox row's route and category (enqueue writes
+    the template route; inside the window it is a free-form text, Meta's service category)."""
+    notify(db, shop["owner_id"], STOCK_CHECK_KIND, link="/shop/inventory", message=STOCK_CHECK_KIND, params=params)
+    if route == ROUTE_IN_WINDOW:
+        db.mongo[OUTBOX].find_one_and_update(
+            {"user_id": shop["owner_id"], "kind": STOCK_CHECK_KIND, "status": "queued"},
+            {"$set": {"route": ROUTE_IN_WINDOW, "category": CATEGORY_SERVICE}}, sort=[("_id", -1)],
+            session=db.session)

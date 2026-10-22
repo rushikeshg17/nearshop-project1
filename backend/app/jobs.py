@@ -30,11 +30,14 @@ lease (phone_signin_since), so a provider that goes live late moves the sunset l
 send_notifications (P4.3), every tick, delivers the WhatsApp notification outbox (app/services/whatsapp.py): rows
 written by notify() in the reservation and order transactions, sent here, outside them, with retries after 30 s,
 2 min and 10 min. Each run also computes the hourly failure rate and, above 5%, reports the warning event the
-WhatsApp alert fires on, at most once every 15 minutes (failure_alert_at on its lease). stock_check (P4.4), every
-tick, sends each shop's daily stock check from its opening time (IST): a stock-check notification, delivered on
-WhatsApp through the outbox, listing up to 5 listings counted more than 48 hours ago (app/services/whatsapp.py
-send_stock_checks). A shop's day is recorded once considered, so each tick after that reads today's rows and the
-active shops (their id, owner, name and opening hours), and sends nothing more to that shop that day.
+WhatsApp alert fires on, at most once every 15 minutes (failure_alert_at on its lease). stock_check (P4.4, cadence
+P9.3), every tick, considers each shop once a day from its opening time (IST) and sends its stock check, a stock-check
+notification delivered on WhatsApp through the outbox, listing up to 5 listings counted more than 48 hours ago
+(app/services/whatsapp.py send_stock_checks): daily as a free-form message when the owner's 24-hour service window
+stays open at least 30 minutes more, otherwise the template once a week (NEARSHOP_STOCK_CHECK_WEEKLY_DAY); never on
+the shop's closed day or when every listing is fresh. A shop's day is recorded once considered, so each tick after
+that reads today's rows and the active shops (their id, owner, name, opening hours and closed day), and sends nothing
+more to that shop that day.
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -117,7 +120,7 @@ DEACTIVATED_NO_PHONE = "phone_not_verified"  # User.deactivated_reason of an acc
 IST = ZoneInfo("Asia/Kolkata")
 SEND_NOTIFICATIONS_JOB = "send_notifications"  # the WhatsApp outbox sender (P4.3)
 FAILURE_ALERT_AT = "failure_alert_at"  # on that job's lease: when the failure-rate warning was last reported
-STOCK_CHECK_JOB = "stock_check"  # the daily WhatsApp stock check (P4.4)
+STOCK_CHECK_JOB = "stock_check"  # the WhatsApp stock check (P4.4; daily in the window, else weekly: P9.3)
 
 RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
@@ -401,9 +404,10 @@ def send_notifications(clock: Clock = utcnow) -> dict[str, Any]:
 
 
 def stock_check(clock: Clock = utcnow) -> dict[str, Any]:
-    """The daily stock check (P4.4, app/services/whatsapp.py send_stock_checks): nothing while WhatsApp is off here.
-    last_result: the IST day and the shops sent, fresh (nothing older than 48 hours) and unreachable this run. A
-    failed run is retried 15 minutes later (RETRY_AFTER_FAILURE)."""
+    """The stock check (P4.4, cadence P9.3, app/services/whatsapp.py send_stock_checks): nothing while WhatsApp is
+    off here. last_result: the IST day and the shops considered this run: sent (in_window plus template), fresh
+    (nothing older than 48 hours), unreachable, closed (the shop's closed day) and waiting (no open window and not
+    the weekly template day). A failed run is retried 15 minutes later (RETRY_AFTER_FAILURE)."""
     from app.services import whatsapp
 
     return whatsapp.send_stock_checks(Database(), clock())

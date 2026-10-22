@@ -34,6 +34,9 @@ IST = ZoneInfo("Asia/Kolkata")
 def whatsapp_on(ids, monkeypatch):
     monkeypatch.setattr(settings, "whatsapp_notifications", True)
     monkeypatch.setattr(settings, "whatsapp_app_secret", type(settings.whatsapp_app_secret)(APP_SECRET))
+    # The stock-check tests run tomorrow without an open service window: make tomorrow the weekly template day (P9.3;
+    # tests/test_stock_check_cadence.py covers the cadence itself).
+    monkeypatch.setattr(settings, "stock_check_weekly_day", (datetime.now(IST) + timedelta(days=1)).strftime("%A"))
     db = Database()
     collections = (whatsapp.OUTBOX, whatsapp.INBOUND, whatsapp.SESSIONS, whatsapp.STOCK_CHECKS)
     for name in collections:

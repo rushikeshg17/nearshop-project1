@@ -4,7 +4,8 @@ The WhatsApp templates NearShop sends, for approval at Meta (B8) and for the cod
 reply. Plan section 8.7; P4.3 (outbound notifications); P4.4 (replies from shops and the daily stock check); P4.1
 (the login code). Every notification template is submitted in English (en) and Kannada (kn), all under the
 **utility** category. The code is in backend/app/services/whatsapp.py (notifications and replies) and
-backend/app/services/messaging.py (the login code).
+backend/app/services/messaging.py (the login code). P9.3 sets the stock check's cadence (daily inside the shop's
+service window, otherwise weekly) and lists the Phase 9 templates, written in English for the team to translate.
 
 ## How a notification becomes a message
 
@@ -90,12 +91,15 @@ phone.
 
 Have a native Kannada speaker read every Kannada body and button before submission (the stock check's too).
 
-### nearshop_shop_stock_check (shop, daily stock check)
+### nearshop_shop_stock_check (shop, weekly stock check)
 
-Kind stock_check, to the shop's owner (P4.4). Sent once a day from the shop's opening time (IST, read from its
-opening hours; 9:00 AM when they cannot be read) until 3 hours after it, when the shop has active listings counted
-more than 48 hours ago. {{2}} lists up to 5 of them, oldest count first, with their counts. The owner answers with
-a stock message (below). Submitted as **utility**; Meta may class it as **marketing** (see Rates).
+Kind stock_check, to the shop's owner (P4.4; cadence P9.3, see "The stock-check cadence" below). Considered once a
+day from the shop's opening time (IST, read from its opening hours; 9:00 AM when they cannot be read) until 3 hours
+after it, when the shop has active listings counted more than 48 hours ago. This template goes only to a shop whose
+owner's service window is not open, and only on the weekly check day; a shop whose window is open gets the same
+words daily as a free-form message instead. {{2}} lists up to 5 listings, oldest count first, with their counts. The
+owner answers with a stock message (below). Submitted as **utility**; Meta may class it as **marketing** (see
+Rates).
 
 | | English (en) | Kannada (kn) |
 |---|---|---|
@@ -116,9 +120,250 @@ expiry notice, delivery-code reminders, grievances, shop verification, phone-mig
 | Template | Category | Variables | Where |
 |---|---|---|---|
 | The login code (NEARSHOP_WHATSAPP_OTP_TEMPLATE) | authentication | {{1}}: the code; copy-code button with the code | P4.1, backend/app/services/messaging.py |
-| nearshop_shop_stock_check | utility (Meta may class it as marketing) | {{1}}, {{2}}: see above | P4.4 |
+| nearshop_shop_stock_check | utility (Meta may class it as marketing) | {{1}}, {{2}}: see above | P4.4, P9.3 |
 
-Phases 9 and 10 add their templates here (P9.3 and later).
+The Phase 9 templates are in "Phase 9 templates" below. Phase 10 adds its templates there too.
+
+## The stock-check cadence (P9.3)
+
+Plan section 8.17. The stock check is free for every shop, on every plan, including after a plan lapses. To keep it
+affordable when Meta classes the template as marketing, it is sent where WhatsApp does not charge for it whenever it
+can be (backend/app/services/whatsapp.py send_stock_checks, run by the stock_check job every 30 seconds under its
+lease):
+
+1. **Daily, inside the window.** At the shop's opening hour, when the owner's 24-hour customer-service window will
+   still be open at least 30 minutes later, the check goes as a free-form text inside it: "NearShop: {{1}}." then
+   {{2}} then the bot's usual how-to-reply text, in the owner's language (English or Kannada, from
+   backend/app/services/notification_text.py). The window is the owner's own phone's: the time of the last message
+   from the owner's verified phone (whatsapp_sessions owner_inbound_at). A message from the shop's
+   call-back-verified number opens that number's window, not the owner's, so it does not count. If the window has
+   closed by the time the outbox sends the row, the row is cancelled (window_closed), never sent as a template.
+2. **Weekly, as the template.** Every other shop with a stale listing gets nearshop_shop_stock_check once a week, at
+   the opening hour of the weekly check day, NEARSHOP_STOCK_CHECK_WEEKLY_DAY (default Monday). A shop closed on that
+   day gets it the next day.
+3. **Limits.** At most one check per shop per IST day (whatsapp_stock_checks claims the shop's day once), none on the
+   shop's closed day (closed_on), and none when no active listing is older than 48 hours. On other days a shop
+   without an open window gets nothing (decision waiting).
+
+**What each send records.** Every notification_outbox row has route (template, or in_window for a free-form text)
+and category (the category it was submitted under: utility for a template, service for a free-form text). Meta's
+status callbacks carry a pricing object; the row records the category Meta reports (meta_category: utility,
+marketing, authentication or service), billable and pricing_type (for example regular or free_customer_service),
+and cost_estimate is set from them (₹0 when not billable or service; otherwise the rate of Meta's category, below).
+The day's whatsapp_stock_checks row records the decision (in_window, template, fresh, unreachable, closed or
+waiting) and the route. The share of stock checks sent inside the window in a month is the stock_check rows with
+route in_window over all stock_check rows sent that month (rows are kept 30 days).
+
+**Cost, both cases** (rates below; per shop with stale listings, a 30-day month, about 4.3 weekly days):
+
+| Shop | Utility | Marketing |
+|---|---|---|
+| Window open at opening time every day (30 free-form checks) | ₹0 | ₹0 |
+| Window never open (4.3 templates) | 4.3 × ₹0.160 = ₹0.69 | 4.3 × ₹0.970 = ₹4.17 |
+| Before P9.3, the template every day (30 templates), for comparison | ₹4.80 | ₹29.10 |
+
+For 300 shops that never open a window, about 1,300 templates a month: ₹208 as utility, ₹1,261 as marketing, the
+plan's section 11 budget. Every shop whose window is open at opening time costs nothing for that day. Shops that
+reply every day get up to 30 checks a month; the rest get at most 5 (a month has at most 5 of any weekday).
+Results after release (fill in): the category Meta gave the template, and for June 2027, the share of checks sent
+inside the window and the largest number of checks any shop received minus its in-window days (target: 5 or fewer).
+
+## Phase 9 templates
+
+Written for P9.3, to be submitted to Meta under B23 by 15 May 2027 (for the prompts named, which send them). All are
+submitted as **utility**. The Kannada column is empty: the team writes it, and a native Kannada speaker reads it
+before submission. Variables follow the same rules as above: one line each, at most 400 characters, never a rupee
+value of a shop's sales. Each line ends with whether the wording risks Meta classing it as **marketing**, and what a
+send would then cost (₹0.970 instead of ₹0.160 outside the window; inside an open window a utility template is free,
+a marketing one never is).
+
+### nearshop_shop_statement_free (shop on Free, monthly statement; P9.9)
+
+To the owner of a shop on Free (and to every shop before billing starts), on the 1st of the month. Four quick-reply
+buttons, whose payloads P9.9 reads (statement:<id>:accurate, :not_accurate, :would_pay, :not_now).
+
+| | English (en) | Kannada (kn) |
+|---|---|---|
+| Body | NearShop: your statement for {{1}}.<br><br>{{2}}<br><br>Amount due: ₹0. You are on the Free plan, and every stock tool stays free.<br>{{3}}<br><br>Is this statement accurate? Would you pay for Growth? Tap a reply below. | |
+| Button 1 (quick reply) | Accurate | |
+| Button 2 (quick reply) | Not accurate | |
+| Button 3 (quick reply) | I'd pay | |
+| Button 4 (quick reply) | Not now | |
+
+| Variable | Holds | Example |
+|---|---|---|
+| {{1}} | The month and the shop | May 2027, Sri Ganesh Hardware |
+| {{2}} | The month's counts, and the top 3 "asked for near you" items when the P9.7 report is shown | 2 reservation requests (1 collected), 0 delivery orders, 4 call taps and 3 directions taps. Asked for near you: PVC elbow, wall putty, LED bulb. |
+| {{3}} | The founding-price line (the price the shop qualifies for) | Growth would cost ₹83 a month at the founding price (₹999 for the first year). |
+
+Marketing risk: **high**. The founding-price line and the "I'd pay" button promote a paid plan, which Meta's
+guidelines treat as marketing. As marketing, ₹0.970 a send, always charged: about ₹97 a month for 100 Free shops,
+against ₹16 as utility. To lower the risk, keep {{3}} a plain statement of the price (no "offer ends", no
+exclamation marks), and send the statement inside the shop's window when it is open.
+
+### nearshop_shop_statement_roi (paying shop, monthly ROI statement; P9.9)
+
+To the owner of a shop on a paid plan, on the 1st of the month. Two quick-reply buttons (statement:<id>:accurate,
+:not_accurate).
+
+| | English (en) | Kannada (kn) |
+|---|---|---|
+| Body | NearShop: your statement for {{1}}.<br><br>{{2}}<br><br>Your plan: {{3}}<br>Outcome guarantee: {{4}}<br><br>Is this statement accurate? Tap a reply below. | |
+| Button 1 (quick reply) | Accurate | |
+| Button 2 (quick reply) | Not accurate | |
+
+| Variable | Holds | Example |
+|---|---|---|
+| {{1}} | The month and the shop | September 2027, Sri Ganesh Hardware |
+| {{2}} | The month's counts and the customer requests so far this quarter | 6 reservation requests (5 collected), 2 delivery orders, 14 call taps and 9 directions taps. Customer requests this quarter: 8. |
+| {{3}} | The plan and its end date | Growth, paid until 31 Jul 2028 |
+| {{4}} | Progress against the guarantee in the current quarter | 8 customer requests this quarter, 3 needed: met. A paid quarter that ends with fewer than 3 adds 3 months free. |
+
+Marketing risk: **low**. It reports on a service the shop already pays for. As marketing, ₹0.970 a send (about
+₹19 a month for 20 paying shops, against ₹3 as utility). Keep upgrade or Boost offers out of it.
+
+### nearshop_shop_demand_summary (Growth shop, weekly "asked for near you"; P9.9)
+
+To the owner of a shop on Growth or above, after the weekly P9.7 report is built (Monday), only while the report is
+shown. No buttons.
+
+| | English (en) | Kannada (kn) |
+|---|---|---|
+| Body | NearShop: asked for near you this week.<br><br>{{1}}<br>{{2}}<br><br>People near your shop searched for these and could not find them in stock. Open Insights in NearShop for the full list. | |
+
+| Variable | Holds | Example |
+|---|---|---|
+| {{1}} | The shop and the report's week | Sri Ganesh Hardware, week of 7 Jun 2027 |
+| {{2}} | Up to 5 items with their bands of distinct people (never a count below 5) | PVC elbow 1 inch (10 to 19 people); wall putty (5 to 9); LED bulb 9W (5 to 9) |
+
+Marketing risk: **medium**. It is a report the plan pays for, but suggesting items to stock could read as promotion.
+Keep it factual and do not name brands' offers. As marketing, ₹0.970 a send, about 4.3 a month per shop: ₹4.17 a
+month per Growth shop, against ₹0.69 as utility.
+
+### nearshop_shop_arrival_report (shop, a customer found the item missing; P9.1)
+
+Kind arrival_failure (P9.1), to the shop's owner, when a customer reports "Not available when I arrived" on a
+confirmed or ready reservation. No buttons; the owner answers with a stock message, as for the stock check.
+
+| | English (en) | Kannada (kn) |
+|---|---|---|
+| Body | NearShop: a customer could not find an item at your shop.<br><br>{{1}}.<br>Details: {{2}}<br><br>The listing shows "stock not confirmed" until you update its count. Reply with the item's name and count, or update it in NearShop. | |
+
+| Variable | Holds | Example |
+|---|---|---|
+| {{1}} | The notification's title | Item not available for reservation R-7KQ2MX |
+| {{2}} | The notification's text: the listing and the count NearShop showed | The customer found Astral PTFE Thread Seal Tape missing. NearShop showed 50 in stock. |
+
+Marketing risk: **low**: it reports an event in a transaction the shop took part in. As marketing, ₹0.970 a send.
+
+### nearshop_shop_payment_request (shop, payment request; P9.5)
+
+To the owner, when they or an admin create a payment request.
+
+| | English (en) | Kannada (kn) |
+|---|---|---|
+| Body | NearShop: payment request {{1}}.<br><br>{{2}}<br>Amount: {{3}}<br><br>Pay by UPI to {{4}}, with {{1}} as the payment note. NearShop never collects cash. | |
+
+| Variable | Holds | Example |
+|---|---|---|
+| {{1}} | The request number | PR-2027-00042 |
+| {{2}} | What it is for | Growth plan, 1 Aug 2027 to 31 Jul 2028 (founding price) |
+| {{3}} | The amount | ₹999 |
+| {{4}} | NearShop's UPI handle and payee name (settings) | nearshop@examplebank (NearShop Technologies) |
+
+Marketing risk: **low**: a request the owner asked for. As marketing, ₹0.970 a send.
+
+### nearshop_shop_payment_receipt (shop, receipt link; P9.5)
+
+To the owner, when a payment is matched and its receipt or tax invoice is issued.
+
+| | English (en) | Kannada (kn) |
+|---|---|---|
+| Body | NearShop: we received your payment.<br><br>{{1}}<br>Receipt: {{2}}<br><br>Keep this link for your records. | |
+
+| Variable | Holds | Example |
+|---|---|---|
+| {{1}} | The payment and what it paid for | ₹999 for request PR-2027-00042: Growth plan until 31 Jul 2028 |
+| {{2}} | The receipt or invoice number and its link | NS-R-2027-0007, https://<site domain>/shop/billing/receipts/7 |
+
+Marketing risk: **low** (a receipt). As marketing, ₹0.970 a send.
+
+### nearshop_shop_plan_renewal (shop, renewal reminders; P9.4)
+
+To the owner 30, 7 and 1 days before a paid plan ends. One template for all three.
+
+| | English (en) | Kannada (kn) |
+|---|---|---|
+| Body | NearShop: your plan ends soon.<br><br>{{1}} ends on {{2}}.<br>{{3}}<br><br>Your shop stays listed after that, on the Free plan, with every stock tool. | |
+
+| Variable | Holds | Example |
+|---|---|---|
+| {{1}} | The plan | Your Growth plan for Sri Ganesh Hardware |
+| {{2}} | The end date and days left | 31 Jul 2028 (7 days left) |
+| {{3}} | How to renew | To renew, open Plan and billing in NearShop and create a payment request. |
+
+Marketing risk: **medium**. Renewal reminders for an existing subscription are usually utility, but a renewal
+discount or upgrade pitch would make it marketing; keep {{3}} to how to renew. As marketing, ₹0.970 a send, 3 a year
+per paying shop.
+
+### nearshop_shop_plan_lapsed (shop, lapse notice; P9.4)
+
+To the owner when a plan lapses and the shop moves to Free.
+
+| | English (en) | Kannada (kn) |
+|---|---|---|
+| Body | NearShop: {{1}} ended on {{2}}.<br><br>Your shop is now on the Free plan. It stays exactly as visible to customers, and every stock tool stays free. {{3}} | |
+
+| Variable | Holds | Example |
+|---|---|---|
+| {{1}} | The plan | Your Growth plan for Sri Ganesh Hardware |
+| {{2}} | The end date | 31 Jul 2028 |
+| {{3}} | What stopped | The weekly demand report, low-stock alerts and extra logins are paused until you renew. |
+
+Marketing risk: **low to medium** (an account change; avoid a win-back offer in it). As marketing, ₹0.970 a send.
+
+### nearshop_shop_low_stock (Growth shop, daily low-stock alert; P9.14)
+
+To the owner of an entitled shop, daily at its alert hour, when listings are at or below their low-stock level.
+Inside an open window P9.14 sends the same words as a free-form message instead.
+
+| | English (en) | Kannada (kn) |
+|---|---|---|
+| Body | NearShop: low stock at {{1}}.<br><br>{{2}}<br><br>Reply with each item's name and its new count to update NearShop, or update them in NearShop. | |
+
+| Variable | Holds | Example |
+|---|---|---|
+| {{1}} | The shop | Sri Ganesh Hardware |
+| {{2}} | Up to 10 listings, lowest first, with their counts and low-stock levels | Astral PTFE Thread Seal Tape: 1 (alert at 2); LED bulb 9W: 0 (alert at 3) |
+
+Marketing risk: **low**: an alert the owner turned on about their own stock. As marketing, ₹0.970 a send, up to 30
+a month per Growth shop (₹29.10, against ₹4.80 as utility), less on days the window is open.
+
+### nearshop_staff_invitation (staff, invitation; P9.13)
+
+To the invited phone, when an owner invites a staff member. The invitee has not messaged NearShop and may have no
+account, so this always goes as a template outside any window.
+
+| | English (en) | Kannada (kn) |
+|---|---|---|
+| Body | NearShop: {{1}} invited you to help run {{2}} on NearShop.<br><br>To accept, sign in at {{3}} with this phone number. If you did not expect this, ignore this message. | |
+
+| Variable | Holds | Example |
+|---|---|---|
+| {{1}} | The owner's first name | Ramesh |
+| {{2}} | The shop | Sri Ganesh Hardware |
+| {{3}} | The sign-in link | https://<site domain>/login |
+
+Marketing risk: **low to medium**: Meta may treat a message to someone who has not opted in as promotional. As
+marketing, ₹0.970 a send. P9.13 must record the owner's statement that the invitee agreed to be messaged.
+
+### Kannada still to write
+
+Every Phase 9 template above has an empty Kannada column: the bodies and buttons of nearshop_shop_statement_free
+(4 buttons), nearshop_shop_statement_roi (2 buttons), nearshop_shop_demand_summary, nearshop_shop_arrival_report,
+nearshop_shop_payment_request, nearshop_shop_payment_receipt, nearshop_shop_plan_renewal, nearshop_shop_plan_lapsed,
+nearshop_shop_low_stock and nearshop_staff_invitation. The variables are filled in the owner's language by the code
+(P7.11). Record Meta's outcome and category for each after submission (B23).
 
 ## Replies from shops (P4.4)
 
@@ -148,8 +393,10 @@ backend/app/services/notification_text.py, P7.11).
 
 What is stored: whatsapp_inbound keeps each message id, its type, the outcome and whether the reply went, never the
 number or the text, for 8 days (Meta retries for up to 7). whatsapp_sessions keeps, per owner, the time of their
-last message and the summary waiting for Yes (listing names and counts), removed 2 days after the last message.
-whatsapp_stock_checks records that a shop's stock check was considered on an IST day (3 days).
+last message, the time of the last one from the owner's own verified phone (owner_inbound_at, the window the stock
+check uses, P9.3) and the summary waiting for Yes (listing names and counts), removed 2 days after the last message.
+whatsapp_stock_checks records that a shop's stock check was considered on an IST day, with the decision and route
+(3 days).
 
 ## Rates
 
@@ -172,13 +419,11 @@ service window was open, so it is an upper bound).
 Example: 50 reservations a day, each with a new-reservation message to the shop and about two customer messages,
 is about 150 utility messages a day: about ₹24 a day, or ₹720 a month, before any free service-window sends.
 
-**The daily stock check under both categories.** It is submitted as utility, but Meta decides the category and may
-class it as marketing. Each shop gets at most one a day, and only on a day it has listings counted more than 48
-hours ago. Per shop sent every day for 30 days: utility, 30 × ₹0.160 = ₹4.80 a month (free on a day the shop
-messaged NearShop in the 24 hours before); marketing, 30 × ₹0.970 = ₹29.10 a month (always charged). For the plan's
-budget of 1,300 stock checks a month (section 11): ₹208 as utility, ₹1,261 as marketing. Record the category Meta
-gives when the template is approved; if it is marketing, consider sending the check only to shops whose service
-window is open (plan section 12).
+**The stock check under both categories.** It is submitted as utility, but Meta decides the category and may
+class it as marketing. Since P9.3 it goes daily only as a free-form message inside an open window (no charge in
+either case) and otherwise as the template once a week: see "The stock-check cadence" for the costs. Record the
+category Meta gives when the template is approved. NEARSHOP_WHATSAPP_MARKETING_COST_INR (default 0.97) is the
+marketing rate recorded on a row when Meta's status callback reports the marketing category.
 
 Bot replies to shops (P4.4) are free-form messages inside the service window the shop's own message opened: no
 charge, and the code records none.
@@ -195,6 +440,8 @@ Off by default. Nothing is sent until all of these are set on the environment (R
 | NEARSHOP_WHATSAPP_APP_SECRET | The Meta app's secret: the webhook refuses every call without it |
 | NEARSHOP_WHATSAPP_WEBHOOK_VERIFY_TOKEN | A long random value, also typed into the webhook settings at Meta |
 | NEARSHOP_WHATSAPP_TEMPLATE_LANGUAGE | The template language for users who have not chosen Kannada (en); Kannada users get kn |
+| NEARSHOP_STOCK_CHECK_WEEKLY_DAY | The weekday the stock-check template goes to shops without an open window (Monday; P9.3) |
+| NEARSHOP_WHATSAPP_MARKETING_COST_INR | The marketing rate recorded when Meta reports a message as marketing (0.97) |
 
 In development, NEARSHOP_WHATSAPP_NOTIFICATIONS=true without a token uses the fake client: messages are logged with
 the phone masked and nothing leaves the machine. The test suite always uses the fake client.

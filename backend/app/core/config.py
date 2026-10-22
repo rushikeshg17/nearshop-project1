@@ -14,6 +14,8 @@ ENVIRONMENTS: tuple[str, ...] = get_args(Environment)
 MediaBackend = Literal["local", "s3"]
 BackupBackend = Literal["off", "local", "s3"]
 RateLimitMode = Literal["enforce", "log_only", "off"]
+Weekday = Literal["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+WEEKDAYS: tuple[str, ...] = get_args(Weekday)
 EDGE_SECRET_MIN_LENGTH = 32
 # The deployed environments, served over https: the API refuses to start in them with cookie_secure false.
 SECURE_COOKIE_ENVIRONMENTS: tuple[str, ...] = ("staging", "production", "demo")
@@ -192,6 +194,14 @@ class Settings(BaseSettings):
     whatsapp_app_secret: SecretStr = SecretStr("")
     whatsapp_webhook_verify_token: SecretStr = SecretStr("")
     whatsapp_utility_cost_inr: float = 0.16  # per utility template outside a service window (plan section 8.7)
+    # Per marketing template, always charged (plan section 8.7): recorded when Meta's status callback reports that it
+    # priced a template as marketing (the stock check may be classed so; P9.3, docs/whatsapp-templates.md).
+    whatsapp_marketing_cost_inr: float = 0.97
+    # The stock-check cadence (P9.3, plan section 8.17; app/services/whatsapp.py send_stock_checks): a shop whose
+    # WhatsApp service window is open at its opening hour gets the check daily, as a free-form message inside the
+    # window; every other shop with a stale listing gets the template once a week, on this IST weekday (the next day
+    # when the shop is closed on it). An English weekday name, any case.
+    stock_check_weekly_day: Weekday = "Monday"
     # SMS through MSG91's flow API (B7: the DLT entity, sender header and OTP template; the flow template at MSG91
     # holds that registered text and its code variable). The auth key and template id are needed.
     sms_auth_key: SecretStr = SecretStr("")
@@ -233,6 +243,11 @@ class Settings(BaseSettings):
             raise ValueError(f"NEARSHOP_EMAIL_LOGIN_MIN_NOTICE_DAYS must be {EMAIL_LOGIN_MIN_NOTICE_DAYS} or more in "
                              "production: customers and owners get at least 8 weeks of warning")
         return self
+
+    @field_validator("stock_check_weekly_day", mode="before")
+    @classmethod
+    def _weekday_name(cls, value: object) -> object:
+        return value.strip().capitalize() if isinstance(value, str) else value
 
     @field_validator("otp_daily_cap", mode="after")
     @classmethod
