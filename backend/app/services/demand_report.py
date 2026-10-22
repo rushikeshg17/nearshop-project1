@@ -26,13 +26,16 @@ in the row's dropped counts under its reason, when:
   recheck       the same search from the shop's location with the in-stock filter now finds an in-stock result (a
                 result search returns has passed its relevance cutoffs);
   shop_stocks   the shop itself has an in-stock listing that matches (stocks_match, the check owner insights makes
-                for "you stock it"): the query goes to demand_search_failures, the possible search failures that
-                the admin_tasks demand-audit command shows R5.
+                for "you stock it"). When a match's stock was confirmed within STALE_DAYS (so the re-check should
+                have found it), the query goes to demand_search_failures, the possible search failures that the
+                admin_tasks demand-audit command shows R5; a re-run of the week replaces the shop's list. A match
+                only among older stock is out-of-date stock, not a search failure, and is only dropped.
 
 Each kept item stores the query, the catalogue item and category the search matches among out-of-stock listings
 when there is one, and its band of distinct people: 5-9, 10-19 or 20+. The result is one demand_reports row per shop
-per ISO week (week_of the Monday), replaced by a re-run. Nothing in a row is a user id, a demand key, a time or a
-location: the week names the report, not when anyone searched.
+per ISO week (week_of the Monday), replaced by a re-run, and holding at most MAX_ITEMS (500) items, most people
+first. Nothing in a row is a user id, a demand key, a time or a location: the week names the report, not when
+anyone searched.
 
 The audit gate
 --------------
@@ -62,6 +65,7 @@ from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.models import Shop
 from app.models.core import live_shop_filter
+from app.schemas.serializers import STALE_DAYS
 from app.utils.geo import within_km
 
 log = logging.getLogger(__name__)
@@ -79,6 +83,7 @@ DEMAND_BANDS: tuple[str, ...] = ("5-9", "10-19", "20+")
 DEMAND_AUDIT_LABELS: tuple[str, ...] = ("genuine", "search_failure", "junk")
 DROP_REASONS: tuple[str, ...] = ("failed", "length", "blocklist", "recheck", "shop_stocks")
 SEMANTIC_MATCH = 0.5  # stocks_match: the similarity owner insights has used for "you stock it"
+MAX_ITEMS = 500  # items kept per shop per week: the demand_reports validator's maxItems (database/schema.py)
 
 
 # ---------------------------------------------------------------- pure rules
@@ -184,15 +189,24 @@ def build_shop(db: Database, shop: Shop, since: datetime) -> tuple[list[dict], d
     dropped = dict.fromkeys(DROP_REASONS, 0)
     items: list[dict] = []
     failures: list[dict] = []
-    in_stock_ids = {p["_id"] for p in db.products.find_raw(
-        {"shop_id": shop.id, "is_active": True, "quantity": {"$gt": 0}}, {"_id": 1})}
+    stock = db.products.find_raw({"shop_id": shop.id, "is_active": True, "quantity": {"$gt": 0}},
+                                 {"_id": 1, "stock_updated_at": 1})
+    in_stock_ids = {p["_id"] for p in stock}
+    # Stock confirmed within STALE_DAYS, as search's in-stock filter judges it (P7.4). A match the re-check missed
+    # among these is a possible search failure; a match only among older stock is stock out of date, not a search
+    # failure, so it is dropped (shop_stocks) without going on R5's list.
+    fresh_after = utcnow() - timedelta(days=STALE_DAYS)
+    fresh_ids = {p["_id"] for p in stock if p.get("stock_updated_at") and p["stock_updated_at"] >= fresh_after}
     for query, people in candidates(db, shop, since):
+        if len(items) >= MAX_ITEMS:  # candidates come most people first: the rest would not fit the row
+            break
         reason = drop_reason(query)
         if reason is None and _search(db, shop, query, in_stock_only=True)["total"] > 0:
             reason = "recheck"
         if reason is None and (matched := matching_ids(db, in_stock_ids, query)):
             reason = "shop_stocks"
-            failures.append({"query": query, "product_ids": sorted(matched)[:20]})
+            if fresh := matched & fresh_ids:
+                failures.append({"query": query, "product_ids": sorted(fresh)[:20]})
         if reason is not None:
             dropped[reason] += 1
             continue
@@ -219,6 +233,9 @@ def build_week(db: Database, now: datetime | None = None, rng: random.Random | N
         for reason, n in dropped.items():
             totals[reason] += n
         _store_report(db, shop.id, week, items, dropped)
+        # A re-run replaces the shop's list for the week too: a query this build no longer flags must not linger.
+        db.mongo[FAILURES].delete_many({"week": week, "shop_id": shop.id,
+                                        "query": {"$nin": [f["query"] for f in failures]}})
         for f in failures:
             db.mongo[FAILURES].update_one(
                 {"week": week, "shop_id": shop.id, "query": f["query"]},

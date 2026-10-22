@@ -211,7 +211,8 @@ def export_data(db: Database, user: User) -> dict:
             {"user_id": user.id}, sort=newest_first)],
         "grievances": [_clean(d, GRIEVANCE_INTERNAL) for d in db.mongo["grievances"].find(  # filed signed in
             {"user_id": user.id}, sort=newest_first)],
-        "search_history": [_clean(d, ("user_id",)) for d in db.mongo["search_history"].find(
+        # demand_key (P9.7) is never shown or exported: it is a keyed hash, not the user's data to read.
+        "search_history": [_clean(d, ("user_id", "demand_key")) for d in db.mongo["search_history"].find(
             {"user_id": user.id}, sort=newest_first)],
     }
 
