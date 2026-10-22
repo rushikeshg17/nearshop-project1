@@ -87,11 +87,20 @@ class Plan(Document):
     reason: str
 
 
+class PaidTerm(Embedded):
+    """A stretch of paid time [start, end): one term, or several renewed without a break."""
+
+    start: datetime
+    end: datetime
+
+
 class Subscription(Document, Timestamps):
     """Collection subscriptions. ends_at is exclusive: the shop is on Free from that moment. paid_until is the end of
-    the paid term (ends_at before any guarantee credit); term_start, quarters_done and next_quarter_end are the
-    outcome guarantee's cursor over the paid quarters (None: no paid quarter left to check). reminded lists the reminder stages (days before ends_at) already sent
-    for the current ends_at."""
+    the paid time (ends_at before any guarantee credit or extension). paid_terms, quarters_done and next_quarter_end
+    are the outcome guarantee's cursor: the paid terms not yet fully checked (oldest first), the quarters checked in
+    the first one, and the end of its next quarter (None: nothing left to check). A subscription is "live" while it
+    is an advance or active; the unique index uq_live_shop allows one live subscription per shop. reminded lists the
+    reminder stages (days before ends_at) already sent for the current ends_at."""
 
     account_type: AccountType = AccountType.OWNER
     account_id: int
@@ -110,7 +119,7 @@ class Subscription(Document, Timestamps):
     ends_at: datetime
     paid_until: datetime
     paid_at: datetime | None = None  # the first payment (advances: the 300-day alert counts from it)
-    term_start: datetime | None = None
+    paid_terms: list[PaidTerm] = Field(default_factory=list)
     quarters_done: int = 0
     next_quarter_end: datetime | None = None
     reminded: list[int] = Field(default_factory=list)

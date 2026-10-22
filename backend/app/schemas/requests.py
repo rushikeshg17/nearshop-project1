@@ -268,6 +268,15 @@ class PlanChangeIn(_Strict):
     founding_year_paise: int | None = Field(default=None, ge=0, le=PAISE_MAX)
     on_sale: bool | None = None
 
+    @model_validator(mode="after")
+    def not_null(self):
+        # A price of null means "not offered"; a name and the on-sale flag always have a value, so a change leaves
+        # them out to keep them.
+        nulls = [f for f in ("name", "on_sale") if f in self.model_fields_set and getattr(self, f) is None]
+        if nulls:
+            raise ValueError(f"{', '.join(nulls)} cannot be null: leave it out to keep the current value")
+        return self
+
 
 class CataloguePublishIn(_Strict):
     reason: str = Field(min_length=10, max_length=500)

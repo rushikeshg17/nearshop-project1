@@ -445,7 +445,9 @@ VALIDATORS: dict[str, dict] = {
         plan_id=INT, plan_code=enum(PlanCode), plan_version=POSITIVE_INT, period=enum(Period),
         price_paise={"bsonType": INT, "minimum": 0}, founding=BOOL, founding_slot=INT_N, founding_shop_id=INT_N,
         source=enum(SubscriptionSource), status=enum(SubscriptionStatus), starts_at=DATE, ends_at=DATE,
-        paid_until=DATE, paid_at=DATE_N, term_start=DATE_N, quarters_done={"bsonType": INT, "minimum": 0},
+        paid_until=DATE, paid_at=DATE_N, quarters_done={"bsonType": INT, "minimum": 0},
+        paid_terms={"bsonType": "array", "items": {"bsonType": "object", "required": ["start", "end"],
+                                                   "properties": {"start": {"bsonType": DATE}, "end": {"bsonType": DATE}}}},
         next_quarter_end=DATE_N, reminded={"bsonType": "array", "items": {"bsonType": INT}},
         advance_alerted_at=DATE_N, created_at=DATE, updated_at=DATE,
     ),
@@ -658,6 +660,10 @@ INDEXES: dict[str, list[IndexModel]] = {
     ],
     "subscriptions": [
         IndexModel([("shop_ids", A), ("status", A), ("ends_at", D)], name="shop_status_ends"),  # effective_plan
+        # One live (advance or active) subscription per shop, even when two grants or payments arrive at once.
+        IndexModel([("shop_ids", A)], unique=True, name="uq_live_shop",
+                   partialFilterExpression={"status": {"$in": [SubscriptionStatus.ADVANCE.value,
+                                                                SubscriptionStatus.ACTIVE.value]}}),
         IndexModel([("status", A), ("ends_at", A)], name="status_ends"),  # lapses, reminders, the admin list
         IndexModel([("status", A), ("next_quarter_end", A)], name="status_quarter"),  # the outcome guarantee
         IndexModel([("status", A), ("paid_at", A)], name="status_paid"),  # the 300-day advance alert

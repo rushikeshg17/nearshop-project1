@@ -48,12 +48,18 @@ run_jobs (the subscriptions job in app/jobs.py, every tick, under the P1.7 lease
   2. apply_guarantees: the outcome guarantee. When a paid quarter (shop_paid or advance, on a plan with
      outcome_guarantee) ends with fewer than NEARSHOP_PLAN_GUARANTEE_MIN_REQUESTS customer requests (P9.2, the
      covered shops together), ends_at moves NEARSHOP_PLAN_GUARANTEE_CREDIT_MONTHS later, with a guarantee_credit
-     event and a notice to the owner. Quarters run from the paid term's start; the credited months are not paid, so
-     they earn no further credit.
+     event and a notice to the owner. Quarters are counted over paid_terms, the stretches of paid time not yet
+     checked, oldest first: from a paid term's start, in 3-month steps. A renewal without a break lengthens the last
+     paid term, so a monthly plan renewed month after month counts its quarter across the months; a renewal after a
+     credit or an extension adds a new paid term after the unpaid months, and the earlier term's remaining quarters
+     are still checked. A quarter is checked only when it ends within its paid term; credited and goodwill months are
+     not paid, so they earn no further credit, and a monthly plan that stops before its quarter ends earns none.
   3. lapse_due: at ends_at without a renewal the status becomes lapsed (effective_plan already treats the shop as
      Free from that moment), with a notice to the owner. Nothing about the shop changes: every free tool and the same
      visibility in search.
   4. send_reminders: 30, 7 and 1 days (IST calendar days) before ends_at, through notify, once per stage per end date.
+     A stage is used only when it is shorter than the period's shortest term (a monthly plan: 7 and 1 days only, so
+     no "30 days left" notice goes out the day a month is bought).
   5. alert_unused_advances: an advance still not active NEARSHOP_ADVANCE_ALERT_DAYS (300) days after its payment
      raises an admin alert (in-app to every admin, and a warning event), once, because an advance must be used
      within 365 days (plan section 8.18).
@@ -66,6 +72,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import Depends
+from pydantic import ValidationError
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
@@ -77,6 +84,7 @@ from app.models import Shop
 from app.models.billing import (
     PAID_SOURCES,
     Actor,
+    PaidTerm,
     Period,
     Plan,
     PlanCode,
@@ -97,6 +105,7 @@ EVENTS = "subscription_events"
 FOUNDING_COUNTER = "founding_offer"  # its document in counters: seq is the number of founding slots taken
 
 REMINDER_DAYS = (30, 7, 1)  # reminders this many IST days before ends_at (plan section 8.18)
+SHORTEST_TERM_DAYS = {Period.YEAR: 365, Period.MONTH: 28}  # a reminder stage must be shorter than this
 REMINDER_WINDOW = timedelta(days=max(REMINDER_DAYS) + 1)
 QUARTER_MONTHS = 3
 PERIOD_MONTHS = {Period.YEAR: 12, Period.MONTH: 1}
@@ -109,9 +118,10 @@ KIND_REMINDER, KIND_LAPSED, KIND_GUARANTEE, KIND_ACTIVATED = (
 KIND_ADVANCE_ALERT = "advance_unused"
 
 # Never behind a payment (plan section 8.17): these endpoints never ask for an entitlement, on any plan, lapsed or not.
-# The always-free tools that exist today: listings and stock edits, Excel and CSV import, reservation and order
-# alerts and queues, and the trust signals (verification and reviews). WhatsApp stock replies (P4.4), the stock check
-# (P9.3), the QR standee and the monthly statement (P9.9) add their endpoints here when they are built.
+# The always-free tools that exist today: listings and stock edits (with the shop's details and photo), Excel and CSV
+# import, reservation and order alerts (the in-app notifications) and queues, and the trust signals (verification and
+# reviews). WhatsApp stock replies (P4.4), the stock check (P9.3), the QR standee and the monthly statement (P9.9) add
+# their endpoints here when they are built.
 FREE_TOOLS: tuple[tuple[str, str], ...] = (
     ("GET", "/api/owner/products"),
     ("POST", "/api/owner/products"),
@@ -138,6 +148,10 @@ FREE_TOOLS: tuple[tuple[str, str], ...] = (
     ("PUT", "/api/owner/reviews/{review_id}/reply"),
     ("GET", "/api/owner/shop"),
     ("PATCH", "/api/owner/shop"),
+    ("POST", "/api/owner/shop/image"),
+    ("GET", "/api/notifications"),
+    ("GET", "/api/notifications/unread-count"),
+    ("POST", "/api/notifications/read"),
 )
 
 
@@ -203,6 +217,7 @@ def plan_in_force(db: Database, code: PlanCode | str, at: datetime | None = None
 
 
 PUBLISHABLE = ("name", "price_year_paise", "price_month_paise", "founding_year_paise", "on_sale")
+PRICE_FIELDS = ("price_year_paise", "price_month_paise", "founding_year_paise")
 
 
 def publish_catalogue(db: Database, *, admin_id: int, reason: str, changes: dict[str, dict[str, Any]],
@@ -224,8 +239,17 @@ def publish_catalogue(db: Database, *, admin_id: int, reason: str, changes: dict
     rows: list[Plan] = []
     for code, row in base.items():
         change = {k: v for k, v in (changes.get(code) or {}).items() if k in PUBLISHABLE}
-        new = row.model_copy(update={**change, "id": 0, "version": version, "effective_from": effective_from,
-                                     "published_at": now, "published_by": admin_id, "reason": reason})
+        try:  # validated as a whole row: a name or on_sale of null is refused here, not by the collection validator
+            new = Plan.model_validate({**row.model_dump(), **change, "id": 0, "version": version,
+                                       "effective_from": effective_from, "published_at": now,
+                                       "published_by": admin_id, "reason": reason})
+        except ValidationError as exc:
+            fields = ", ".join(sorted({str(e["loc"][0]) for e in exc.errors() if e["loc"]}))
+            raise AppError(f"Invalid change to {code}: {fields}", code="invalid_plan_change",
+                           status_code=422) from None
+        if any(getattr(new, f) is not None and getattr(new, f) < 0 for f in PRICE_FIELDS) or not new.name.strip():
+            raise AppError(f"Invalid change to {code}: prices are 0 or more and the name is not blank",
+                           code="invalid_plan_change", status_code=422)
         if code == PlanCode.FREE and (new.price_year_paise or new.price_month_paise or not new.on_sale):
             raise AppError("Free stays free and on sale", code="free_is_free", status_code=422)
         rows.append(new)
@@ -341,9 +365,34 @@ def _event(db: Database, sub: Subscription, kind: str, actor: Actor, reason: str
                                         ends_at_before=ends_at_before, ends_at_after=sub.ends_at, at=at))
 
 
-def _guarantee_cursor(term_start: datetime, paid_until: datetime) -> dict[str, Any]:
-    first = months_after(term_start, QUARTER_MONTHS)
-    return {"term_start": term_start, "quarters_done": 0, "next_quarter_end": first if first <= paid_until else None}
+def _cursor(terms: list[PaidTerm], quarters_done: int = 0) -> dict[str, Any]:
+    """The outcome guarantee's cursor (module docstring): the paid terms still to check, the quarters already checked
+    in the first one, and the end of its next quarter (None when no paid term is left). The next quarter may end after
+    the first term does: a monthly plan's renewal without a break lengthens it."""
+    terms = list(terms)
+    while len(terms) > 1 and months_after(terms[0].start, QUARTER_MONTHS * (quarters_done + 1)) > terms[0].end:
+        terms, quarters_done = terms[1:], 0  # a term with no full quarter left that no renewal can lengthen now
+    following = months_after(terms[0].start, QUARTER_MONTHS * (quarters_done + 1)) if terms else None
+    return {"paid_terms": terms, "quarters_done": quarters_done if terms else 0, "next_quarter_end": following}
+
+
+def _new_cursor(start: datetime, end: datetime) -> dict[str, Any]:
+    return _cursor([PaidTerm(start=start, end=end)])
+
+
+def _add_paid_term(sub: Subscription, start: datetime, end: datetime) -> dict[str, Any]:
+    """The cursor with one more paid term: the last term lengthened when the new one follows it without a break,
+    else a new term after it (the months between were credited or extended, not paid)."""
+    terms = list(sub.paid_terms)
+    if terms and terms[-1].end == start:
+        terms[-1] = PaidTerm(start=terms[-1].start, end=end)
+        return _cursor(terms, sub.quarters_done)
+    return _cursor([*terms, PaidTerm(start=start, end=end)], sub.quarters_done if terms else 0)
+
+
+def _live_conflict(exc: DuplicateKeyError) -> bool:
+    """Whether a duplicate key is the one-live-subscription-per-shop index (uq_live_shop), not the founding one."""
+    return "shop_ids" in ((exc.details or {}).get("keyPattern") or {})
 
 
 def create_subscription(db: Database, *, shop_ids: list[int], plan_code: PlanCode | str, period: Period | str,
@@ -411,14 +460,17 @@ def create_subscription(db: Database, *, shop_ids: list[int], plan_code: PlanCod
             founding_slot=slot, founding_shop_id=founding_shop.id if slot else None, source=source, status=status_,
             starts_at=starts_at, ends_at=ends_at, paid_until=ends_at if paid else starts_at,
             paid_at=(paid_at or now) if paid else None, created_at=now, updated_at=now,
-            **(_guarantee_cursor(starts_at, ends_at) if paid else {}))
+            **(_new_cursor(starts_at, ends_at) if paid else {}))
         subscriptions(db).insert(sub)
         _event(db, sub, "created", actor, reason, status_before=None, ends_at_before=None, at=now)
         return sub
 
     try:
         return db.transaction(write)
-    except DuplicateKeyError:
+    except DuplicateKeyError as exc:
+        # Two grants at once for one shop: the unique index uq_live_shop allows one advance or active subscription.
+        if _live_conflict(exc):
+            raise PlanRefused("The shop already has a live subscription") from None
         raise PlanRefused("This shop has already had the founding offer") from None
 
 
@@ -448,13 +500,19 @@ def _change(db: Database, sub_id: int, kind: str, actor: Actor, reason: str, now
             after(sub)
         return sub
 
-    return db.transaction(write)
+    try:
+        return db.transaction(write)
+    except DuplicateKeyError as exc:
+        if _live_conflict(exc):  # a lapsed subscription made active while the shop has another live one
+            raise PlanRefused("The shop already has another live subscription") from None
+        raise
 
 
 def extend(db: Database, sub_id: int, *, actor: Actor, reason: str, months: int | None = None,
            ends_at: datetime | None = None, now: datetime | None = None) -> Subscription:
     """Move the end date later, by months or to ends_at (admin goodwill: not paid, so no guarantee credit). A lapsed
-    subscription extended past now is active again."""
+    subscription extended past now is active again. An advance's extra time is kept when it is activated: its year
+    then runs from billing_starts_on, and the extension is added after it."""
     now = now or utcnow()
 
     def apply(sub: Subscription) -> dict[str, Any]:
@@ -487,7 +545,7 @@ def renew(db: Database, sub_id: int, *, actor: Actor, reason: str, paid_at: date
           now: datetime | None = None) -> Subscription:
     """A paid renewal (P9.5 and P9.6 call it once the payment is recorded): one more period on the catalogue version
     in force now, at its list price (the founding price is for the first year only). An active subscription's new term
-    starts at its end date (after any guarantee credit); a lapsed one's starts now."""
+    starts at its end date (after any guarantee credit or extension); a lapsed one's starts now."""
     now = now or utcnow()
 
     def apply(sub: Subscription) -> dict[str, Any]:
@@ -506,9 +564,9 @@ def renew(db: Database, sub_id: int, *, actor: Actor, reason: str, paid_at: date
         if not contiguous:
             fields["starts_at"] = now
         if sub.source in PAID_SOURCES:
-            # A monthly plan renewed without a break keeps counting its quarter; any other renewal starts a new one.
-            keep = contiguous and sub.ends_at == sub.paid_until and sub.next_quarter_end is not None
-            fields.update({"next_quarter_end": sub.next_quarter_end} if keep else _guarantee_cursor(term_start, new_end))
+            # Without a break the new term joins the paid terms still to check (lengthening the last one when it
+            # follows it directly, as a monthly plan's does); after a lapse the guarantee starts again from now.
+            fields.update(_add_paid_term(sub, term_start, new_end) if contiguous else _new_cursor(term_start, new_end))
         return fields
 
     return _change(db, sub_id, "renewed", actor, reason, now, apply)
@@ -530,7 +588,8 @@ def _date(at: datetime) -> str:
 
 
 def activate_advances(db: Database, now: datetime) -> int:
-    """From billing_starts_on, each advance becomes active for one year from that day."""
+    """From billing_starts_on, each advance becomes active for one year from that day, plus any time an admin
+    extended it by while it waited."""
     start = billing_start()
     if now < start:
         return 0
@@ -539,9 +598,10 @@ def activate_advances(db: Database, now: datetime) -> int:
         def apply(sub: Subscription) -> dict[str, Any] | None:
             if sub.status != SubscriptionStatus.ADVANCE:
                 return None
-            end = months_after(start, _months(sub.period))
-            return {"status": SubscriptionStatus.ACTIVE, "starts_at": start, "ends_at": end, "paid_until": end,
-                    "reminded": [], **_guarantee_cursor(start, end)}
+            paid_end = months_after(start, _months(sub.period))
+            extra = max(sub.ends_at - sub.paid_until, timedelta(0))  # an extension (extend) while it waited
+            return {"status": SubscriptionStatus.ACTIVE, "starts_at": start, "ends_at": paid_end + extra,
+                    "paid_until": paid_end, "reminded": [], **_new_cursor(start, paid_end)}
 
         def after(sub: Subscription) -> None:
             _owner_notice(db, sub, KIND_ACTIVATED, "Your NearShop plan has started",
@@ -567,36 +627,36 @@ def apply_guarantees(db: Database, now: datetime) -> dict[str, int]:
     up on quarters a stopped job missed."""
     credited = met = 0
     for _ in range(GUARANTEE_CATCH_UP):
-        c, m = _guarantee_pass(db, now)
+        c, m, skipped = _guarantee_pass(db, now)
         credited, met = credited + c, met + m
-        if not c and not m:
+        if not c and not m and not skipped:
             break
     return {"guarantee_credits": credited, "guarantee_met": met}
 
 
-def _guarantee_pass(db: Database, now: datetime) -> tuple[int, int]:
-    """One quarter for each subscription with a paid quarter that has ended."""
-    credited = met = 0
+def _guarantee_pass(db: Database, now: datetime) -> tuple[int, int, int]:
+    """One quarter for each subscription with a quarter that has ended: credited, met, and skipped (not paid)."""
+    credited = met = skipped = 0
     due = subscriptions(db).find({"status": SubscriptionStatus.ACTIVE.value, "next_quarter_end": {"$lte": now},
                                   "source": {"$in": [s.value for s in PAID_SOURCES]}})
     for row in due:
         plan = plans(db).get(row.plan_id)
         q_end = row.next_quarter_end
-        q_start = months_after(row.term_start, QUARTER_MONTHS * row.quarters_done) if row.term_start else row.starts_at
-        if plan is None or not plan.entitlements.outcome_guarantee:
-            subscriptions(db).update_one({"_id": row.id, "next_quarter_end": q_end}, {"$set": {"next_quarter_end": None}})
+        term = row.paid_terms[0] if row.paid_terms else None
+        if plan is None or not plan.entitlements.outcome_guarantee or term is None or q_end > term.end:
+            # Not a paid quarter (a monthly plan not renewed to its end, or time credited or extended), or no
+            # guarantee on this plan: move on to the next paid term without a check.
+            skipped += _skip_quarter(db, row.id, q_end,
+                                     drop_all=plan is None or not plan.entitlements.outcome_guarantee)
             continue
+        q_start = months_after(term.start, QUARTER_MONTHS * row.quarters_done)
         requests = quarter_requests(db, row.shop_ids, q_start, q_end)
         short = requests < settings.plan_guarantee_min_requests
 
         def apply(sub: Subscription, q_end=q_end, short=short) -> dict[str, Any] | None:
             if sub.next_quarter_end != q_end or sub.status != SubscriptionStatus.ACTIVE:
                 return None  # another run did it
-            done = sub.quarters_done + 1
-            following = months_after(sub.term_start, QUARTER_MONTHS * (done + 1)) if sub.term_start else None
-            fields: dict[str, Any] = {"quarters_done": done,
-                                      "next_quarter_end": following if following and following <= sub.paid_until
-                                      else None}
+            fields: dict[str, Any] = _cursor(sub.paid_terms, sub.quarters_done + 1)
             if short:
                 fields.update(ends_at=months_after(sub.ends_at, settings.plan_guarantee_credit_months), reminded=[])
             return fields
@@ -617,7 +677,21 @@ def _guarantee_pass(db: Database, now: datetime) -> tuple[int, int]:
             credited += 1
         else:
             met += 1
-    return credited, met
+    return credited, met, skipped
+
+
+def _skip_quarter(db: Database, sub_id: int, q_end: datetime, *, drop_all: bool) -> bool:
+    """Move the cursor past a quarter that is not checked: to the next paid term, or past every term when the plan
+    has no guarantee. Bookkeeping only, so no event. False when another run moved it first."""
+
+    def write() -> bool:
+        sub = _load(db, sub_id)
+        if sub.next_quarter_end != q_end:
+            return False
+        subscriptions(db).set(sub, **_cursor([] if drop_all else sub.paid_terms[1:]))
+        return True
+
+    return db.transaction(write)
 
 
 def lapse_due(db: Database, now: datetime) -> int:
@@ -641,10 +715,12 @@ def lapse_due(db: Database, now: datetime) -> int:
     return done
 
 
-def reminder_stage(ends_at: datetime, now: datetime) -> int | None:
-    """The reminder stage due at now: the smallest of REMINDER_DAYS at least the IST days left, or None."""
+def reminder_stage(ends_at: datetime, now: datetime, period: Period | str = Period.YEAR) -> int | None:
+    """The reminder stage due at now: the smallest of the period's stages at least the IST days left, or None. A
+    period's stages are the REMINDER_DAYS shorter than its shortest term, so a month bought today is not reminded
+    today that it has 30 days left."""
     days_left = (leads.ist_day(ends_at) - leads.ist_day(now)).days
-    stages = [d for d in REMINDER_DAYS if days_left <= d]
+    stages = [d for d in REMINDER_DAYS if days_left <= d < SHORTEST_TERM_DAYS[Period(period)]]
     return min(stages) if days_left >= 1 and stages else None
 
 
@@ -653,7 +729,7 @@ def send_reminders(db: Database, now: datetime) -> int:
     sent = 0
     for row in subscriptions(db).find({"status": SubscriptionStatus.ACTIVE.value,
                                        "ends_at": {"$gt": now, "$lte": now + REMINDER_WINDOW}}):
-        stage = reminder_stage(row.ends_at, now)
+        stage = reminder_stage(row.ends_at, now, row.period)
         if stage is None or stage in row.reminded:
             continue
 
@@ -738,9 +814,9 @@ def guarantee_progress(db: Database, sub: Subscription | None, now: datetime) ->
     needed = settings.plan_guarantee_min_requests
     plan = plans(db).get(sub.plan_id) if sub is not None else None
     if (sub is None or plan is None or not plan.entitlements.outcome_guarantee or sub.source not in PAID_SOURCES
-            or sub.next_quarter_end is None or sub.term_start is None):
+            or sub.next_quarter_end is None or not sub.paid_terms):
         return {"applies": False, "needed": needed}
-    q_start = months_after(sub.term_start, QUARTER_MONTHS * sub.quarters_done)
+    q_start = months_after(sub.paid_terms[0].start, QUARTER_MONTHS * sub.quarters_done)
     requests = quarter_requests(db, sub.shop_ids, q_start, min(now, sub.next_quarter_end)) if q_start < now else 0
     return {"applies": True, "quarter_start": _iso(q_start), "quarter_end": _iso(sub.next_quarter_end),
             "customer_requests": requests, "needed": needed, "met": requests >= needed,

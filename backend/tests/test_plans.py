@@ -330,6 +330,11 @@ def free_tool_calls(world: World, owner: TestClient, customer: TestClient, shop:
     call("GET", "/api/owner/orders", "/api/owner/orders")
     call("GET", "/api/owner/orders/{order_id}", f"/api/owner/orders/{oid}")
     call("POST", "/api/owner/orders/{order_id}/{action}", f"/api/owner/orders/{oid}/confirm", json={})
+    # The reservation and order alerts: the in-app notifications, read and marked read.
+    alerts = call("GET", "/api/notifications", "/api/notifications")
+    assert {"reservation_new", "order_new"} <= {n["kind"] for n in alerts["items"]}, alerts
+    assert call("GET", "/api/notifications/unread-count", "/api/notifications/unread-count")["unread"] >= 2
+    call("POST", "/api/notifications/read", "/api/notifications/read", json={})
 
     call("GET", "/api/owner/verification", "/api/owner/verification")
     renewal = owner.post("/api/owner/verification", headers=HEADERS, data={"kyc_type": "udyam",
@@ -347,6 +352,7 @@ def free_tool_calls(world: World, owner: TestClient, customer: TestClient, shop:
          json={"text": "Thank you, see you soon"})
     call("GET", "/api/owner/shop", "/api/owner/shop")
     call("PATCH", "/api/owner/shop", "/api/owner/shop", json={"tagline": "Taps and fittings"})
+    call("POST", "/api/owner/shop/image", "/api/owner/shop/image", files={"file": ("shop.png", png(), "image/png")})
     return out
 
 
@@ -602,3 +608,144 @@ def test_owner_sees_plan_entitlements_founding_eligibility_and_guarantee_progres
     g = mine["guarantee"]
     assert g["applies"] and (g["customer_requests"], g["needed"], g["met"]) == (1, 3, False)
     assert mine["plan"]["ends_at"] == sub.ends_at.isoformat() + "Z"
+
+
+# ---------------------------------------------------------------- review fixes: monthly plans, early renewals, races
+
+
+def test_a_monthly_growth_plan_renewed_without_a_break_earns_the_guarantee_for_its_quarter(db, world):
+    shop, lapsing = world.shop(1, city="Mysuru"), world.shop(2, city="Mysuru")
+    start = ist(2027, 9, 1, 10)
+    sub = grant(db, shop, start, period="month")
+    short = grant(db, lapsing, start, period="month")
+    assert (sub.price_paise, sub.ends_at, sub.next_quarter_end) == (14_900, ist(2027, 10, 1, 10), ist(2027, 12, 1, 10))
+    for month in (1, 2):  # each month paid a day before it runs out
+        paid = months_after(start, month) - timedelta(days=1)
+        assert plans.run_jobs(db, paid)["guarantee_credits"] == 0
+        plans.renew(db, sub.id, actor=ADMIN, reason="Monthly payment recorded", now=paid)
+        if month == 1:
+            plans.renew(db, short.id, actor=ADMIN, reason="Monthly payment recorded", now=paid)
+    renewed = plans.subscriptions(db).get(sub.id)
+    assert renewed.ends_at == ist(2027, 12, 1, 10) and renewed.next_quarter_end == ist(2027, 12, 1, 10)
+    assert [(t.start, t.end) for t in renewed.paid_terms] == [(start, ist(2027, 12, 1, 10))]
+
+    result = plans.run_jobs(db, ist(2027, 12, 1, 10))  # 0 customer requests in 3 paid months
+    assert result["guarantee_credits"] == 1
+    credited = plans.subscriptions(db).get(sub.id)
+    assert (credited.status, credited.ends_at, credited.paid_until) == (
+        SubscriptionStatus.ACTIVE, ist(2028, 3, 1, 10), ist(2027, 12, 1, 10))
+    kinds = [k for k in event_kinds(db, sub.id) if k != "reminder"]  # the 1-day reminders before each payment
+    assert kinds == ["created", "renewed", "renewed", "guarantee_credit"]
+    # Paid for 2 months only: no full paid quarter, so no credit, and it lapsed when its second month ran out.
+    assert plans.subscriptions(db).get(short.id).status == SubscriptionStatus.LAPSED
+    assert "guarantee_credit" not in event_kinds(db, short.id)
+
+    # The credited months are not paid: no check at their end, then a renewal starts a new paid quarter after them.
+    assert plans.run_jobs(db, ist(2028, 2, 20))["guarantee_credits"] == 0
+    plans.renew(db, sub.id, actor=ADMIN, reason="Monthly payment recorded", now=ist(2028, 2, 20))
+    after = plans.subscriptions(db).get(sub.id)
+    assert [(t.start, t.end) for t in after.paid_terms] == [(ist(2028, 3, 1, 10), ist(2028, 4, 1, 10))]
+    assert after.next_quarter_end == ist(2028, 6, 1, 10)
+    assert plans.run_jobs(db, ist(2028, 3, 1, 10))["guarantee_credits"] == 0
+
+
+def test_an_early_renewal_after_a_credit_still_checks_the_old_terms_last_quarter(db, world, monkeypatch):
+    shop = world.shop(1, city="Mysuru")
+    s = ist(2027, 9, 1, 10)
+    sub = grant(db, shop, s)
+    assert plans.run_jobs(db, months_after(s, 3))["guarantee_credits"] == 1  # 0 requests: ends_at to S+15
+    monkeypatch.setattr(settings, "plan_guarantee_min_requests", 0)
+    assert plans.run_jobs(db, months_after(s, 9))["guarantee_met"] == 2  # quarters 2 and 3
+    renewed = plans.renew(db, sub.id, actor=ADMIN, reason="Renewal payment recorded", now=months_after(s, 10))
+    assert renewed.ends_at == months_after(s, 27) and renewed.paid_until == months_after(s, 27)
+    assert [(t.start, t.end) for t in renewed.paid_terms] == [(s, months_after(s, 12)),
+                                                             (months_after(s, 15), months_after(s, 27))]
+    assert renewed.next_quarter_end == months_after(s, 12)
+
+    monkeypatch.setattr(settings, "plan_guarantee_min_requests", 3)
+    assert plans.run_jobs(db, months_after(s, 12))["guarantee_credits"] == 1  # the old term's last quarter
+    q4 = db.mongo[plans.EVENTS].find_one({"subscription_id": sub.id, "kind": "guarantee_credit"}, sort=[("_id", -1)])
+    assert "1 June 2028 to 1 September 2028" in q4["reason"]
+    moved = plans.subscriptions(db).get(sub.id)
+    assert moved.ends_at == months_after(s, 30) and moved.next_quarter_end == months_after(s, 18)
+    assert plans.run_jobs(db, months_after(s, 15))["guarantee_credits"] == 0  # credited months: no check
+    assert plans.run_jobs(db, months_after(s, 18))["guarantee_credits"] == 1  # the new term's first quarter
+    assert event_kinds(db, sub.id) == ["created", "guarantee_credit", "guarantee_met", "guarantee_met", "renewed",
+                                       "guarantee_credit", "guarantee_credit"]
+
+
+def test_an_extension_of_an_advance_is_kept_when_it_is_activated(db, world):
+    shop = world.shop(1)
+    sub = grant(db, shop, ist(2027, 6, 10, 11), source="advance")
+    extended = plans.extend(db, sub.id, actor=ADMIN, reason="Goodwill: pilot feedback", months=2,
+                            now=ist(2027, 7, 1))
+    assert extended.ends_at == ist(2028, 10, 1) and extended.paid_until == ist(2028, 8, 1)
+    assert plans.run_jobs(db, ist(2027, 8, 1, 0, 1))["activated"] == 1
+    active = plans.subscriptions(db).get(sub.id)
+    assert (active.status, active.starts_at, active.ends_at, active.paid_until) == (
+        SubscriptionStatus.ACTIVE, ist(2027, 8, 1), ist(2028, 10, 1), ist(2028, 8, 1))
+    assert [(t.start, t.end) for t in active.paid_terms] == [(ist(2027, 8, 1), ist(2028, 8, 1))]
+
+
+def test_concurrent_grants_for_one_shop_record_one_live_subscription(db, world, monkeypatch):
+    monkeypatch.setattr(settings, "billing_starts_on", date(2020, 1, 1))
+    shop = world.shop(1, city="Mysuru")
+    now = utcnow()
+
+    def pay(_: int):
+        try:
+            return plans.create_subscription(Database(), shop_ids=[shop.id], plan_code="growth", period="year",
+                                             source="shop_paid", actor=ADMIN, reason=REASON, now=now)
+        except plans.PlanRefused as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(pay, range(8)))
+    made = [r for r in results if isinstance(r, plans.Subscription)]
+    assert len(made) == 1 and all(isinstance(r, plans.PlanRefused) for r in results if r not in made)
+    assert db.mongo[plans.SUBSCRIPTIONS].count_documents({"shop_ids": shop.id, "status": "active"}) == 1
+
+    # A lapsed subscription cannot be made active again beside the live one.
+    monkeypatch.setattr(settings, "plan_guarantee_min_requests", 0)  # no credit keeps it from lapsing
+    old = grant(db, world.shop(2, city="Mysuru"), now - timedelta(days=400))
+    plans.run_jobs(db, now)
+    assert plans.subscriptions(db).get(old.id).status == SubscriptionStatus.LAPSED
+    db.mongo[plans.SUBSCRIPTIONS].update_one({"_id": old.id}, {"$set": {"shop_ids": [shop.id]}})
+    with pytest.raises(plans.PlanRefused):
+        plans.extend(db, old.id, actor=ADMIN, reason="Goodwill: app outage", months=24, now=now)
+    with pytest.raises(plans.PlanRefused):
+        plans.renew(db, old.id, actor=ADMIN, reason="Renewal payment recorded", now=now)
+    assert plans.subscriptions(db).get(old.id).status == SubscriptionStatus.LAPSED
+
+
+def test_publishing_a_null_name_or_on_sale_is_refused_with_422(db, admin):
+    for change in ({"name": None}, {"on_sale": None}):
+        res = admin.post("/api/admin/plans", headers=HEADERS,
+                         json={"reason": "Catalogue change for a test", "plans": {"growth": change}})
+        assert res.status_code == 422, res.text
+        with pytest.raises(plans.AppError) as refused:
+            plans.publish_catalogue(db, admin_id=0, reason="Catalogue change for a test", changes={"growth": change})
+        assert refused.value.status_code == 422
+    with pytest.raises(plans.AppError):
+        plans.publish_catalogue(db, admin_id=0, reason="Catalogue change for a test",
+                                changes={"growth": {"price_year_paise": -1}})
+    assert plans.plans(db).distinct("version") == [1]
+    # A null price is allowed: that plan is then not sold by the month.
+    version = plans.publish_catalogue(db, admin_id=0, reason="No monthly Growth for now",
+                                      changes={"growth": {"price_month_paise": None}})
+    assert plans.catalogue(db, version=version)["growth"].price_month_paise is None
+
+
+def test_a_monthly_plan_is_reminded_7_days_and_1_day_before_its_end_only(db, world):
+    shop = world.shop(1, city="Mysuru")
+    sub = grant(db, shop, ist(2027, 10, 1, 10), period="month")  # a 31-day month
+    assert sub.ends_at == ist(2027, 11, 1, 10)
+    sent: list[date] = []
+    day = date(2027, 10, 1)
+    while day <= date(2027, 10, 31):
+        result = plans.run_jobs(db, ist(day.year, day.month, day.day, 11))
+        sent += [day] * result["reminders"]
+        day += timedelta(days=1)
+    assert sent == [date(2027, 10, 25), date(2027, 10, 31)]
+    assert plans.reminder_stage(ist(2028, 9, 1), ist(2028, 8, 2), "year") == 30
+    assert plans.reminder_stage(ist(2027, 11, 1), ist(2027, 10, 2), "month") is None
