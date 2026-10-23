@@ -19,7 +19,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useNow } from "@/hooks/use-debounce";
-import { useMe } from "@/hooks/use-session";
+import { clearOfflineReservations, useMe } from "@/hooks/use-session";
 import { api, errorMessage } from "@/lib/api";
 import { formatDateTime, formatDistance, formatNumber, formatPrice, timeAgo } from "@/lib/format";
 import { type MessageKey, plural } from "@/lib/i18n";
@@ -417,9 +417,12 @@ function DevicesCard() {
   const qc = useQueryClient();
   const router = useRouter();
   const devices = useQuery({ queryKey: ["sessions"], queryFn: () => api.get<Device[]>("/auth/sessions") });
-  const signedOut = () => {
+  // Signed out of this browser: the stored reservation codes and saved /account pages go too (P7.12), as on sign-out.
+  const signedOut = async () => {
+    await qc.cancelQueries();
     qc.clear();
     qc.setQueryData(["me"], null);
+    await clearOfflineReservations();
     router.push("/");
     router.refresh();
   };
@@ -521,12 +524,15 @@ function DeleteCard({ plan }: { plan: DeletionPlan }) {
   const cancelFirst = plan.outcome === "cancel_first";
   const remove = useMutation({
     mutationFn: () => api.post<{ status: "deleted" | "scheduled"; scheduled_for?: string }>("/auth/delete", { password, cancel_open: cancelFirst }),
-    onSuccess: (res) => {
+    onSuccess: async (res) => {
       setOpen(false);
       setPassword("");
       if (res.status === "deleted") {
+        // Signed out with the account gone: the stored reservation codes and saved /account pages go too (P7.12).
+        await qc.cancelQueries();
         qc.clear();
         qc.setQueryData(["me"], null);
+        await clearOfflineReservations();
         toast.success(t("transactions.account.deletion.deleted"));
         router.push("/");
         router.refresh();

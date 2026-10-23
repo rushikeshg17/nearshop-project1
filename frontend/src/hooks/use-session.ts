@@ -116,9 +116,10 @@ export async function readOfflineReservation(id: number): Promise<OfflineReserva
   }
 }
 
-/** Sign-out: the worker deletes every stored reservation and every saved /account page; the page also deletes the
- * stored reservations itself, for a browser where the worker is not running this page (yet). */
-function clearOfflineReservations() {
+/** Sign-out (here, and every other way the account signs out of this browser: src/app/(site)/account/account-view.tsx):
+ * the worker deletes every stored reservation and every saved /account page. The page also deletes them itself, for a
+ * browser where the worker is not controlling this page (a first visit, a hard reload) or does not answer. */
+export function clearOfflineReservations() {
   return queueOffline(async () => {
     const worker = typeof navigator !== "undefined" ? navigator.serviceWorker?.controller : null;
     if (worker) {
@@ -132,7 +133,16 @@ function clearOfflineReservations() {
         worker.postMessage({ type: "sign-out" }, [channel.port2]);
       });
     }
-    if (offlineCacheAvailable()) await caches.delete(OFFLINE_RESERVATIONS);
+    if (!offlineCacheAvailable()) return;
+    await caches.delete(OFFLINE_RESERVATIONS);
+    // The worker's saved pages (nearshop-pages-<build>, public/sw.js): every /account page in any version's cache.
+    for (const name of await caches.keys()) {
+      if (!name.startsWith("nearshop-pages-")) continue;
+      const pages = await caches.open(name);
+      for (const key of await pages.keys()) {
+        if (/^\/account(\/|$)/.test(new URL(key.url).pathname)) await pages.delete(key);
+      }
+    }
   });
 }
 

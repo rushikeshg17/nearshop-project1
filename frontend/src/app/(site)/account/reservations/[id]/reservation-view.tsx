@@ -112,7 +112,11 @@ export function ReservationView({ id }: { id: number }) {
   useEffect(() => {
     if (signedIn && q.data) storeOfflineReservation(q.data);
   }, [signedIn, q.data, q.dataUpdatedAt]);
-  const gone = q.error instanceof ApiError && (q.error.status === 403 || q.error.status === 404);
+  // Signed out (401: this session was revoked, perhaps from another device), or a reservation this account can no
+  // longer see (403, 404): the stored copy is forgotten, not shown.
+  const gone = q.error instanceof ApiError && [401, 403, 404].includes(q.error.status);
+  // The request never reached the server (ApiError status 0), as opposed to an HTTP error the server answered with.
+  const unreachable = q.error instanceof ApiError && q.error.status === 0;
   useEffect(() => {
     if (gone) forgetOfflineReservation(id);
   }, [gone, id]);
@@ -135,8 +139,9 @@ export function ReservationView({ id }: { id: number }) {
     },
   });
 
-  // Without a network, the saved copy, at once: not after the request's retries have run out.
-  if (!q.data && stored && !gone && (offline || q.isError)) return <OfflineReservationView r={stored} />;
+  // Without a network, the saved copy, at once: not after the request's retries have run out. Only then: an error
+  // the server answered with (a 5xx, say) shows the error and its retry, not the saved copy.
+  if (!q.data && stored && !gone && (offline || unreachable)) return <OfflineReservationView r={stored} />;
   if (q.isError) return <div className="mx-auto max-w-3xl px-4 py-12"><ErrorState error={q.error} onRetry={() => q.refetch()} /></div>;
   const r = q.data;
   if (!r) return <div className="mx-auto max-w-3xl px-4 py-12"><ListSkeleton rows={3} /></div>;

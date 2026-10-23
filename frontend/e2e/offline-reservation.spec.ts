@@ -12,6 +12,8 @@ import { type APIRequestContext, expect, type Page, test as base } from "@playwr
  *    saved yet, and in the reservation page once it has been.
  * 2. The caches hold no API response except the customer's open reservations.
  * 3. After sign-out, neither the caches nor the page's storage hold any reservation.
+ * 4. The other ways out of the account do the same: a session revoked from another device forgets the stored copy
+ *    when the page next loads online, and shows no code, and "Sign out everywhere" clears the caches like sign-out.
  *
  * Runs against the production build (the worker is registered only there) in front of the API on the seeded
  * throwaway database of the frontend-quality CI job, with NEARSHOP_DEMO_PASSWORD, like review-codes.spec.ts.
@@ -172,6 +174,47 @@ test("an open reservation viewed once online shows its code offline; sign-out le
   await context.setOffline(false);
 
   await post(page.request, "/api/auth/login", { email: CUSTOMER, password: demoPassword() });
+  await post(page.request, `/api/reservations/${reservation.id}/cancel`, { reason: "offline-reservation test" }).catch(() => undefined);
+  await owner.close();
+});
+
+/** The cache entries a signed-out browser must not keep: stored reservations and saved /account pages. */
+async function privateEntries(page: Page) {
+  return (await cacheContents(page)).filter((e) => e.path.startsWith("/api/") || e.path.startsWith("/account"));
+}
+
+test("a session revoked elsewhere, and sign-out everywhere, leave no reservation stored", async ({ page, browser, language }, testInfo) => {
+  const owner = await browser.newContext({ baseURL: testInfo.project.use.baseURL });
+  await signIn(owner.request, OWNER);
+  await signIn(page.request, CUSTOMER);
+  const reservation = await confirmedReservation(page.request, owner.request);
+  const code = reservation.code.replace(/^R-/, "");
+  const url = `/account/reservations/${reservation.id}`;
+  const stored = () => page.evaluate(async (key) => !!(await caches.match(key)), `/api/reservations/${reservation.id}`);
+
+  // Revoked from another device (the lost-phone case): online, the page shows no code and forgets the stored copy.
+  await page.goto(url);
+  await expect(page.getByText(code, { exact: true })).toBeVisible();
+  await waitForOfflineCopy(page, reservation.id);
+  const elsewhere = await browser.newContext({ baseURL: testInfo.project.use.baseURL });
+  await signIn(elsewhere.request, CUSTOMER);
+  await post(elsewhere.request, "/api/auth/logout-everywhere");
+  await elsewhere.close();
+  await page.reload();
+  await expect.poll(stored).toBe(false);
+  await expect(page.getByText(code, { exact: true })).toHaveCount(0);
+
+  // "Sign out everywhere" on the account page clears the caches as sign-out does.
+  await signIn(page.request, CUSTOMER);
+  await page.goto(url);
+  await expect(page.getByText(code, { exact: true })).toBeVisible();
+  await waitForOfflineCopy(page, reservation.id);
+  await page.goto("/account");
+  await page.getByRole("button", { name: message(language, "transactions.account.devices.everywhere") }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect.poll(() => privateEntries(page)).toEqual([]);
+
+  await signIn(page.request, CUSTOMER);
   await post(page.request, `/api/reservations/${reservation.id}/cancel`, { reason: "offline-reservation test" }).catch(() => undefined);
   await owner.close();
 });
