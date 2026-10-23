@@ -136,7 +136,7 @@ export default function OwnerOverviewPage() {
                       {p.recommended_restock ? ` · ${t("owner.overview.restock", count(p.recommended_restock))}` : ""}
                     </p>
                   </div>
-                  <StockPill status={p.stock_status} quantity={p.quantity} compact />
+                  <StockPill status={p.stock_status} quantity={p.quantity} exact compact />
                 </li>
               ))}
             </ul>

@@ -10,6 +10,7 @@ import { type APIRequestContext, expect, type Page, test as base } from "@playwr
  *    count on the search, product and shop pages.
  * 2. Once the shop opts in, its product page shows the exact count.
  * 3. The owner's "Show exact stock counts to customers" toggle in shop settings saves.
+ * 4. Owners still see their exact counts in their own console, whatever the opt-in.
  *
  * Runs against the seeded throwaway database of the frontend-quality CI job, with NEARSHOP_DEMO_PASSWORD. The seed
  * leaves every shop without the opt-in (Shop.show_exact_stock is false by default). The tests that turn it on for the
@@ -121,6 +122,14 @@ test("a shop without the opt-in shows bands and no count on search, product and 
 
   await page.goto(`/product/${listing.id}`);
   await expectBandsOnly(page, language, "product page");
+  // The page's description, which search engines and link previews show, states no count either.
+  for (const selector of ['meta[name="description"]', 'meta[property="og:description"]']) {
+    const content = (await page.locator(selector).first().getAttribute("content")) ?? "";
+    expect(content, `product page ${selector}`).not.toBe("");
+    for (const key of COUNT_KEYS) {
+      expect(content, `product page ${selector}: no stock count (${key})`).not.toMatch(pattern(language, key));
+    }
+  }
 
   await page.goto(`/shops/${shop.slug}`);
   await expectBandsOnly(page, language, "shop page");
@@ -164,4 +173,14 @@ test("the owner's exact-stock toggle saves", async ({ page, language }) => {
   } finally {
     await setExactStock(page.request, false);
   }
+});
+
+test("owners see exact counts in their inventory without the opt-in", async ({ page, language }) => {
+  await signInOwner(page.request);
+  await setExactStock(page.request, false);
+  const { listing } = await pickListing(page.request);
+  await page.goto("/shop/inventory");
+  const row = page.getByText(listing.name, { exact: true }).first().locator("xpath=..");
+  await expect(row, "the inventory row").toBeVisible();
+  await expect(row.getByText(pattern(language, "common.stock.left")), "the exact count on the owner's row").toBeVisible();
 });

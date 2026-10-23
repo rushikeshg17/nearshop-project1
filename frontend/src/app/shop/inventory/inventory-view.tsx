@@ -191,7 +191,7 @@ function InventoryRow({ p, focused, onEdit }: { p: OwnerListing; focused: boolea
       <div className="min-w-0 flex-1 basis-48">
         <p className="truncate text-sm font-medium">{p.name}</p>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1">
-          <StockPill status={p.stock_status} quantity={p.quantity} compact />
+          <StockPill status={p.stock_status} quantity={p.quantity} exact compact />
           <Freshness at={p.stock_updated_at} />
           {p.sku && <span className="font-mono text-[11px] text-muted-foreground">{p.sku}</span>}
         </div>
