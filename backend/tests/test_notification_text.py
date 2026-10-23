@@ -27,7 +27,7 @@ PARAMS = {
     "address": "12 MG Road, Ballari", "distance_km": 1.4, "total": 249.5, "delivery_code": "0427",
     "items": "Tape: 3 (counted 4 days ago)", "name": "Tape", "days": 4, "before": 7, "line": "tape",
     "options": "1. Tape\n2. Duct Tape", "lines": "glue; nails", "count": 3, "max": 20, "error": "Not enough stock",
-    "hint": "",
+    "hint": "", "threshold": 3,
 }
 
 
@@ -65,6 +65,9 @@ def test_every_message_renders_in_both_languages_with_its_parameters(key):
 @pytest.mark.parametrize("key", sorted(TEXTS))
 def test_every_reply_and_fragment_renders_in_both_languages(key):
     entry = TEXTS[key]
+    if key in words.KANNADA_AWAITED:  # English only until the team supplies the Kannada (P9.14)
+        assert set(entry) == {"en"} and words.text(key, "kn", PARAMS) == words.text(key, "en", PARAMS)
+        return
     assert set(entry) == set(words.LANGUAGES)
     assert placeholders(entry["kn"]) == placeholders(entry["en"])
     for language in words.LANGUAGES:

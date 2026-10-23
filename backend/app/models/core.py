@@ -275,6 +275,15 @@ class Shop(Document, Timestamps):
     # settings.public_stock_cap and no exact count in any error, and may ask for at most that many units at once. The
     # owner turns it on in shop settings to show exact counts. Owners, staff and admins always see exact counts.
     show_exact_stock: bool = False
+    # Low-stock alerts (P9.14, app/services/alerts.py): one message a day, at low_stock_alert_hour (IST, 0 to 23),
+    # listing the listings at or below their low-stock level, for a shop whose plan has the low_stock_alerts
+    # entitlement (Growth and above). On by default, so an entitled shop gets it without doing anything. The job keeps
+    # the IST day it last considered the shop (YYYY-MM-DD) and what it decided (sent, nothing_low or not_entitled);
+    # the owner cannot set those two.
+    low_stock_alerts_on: bool = True
+    low_stock_alert_hour: int = 18
+    low_stock_alert_day: str | None = None
+    low_stock_alert_outcome: str | None = None
 
     is_active: bool = True
     # Kept in step with verification_status (true only while it is verified) for older readers.

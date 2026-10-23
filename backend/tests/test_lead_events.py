@@ -281,13 +281,21 @@ def test_the_monthly_rollup_gives_every_count_and_leaves_the_shops_own_phones_ou
     assert all(rows[s]["reservation_requests"] == 0 for s in live - {town["shop"].id})
 
     # A staff member's phone (shop_staff, P9.13) is left out as well: the request from the customer whose phone it is.
-    db.mongo[leads.STAFF].insert_one({"shop_id": town["shop"].id, "phone": "+91 91234 00001"})
+    db.mongo[leads.STAFF].insert_one(staff_row(town, phone="9123400001"))
     counts = leads.compute_counts(db, *leads.month_bounds(2031, 5), [town["shop"].id])[town["shop"].id]
     assert counts["customer_requests"] == 2  # only the account without a phone is left: a reservation and an order
     db.mongo[leads.STAFF].delete_many({})
-    db.mongo[leads.STAFF].insert_one({"shop_id": town["shop"].id, "user_id": town["cust"].id})
+    db.mongo[leads.STAFF].insert_one(staff_row(town, phone="6000000001", user_id=town["cust"].id))
     counts = leads.compute_counts(db, *leads.month_bounds(2031, 5), [town["shop"].id])[town["shop"].id]
     assert counts["customer_requests"] == 2  # a staff row naming the account instead of a phone
+
+
+def staff_row(town: dict, *, phone: str, user_id: int | None = None) -> dict:
+    """A shop_staff row as P9.13 writes it (app/services/staff.py), valid under its validator."""
+    now = utcnow()
+    return {"_id": 10**8 + int(phone[-4:]), "shop_id": town["shop"].id, "user_id": user_id, "phone": phone,
+            "name": "Lead Staff", "status": "active", "invited_by": town["shop"].owner_id, "invited_at": now,
+            "created_at": now, "updated_at": now}
 
 
 def test_a_rerun_replaces_the_months_row(town, clean):

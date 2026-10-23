@@ -191,7 +191,9 @@
       "out": "",
       "left": "",
       "only": "",
-      "inStock": ""
+      "inStock": "",
+      "available": "",
+      "low": ""
     },
     "freshness": {
       "updated": "",
@@ -542,7 +544,8 @@
       "callOnlyTitle": "",
       "callOnlyBody": "",
       "callOnlyNoPhone": "",
-      "callToCheck": ""
+      "callToCheck": "",
+      "stickyBand": ""
     },
     "shop": {
       "notFoundTitle": "",
@@ -827,7 +830,8 @@
       "note": "",
       "notePlaceholder": "",
       "sent": "",
-      "sentBody": ""
+      "sentBody": "",
+      "eachBand": ""
     },
     "delivery": {
       "title": "",
@@ -1149,8 +1153,15 @@
         "insights": "",
         "reviews": "",
         "settings": "",
-        "statements": ""
-      }
+        "statements": "",
+        "billing": "",
+        "staff": ""
+      },
+      "staffPausedTitle": "",
+      "staffPausedBody": "",
+      "ownerOnlyTitle": "",
+      "ownerOnlyBody": "",
+      "toQueue": ""
     },
     "verification": {
       "reason": "",
@@ -1851,6 +1862,19 @@
         "payeeHint": "",
         "idError": "",
         "payeeError": ""
+      },
+      "exactStockLabel": "",
+      "exactStockHint": "",
+      "lowStock": {
+        "title": "",
+        "intro": "",
+        "switchLabel": "",
+        "switchHint": "",
+        "hourLabel": "",
+        "hourHint": "",
+        "growthOnly": "",
+        "seePlans": "",
+        "freeUpdates": ""
       }
     },
     "reviews": {
@@ -1957,6 +1981,191 @@
         "failed": "",
         "cancelled": ""
       }
+    },
+    "billing": {
+      "title": "",
+      "description": "",
+      "terms": "",
+      "termsLink": "",
+      "status": {
+        "free": "",
+        "active": "",
+        "advance": "",
+        "lapsed": "",
+        "cancelled": "",
+        "refunded": ""
+      },
+      "current": {
+        "heading": "",
+        "endsOn": "",
+        "nextReminder": "",
+        "renewsByAutopay": "",
+        "freeNoEnd": "",
+        "lapsed": "",
+        "renew": ""
+      },
+      "includes": {
+        "heading": "",
+        "demandTeaser": "",
+        "demandFull": "",
+        "lowStock": "",
+        "logins": "",
+        "roi": "",
+        "support": "",
+        "boost": "",
+        "guarantee": "",
+        "proInsights": "",
+        "outlets": ""
+      },
+      "freeTools": {
+        "heading": "",
+        "body": "",
+        "listings": "",
+        "import": "",
+        "whatsapp": "",
+        "alerts": "",
+        "standee": "",
+        "trust": "",
+        "statement": ""
+      },
+      "founding": {
+        "heading": "",
+        "eligible": "",
+        "claimed": "",
+        "full": "",
+        "notInCity": ""
+      },
+      "guarantee": {
+        "heading": "",
+        "progress": "",
+        "quarterEnds": "",
+        "met": "",
+        "notMet": "",
+        "notApplies": ""
+      },
+      "advance": {
+        "heading": "",
+        "body": ""
+      },
+      "pay": {
+        "heading": "",
+        "headingRenew": "",
+        "yearly": "",
+        "yearlyPrice": "",
+        "foundingPrice": "",
+        "requestButton": "",
+        "advanceNote": "",
+        "notOpen": "",
+        "gst": "",
+        "noGst": "",
+        "monthly": "",
+        "monthlyPrice": "",
+        "autopayLater": "",
+        "autopayUnavailable": "",
+        "autopayStart": "",
+        "autopayApprove": "",
+        "autopayWaiting": "",
+        "autopayOn": "",
+        "autopayHalted": "",
+        "autopayCancel": "",
+        "autopayCancelTitle": "",
+        "autopayCancelBody": "",
+        "autopayKeep": "",
+        "autopayCancelled": ""
+      },
+      "block": {
+        "title": "",
+        "body": "",
+        "payButton": "",
+        "scanHint": "",
+        "qrLabel": "",
+        "payee": "",
+        "upiId": "",
+        "amount": "",
+        "note": "",
+        "after": ""
+      },
+      "history": {
+        "heading": "",
+        "empty": "",
+        "paidOn": "",
+        "refunded": "",
+        "upiReference": ""
+      },
+      "docTypes": {
+        "receipt": "",
+        "tax_invoice": "",
+        "refund_receipt": "",
+        "credit_note": ""
+      },
+      "document": {
+        "back": "",
+        "print": "",
+        "notFound": "",
+        "number": "",
+        "date": "",
+        "supplier": "",
+        "recipient": "",
+        "gstin": "",
+        "placeOfSupply": "",
+        "description": "",
+        "sac": "",
+        "taxable": "",
+        "amount": "",
+        "cgst": "",
+        "sgst": "",
+        "igst": "",
+        "total": "",
+        "paymentDate": "",
+        "request": "",
+        "upiReference": "",
+        "original": "",
+        "refundReference": "",
+        "altered": "",
+        "terms": ""
+      }
+    },
+    "staff": {
+      "title": "",
+      "description": "",
+      "logins": "",
+      "planLine": "",
+      "planLineOne": "",
+      "seePlans": "",
+      "invite": {
+        "heading": "",
+        "name": "",
+        "phone": "",
+        "phoneHint": "",
+        "agreed": "",
+        "submit": "",
+        "done": "",
+        "full": ""
+      },
+      "list": {
+        "heading": "",
+        "empty": "",
+        "emptyBody": "",
+        "remove": "",
+        "withdraw": "",
+        "invitedOn": "",
+        "activeSince": "",
+        "suspendedOn": "",
+        "whatsappOff": "",
+        "failed": ""
+      },
+      "status": {
+        "invited": "",
+        "active": "",
+        "suspended": ""
+      },
+      "confirm": {
+        "title": "",
+        "body": "",
+        "action": "",
+        "cancel": ""
+      },
+      "removed": ""
     }
   },
   "support": {

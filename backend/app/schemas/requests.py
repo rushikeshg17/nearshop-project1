@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, EmailStr, Field, ValidationInfo, field_validator, model_validator
 
 from app.models.core import Language, validate_upi_id, validate_upi_payee_name
 
@@ -146,6 +146,9 @@ class ShopUpdateIn(_Strict):
     free_delivery_above: float | None = Field(default=None, ge=0)
     hold_minutes: int | None = Field(default=None, ge=10, le=240)
     show_exact_stock: bool | None = None  # P10.1: show customers exact stock counts
+    # P9.14: the daily low-stock alert (Growth and above) and its IST hour.
+    low_stock_alerts_on: bool | None = None
+    low_stock_alert_hour: int | None = Field(default=None, ge=0, le=23)
     is_active: bool | None = None
     # Direct UPI (P6.1): the shop's own UPI ID and payee name. null or an empty string removes them.
     upi_id: str | None = Field(default=None, max_length=50)
@@ -161,12 +164,12 @@ class ShopUpdateIn(_Strict):
     def _upi_payee_name(cls, value: str | None) -> str | None:
         return validate_upi_payee_name(value) if value else None
 
-    @field_validator("show_exact_stock")
+    @field_validator("show_exact_stock", "low_stock_alerts_on", "low_stock_alert_hour")
     @classmethod
-    def _show_exact_stock_not_null(cls, v: bool | None) -> bool:
+    def _not_null(cls, v: bool | int | None, info: ValidationInfo) -> bool | int:
         # Leave the field out to keep it unchanged; an explicit null would be stored and break loading the Shop.
         if v is None:
-            raise ValueError("show_exact_stock must be true or false")
+            raise ValueError(f"{info.field_name} must be set; leave it out to keep it unchanged")
         return v
 
 

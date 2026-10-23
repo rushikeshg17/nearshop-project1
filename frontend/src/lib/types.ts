@@ -1,6 +1,7 @@
 // Shapes returned by the NearShop API (see backend/app/schemas/serializers.py).
 
-export type Role = "customer" | "owner" | "admin";
+/** staff: counter staff of one shop, invited by its owner (P9.13). */
+export type Role = "customer" | "owner" | "staff" | "admin";
 export type StockStatus = "in_stock" | "low_stock" | "out_of_stock";
 
 export interface User {
@@ -12,7 +13,9 @@ export interface User {
   home_lat: number | null;
   home_lng: number | null;
   home_label: string | null;
-  shop: { id: number; slug: string; name: string } | null;
+  /** The owner's shop, or the shop a staff member works for (with staff_status: active, or suspended while the plan
+   * allows fewer logins). */
+  shop: { id: number; slug: string; name: string; staff_status?: "invited" | "active" | "suspended" } | null;
   /** P4.2: whether the phone is verified by a code (phone sign-in reaches only a verified phone). */
   phone_verified: boolean;
   /** The email sign-in sunset, an IST day (YYYY-MM-DD, NEARSHOP_EMAIL_LOGIN_SUNSET). */
@@ -139,6 +142,9 @@ export interface ShopDetail extends ShopBrief {
   closed_on: string | null;
   established_year: number | null;
   hold_minutes: number;
+  /** Whether customers see this shop's exact stock counts (P10.1, P10.2, plan section 8.20). Off by default: customers
+   * then see stock bands, and public quantities are capped. */
+  show_exact_stock: boolean;
   is_active: boolean;
   reliability: Reliability;
   category_details: Category[];
@@ -243,6 +249,9 @@ export interface Listing {
   low_stock_threshold: number;
   stock_status: StockStatus;
   stock_updated_at: string | null;
+  /** Public listings only (P10.1): true when the shop opted in to showing exact stock, so quantity is its real count.
+   * When false, quantity is capped and customers see only the stock band (P10.2). Absent from owner listings. */
+  stock_exact?: boolean;
   is_active: boolean;
   shop: ShopBrief | null;
 }
@@ -447,6 +456,8 @@ export interface TimelineEvent {
   from_status: string | null;
   to_status: string;
   actor_role: string;
+  /** The staff member's name on their own entries, in the owner's timelines (P9.13). */
+  actor_name?: string | null;
   note: string | null;
   at: string;
 }
@@ -483,6 +494,8 @@ export interface Reservation {
     image_url: string | null;
     thumbnail_url: string | null; // the 320 px thumbnail (P2.7), for lists and small previews
     quantity_in_stock: number;
+    /** True for the owner, or when the shop shows exact stock; otherwise quantity_in_stock is capped (P10.1). */
+    stock_exact: boolean;
   };
   shop: {
     id: number;
@@ -570,26 +583,32 @@ export interface SalesPoint {
   units: number;
 }
 
-export interface OwnerOverview {
-  today: { revenue: number; units: number; reservations: number; orders: number };
-  revenue_7d: number;
-  revenue_prev_7d: number;
-  revenue_30d: number;
+/** What /owner/overview gives anyone who works the shop, staff included (P9.13): the queues and the shop line,
+ * never the shop's money. takes_upi: the shop has a UPI ID (P6.1). */
+export interface WorkOverview {
   queue: {
     reservation_requests: number;
     pickups_waiting: number;
     orders_pending: number;
     deliveries_in_progress: number;
   };
+  reservation_requests: Reservation[];
+  pending_orders: Order[];
+  shop: { id: number; name: string; slug: string; offers_delivery: boolean; takes_upi: boolean };
+}
+
+/** The owner's full overview: the work part plus sales and stock. */
+export interface OwnerOverview extends WorkOverview {
+  today: { revenue: number; units: number; reservations: number; orders: number };
+  revenue_7d: number;
+  revenue_prev_7d: number;
+  revenue_30d: number;
   inventory: { listings: number; in_stock: number; low_stock: number; out_of_stock: number; updated_at: string | null };
   sales_series: SalesPoint[];
   top_products: (Listing & { units: number; revenue: number })[];
   low_stock: (Listing & { days_to_stockout: number | null; recommended_restock: number | null })[];
   rating: { avg: number | null; count: number };
   includes_demo_data: boolean;
-  reservation_requests: Reservation[];
-  pending_orders: Order[];
-  shop: { id: number; name: string; slug: string; offers_delivery: boolean };
 }
 
 export interface ForecastItem extends Listing {
@@ -785,4 +804,323 @@ export interface SearchCompare {
     note: string;
     results: { name: string; icon: string; category: string; score: number }[];
   }[];
+}
+
+// ------------------------------------------------------------------ plans and billing (P9.4 to P9.6; screens P9.10)
+
+export type PlanCode = "free" | "growth" | "pro" | "business" | "partner_seat";
+export type PlanPeriod = "year" | "month";
+export type SubscriptionStatus = "advance" | "active" | "lapsed" | "cancelled" | "refunded";
+export type SubscriptionSource = "shop_paid" | "advance" | "sponsored" | "guarantee_credit";
+
+/** What a plan allows (backend/app/models/billing.py, Entitlements). The freshness tools are never here. */
+export interface PlanEntitlements {
+  demand_report: "teaser" | "full";
+  low_stock_alerts: boolean;
+  logins: number;
+  roi_statement: boolean;
+  priority_support: boolean;
+  boost_discount_pct: number;
+  outcome_guarantee: boolean;
+  pro_insights: boolean;
+  outlets: number;
+}
+
+/** One plan in one catalogue version (plans.plan_out). Prices are in paise. */
+export interface PlanVersion {
+  id: number;
+  code: PlanCode;
+  version: number;
+  name: string;
+  price_year_paise: number | null;
+  price_month_paise: number | null;
+  founding_year_paise: number | null;
+  on_sale: boolean;
+  entitlements: PlanEntitlements;
+  effective_from: string | null;
+  published_at: string | null;
+  reason: string | null;
+}
+
+/** plans.subscription_out. */
+export interface PlanSubscription {
+  id: number;
+  account_type: string;
+  account_id: number;
+  shop_ids: number[];
+  plan_code: PlanCode;
+  plan_version: number;
+  period: PlanPeriod;
+  price_paise: number;
+  founding: boolean;
+  founding_slot: number | null;
+  source: SubscriptionSource;
+  status: SubscriptionStatus;
+  starts_at: string | null;
+  ends_at: string | null;
+  paid_until: string | null;
+  paid_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** GET /api/admin/subscriptions: a subscription with the names of the shops it covers. */
+export interface AdminSubscription extends PlanSubscription {
+  shops: { id: number; name: string | null }[];
+}
+
+export interface GuaranteeProgress {
+  applies: boolean;
+  needed: number;
+  quarter_start?: string;
+  quarter_end?: string;
+  customer_requests?: number;
+  met?: boolean;
+  credit_months?: number;
+}
+
+export interface FoundingCounter {
+  cap: number;
+  taken: number;
+  remaining: number;
+  cities: string[];
+}
+
+/** GET /api/owner/plan (plans.owner_plan). */
+export interface OwnerPlan {
+  plan: {
+    code: PlanCode;
+    name: string;
+    version: number;
+    entitlements: PlanEntitlements;
+    subscription_id: number | null;
+    /** "free" when no subscription is active (none, an advance not started yet, lapsed, cancelled or refunded). */
+    status: "free" | SubscriptionStatus;
+    source: SubscriptionSource | null;
+    starts_at: string | null;
+    ends_at: string | null;
+  };
+  subscription: PlanSubscription | null;
+  advance: PlanSubscription | null;
+  founding: {
+    eligible: boolean;
+    in_city: boolean;
+    already_claimed: boolean;
+    remaining: number;
+    cap: number;
+    price_year_paise: number | null;
+  };
+  guarantee: GuaranteeProgress;
+  /** YYYY-MM-DD: before it, a shop can only pay a refundable advance. */
+  billing_starts_on: string;
+  on_sale: PlanVersion[];
+}
+
+export interface BillingAccount {
+  id: number;
+  kind: "shop_owner" | "distributor" | "lender";
+  legal_name: string;
+  address: string;
+  state_code: string;
+  gstin: string | null;
+  contact_user_id: number;
+}
+
+export type GstMode = "unregistered" | "registered";
+
+/** A payment request (billing.request_out): pay_to is what the UPI payment carries. */
+export interface PaymentRequest {
+  id: number;
+  number: string;
+  shop_id: number;
+  purpose: "plan" | "boost";
+  plan_code: PlanCode;
+  plan_version: number;
+  period: PlanPeriod;
+  kind: "advance" | "new" | "renewal";
+  founding: boolean;
+  amount_paise: number;
+  gst_mode: GstMode;
+  gst_paise: number;
+  total_paise: number;
+  status: "open" | "paid" | "cancelled" | "refunded";
+  created_at: string | null;
+  payment_id: number | null;
+  created_by: string;
+  reason: string | null;
+  /** NearShop's UPI ID and payee name (settings), the amount in rupees with two decimals, and the request number. */
+  pay_to: { upi_id: string; payee_name: string; amount: string; note: string };
+}
+
+export type BillingDocumentType = "receipt" | "tax_invoice" | "refund_receipt" | "credit_note";
+
+export interface BillingDocumentBrief {
+  id: number;
+  number: string;
+  type: BillingDocumentType;
+  issued_at: string | null;
+  total_paise: number;
+  draft: boolean;
+}
+
+export interface BillingActor {
+  type: string;
+  id?: number | null;
+}
+
+/** billing.payment_out. */
+export interface BillingPayment {
+  id: number;
+  request_id: number;
+  request_number: string;
+  shop_id: number;
+  credit_id: number;
+  upi_reference: string;
+  amount_paise: number;
+  paid_at: string | null;
+  matched_at: string | null;
+  matched_by: BillingActor;
+  match: "statement" | "manual" | "pilot_ledger" | "autopay" | "reconciliation";
+  reason: string;
+  subscription_id: number;
+  document_id: number | null;
+  status: "matched" | "refunded";
+  refund: { at: string; by: BillingActor; reason: string; bank_reference: string; document_id: number } | null;
+  settled_at: string | null;
+  settlement_id: string | null;
+}
+
+/** The latest UPI Autopay mandate (gateway.mandate_out). checkout_url is set while it waits for approval. */
+export interface AutopayMandate {
+  id: number;
+  status: "created" | "authorised" | "halted" | "cancelled";
+  plan_code: PlanCode;
+  plan_version: number;
+  amount_paise: number;
+  gst_paise: number;
+  total_paise: number;
+  checkout_url: string | null;
+  subscription_id: number | null;
+  debits: number;
+  failed_debits: number;
+  authorised_at: string | null;
+  last_debit_at: string | null;
+  halted_at: string | null;
+  cancelled_at: string | null;
+  cancelled_by: string | null;
+  created_at: string | null;
+}
+
+/** GET /api/owner/billing. */
+export interface OwnerBilling {
+  /** Whether NearShop's UPI ID and payee name are set: until then no payment request can be made. */
+  configured: boolean;
+  account: BillingAccount | null;
+  gst_mode: GstMode;
+  requests: PaymentRequest[];
+  payments: (BillingPayment & { documents: BillingDocumentBrief[] })[];
+  autopay: { available: boolean; price_month_paise: number | null; mandate: AutopayMandate | null };
+}
+
+export interface BillingParty {
+  legal_name: string;
+  address: string;
+  state_code: string;
+  gstin: string | null;
+}
+
+/** One issued document, an immutable snapshot (billing.document_out). */
+export interface BillingDocument {
+  id: number;
+  number: string;
+  financial_year: string;
+  seq: number;
+  type: BillingDocumentType;
+  issued_at: string | null;
+  payment_date: string | null;
+  format: string;
+  /** "Draft format, not for use" until the CA approves the format (B22). */
+  draft_line: string | null;
+  wording: string;
+  supplier: BillingParty;
+  recipient: BillingParty;
+  place_of_supply: string;
+  description: string;
+  sac: string | null;
+  taxable_paise: number;
+  gst_rate_pct: number;
+  cgst_paise: number;
+  sgst_paise: number;
+  igst_paise: number;
+  total_paise: number;
+  payment_id: number;
+  request_number: string;
+  upi_reference: string;
+  original_document_id: number | null;
+  original_number: string | null;
+  refund_reference: string | null;
+  content_hash: string;
+  /** Whether the stored document is exactly as issued. */
+  intact: boolean;
+}
+
+/** billing.credit_out: a credit from a bank statement, matched by hand, from the pilot ledger or from the gateway. */
+export interface BankCredit {
+  id: number;
+  upi_reference: string;
+  credited_on: string;
+  amount_paise: number;
+  narration: string;
+  source: "statement" | "manual" | "pilot_ledger" | "autopay" | "reconciliation";
+  statement_id: number | null;
+  request_number: string | null;
+  status: "unmatched" | "matched" | "returned" | "closed";
+  note: string | null;
+  payment_id: number | null;
+  alerted_at: string | null;
+  returned: { at: string; by: BillingActor; reason: string; bank_reference: string } | null;
+  closed: { at: string; by: BillingActor; reason: string; reference: string } | null;
+  created_at: string | null;
+}
+
+/** POST /api/admin/billing/statements: what one statement upload did. */
+export interface StatementImport {
+  statement_id: number;
+  credits: number;
+  matched: number;
+  unmatched: number;
+  duplicates: number;
+  debits_skipped: number;
+  unreadable: number;
+  rows: {
+    upi_reference: string;
+    amount_paise: number;
+    credited_on: string;
+    result: "matched" | "unmatched" | "duplicate";
+    credit_id?: number | null;
+    request_number?: string;
+    reason?: string;
+    payment_id?: number;
+    status?: string | null;
+  }[];
+}
+
+/** One staff member or invitation (GET /api/owner/staff, P9.13). */
+export interface StaffMember {
+  id: number;
+  name: string;
+  phone: string;
+  status: "invited" | "active" | "suspended";
+  invited_at: string;
+  activated_at: string | null;
+  suspended_at: string | null;
+  /** The WhatsApp invitation: sent, failed, or whatsapp_off where WhatsApp is not switched on. */
+  invitation: "sent" | "failed" | "whatsapp_off" | null;
+}
+
+/** GET /api/owner/staff: the shop's staff, the plan's logins (the owner counts as one) and the plan. */
+export interface StaffOverview {
+  staff: StaffMember[];
+  logins: { limit: number; used: number; available: number };
+  plan: { code: string; name: string; status: string; ends_at: string | null };
 }

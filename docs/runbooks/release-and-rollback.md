@@ -203,6 +203,15 @@ One row per production release (check 5.2), including rollbacks. Staging smoke r
 | Date | Commit | Staging smoke result | Promoted by |
 |---|---|---|---|
 
+### Changes outside a prompt's file list
+
+Each prompt lists the files it may touch. A change outside that list is recorded here with its reason, so the
+release that carries it can be reviewed against it.
+
+| Prompt | Files outside the list | Why |
+|---|---|---|
+| P9.13 Staff logins | backend/app/api/routes/auth.py; backend/app/services/reservations.py, orders.py and reliability.py; backend/app/services/privacy.py; backend/tests/test_lead_events.py; frontend/src/hooks/use-session.ts, src/app/(auth)/login/login-form.tsx, src/components/site/user-menu.tsx and mobile-tab-bar.tsx; frontend/src/components/fulfillment/progress.tsx and owner/queue-cards.tsx; frontend/src/app/shop/orders/page.tsx; frontend/src/lib/types.ts; this file | The first phone sign-in creates the staff account and takes up the invitation, and a phone with an invitation cannot sign up as a customer (auth.py). Staff are actors of their shop's reservations and orders, recorded as actor_role staff (reservations.py, orders.py), and staff actions count as the shop's in reliability (reliability.py). Deleting a staff or owner account ends the memberships (privacy.py). Its staff rows now pass the new shop_staff validator (test_lead_events.py). Staff are sent to the console and land on the queue, not the owner's overview (use-session.ts, login-form.tsx, user-menu.tsx, mobile-tab-bar.tsx). Timelines name staff (progress.tsx, types.ts). The queue reads whether the shop takes UPI from the overview for staff, not the owner-only settings (queue-cards.tsx, orders page, types.ts). |
+
 ## Rollback rehearsal log
 
 Rehearse on production at least once before G1 (plan step 1-B, by 22 Nov 2026, R2 and R3) and then once a

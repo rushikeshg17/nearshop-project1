@@ -191,7 +191,9 @@
       "out": "Out of stock",
       "left": "{count} left",
       "only": "Only {count} left",
-      "inStock": "{count} in stock"
+      "inStock": "{count} in stock",
+      "available": "In stock",
+      "low": "Low stock"
     },
     "freshness": {
       "updated": "Updated {time}",
@@ -542,7 +544,8 @@
       "callOnlyTitle": "Call the shop to check",
       "callOnlyBody": "Nobody has confirmed this item's stock for over two weeks, so it can't be reserved or delivered online. Call the shop before you go.",
       "callOnlyNoPhone": "This shop has no phone number on NearShop. Visit the shop to check.",
-      "callToCheck": "Call to check"
+      "callToCheck": "Call to check",
+      "stickyBand": "{stock} · {shop}"
     },
     "shop": {
       "notFoundTitle": "Shop not found",
@@ -827,7 +830,8 @@
       "note": "Note for the shop (optional)",
       "notePlaceholder": "e.g. Size 8 please, or I'll come by 6 pm",
       "sent": "Reservation {code} sent to {shop}",
-      "sentBody": "You'll be notified the moment they confirm."
+      "sentBody": "You'll be notified the moment they confirm.",
+      "eachBand": "{price} each · {stock}"
     },
     "delivery": {
       "title": "Request delivery",
@@ -1149,8 +1153,15 @@
         "insights": "AI insights",
         "reviews": "Reviews",
         "settings": "Shop settings",
-        "statements": "Statements"
-      }
+        "statements": "Statements",
+        "billing": "Plan and billing",
+        "staff": "Staff"
+      },
+      "staffPausedTitle": "Your staff access is paused",
+      "staffPausedBody": "The shop's plan allows fewer logins just now, or the owner removed you. Ask the shop's owner.",
+      "ownerOnlyTitle": "This page is for the shop's owner",
+      "ownerOnlyBody": "Staff work on reservations, orders, stock and imports. Ask the owner for anything else.",
+      "toQueue": "Go to reservations"
     },
     "verification": {
       "reason": "Reason:",
@@ -1851,6 +1862,19 @@
         "payeeHint": "Customers see it before paying. Empty uses your shop's name.",
         "idError": "A UPI ID looks like yourshop@okhdfcbank: a name or number, an @ and your bank or app, {min} to {max} characters with no spaces",
         "payeeError": "The payee name has {min} to {max} characters, as your UPI app shows it"
+      },
+      "exactStockLabel": "Show exact stock counts to customers",
+      "exactStockHint": "Off by default: customers see In stock, Low stock or Out of stock. Other shops and scrapers could otherwise track how fast you sell.",
+      "lowStock": {
+        "title": "Low-stock alerts",
+        "intro": "Once a day, at the hour you choose, NearShop sends you one message, in the app and on WhatsApp, listing up to 10 items at or below their low-stock level, lowest first.",
+        "switchLabel": "Send me low-stock alerts",
+        "switchHint": "Only on days when something is low.",
+        "hourLabel": "Send at",
+        "hourHint": "Indian time. 18:00 unless you change it.",
+        "growthOnly": "Low-stock alerts are part of the Growth plan.",
+        "seePlans": "See plans",
+        "freeUpdates": "Updating your stock by WhatsApp stays free on every plan."
       }
     },
     "reviews": {
@@ -1957,6 +1981,191 @@
         "failed": "Could not be sent on WhatsApp",
         "cancelled": "Not sent on WhatsApp"
       }
+    },
+    "billing": {
+      "title": "Plan and billing",
+      "description": "Your NearShop plan, what it includes, and how to pay for it.",
+      "terms": "Read the {terms} before you pay.",
+      "termsLink": "plan terms",
+      "status": {
+        "free": "Free",
+        "active": "Active",
+        "advance": "Paid in advance",
+        "lapsed": "Ended",
+        "cancelled": "Cancelled",
+        "refunded": "Refunded"
+      },
+      "current": {
+        "heading": "Your plan",
+        "endsOn": "Runs until {date}",
+        "nextReminder": "We will remind you on {date}.",
+        "renewsByAutopay": "Renews each month by UPI Autopay.",
+        "freeNoEnd": "The Free plan has no end date and costs nothing.",
+        "lapsed": "Your paid plan has ended, so your shop is on the Free plan. Your listings and your place in search have not changed.",
+        "renew": "Renew Growth"
+      },
+      "includes": {
+        "heading": "What your plan includes",
+        "demandTeaser": "The top 3 things people asked for near you",
+        "demandFull": "The full weekly report of what people asked for near you",
+        "lowStock": "Low-stock alerts",
+        "logins": "Logins for you and your staff: {count}",
+        "roi": "The monthly return-on-investment statement",
+        "support": "Priority support",
+        "boost": "{pct}% off Boost",
+        "guarantee": "The outcome guarantee",
+        "proInsights": "Forecast and restock, bundles and price position",
+        "outlets": "Outlets: {count}"
+      },
+      "freeTools": {
+        "heading": "Free on every plan",
+        "body": "These never need a paid plan, even after a plan ends:",
+        "listings": "Listings and stock edits",
+        "import": "Excel and CSV import and re-import",
+        "whatsapp": "WhatsApp stock replies and the stock check",
+        "alerts": "Reservation and order alerts",
+        "standee": "The QR standee for your counter",
+        "trust": "Trust signals: verification and reviews",
+        "statement": "The monthly statement"
+      },
+      "founding": {
+        "heading": "Founding offer",
+        "eligible": "Your shop qualifies: Growth for {price} for the first year, then the list price. Places left: {remaining} of {cap}.",
+        "claimed": "Your shop has already had the founding offer.",
+        "full": "All {cap} founding places are taken.",
+        "notInCity": "The founding offer is only for shops in the first cities NearShop serves."
+      },
+      "guarantee": {
+        "heading": "Outcome guarantee",
+        "progress": "Customer requests this quarter: {count} of {needed}",
+        "quarterEnds": "This quarter ends on {date}.",
+        "met": "The guarantee is met for this quarter.",
+        "notMet": "If the quarter ends with fewer than {needed} customer requests, your plan is extended by {months} months for free.",
+        "notApplies": "The outcome guarantee comes with a paid Growth plan: if a paid quarter brings fewer than {needed} customer requests, your plan is extended for free."
+      },
+      "advance": {
+        "heading": "Paid in advance",
+        "body": "Your advance payment is recorded. Your Growth year starts on {date}."
+      },
+      "pay": {
+        "heading": "Get Growth",
+        "headingRenew": "Renew Growth",
+        "yearly": "Growth for a year",
+        "yearlyPrice": "{price} a year",
+        "foundingPrice": "{price} for the first year with the founding offer (list price {list})",
+        "requestButton": "Get the UPI payment details",
+        "advanceNote": "Paid plans start on {date}. A payment before then is a refundable advance, and your Growth year starts on that day.",
+        "notOpen": "Payments to NearShop are not open yet.",
+        "gst": "{amount} plus GST of {gst}",
+        "noGst": "No GST is charged.",
+        "monthly": "Growth by the month",
+        "monthlyPrice": "{price} a month, paid by UPI Autopay",
+        "autopayLater": "Monthly payment by UPI Autopay opens on {date}.",
+        "autopayUnavailable": "Monthly payment by UPI Autopay is not available yet.",
+        "autopayStart": "Set up UPI Autopay",
+        "autopayApprove": "Approve in your UPI app",
+        "autopayWaiting": "Approve the Autopay mandate in your UPI app to start your plan.",
+        "autopayOn": "UPI Autopay is on: {price} a month.",
+        "autopayHalted": "Your last Autopay payment failed, so Autopay has stopped. Set it up again, or pay for a year, to keep Growth.",
+        "autopayCancel": "Cancel Autopay",
+        "autopayCancelTitle": "Cancel UPI Autopay?",
+        "autopayCancelBody": "No more payments will be taken. Your plan runs to the end of the month you paid for, then your shop moves to the Free plan, with every stock tool and the same place in search.",
+        "autopayKeep": "Keep Autopay",
+        "autopayCancelled": "UPI Autopay is cancelled."
+      },
+      "block": {
+        "title": "Pay NearShop by UPI",
+        "body": "Pay {price} to {payee}. Keep the note exactly as it is, so we can match your payment.",
+        "payButton": "Pay {price} by UPI",
+        "scanHint": "Paying from another phone? Scan this code with any UPI app.",
+        "qrLabel": "UPI QR code to pay {price} to {payee}",
+        "payee": "Payee",
+        "upiId": "UPI ID",
+        "amount": "Amount",
+        "note": "Note",
+        "after": "We match your payment against our bank statement, usually within 3 working days. Your receipt then appears below."
+      },
+      "history": {
+        "heading": "Payments and documents",
+        "empty": "No payments yet.",
+        "paidOn": "Paid on {date}",
+        "refunded": "Refunded",
+        "upiReference": "UPI reference: {reference}"
+      },
+      "docTypes": {
+        "receipt": "Payment receipt",
+        "tax_invoice": "Tax invoice",
+        "refund_receipt": "Refund receipt",
+        "credit_note": "Credit note"
+      },
+      "document": {
+        "back": "Plan and billing",
+        "print": "Print",
+        "notFound": "This document was not found.",
+        "number": "Number",
+        "date": "Date",
+        "supplier": "From",
+        "recipient": "To",
+        "gstin": "GSTIN: {gstin}",
+        "placeOfSupply": "Place of supply",
+        "description": "Description",
+        "sac": "SAC",
+        "taxable": "Taxable value",
+        "amount": "Amount",
+        "cgst": "CGST at {rate}%",
+        "sgst": "SGST at {rate}%",
+        "igst": "IGST at {rate}%",
+        "total": "Total",
+        "paymentDate": "Payment date",
+        "request": "Payment request",
+        "upiReference": "UPI reference",
+        "original": "Against document",
+        "refundReference": "Refund transfer reference",
+        "altered": "This copy does not match the document as issued. Contact NearShop support.",
+        "terms": "Payments to NearShop are covered by the {terms}."
+      }
+    },
+    "staff": {
+      "title": "Staff",
+      "description": "Give your counter staff their own sign-in for reservations, orders, stock and imports. Shop settings, payments, KYC, your plan and staff stay with you.",
+      "logins": "{used} of {limit} logins in use, yours included",
+      "planLine": "Your plan, {plan}, allows {limit} logins, yours included.",
+      "planLineOne": "Your plan, {plan}, allows 1 login: yours. Staff logins come with a paid plan.",
+      "seePlans": "See plans",
+      "invite": {
+        "heading": "Invite a staff member",
+        "name": "Their name",
+        "phone": "Their mobile number",
+        "phoneHint": "Their own 10-digit number, one that is not on NearShop yet.",
+        "agreed": "They agreed to get the invitation on WhatsApp",
+        "submit": "Send invitation",
+        "done": "{name} is invited. They sign in with their phone number.",
+        "full": "All your plan's logins are in use. Remove someone, or choose a plan with more logins."
+      },
+      "list": {
+        "heading": "Your staff",
+        "empty": "No staff yet",
+        "emptyBody": "Invite your counter staff by phone. They sign in with a code sent to their number.",
+        "remove": "Remove",
+        "withdraw": "Withdraw",
+        "invitedOn": "Invited {date}",
+        "activeSince": "Active since {date}",
+        "suspendedOn": "Paused on {date}: beyond your plan's logins. Back when the plan is renewed.",
+        "whatsappOff": "No WhatsApp invitation was sent: tell them to sign in with their number.",
+        "failed": "The WhatsApp invitation could not be sent: tell them to sign in with their number."
+      },
+      "status": {
+        "invited": "Invited",
+        "active": "Active",
+        "suspended": "Paused"
+      },
+      "confirm": {
+        "title": "Remove {name}?",
+        "body": "They are signed out at once and can no longer work in your shop.",
+        "action": "Remove",
+        "cancel": "Cancel"
+      },
+      "removed": "{name} was removed"
     }
   },
   "support": {

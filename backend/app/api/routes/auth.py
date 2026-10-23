@@ -47,7 +47,7 @@ from app.schemas.requests import (
     RegisterShopIn,
 )
 from app.schemas.serializers import iso
-from app.services import otp
+from app.services import otp, staff
 from app.services.loaders import categories
 from app.services.meta import city_config
 from app.services.privacy import (
@@ -237,6 +237,8 @@ def user_out(user: User, db: Database) -> dict:
         s = db.shops.find_one({"owner_id": user.id}, sort=[("_id", 1)])
         if s:
             shop = {"id": s.id, "slug": s.slug, "name": s.name}
+    elif user.role == Role.STAFF:
+        shop = staff.summary(db, user)  # P9.13: the shop they work for, with staff_status (active or suspended)
     return {
         "id": user.id,
         "name": user.name,
@@ -385,6 +387,8 @@ def _verifiable_phone(db: Database, phone: str) -> None:
     holder = _verified_holder(db, phone)
     if holder is not None:
         raise PHONE_TAKEN if holder.is_active else account_inactive()
+    if staff.waiting_invitation(db, phone) is not None:
+        raise staff.staff_invited()  # P9.13: an invited phone's first sign-in makes it a staff account
 
 
 @router.post("/register-shop", dependencies=[Depends(require_open_signups)])
@@ -673,11 +677,29 @@ def verify_otp(body: PhoneVerifyIn, request: Request, response: Response, user: 
 
     if body.purpose == "login":
         if holder is None:
-            raise _no_account(db)
+            # An invited staff member's first sign-in (P9.13) creates their staff account; anyone else has none.
+            def create_staff() -> User | None:
+                _release_unverified(db, body.phone)
+                return staff.new_account(db, body.phone, now)
+
+            try:
+                holder = db.transaction(create_staff)
+            except DuplicateKeyError:
+                raise PHONE_TAKEN from None
+            if holder is None:
+                if staff.waiting_invitation(db, body.phone) is not None:
+                    raise staff.staff_paused()  # invited, but the shop's plan has no free login now
+                raise _no_account(db)
         if holder.role == Role.ADMIN:
             raise Forbidden("Admins sign in with their email, password and authenticator code.",
                             code="password_required")
+        if holder.role == Role.STAFF:
+            # Fit their shop to its plan before the session starts, so a suspension it causes (which ends sessions)
+            # does not end this new one: a suspended member signs in to the paused screen.
+            staff.fit_before_sign_in(db, holder)
         holder = _start_session(request, response, db, holder, {"last_login_at": now})
+        if holder.role == Role.STAFF:
+            staff.activate(db, holder, now)  # the invitation waiting for this phone, if any, becomes active
         return user_out(holder, db)
 
     if body.purpose == "reset":
@@ -693,6 +715,8 @@ def verify_otp(body: PhoneVerifyIn, request: Request, response: Response, user: 
     if body.purpose == "register":
         if holder is not None:
             raise PHONE_TAKEN
+        if staff.waiting_invitation(db, body.phone) is not None:
+            raise staff.staff_invited()  # P9.13: an invited phone's first sign-in makes it a staff account
 
         def create() -> User:
             _release_unverified(db, body.phone)

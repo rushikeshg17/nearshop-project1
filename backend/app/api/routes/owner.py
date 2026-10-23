@@ -1,4 +1,9 @@
-"""Shop owner: shop settings, inventory, catalog, reservation and delivery queues, insights."""
+"""Shop owner: shop settings, inventory, catalog, reservation and delivery queues, insights, staff.
+
+Daily work (the overview, its sales and revenue left out for staff, listings and stock, the catalogue, the reservation and order queues and their actions, and
+imports) takes WorkShop: the owner or an active staff member of the shop (P9.13, app/services/staff.py). Everything
+else takes OwnerShop and stays the owner's alone: shop settings and the UPI ID, KYC, the plan and billing, insights,
+reviews and staff."""
 import re
 from datetime import date, timedelta
 from typing import Annotated, Any, Literal
@@ -10,9 +15,9 @@ from pydantic import BaseModel, Discriminator, Field, Tag
 from app.core import cache_version
 from app.core.config import settings
 from app.core.database import Database, utcnow
-from app.core.deps import DB, OwnerShop, OwnerUser
+from app.core.deps import DB, CurrentUser, OwnerShop, OwnerUser, WorkShop
 from app.core.errors import AppError, Conflict, NotFound
-from app.models import Category, GeoPoint, InventoryReason, Order, Product, Reservation, Shop
+from app.models import Category, GeoPoint, InventoryReason, Order, Product, Reservation, Role, Shop
 from app.models.billing import Actor
 from app.models.core import (
     RENEWAL_WINDOW_DAYS,
@@ -22,6 +27,7 @@ from app.models.core import (
     validate_kyc_number,
 )
 from app.schemas.requests import (
+    PHONE_PATTERN,
     BillingAccountIn,
     CatalogAddIn,
     PaymentMethod,
@@ -42,10 +48,11 @@ from app.schemas.serializers import (
     shop_detail,
     thumbnail_url,
 )
-from app.services import analytics, billing, gateway, importer, plans, statements
+from app.services import analytics, billing, gateway, importer, plans, staff, statements
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
 from app.services import reviews as review_service
+from app.services.alerts import settings_out as low_stock_alert_settings
 from app.services.inventory import apply_bulk, change_stock, set_stock
 from app.services.loaders import (
     categories,
@@ -110,7 +117,8 @@ def verification_out(shop: Shop) -> dict:
 def _shop_settings(db: Database, shop: Shop, review_started: bool = False) -> dict:
     # The UPI ID (P6.1) is added here, for the owner, and never by shop_detail, which public shop pages use too.
     return {**shop_detail(shop, None, shop_reliability(db, shop)), "verification": verification_out(shop),
-            "review_started": review_started, "upi_id": shop.upi_id, "upi_payee_name": shop.upi_payee_name}
+            "review_started": review_started, "upi_id": shop.upi_id, "upi_payee_name": shop.upi_payee_name,
+            **low_stock_alert_settings(db, shop)}
 
 
 @router.get("/verification")
@@ -219,17 +227,36 @@ def upload_shop_image(shop: OwnerShop, db: DB, file: UploadFile = File(...)):
     return {"image_url": media_url(rel), "thumbnail_url": thumbnail_url(rel)}
 
 
+def _work_queue(db: Database, shop: Shop) -> dict:
+    """The queue counts the console's menu badges show (the same as analytics.owner_overview's queue)."""
+    mine = {"shop_id": shop.id}
+    req, pickups, pending, deliveries = db.gather(
+        lambda: db.reservations.count({**mine, "status": "REQUESTED"}),
+        lambda: db.reservations.count({**mine, "status": {"$in": ["CONFIRMED", "READY_FOR_PICKUP"]}}),
+        lambda: db.orders.count({**mine, "status": "PENDING"}),
+        lambda: db.orders.count({**mine, "status": {"$in": ["SHOP_CONFIRMED", "PREPARING", "OUT_FOR_DELIVERY"]}}),
+    )
+    return {"reservation_requests": req, "pickups_waiting": pickups, "orders_pending": pending,
+            "deliveries_in_progress": deliveries}
+
+
 @router.get("/overview")
-def overview(shop: OwnerShop, db: DB):
+def overview(shop: WorkShop, user: CurrentUser, db: DB):
+    """The owner's overview: sales, stock, the queues and what needs attention. A staff member (P9.13) gets the
+    daily-work part only, never the shop's money: the queue counts, the requests waiting and the shop line.
+    shop.takes_upi says whether the shop has a UPI ID (P6.1), so the queue offers UPI as a payment method without
+    reading the owner-only settings."""
     reservation_service.expire_due(db)
+    is_staff = user.role == Role.STAFF
     data, requests, pending = db.gather(
-        lambda: analytics.owner_overview(db, shop),
+        lambda: {"queue": _work_queue(db, shop)} if is_staff else analytics.owner_overview(db, shop),
         lambda: db.reservations.find({"shop_id": shop.id, "status": "REQUESTED"}, sort=[("created_at", 1)], limit=6),
         lambda: db.orders.find({"shop_id": shop.id, "status": "PENDING"}, sort=[("created_at", 1)], limit=6),
     )
     data["reservation_requests"] = _res(db, requests)
     data["pending_orders"] = _ord(db, pending)
-    data["shop"] = {"id": shop.id, "name": shop.name, "slug": shop.slug, "offers_delivery": shop.offers_delivery}
+    data["shop"] = {"id": shop.id, "name": shop.name, "slug": shop.slug, "offers_delivery": shop.offers_delivery,
+                    "takes_upi": bool(shop.upi_id)}
     return data
 
 
@@ -338,6 +365,41 @@ def edit_reply(review_id: int, body: ReplyIn, shop: OwnerShop, db: DB):
     return _reply_json(review_service.edit_reply(db, shop, review_id, body.text))
 
 
+# ------------------------------------------------------------------ staff logins (P9.13, app/services/staff.py)
+
+
+class StaffInviteIn(BaseModel):
+    """An invitation: the staff member's name and Indian mobile number, and the owner's statement that they agreed to
+    get the invitation on WhatsApp (docs/whatsapp-templates.md)."""
+
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    name: str = Field(min_length=2, max_length=120)
+    phone: str = Field(pattern=PHONE_PATTERN)
+    agreed: bool = False
+
+
+@router.get("/staff")
+def my_staff(shop: OwnerShop, db: DB):
+    """The shop's staff (invited, active and suspended), the plan's logins (the owner counts as one) and the plan."""
+    return staff.overview(db, shop)
+
+
+@router.post("/staff")
+def invite_staff(body: StaffInviteIn, shop: OwnerShop, user: OwnerUser, db: DB):
+    """Invite a staff member by phone. 409 phone_registered for a number with a NearShop account, already_staff for a
+    number on a shop's staff, plan_limit beyond the plan's logins."""
+    staff.invite(db, shop, user, phone=body.phone, name=body.name, agreed=body.agreed)
+    return staff.overview(db, shop)
+
+
+@router.delete("/staff/{staff_id}")
+def remove_staff(staff_id: int, shop: OwnerShop, user: OwnerUser, db: DB):
+    """Remove a staff member, or withdraw an invitation, at once: their sessions end."""
+    staff.remove(db, shop, user, staff_id)
+    return staff.overview(db, shop)
+
+
 # ------------------------------------------------------------------ inventory
 
 def _own_product(db: Database, shop: Shop, product_id: int) -> Product:
@@ -353,7 +415,7 @@ def _keywords(tags: list[str], category: Category, subcategory: str | None = Non
 
 @router.get("/products")
 def list_products(
-    shop: OwnerShop, db: DB,
+    shop: WorkShop, db: DB,
     q: str = Query("", max_length=120),
     stock: Literal["all", "in_stock", "low_stock", "out_of_stock", "inactive"] = "all",
     category: str | None = None,
@@ -392,7 +454,7 @@ def list_products(
 
 
 @router.post("/products")
-def create_product(body: ProductIn, shop: OwnerShop, user: OwnerUser, db: DB):
+def create_product(body: ProductIn, shop: WorkShop, user: CurrentUser, db: DB):
     cat = category_by_slug(db, body.category_slug)
     if cat is None:
         raise AppError("Unknown category")
@@ -412,7 +474,7 @@ def create_product(body: ProductIn, shop: OwnerShop, user: OwnerUser, db: DB):
 
 
 @router.patch("/products/{product_id}")
-def update_product(product_id: int, body: ProductUpdateIn, shop: OwnerShop, db: DB):
+def update_product(product_id: int, body: ProductUpdateIn, shop: WorkShop, db: DB):
     p = _own_product(db, shop, product_id)
     data = body.model_dump(exclude_unset=True)
     if "category_slug" in data:
@@ -429,14 +491,14 @@ def update_product(product_id: int, body: ProductUpdateIn, shop: OwnerShop, db: 
 
 
 @router.put("/products/{product_id}/stock")
-def update_stock(product_id: int, body: StockIn, shop: OwnerShop, user: OwnerUser, db: DB):
+def update_stock(product_id: int, body: StockIn, shop: WorkShop, user: CurrentUser, db: DB):
     p = _own_product(db, shop, product_id)
     set_stock(db, p, body.quantity, user.id)
     return listing(p)
 
 
 @router.delete("/products/{product_id}")
-def delete_product(product_id: int, shop: OwnerShop, db: DB):
+def delete_product(product_id: int, shop: WorkShop, db: DB):
     """Soft delete: the listing disappears from search but past orders and reviews keep their history."""
     p = _own_product(db, shop, product_id)
     active_holds = db.reservations.count({"product_id": p.id, "status": {"$in": RES_ACTIVE}})
@@ -448,7 +510,7 @@ def delete_product(product_id: int, shop: OwnerShop, db: DB):
 
 
 @router.post("/products/{product_id}/image")
-def upload_product_image(product_id: int, shop: OwnerShop, db: DB, file: UploadFile = File(...)):
+def upload_product_image(product_id: int, shop: WorkShop, db: DB, file: UploadFile = File(...)):
     p = _own_product(db, shop, product_id)
     rel = save_image(file, "products")
     delete_image(p.image_path)
@@ -457,7 +519,7 @@ def upload_product_image(product_id: int, shop: OwnerShop, db: DB, file: UploadF
 
 
 @router.get("/catalog")
-def browse_catalog(shop: OwnerShop, db: DB, q: str = Query("", max_length=120), category: str | None = None,
+def browse_catalog(shop: WorkShop, db: DB, q: str = Query("", max_length=120), category: str | None = None,
                    limit: int = Query(60, ge=1, le=200)):
     query: dict = {}
     if category:
@@ -490,7 +552,7 @@ def browse_catalog(shop: OwnerShop, db: DB, q: str = Query("", max_length=120), 
 
 
 @router.post("/catalog/add")
-def add_from_catalog(body: CatalogAddIn, shop: OwnerShop, user: OwnerUser, db: DB):
+def add_from_catalog(body: CatalogAddIn, shop: WorkShop, user: CurrentUser, db: DB):
     wanted = {i.catalog_item_id: i for i in body.items}
     catalog, existing = db.gather(
         lambda: db.catalog_items.by_ids(wanted),
@@ -528,19 +590,33 @@ class ShopTransitionIn(TransitionIn):
     payment_method: PaymentMethod | None = None
 
 
+def _staff_names(db: Database, outs: list[dict], events: dict[int, list]) -> list[dict]:
+    """Name the staff member on each of their timeline entries (actor_name, P9.13), so the owner sees who did what.
+    outs and events are in the same order (each output's timeline was built from its events)."""
+    ids = {e.actor_id for evs in events.values() for e in evs if e.actor_role == "staff" and e.actor_id}
+    found = staff.names(db, ids)
+    for out, evs in zip(outs, events.values(), strict=True):
+        for entry, e in zip(out.get("timeline") or [], evs, strict=True):
+            if e.actor_role == "staff":
+                entry["actor_name"] = found.get(e.actor_id)
+    return outs
+
+
 def _res(db: Database, rows: list[Reservation], with_events: bool = False) -> list[dict]:
     hydrate_reservations(db, rows, customers=True)
     events = timelines(db, "reservation", [r.id for r in rows]) if with_events else {}
-    return [{**reservation_out(r, actions=reservation_service.allowed_actions(r, "owner"), for_owner=True,
+    outs = [{**reservation_out(r, actions=reservation_service.allowed_actions(r, "owner"), for_owner=True,
                                events=events.get(r.id) if with_events else None),
              "payment_method": r.payment_method, "payment_status": r.payment_status} for r in rows]
+    return _staff_names(db, outs, events) if with_events else outs
 
 
 def _ord(db: Database, rows: list[Order], with_events: bool = False) -> list[dict]:
     hydrate_orders(db, rows, customers=True)
     events = timelines(db, "order", [o.id for o in rows]) if with_events else {}
-    return [order_out(o, actions=order_service.allowed_actions(o, "owner"), for_owner=True,
+    outs = [order_out(o, actions=order_service.allowed_actions(o, "owner"), for_owner=True,
                       events=events.get(o.id) if with_events else None) for o in rows]
+    return _staff_names(db, outs, events) if with_events else outs
 
 
 def _shop_reservation(db: Database, shop: Shop, reservation_id: int) -> Reservation:
@@ -558,7 +634,7 @@ def _shop_order(db: Database, shop: Shop, order_id: int) -> Order:
 
 
 @router.get("/reservations")
-def shop_reservations(shop: OwnerShop, db: DB, scope: Literal["active", "history"] = "active"):
+def shop_reservations(shop: WorkShop, db: DB, scope: Literal["active", "history"] = "active"):
     reservation_service.expire_due(db)
     if scope == "active":
         rows = db.reservations.find({"shop_id": shop.id, "status": {"$in": RES_ACTIVE}}, sort=[("created_at", 1)])
@@ -569,14 +645,14 @@ def shop_reservations(shop: OwnerShop, db: DB, scope: Literal["active", "history
 
 
 @router.get("/reservations/{reservation_id}")
-def shop_reservation(reservation_id: int, shop: OwnerShop, db: DB):
+def shop_reservation(reservation_id: int, shop: WorkShop, db: DB):
     reservation_service.expire_due(db)
     return _res(db, [_shop_reservation(db, shop, reservation_id)], with_events=True)[0]
 
 
 @router.post("/reservations/{reservation_id}/{action}")
 def act_on_reservation(reservation_id: int, action: Literal["confirm", "reject", "ready", "complete", "cancel"],
-                       body: ShopTransitionIn, shop: OwnerShop, user: OwnerUser, db: DB):
+                       body: ShopTransitionIn, shop: WorkShop, user: CurrentUser, db: DB):
     r = _shop_reservation(db, shop, reservation_id)
     r = reservation_service.transition(db, r.id, action, user, body.reason, code=body.code,
                                        payment_method=body.payment_method)
@@ -584,7 +660,7 @@ def act_on_reservation(reservation_id: int, action: Literal["confirm", "reject",
 
 
 @router.get("/orders")
-def shop_orders(shop: OwnerShop, db: DB, scope: Literal["active", "history"] = "active"):
+def shop_orders(shop: WorkShop, db: DB, scope: Literal["active", "history"] = "active"):
     order_service.cancel_stale_pending(db)  # lazily, as reservations expire: right even between sweeps
     if scope == "active":
         rows = db.orders.find({"shop_id": shop.id, "status": {"$in": ORDER_OPEN}}, sort=[("created_at", 1)])
@@ -595,7 +671,7 @@ def shop_orders(shop: OwnerShop, db: DB, scope: Literal["active", "history"] = "
 
 
 @router.get("/orders/{order_id}")
-def shop_order(order_id: int, shop: OwnerShop, db: DB):
+def shop_order(order_id: int, shop: WorkShop, db: DB):
     order_service.cancel_stale_pending(db)
     return _ord(db, [_shop_order(db, shop, order_id)], with_events=True)[0]
 
@@ -603,7 +679,7 @@ def shop_order(order_id: int, shop: OwnerShop, db: DB):
 @router.post("/orders/{order_id}/{action}")
 def act_on_order(order_id: int, action: Literal["confirm", "prepare", "dispatch", "deliver", "fail", "return",
                                                  "cancel"],
-                 body: ShopTransitionIn, shop: OwnerShop, user: OwnerUser, db: DB):
+                 body: ShopTransitionIn, shop: WorkShop, user: CurrentUser, db: DB):
     o = _shop_order(db, shop, order_id)
     o = order_service.transition(db, o.id, action, user, body.reason, code=body.code,
                                  payment_method=body.payment_method)
@@ -661,13 +737,13 @@ CommitBody = Annotated[Annotated[ImportCommitIn, Tag("stock")] | Annotated[Sales
 
 
 @router.get("/import/template", response_class=PlainTextResponse)
-def import_template(_: OwnerShop):
+def import_template(_: WorkShop):
     return PlainTextResponse(importer.TEMPLATE_CSV, media_type="text/csv",
                              headers={"Content-Disposition": 'attachment; filename="nearshop-stock-template.csv"'})
 
 
 @router.post("/import/preview")
-def import_preview(shop: OwnerShop, db: DB, file: UploadFile = File(...),
+def import_preview(shop: WorkShop, db: DB, file: UploadFile = File(...),
                    kind: Literal["stock", "sales"] = Query("stock")):
     data = file.file.read(settings.import_max_mb * 1024 * 1024 + 1)
     if kind == "sales":
@@ -676,7 +752,7 @@ def import_preview(shop: OwnerShop, db: DB, file: UploadFile = File(...),
 
 
 @router.post("/import/commit")
-def import_commit(body: CommitBody, shop: OwnerShop, user: OwnerUser, db: DB):
+def import_commit(body: CommitBody, shop: WorkShop, user: CurrentUser, db: DB):
     if isinstance(body, SalesImportCommitIn):
         return importer.sales_commit(db, shop, body.start, body.end, [r.model_dump() for r in body.rows])
     return importer.commit(db, shop, [r.model_dump() for r in body.rows], user.id)  # bumps the listings version

@@ -43,8 +43,12 @@ async function load(raw: string): Promise<ProductDetail | null> {
   return result.data;
 }
 
+// The band alone unless the shop opted in to exact stock (stock_exact, P10.2, plan section 8.20): without the opt-in
+// the public quantity is capped, so a count here would be wrong as well as public. Mirrors stockLabel in
+// components/common/indicators.tsx, which is a client module and so cannot be called from this server component.
 function stockText(p: ProductDetail, t: Translate): string {
   if (p.stock_status === "out_of_stock") return t("common.stock.out");
+  if (!p.stock_exact) return t(p.stock_status === "low_stock" ? "common.stock.low" : "common.stock.available");
   return t(p.stock_status === "low_stock" ? "common.stock.only" : "common.stock.inStock", { count: p.quantity });
 }
 

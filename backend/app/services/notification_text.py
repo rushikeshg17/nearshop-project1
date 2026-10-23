@@ -177,14 +177,21 @@ MESSAGES: dict[str, dict[str, tuple[str, str | None]]] = {
         "en": ("Stock check for {shop}", "Are these counts still right? {items}"),
         "kn": ("{shop} ಸ್ಟಾಕ್ ಪರಿಶೀಲನೆ", "ಈ ಸಂಖ್ಯೆಗಳು ಇನ್ನೂ ಸರಿಯಾಗಿವೆಯೇ? {items}"),
     },
+    # ------------------------------------------------------------ the daily low-stock alert (app/services/alerts.py)
+    "low_stock_alert": {  # items: the low_stock_item fragments, joined by "; ". Kannada awaited (KANNADA_AWAITED).
+        "en": ("Low stock at {shop}", "{items}"),
+    },
 }
 
-# Messages whose Kannada text the team has not supplied yet. From P9.1 on, only Kannada written or approved by the
-# team is added here, never an implementer's draft; until then a Kannada-preference recipient gets the English text
-# (render falls back), and the WhatsApp outbox row of the same kind uses the en template (whatsapp._row_language)
-# until its kn version is approved (docs/whatsapp-templates.md, "Kannada still to write"). Remove a key once its kn
-# entry is added and its kn template approved.
-AWAITING_KANNADA: frozenset[str] = frozenset({"arrival_failure"})
+# Messages and texts whose Kannada the team has not supplied yet. From P9.1 on, only Kannada written or approved by
+# the team is added here, never an implementer's draft; until then a Kannada-preference recipient gets the English
+# text (render and text fall back), and the WhatsApp outbox row of the same kind uses the en template
+# (whatsapp._row_language) until its kn version is approved (docs/whatsapp-templates.md, "Kannada still to write").
+# The catalogue test (tests/test_notification_text.py) holds every other entry to both languages. Remove a key once
+# its kn entry is added and its kn template approved.
+AWAITING_KANNADA: frozenset[str] = frozenset({"arrival_failure",  # P9.1
+                                              "low_stock_alert", "low_stock_item", "low_stock_more"})  # P9.14
+KANNADA_AWAITED = AWAITING_KANNADA  # P9.14's name for the same set
 
 # key -> language -> text: the WhatsApp bot's replies to shops (P4.4) and the fragments messages are built from.
 TEXTS: dict[str, dict[str, str]] = {
@@ -195,6 +202,9 @@ TEXTS: dict[str, dict[str, str]] = {
     # ------------------------------------------------------------ the stock check's listings
     "stock_check_item": {"en": "{name}: {quantity} (counted {days} days ago)",
                          "kn": "{name}: {quantity} ({days} ದಿನಗಳ ಹಿಂದೆ ಎಣಿಸಲಾಗಿದೆ)"},
+    # ------------------------------------------------------------ the low-stock alert's listings (Kannada awaited)
+    "low_stock_item": {"en": "{name}: {quantity} (alert at {threshold})"},
+    "low_stock_more": {"en": "and {count} more"},
     # ------------------------------------------------------------ the bot's replies
     "bot_help": {
         "en": "To update your stock on NearShop, send one line per item with its name and count, for example:\n"

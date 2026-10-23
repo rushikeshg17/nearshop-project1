@@ -272,7 +272,7 @@ function useSignedIn() {
     qc.setQueryData(["me"], user);
     qc.invalidateQueries({ refetchType: "none" });
     const next = safeNext(params.get("next"));
-    const allowed = next && !(next.startsWith("/shop") && user.role !== "owner") && !(next.startsWith("/admin") && user.role !== "admin");
+    const allowed = next && !(next.startsWith("/shop") && user.role !== "owner" && user.role !== "staff") && !(next.startsWith("/admin") && user.role !== "admin");
     router.replace(allowed ? next : homeFor(user));
   };
 }

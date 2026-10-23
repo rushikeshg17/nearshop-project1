@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { stockLabel } from "@/components/common/indicators";
 import { ResponsiveDialog } from "@/components/common/responsive-dialog";
 import { QuantityStepper } from "@/components/product/quantity-stepper";
 import { useI18n } from "@/components/providers";
@@ -24,6 +25,7 @@ export function ReserveDialog({ product, open, onOpenChange }: { product: Produc
   const qc = useQueryClient();
   const [qty, setQty] = useState(1);
   const [note, setNote] = useState("");
+  // Without the shop's opt-in, product.quantity is already capped (P10.1), and so is the stepper.
   const max = Math.max(1, Math.min(product.quantity, 20));
 
   const reserve = useMutation({
@@ -59,7 +61,10 @@ export function ReserveDialog({ product, open, onOpenChange }: { product: Produc
           <div className="min-w-0">
             <p className="truncate text-sm font-medium">{product.name}</p>
             <p className="text-xs text-muted-foreground">
-              {t("transactions.reserve.eachInStock", { price: formatPrice(product.price), count: formatNumber(product.quantity) })}
+              {/* The exact count only where the shop opted in; otherwise the band (P10.2, plan section 8.20). */}
+              {product.stock_exact
+                ? t("transactions.reserve.eachInStock", { price: formatPrice(product.price), count: formatNumber(product.quantity) })
+                : t("transactions.reserve.eachBand", { price: formatPrice(product.price), stock: stockLabel(t, product.stock_status, product.quantity) })}
             </p>
           </div>
           <QuantityStepper value={qty} onChange={setQty} max={max} />

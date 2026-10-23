@@ -189,13 +189,18 @@ def _create_reservation(db: Database, customer: User, product_id: int, quantity:
     return res
 
 
-def _actor_for(user: User | None, res: Reservation, shop_owner_id: int) -> str:
+def _actor_for(db: Database, user: User | None, res: Reservation, shop_owner_id: int) -> str:
     if user is None:
         return "system"
     if user.role == Role.CUSTOMER and res.customer_id == user.id:
         return "customer"
     if user.role == Role.OWNER and shop_owner_id == user.id:
         return "owner"
+    if user.role == Role.STAFF:
+        from app.services import staff  # imported here: staff -> plans -> app.core.deps
+
+        if staff.is_member(db, user.id, res.shop_id):
+            return "staff"  # P9.13: acts as the shop, recorded as staff with the member's user id
     if user.role == Role.ADMIN:
         return "admin"
     raise Forbidden("This reservation belongs to someone else")
@@ -224,7 +229,7 @@ def _transition(db: Database, reservation_id: int, action: str, user: User | Non
         raise NotFound("Reservation not found")
     product = db.products.get(res.product_id)
     shop = db.shops.get(res.shop_id)
-    actor = _actor_for(user, res, shop.owner_id)
+    actor = _actor_for(db, user, res, shop.owner_id)
     key = (res.status, action)
     if action == NOT_AVAILABLE and res.arrival_reported_at is not None:
         raise InvalidTransition("You have already reported this item as not available")
@@ -237,7 +242,7 @@ def _transition(db: Database, reservation_id: int, action: str, user: User | Non
         # Only the customer who stood at the counter can say the item was missing, and only once (P9.1).
         if actor != "customer":
             raise Forbidden("Only the customer can report that the item was not available")
-    elif actor not in actors and actor != "admin":
+    elif ("owner" if actor == "staff" else actor) not in actors and actor != "admin":
         raise Forbidden(f"Only the {' or '.join(sorted(actors))} can {action} this reservation")
     if action == "complete" and settings.completion_codes_required and not code_matches(code, res.code):
         raise Conflict("Enter the reservation code the customer shows you" if not (code or "").strip()
