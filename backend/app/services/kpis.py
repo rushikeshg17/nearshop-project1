@@ -11,7 +11,8 @@ Scope
 Every shop-based figure counts the gate city (settings.seed_city's name, matched on Shop.city ignoring case and
 spaces, as P7.4's freshness report does) and never a shop the seed made (an owner on the demo email domain,
 statements.demo_shop_ids). The zero-result rate counts every search (search_history has no city). Months are IST
-calendar months; "the month" is the last complete one before the time the figures are computed for.
+calendar months; "the month" is the last complete one before the time the live figures are computed for, and the
+snapshotted month itself for a snapshot (see Snapshots for what a snapshot measures when).
 
 The figures (compute)
 ---------------------
@@ -25,8 +26,10 @@ The figures (compute)
     that fails or has too few readings ends the run.
   * arrival_failure_pct: plan section 8.17: arrival failures ÷ (completed pickups and deliveries + arrival failures)
     over the last 90 days, shown with both counts (check 10.5). An arrival failure is a reservation or order closed
-    with a reason in ARRIVAL_FAILURE_REASONS (the customer's report, P9.1; P9.8 adds the owner's "out of stock after
-    confirming" reason there) in the window. completions_90d is the completions in the same window.
+    in the window with a reason in ARRIVAL_FAILURE_REASONS and arrival_reported_at set (the customer's report, P9.1;
+    P9.8 adds the owner's "out of stock after confirming" reason there and must set arrival_reported_at with it).
+    Only the report sets arrival_reported_at, so a cancellation reason typed to match one (an order's reason is free
+    text) is never counted. completions_90d is the completions in the same window.
   * completions_month: completed pickups (completed_at) plus delivered orders (delivered_at) in the month, with the
     current month so far beside it.
   * month2_return_pct: of the customers whose first reservation or order (at a city shop) was in the month before
@@ -35,7 +38,8 @@ The figures (compute)
     zero_result_rate_all).
   * shop_paid_pct: active shops on an active plan they pay for (source shop_paid or advance, covering the time, an
     Autopay hold included) ÷ active shops. sponsored_seats (a distributor's seats) are shown separately and never
-    counted.
+    counted. Plan section 8.23 measures it at month end: a snapshot takes it, and the active shops it divides by, from
+    the month-end reading (below); the live value is measured now, and each says when in detail.measured_at.
   * founding_renewal_pct: of the founding subscriptions (founding_slot set) whose first year ended in the last 12
     months and at least 30 days ago, the share renewed within 30 days of that end: a renewal of the subscription
     (plans.renew always charges the list price in force) or a new paid subscription for the shop. The first year ends
@@ -58,10 +62,18 @@ have passed. pass is None when the figure has no value yet.
 
 Snapshots
 ---------
-The kpis job (app/jobs.py), every tick under its lease, records the day's median stock age once per IST day
-(record_day) and, on the 2nd of each month from SNAPSHOT_AT IST or on the first tick after it, stores the previous
-month's snapshot (take_snapshot): every figure as computed then, with its threshold and pass, the latest entered
-inputs and the active shop ids (for annual inactivity a year later). A snapshot is only ever inserted, under the
+The kpis job (app/jobs.py), every tick under its lease, records a daily reading once per IST day (record_day: the median
+stock age, the active shop ids and the shop-paid and sponsored counts) and, on the 2nd of each month from SNAPSHOT_AT
+IST or on the first tick after it, stores the previous month's snapshot (take_snapshot). A snapshot holds its own
+month's figures whenever it is taken (compute with for_month), each with its threshold and pass, the latest entered inputs
+and the active shop ids (for annual inactivity a year later):
+  * the active shops, the shop-paid share, the sponsored seats and the median stock age come from the month-end
+    reading, the reading of the 1st of the next month taken on the job's first tick after midnight IST. Without one
+    they are measured when the snapshot is taken if that is still in the next month (detail.measured_at says when),
+    and are left empty (None) once it is later, rather than stored with a later month's values;
+  * completions in the month, month-2 return and annual inactivity count the snapshotted month;
+  * the 90-day, 30-day, fresh-weeks and founding-renewal windows end at the month's end;
+  * the readout figures and the entered inputs are as they stand when the snapshot is taken. A snapshot is only ever inserted, under the
 month as its _id: a second run for the month leaves the first unchanged, and nothing in the app updates or deletes
 one, so later code changes cannot rewrite history. Nothing is recorded from demo data (statements.demo_data).
 """
@@ -251,14 +263,18 @@ def median_stock_age(db: Database, at: datetime, city: str) -> tuple[float | Non
 
 
 def record_day(db: Database, now: datetime, city: str | None = None) -> dict[str, Any]:
-    """The day's reading of the median stock age (and the active shops), once per IST day and city: the first reading
-    of a day stands."""
+    """The day's reading of the median stock age, the active shops and the shop-paid count, once per IST day and city:
+    the first reading of a day stands. The reading of the 1st, taken on the first tick after midnight IST, is the
+    previous month's month-end reading (month_end_reading)."""
     city = city or default_city()
     day = leads.ist_day(now)
     med, listings = median_stock_age(db, now, city)
+    active = active_shop_ids(db, now, city)
+    paid = shop_paid(db, active, now)
     doc = {"_id": f"{city_key(city)}:{day.isoformat()}", "city": city_key(city), "day": day.isoformat(),
            "median_stock_age_hours": round(med, 2) if med is not None else None, "listings": listings,
-           "active_shops": len(active_shop_ids(db, now, city)), "recorded_at": now}
+           "active_shops": len(active), "active_shop_ids": active, "paid": paid["paid"],
+           "sponsored": paid["sponsored"], "recorded_at": now}
     try:
         db.mongo[DAYS].insert_one(doc)
     except DuplicateKeyError:
@@ -301,8 +317,11 @@ def completions(db: Database, shop_ids: list[int], start: datetime, end: datetim
 
 
 def arrival_failures(db: Database, shop_ids: list[int], start: datetime, end: datetime) -> int:
-    flt = {"close_reason": {"$in": list(ARRIVAL_FAILURE_REASONS)}, "closed_at": {"$gte": start, "$lt": end},
-           "shop_id": {"$in": shop_ids}}
+    """Reservations and orders closed in [start, end) as an arrival failure: the reason is one of
+    ARRIVAL_FAILURE_REASONS and arrival_reported_at is set. Only the arrival report itself sets arrival_reported_at,
+    so a cancellation reason typed to look like one is never counted."""
+    flt = {"close_reason": {"$in": list(ARRIVAL_FAILURE_REASONS)}, "arrival_reported_at": {"$ne": None},
+           "closed_at": {"$gte": start, "$lt": end}, "shop_id": {"$in": shop_ids}}
     return db.reservations.count(flt) + db.orders.count(flt)
 
 
@@ -494,6 +513,14 @@ def latest_inputs(db: Database) -> dict[str, dict[str, Any] | None]:
 # ---------------------------------------------------------------- all figures
 
 
+def month_end_reading(db: Database, year: int, month: int, city: str) -> dict[str, Any] | None:
+    """The month's month-end reading: record_day's reading of the 1st of the next month (taken on the job's first tick
+    after midnight IST), or None if there is none (or it predates the active shops being recorded)."""
+    ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
+    doc = db.mongo[DAYS].find_one({"_id": f"{city_key(city)}:{date(ny, nm, 1).isoformat()}"})
+    return doc if doc is not None and "active_shop_ids" in doc else None
+
+
 def _figure(key: str, value: float | None, today: date, detail: dict[str, Any] | None = None) -> dict[str, Any]:
     label, unit, group = FIGURES[key]
     threshold = next_threshold(key, today)
@@ -501,42 +528,67 @@ def _figure(key: str, value: float | None, today: date, detail: dict[str, Any] |
             "threshold": threshold, "pass": judge(value, threshold), "detail": detail or {}}
 
 
-def compute(db: Database, at: datetime | None = None, city: str | None = None) -> dict[str, Any]:
-    """Every figure at `at` (default now) for the city (default the gate city), each with its next gate's threshold
-    and pass or fail."""
+def compute(db: Database, at: datetime | None = None, city: str | None = None,
+            for_month: tuple[int, int] | None = None) -> dict[str, Any]:
+    """Every figure for the city (default the gate city), each with its next gate's threshold and pass or fail.
+
+    Live (for_month None): every figure at `at` (default now), for the last complete month before it.
+    For a month's snapshot (for_month given): the figures of that month whatever `at` is. The monthly figures count that
+    month; the trailing windows (90 and 30 days, fresh weeks, founding renewal) end at its end; the active shops, the
+    shop-paid share, the sponsored seats and the median stock age come from its month-end reading. Without that
+    reading they are measured at `at` while `at` is still in the next month (measured_at says when), and are None
+    once it is later. The readout figures and the entered inputs are as they stand at `at`."""
     at = at or utcnow()
     city = city or default_city()
     today = leads.ist_day(at)
-    year, month = _month(at)
+    snapshot = for_month is not None
+    year, month = for_month or _month(at)
     m_start, m_end = leads.month_bounds(year, month)
+    ref = m_end if snapshot else at
     shops = city_shop_ids(db, city)
-    active = active_shop_ids(db, at, city)
-    med, listings = median_stock_age(db, at, city)
-    weeks, last_week = fresh_weeks(db, at, city)
-    arrival = arrival_failure_rate(db, shops, at)
+    reading = month_end_reading(db, year, month, city) if snapshot else None
+    if reading is not None:
+        active = sorted(reading["active_shop_ids"])
+        measured_at: datetime | None = reading["recorded_at"]
+        med, listings = reading.get("median_stock_age_hours"), reading.get("listings", 0)
+        paid = {"paid": reading["paid"], "sponsored": reading["sponsored"], "active": len(active),
+                "rate": _pct(reading["paid"], len(active))}
+    elif not snapshot or _month(at) == (year, month):
+        active = active_shop_ids(db, at, city)
+        measured_at = at
+        med, listings = median_stock_age(db, at, city)
+        paid = shop_paid(db, active, at)
+    else:  # too late to measure the month's end: unknown, not a later month's figures
+        active, measured_at, med, listings = [], None, None, 0
+        paid = {"paid": None, "sponsored": None, "active": None, "rate": None}
+    when = {"measured_at": measured_at.isoformat() if measured_at else None,
+            "month_end_reading": reading is not None} if snapshot else {"measured_at": at.isoformat()}
+    paid = {**paid, **when}
+    weeks, last_week = fresh_weeks(db, ref, city)
+    arrival = arrival_failure_rate(db, shops, ref)
     month_done = completions(db, shops, m_start, m_end)
-    so_far = completions(db, shops, m_end, at)
+    so_far = None if snapshot else completions(db, shops, m_end, at)["total"]
     ret = month2_return(db, shops, year, month)
-    zero = zero_result_rate(db, at)
-    paid = shop_paid(db, active, at)
-    renewal = founding_renewal(db, shops, at)
-    inactive = annual_inactivity(db, active, year, month)
+    zero = zero_result_rate(db, ref)
+    renewal = founding_renewal(db, shops, ref)
+    inactive = annual_inactivity(db, active, year, month) if measured_at else \
+        {"from_month": None, "then_active": None, "inactive": None, "rate": None}
     readout = accurate_share(db, shops)
     advances = advances_paid(db, shops)
     entered = latest_inputs(db)
     figures = [
-        _figure("active_shops", len(active), today),
-        _figure("median_stock_age_hours", med, today, {"listings": listings}),
+        _figure("active_shops", len(active) if measured_at else None, today, when),
+        _figure("median_stock_age_hours", med, today, {"listings": listings, **when}),
         _figure("fresh_weeks", weeks, today, {"last_complete_week": last_week,
                                               "min_readings": settings.kpi_week_min_readings}),
         _figure("arrival_failure_pct", arrival["rate"], today, arrival),
         _figure("completions_90d", arrival["completions"], today, {"since": arrival["since"]}),
         _figure("completions_month", month_done["total"], today,
-                {**month_done, "month": leads.month_key(year, month), "this_month_so_far": so_far["total"]}),
+                {**month_done, "month": leads.month_key(year, month), "this_month_so_far": so_far}),
         _figure("month2_return_pct", ret["rate"], today, ret),
         _figure("zero_result_pct", zero["rate"], today, zero),
         _figure("shop_paid_pct", paid["rate"], today, paid),
-        _figure("sponsored_seats", paid["sponsored"], today),
+        _figure("sponsored_seats", paid["sponsored"], today, when),
         _figure("founding_renewal_pct", renewal["rate"], today, renewal),
         _figure("annual_inactivity_pct", inactive["rate"], today, inactive),
         _figure("partner_plans", 0, today, {"note": "Partner plans arrive with P10.3."}),
@@ -565,12 +617,13 @@ def snapshot_month(now: datetime) -> tuple[int, int]:
 
 def take_snapshot(db: Database, year: int, month: int, now: datetime | None = None,
                   city: str | None = None) -> dict[str, Any]:
-    """Store the month's snapshot once. A snapshot already stored for the month is left exactly as it is."""
+    """Store the month's snapshot once, holding that month's figures (compute with for_month) whenever it is taken. A
+    snapshot already stored for the month is left exactly as it is."""
     now = now or utcnow()
     key = leads.month_key(year, month)
     if db.mongo[SNAPSHOTS].find_one({"_id": key}, {"_id": 1}) is not None:
         return {"month": key, "taken": False}
-    live = compute(db, now, city)
+    live = compute(db, now, city, for_month=(year, month))
     doc = {"_id": key, "month": key, "taken_at": now, "city": live["city"], "figures": live["figures"],
            "active_shop_ids": live["active_shop_ids"]}
     try:

@@ -858,8 +858,9 @@ VALIDATORS: dict[str, dict] = {
             "active_shop_ids": {"bsonType": "array", "items": {"bsonType": INT}},
         },
     }},
-    # The daily reading of the city's median stock age (P9.12), for the consecutive fresh weeks: one row per city and
-    # IST day, _id "<city>:<YYYY-MM-DD>"; the first reading of a day stands.
+    # The daily reading of the city's median stock age (P9.12), for the consecutive fresh weeks, with the active shop ids
+    # and the shop-paid and sponsored counts (the reading of the 1st is the previous month's month-end reading): one row
+    # per city and IST day, _id "<city>:<YYYY-MM-DD>"; the first reading of a day stands.
     "kpi_days": {"$jsonSchema": {
         "bsonType": "object", "additionalProperties": False,
         "required": ["_id", "city", "day", "median_stock_age_hours", "listings", "active_shops", "recorded_at"],
@@ -867,6 +868,7 @@ VALIDATORS: dict[str, dict] = {
             "_id": {"bsonType": STR, "maxLength": 120}, "city": {"bsonType": STR, "maxLength": 100},
             "day": {"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
             "median_stock_age_hours": {"bsonType": NUM_N, "minimum": 0}, "listings": COUNT, "active_shops": COUNT,
+            "active_shop_ids": {"bsonType": "array", "items": {"bsonType": INT}}, "paid": COUNT, "sponsored": COUNT,
             "recorded_at": {"bsonType": DATE},
         },
     }},

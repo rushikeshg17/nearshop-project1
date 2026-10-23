@@ -276,6 +276,11 @@ def test_arrival_failure_rate_numerator_and_denominator(town, monkeypatch):
     town.reservation(other, created=day, status=ReservationStatus.CANCELLED, close_reason=NOT_AVAILABLE_ON_ARRIVAL,
                      closed=day)
     town.reservation(shop, created=old, status=ReservationStatus.COMPLETED, completed=old)
+    # Nor a reason typed to match the report's: on an order (free text) or a reservation, with no report recorded.
+    typed = town.order(shop, created=day)
+    town.db.orders.set(typed, status=OrderStatus.CANCELLED, closed_at=day, close_reason=NOT_AVAILABLE_ON_ARRIVAL)
+    typed_res = town.reservation(shop, created=day, status=ReservationStatus.CANCELLED, closed=day)
+    town.db.reservations.set(typed_res, close_reason=NOT_AVAILABLE_ON_ARRIVAL)
     monkeypatch.setattr(settings, "kpi_g4_min_completions_90d", 19)
     f = town.figures()
     detail = f["arrival_failure_pct"]["detail"]
@@ -526,6 +531,39 @@ def test_snapshot_month_is_the_one_before_the_latest_slot():
     assert kpis.snapshot_month(ist(2033, 7, 2, 6, 0)) == (2033, 6)
     assert kpis.snapshot_month(ist(2033, 1, 1, 12, 0)) == (2032, 11)
     assert kpis.snapshot_month(ist(2033, 1, 2, 6, 0)) == (2032, 12)
+
+
+def test_a_late_snapshot_holds_its_own_months_figures(town, clean_kpis):
+    """Taken on 1 Jul (before the 2nd's slot) for May: May's completions and month-end shop counts, not June's."""
+    db = town.db
+    paying, other = town.shop(), town.shop()
+    in_may, in_june = MAY[0] + timedelta(days=3), MAY[1] + timedelta(days=3)
+    town.reservation(paying, created=in_may, status=ReservationStatus.COMPLETED, completed=in_may)
+    for _ in range(3):
+        town.reservation(paying, created=in_june, status=ReservationStatus.COMPLETED, completed=in_june)
+    # The month-end reading (the 1st of June, just after midnight IST): two active shops, one of them paying.
+    end_reading = MAY[1] + timedelta(minutes=5)
+    key = kpis.city_key(town.city)
+    db.mongo[kpis.DAYS].insert_one({"_id": f"{key}:2033-06-01", "city": key, "day": "2033-06-01",
+                                    "median_stock_age_hours": 30.0, "listings": 2, "active_shops": 2,
+                                    "active_shop_ids": [paying.id, other.id], "paid": 1, "sponsored": 0,
+                                    "recorded_at": end_reading})
+    late = ist(2033, 7, 1, 12, 0)
+    assert kpis.snapshot_month(late) == (2033, 5)
+    assert kpis.take_snapshot(db, 2033, 5, late, town.city) == {"month": "2033-05", "taken": True}
+    stored = {f["key"]: f for f in db.mongo[kpis.SNAPSHOTS].find_one({"_id": "2033-05"})["figures"]}
+    assert stored["completions_month"]["value"] == 1 and stored["completions_month"]["detail"]["month"] == "2033-05"
+    assert stored["active_shops"]["value"] == 2 and stored["median_stock_age_hours"]["value"] == 30.0
+    assert stored["shop_paid_pct"]["value"] == 50.0
+    assert stored["shop_paid_pct"]["detail"]["measured_at"] == end_reading.isoformat()
+    assert stored["shop_paid_pct"]["detail"]["month_end_reading"] is True
+    # Without a month-end reading, once the next month is over: left empty, not filled from a later month.
+    db.mongo[kpis.DAYS].delete_many({"city": key})
+    assert kpis.take_snapshot(db, 2033, 4, late, town.city)["taken"] is True
+    april = {f["key"]: f for f in db.mongo[kpis.SNAPSHOTS].find_one({"_id": "2033-04"})["figures"]}
+    assert april["active_shops"]["value"] is None and april["shop_paid_pct"]["value"] is None
+    assert april["completions_month"]["detail"]["month"] == "2033-04"
+    assert db.mongo[kpis.SNAPSHOTS].find_one({"_id": "2033-04"})["active_shop_ids"] == []
 
 
 def test_the_job_reads_daily_and_snapshots_monthly_once(clean_kpis, monkeypatch):
