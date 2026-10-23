@@ -365,7 +365,8 @@ test.describe("owner screens", () => {
     await audit(page, testInfo, "owner import", language);
     // The preview of a small stock file: one listing the shop has, one catalogue item, one new product.
     const csv = ["Item Name,Qty,Rate", "Ambrane 20W PD Type-C Fast Charger,12,445", "Popy 3 Fold Umbrella (Black),4,", "Hand-made jute bag,7,120"].join("\n");
-    await page.locator('input[type="file"]').setInputFiles({ name: "stock.csv", mimeType: "text/csv", buffer: Buffer.from(csv) });
+    // The page has two file inputs, the stock list's and the sales report's (P7.2): use the stock list tab's.
+    await page.getByRole("tabpanel", { name: "Stock list" }).locator('input[type="file"]').setInputFiles({ name: "stock.csv", mimeType: "text/csv", buffer: Buffer.from(csv) });
     await expect(page.getByRole("button", { name: /import/i }).last()).toBeVisible();
     await audit(page, testInfo, "owner import: preview", language);
   });

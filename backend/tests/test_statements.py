@@ -421,7 +421,7 @@ def test_each_reply_is_stored_once_and_the_not_accurate_reason_is_captured(town,
     assert req is not None and req.kind == billing.RequestKind.ADVANCE and req.founding and req.amount_paise == 99900
     assert reply == (f"Thank you. To pay for Growth (Growth would cost ₹83 a month at the founding price (₹999 for the "
                      f"first year)), pay ₹999.00 by UPI to nearshop-test@testbank (NearShop Test) with the note "
-                     f"{req.number}. You can also pay from {statements.site_link('/owner/billing')}.")
+                     f"{req.number}. You can also pay from {statements.site_link('/shop/billing')}.")
     assert button(db, owner.phone, at, f"statement:{sid}:not_now").startswith("Thank you. You stay on the Free plan")
     # Another shop's statement, a made-up one and a reply the statement has no button for change nothing.
     other_sid = statement_of(db, other)["_id"]

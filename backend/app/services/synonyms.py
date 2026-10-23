@@ -4,7 +4,7 @@ The synonyms collection holds one document per term a customer may type: _id (an
 term (normalised with app/utils/text.py normalize_query, unique), expansions (the extra words OR'd into the
 keyword search, at most MAX_EXPANSIONS, each MAX_EXPANSION_LENGTH characters or fewer), languages (tags such
 as en or hi-Latn), active, created_by (the admin's id; null for entries imported by migration 9), created_at,
-updated_at and updated_by. Migration 5 imported the 42 entries that used to be a dictionary in code.
+updated_at and updated_by. Migration 9 imported the 42 entries that used to be a dictionary in code.
 
 Every write bumps two version numbers: the shared synonyms version in cache_versions (app/core/cache_version.py,
 P8.1), which every process reads at most once every 5 seconds, and the older counters document synonyms_version,

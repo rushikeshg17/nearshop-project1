@@ -29,8 +29,11 @@ Every template has two body variables:
 
 Since P7.11 the variables are in the recipient's language (User.language, en or kn; the text comes from
 backend/app/services/notification_text.py). A Kannada-preference user is sent the kn version of the template; everyone
-else gets the language in NEARSHOP_WHATSAPP_TEMPLATE_LANGUAGE (en). Every template must be approved at Meta in both
-languages before Kannada is offered to users: until then a kn send is rejected and its outbox row marked failed.
+else gets the language in NEARSHOP_WHATSAPP_TEMPLATE_LANGUAGE (en). The exception is a kind whose message still awaits
+the team's Kannada (notification_text.AWAITING_KANNADA, for example arrival_failure and low_stock_alert): its text is
+English for everyone and its row always uses the en template, since Meta has no kn version of it yet
+(whatsapp._row_language). Approval of every template at Meta in both languages is a precondition for offering Kannada
+to users: until a template's kn version is approved, a kn send of it is rejected and its outbox row marked failed.
 
 ## Notification templates
 
@@ -371,7 +374,8 @@ Every Phase 9 template above has an empty Kannada column: the bodies and buttons
 (4 buttons), nearshop_shop_statement_roi (2 buttons), nearshop_shop_demand_summary, nearshop_shop_arrival_report,
 nearshop_shop_payment_request, nearshop_shop_payment_receipt, nearshop_shop_plan_renewal, nearshop_shop_plan_lapsed,
 nearshop_shop_low_stock and nearshop_staff_invitation. The variables are filled in the owner's language by the code
-(P7.11). Record Meta's outcome and category for each after submission (B23).
+(P7.11), except for the kinds in notification_text.AWAITING_KANNADA, which are sent in English with the en template
+until the team's Kannada is added and its kn template approved. Record Meta's outcome and category for each after submission (B23).
 
 ## Replies from shops (P4.4)
 

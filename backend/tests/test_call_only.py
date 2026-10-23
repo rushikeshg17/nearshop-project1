@@ -287,3 +287,18 @@ def test_only_the_owner_can_record_out_of_stock(customer, owner_a, ids, restore)
     assert Database().orders.get(o["id"]).close_reason is None
     assert _quantity(ids["tape"]) == before
     assert not _arrival_failures(ids["tape"], started)
+
+
+@pytest.mark.parametrize("typed", [OUT_OF_STOCK_AFTER_CONFIRM, reservations.NOT_AVAILABLE_ON_ARRIVAL])
+def test_a_failed_delivery_never_stores_a_reserved_reason(customer, owner_a, ids, restore, typed):
+    """A failed delivery's reason is free text: one typed as an arrival-failure code is not stored, so the gate KPI
+    (kpis.arrival_failures) can never count it. A real reason is kept."""
+    for reason, stored in ((typed, None), ("Customer not at home", "Customer not at home")):
+        o = _order(customer, ids["tape"]).json()
+        for action in ("confirm", "prepare", "dispatch"):
+            assert owner_a.post(f"/api/owner/orders/{o['id']}/{action}", json={}, headers=HEADERS).status_code == 200
+        res = owner_a.post(f"/api/owner/orders/{o['id']}/fail", json={"reason": reason}, headers=HEADERS)
+        assert res.status_code == 200, res.text
+        assert res.json()["status"] == "DELIVERY_FAILED"
+        assert Database().orders.get(o["id"]).close_reason == stored
+        owner_a.post(f"/api/owner/orders/{o['id']}/return", json={}, headers=HEADERS)

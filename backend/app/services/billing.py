@@ -131,7 +131,7 @@ DRAFT_LINE = "Draft format, not for use"
 WORDING_PENDING = "[The CA's approved wording (B22) goes here]"
 MAX_NUMBER_LENGTH = 16
 STATE_NAMES = {"29": "Karnataka"}  # the place of supply is printed as the state code, with its name when known
-BILLING_LINK = "/owner/billing"
+BILLING_LINK = "/shop/billing"
 KIND_PAYMENT_RECEIVED, KIND_REFUNDED, KIND_UNMATCHED = "payment_received", "payment_refunded", "credit_unmatched"
 UNMATCHED_WARNING = "bank credit unmatched"
 # The subscription_events kinds billing adds to plans.EVENT_KINDS (autopay_cancelled: P9.6, app/services/gateway.py).

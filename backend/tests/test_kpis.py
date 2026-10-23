@@ -19,6 +19,7 @@ from app.models.billing import Actor, Period, PlanCode, Subscription, Subscripti
 from app.models.billing import SubscriptionStatus as SS
 from app.models.core import VerificationStatus
 from app.models.enums import OrderStatus, ReservationStatus
+from app.schemas.serializers import OUT_OF_STOCK_AFTER_CONFIRM
 from app.services import kpis, leads, plans, statements
 from app.services.reservations import NOT_AVAILABLE_ON_ARRIVAL
 from tests.conftest import CENTER, HEADERS, PASSWORD
@@ -296,6 +297,26 @@ def test_arrival_failure_rate_numerator_and_denominator(town, monkeypatch):
     assert f["arrival_failure_pct"]["detail"]["denominator"] == 21
     assert judged(f["arrival_failure_pct"]) == (round(200 / 21, 2), False)
     assert judged(f["completions_90d"]) == (19, False)
+
+
+def test_the_owners_out_of_stock_cancellation_is_an_arrival_failure(town, monkeypatch):
+    """P9.8: a reservation or order the owner cancelled as "out of stock after confirming" counts, as the customer's
+    report does; its code is reserved (the services never store it from a typed reason), so no report is needed."""
+    assert OUT_OF_STOCK_AFTER_CONFIRM in kpis.ARRIVAL_FAILURE_REASONS
+    shop = town.shop()
+    day = AT - timedelta(days=10)
+    for _ in range(8):
+        town.reservation(shop, created=day, status=ReservationStatus.COMPLETED, completed=day)
+    town.reservation(shop, created=day, status=ReservationStatus.CANCELLED, close_reason=OUT_OF_STOCK_AFTER_CONFIRM,
+                     closed=day)
+    cancelled = town.order(shop, created=day)
+    town.db.orders.set(cancelled, status=OrderStatus.CANCELLED, closed_at=day, close_reason=OUT_OF_STOCK_AFTER_CONFIRM)
+    # Outside the window: not counted.
+    old = AT - timedelta(days=100)
+    town.reservation(shop, created=old, status=ReservationStatus.CANCELLED, close_reason=OUT_OF_STOCK_AFTER_CONFIRM,
+                     closed=old)
+    detail = town.figures()["arrival_failure_pct"]["detail"]
+    assert (detail["failures"], detail["completions"], detail["denominator"]) == (2, 8, 10)
 
 
 def test_completions_in_the_month(town, monkeypatch):

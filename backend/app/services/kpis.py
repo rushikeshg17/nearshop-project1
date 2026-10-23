@@ -26,10 +26,11 @@ The figures (compute)
     that fails or has too few readings ends the run.
   * arrival_failure_pct: plan section 8.17: arrival failures ÷ (completed pickups and deliveries + arrival failures)
     over the last 90 days, shown with both counts (check 10.5). An arrival failure is a reservation or order closed
-    in the window with a reason in ARRIVAL_FAILURE_REASONS and arrival_reported_at set (the customer's report, P9.1;
-    P9.8 adds the owner's "out of stock after confirming" reason there and must set arrival_reported_at with it).
-    Only the report sets arrival_reported_at, so a cancellation reason typed to match one (an order's reason is free
-    text) is never counted. completions_90d is the completions in the same window.
+    in the window with a reason in ARRIVAL_FAILURE_REASONS: the customer's report (not_available_on_arrival, P9.1,
+    counted only with arrival_reported_at set, which only the report sets) or the owner's "out of stock after
+    confirming" cancellation (out_of_stock_after_confirm, P9.8). Both are reserved codes that a typed reason is never
+    stored as (reservations.RESERVED_REASONS), so a cancellation reason typed to match one is never counted.
+    completions_90d is the completions in the same window.
   * completions_month: completed pickups (completed_at) plus delivered orders (delivered_at) in the month, with the
     current month so far beside it.
   * month2_return_pct: of the customers whose first reservation or order (at a city shop) was in the month before
@@ -94,6 +95,7 @@ from app.core.database import Database, utcnow
 from app.core.errors import AppError
 from app.models.billing import PAID_SOURCES, Period, SubscriptionSource, SubscriptionStatus
 from app.models.enums import OrderStatus, ReservationStatus
+from app.schemas.serializers import OUT_OF_STOCK_AFTER_CONFIRM
 from app.services import leads, plans, statements
 from app.services.meta import city_config
 from app.services.reservations import NOT_AVAILABLE_ON_ARRIVAL
@@ -114,7 +116,7 @@ WEEKS_LOOKED_BACK = 104
 NOTE_MIN, NOTE_MAX = 10, 500
 INPUT_MAX = 1_000_000
 # A reservation or order closed with one of these reasons is an arrival failure (plan section 8.17).
-ARRIVAL_FAILURE_REASONS: tuple[str, ...] = (NOT_AVAILABLE_ON_ARRIVAL,)
+ARRIVAL_FAILURE_REASONS: tuple[str, ...] = (NOT_AVAILABLE_ON_ARRIVAL, OUT_OF_STOCK_AFTER_CONFIRM)
 
 ENTERED = ("activation_cost_rupees", "support_minutes")
 ENTERED_SOURCES = {"activation_cost_rupees": "R6's activation cost log",
@@ -317,10 +319,12 @@ def completions(db: Database, shop_ids: list[int], start: datetime, end: datetim
 
 
 def arrival_failures(db: Database, shop_ids: list[int], start: datetime, end: datetime) -> int:
-    """Reservations and orders closed in [start, end) as an arrival failure: the reason is one of
-    ARRIVAL_FAILURE_REASONS and arrival_reported_at is set. Only the arrival report itself sets arrival_reported_at,
-    so a cancellation reason typed to look like one is never counted."""
-    flt = {"close_reason": {"$in": list(ARRIVAL_FAILURE_REASONS)}, "arrival_reported_at": {"$ne": None},
+    """Reservations and orders closed in [start, end) as an arrival failure (ARRIVAL_FAILURE_REASONS): the customer's
+    report, with arrival_reported_at set (only the report itself sets it), or the owner's out-of-stock cancellation
+    (P9.8), a code NearShop alone stores (reservations.RESERVED_REASONS). A reason typed to look like either is never
+    counted."""
+    flt = {"$or": [{"close_reason": NOT_AVAILABLE_ON_ARRIVAL, "arrival_reported_at": {"$ne": None}},
+                   {"close_reason": {"$in": [r for r in ARRIVAL_FAILURE_REASONS if r != NOT_AVAILABLE_ON_ARRIVAL]}}],
            "closed_at": {"$gte": start, "$lt": end}, "shop_id": {"$in": shop_ids}}
     return db.reservations.count(flt) + db.orders.count(flt)
 

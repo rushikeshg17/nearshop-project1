@@ -304,3 +304,12 @@ def test_the_arrival_message_awaits_the_teams_kannada():
     assert words.render("arrival_failure", "kn", params) == words.render("arrival_failure", "en", params) == (
         "Item not available for reservation R-7KQ2MX",
         "The customer found Astral PTFE Thread Seal Tape missing. NearShop showed 50 in stock.")
+
+
+@pytest.mark.parametrize("kind", sorted(words.AWAITING_KANNADA & set(whatsapp.TEMPLATES)))
+@pytest.mark.parametrize("language", ["en", "kn", None])
+def test_a_kind_awaiting_kannada_uses_the_english_template_for_everyone(kind, language):
+    """Meta has no kn version of a template whose message awaits the team's Kannada, so its outbox row is in the
+    English template language whatever the recipient chose; other kinds follow the recipient (P7.11)."""
+    assert whatsapp._row_language(kind, language) == whatsapp.template_language(None) == whatsapp.template_language("en")
+    assert whatsapp._row_language("reservation_confirmed", "kn") == whatsapp.KANNADA_TEMPLATE_LANGUAGE

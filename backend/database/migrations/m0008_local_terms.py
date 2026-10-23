@@ -1,4 +1,4 @@
-"""Migration 4: local_terms on catalog items and their listings (P5.2; plan section 8.6).
+"""Migration 8: local_terms on catalog items and their listings (P5.2; plan section 8.6).
 
 Customers in Ballari type item names in Kannada, Telugu and Hindi script, or spell those words in Latin
 letters ("istri petti"). The catalogue's names and tags are English, so such a query matched nothing.

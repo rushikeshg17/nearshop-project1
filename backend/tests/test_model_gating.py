@@ -280,8 +280,13 @@ def test_owner_sees_price_flags_only_after_precise_admin_review(db, ids, clean, 
 
 # ------------------------------------------------------------------ the insights payload
 
-def test_insights_payload_gives_a_reason_and_progress_for_each_gated_module(db, ids, clean, owner_a):
+def test_insights_payload_gives_a_reason_and_progress_for_each_gated_module(db, ids, clean, owner_a, monkeypatch):
     made, tag = clean
+    # The progress counts UTC days (analytics._shop_demand_progress). Pin its clock, and put each sale on its own UTC
+    # day at or before that time, so a run just after UTC midnight (early morning IST) counts the same 23 days.
+    now = utcnow()
+    monkeypatch.setattr(analytics, "utcnow", lambda: now)
+    day0 = max(now - timedelta(hours=1), now.replace(hour=0, minute=0, second=0, microsecond=0))
     body = owner_a.get("/api/owner/insights", headers=HEADERS).json()
     gates = body["gates"]
     assert set(gates) == {"demand", "bundles", "price_flags", "area_demand", "missed_demand"}
@@ -294,7 +299,10 @@ def test_insights_payload_gives_a_reason_and_progress_for_each_gated_module(db, 
     db.model_runs.insert(ModelRun(name="demand", algorithm="RandomForestRegressor",
                                   metrics={"gate": analytics.gate(True)}))
     _, product_id = own_listing(db, made, tag, ids["shop_a"])
-    db.sales_history.insert_many([sale(tag, ids["shop_a"], product_id, d, 3) for d in range(23)])
+    sales = [sale(tag, ids["shop_a"], product_id, d, 3) for d in range(23)]
+    for d, record in enumerate(sales):
+        record.sold_at = day0 - timedelta(days=d)
+    db.sales_history.insert_many(sales)
     gate = owner_a.get("/api/owner/insights", headers=HEADERS).json()["gates"]["demand"]
     assert not gate["shown"] and gate["reason"] == "Not enough sales data yet: 23 of 56 days"
     assert gate["progress"] == [{"label": "days", "have": 23, "need": 56},

@@ -150,7 +150,8 @@ CALLBACK_ORDER = tuple(CALLBACK_FIELDS)  # the order held callbacks are applied 
 
 @dataclass(frozen=True)
 class Template:
-    """An approved utility template (docs/whatsapp-templates.md): its name at Meta, the role of the recipient it is
+    """A utility template (docs/whatsapp-templates.md; its approval at Meta, in each language it is sent in, is a
+    precondition for sending it, not something the code checks): its name at Meta, the role of the recipient it is
     for, the actions of its quick-reply buttons, in order, and the category it is submitted under (Meta decides the
     one it charges, which the status callbacks report: meta_category)."""
 

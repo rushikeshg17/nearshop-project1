@@ -1,4 +1,4 @@
-"""Migration 6: sales-report imports (P7.2).
+"""Migration 10: sales-report imports (P7.2).
 
 Shops upload the sales report their billing app exports (app/services/importer.py), and each line becomes a
 sales_history row with source import. This migration only adds:

@@ -312,7 +312,10 @@ def _transition(db: Database, order_id: int, action: str, user: User | None, rea
             close_reason = reason = None
         changes.update(stock_held=False, closed_at=now, close_reason=close_reason)
     elif action == "fail":
-        changes["close_reason"] = (reason or "").strip() or None
+        close_reason = (reason or "").strip() or None
+        if close_reason in RESERVED_REASONS:  # never stored from a typed reason (the arrival-failure KPI reads them)
+            close_reason = reason = None
+        changes["close_reason"] = close_reason
 
     db.orders.set(order, **changes)
 

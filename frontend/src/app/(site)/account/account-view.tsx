@@ -140,7 +140,7 @@ export function AccountView() {
             </section>
           </div>
 
-          <aside className="space-y-8">
+          <aside className="min-w-0 space-y-8">
             {d.recommendations.length > 0 && (
               <section>
                 <h2 className="flex items-center gap-2 font-semibold"><Sparkles className="size-4 text-brand" /> {t("transactions.account.nextTitle")}</h2>

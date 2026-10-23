@@ -1,4 +1,4 @@
-"""Migration 5: the synonyms collection, with the 42 entries that were a dictionary in code (P5.4).
+"""Migration 9: the synonyms collection, with the 42 entries that were a dictionary in code (P5.4).
 
 Search synonyms used to be SYNONYMS in app/utils/text.py, so any change needed a code deploy. Admins now
 manage them on the Synonyms page (app/services/synonyms.py). This migration only adds:

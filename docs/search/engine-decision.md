@@ -117,9 +117,10 @@ What the 50,000-listing run shows, even on synthetic rows:
 - Search p95 grows from tens of milliseconds to about 400 ms. That is inside the 600 ms target (check 4.4), but
   on a laptop next to its database. Operations per search rise from about 6 to about 9, because the listing
   fetch and the text-index result need getMore batches.
-- Both of today's stages work city-wide. The text index scores every matching listing in the city, and the
-  in-process index scores every active listing (a 50,000 by 384 float32 matrix, about 77 MB in each API
-  process). Only then does search keep the listings of the shops in radius. P8.2 has to scope this.
+- Both stages worked city-wide when this was measured. The text index scored every matching listing in the city,
+  and the in-process index scored every active listing (a 50,000 by 384 float32 matrix, about 77 MB in each API
+  process). Only then did search keep the listings of the shops in radius. P8.2 has since scoped both stages to the
+  shops in radius: see "Stages scoped to nearby shops (P8.2, done)" below.
 
 ### Candidates 2 to 4
 

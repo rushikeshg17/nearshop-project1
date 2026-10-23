@@ -112,7 +112,7 @@ SHORTEST_TERM_DAYS = {Period.YEAR: 365, Period.MONTH: 28}  # a reminder stage mu
 REMINDER_WINDOW = timedelta(days=max(REMINDER_DAYS) + 1)
 QUARTER_MONTHS = 3
 PERIOD_MONTHS = {Period.YEAR: 12, Period.MONTH: 1}
-PLAN_LINK = "/owner/plan"
+PLAN_LINK = "/shop/billing"  # the plan is shown on the billing page (P9.10)
 AUTOPAY_MANDATES = "autopay_mandates"  # app/services/gateway.py MANDATES (P9.6), read here without importing it
 AUTOPAY_RENEWING = "authorised"  # the mandate status under which the gateway debits each month
 ADVANCE_ALERT_WARNING = "advance subscription not active"

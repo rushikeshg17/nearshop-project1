@@ -535,7 +535,7 @@
       "hintCustomer": "Sign in with a customer account to reserve.",
       "hintOut": "Out of stock here. Compare other shops below.",
       "hintPickupOnly": "Pickup only. Held {minutes} min after the shop confirms.",
-      "hintDelivery": "Delivery {fee} · {distance} away · Cash on delivery",
+      "hintDelivery": "Delivery {fee} · {distance} away · Pay the shop on delivery: cash, or UPI if the shop takes it",
       "free": "free",
       "hintPayAtShop": "Pay at the shop. No online payment.",
       "hours": "Hours {hours}",

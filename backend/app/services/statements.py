@@ -116,7 +116,7 @@ REASON_MAX = 300
 REASON_WAIT = timedelta(hours=24)
 REPLY_WINDOW = timedelta(days=35)
 KEEP_YEARS = leads.COUNTS_KEEP_YEARS  # business records, kept as long as the lead counts they state
-LINK = "/owner/statements"
+LINK = "/shop/statements"
 SYNC_BATCH = 500
 SYNC_DAYS = 40  # outbox rows live 30 days from their creation, and a resent row is created up to RESEND_WITHIN later
 RESEND_ERRORS = ("window_closed", "stale")  # cancelled by the sender before any attempt: sent again by template
