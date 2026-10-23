@@ -1,10 +1,10 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Navigation, PackageX, Phone, Search, Star, X } from "lucide-react";
+import { ArrowLeft, Navigation, PackageX, Phone, Search, Star, WifiOff, X } from "lucide-react";
 import { motion, MotionConfig } from "motion/react";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 
 import { ProductThumb } from "@/components/common/product-thumb";
@@ -17,7 +17,14 @@ import { ReviewDialog } from "@/components/fulfillment/review-dialog";
 import { ShopMap } from "@/components/map/shop-map";
 import { useI18n } from "@/components/providers";
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/api";
+import {
+  forgetOfflineReservation,
+  type OfflineReservation,
+  readOfflineReservation,
+  storeOfflineReservation,
+  useMe,
+} from "@/hooks/use-session";
+import { api, ApiError } from "@/lib/api";
 import { formatNumber, formatPrice } from "@/lib/format";
 import type { Translate } from "@/lib/i18n";
 import type { Reservation } from "@/lib/types";
@@ -68,15 +75,47 @@ const HEADLINE: Record<string, { title: (t: Translate) => string; body: (r: Rese
   },
 };
 
+function subscribeToConnectivity(onChange: () => void) {
+  window.addEventListener("online", onChange);
+  window.addEventListener("offline", onChange);
+  return () => {
+    window.removeEventListener("online", onChange);
+    window.removeEventListener("offline", onChange);
+  };
+}
+
 export function ReservationView({ id }: { id: number }) {
   const { t } = useI18n();
   const qc = useQueryClient();
   const [reviewOpen, setReviewOpen] = useState(false);
+  const { data: me } = useMe();
   const q = useQuery({
     queryKey: ["reservation", id],
     queryFn: () => api.get<Reservation>(`/reservations/${id}`),
     refetchInterval: (query) => (["REQUESTED", "CONFIRMED", "READY_FOR_PICKUP"].includes(query.state.data?.status ?? "") ? 8_000 : false),
   });
+  const offline = useSyncExternalStore(subscribeToConnectivity, () => !navigator.onLine, () => false);
+
+  // Offline codes (P7.12): the copy kept on this phone, read once when the page opens. While signed in, each load of
+  // an open reservation refreshes the copy, and a closed one, or one this account can no longer see, removes it.
+  const [stored, setStored] = useState<OfflineReservation | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    readOfflineReservation(id).then((entry) => {
+      if (!cancelled) setStored(entry);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+  const signedIn = !!me;
+  useEffect(() => {
+    if (signedIn && q.data) storeOfflineReservation(q.data);
+  }, [signedIn, q.data, q.dataUpdatedAt]);
+  const gone = q.error instanceof ApiError && (q.error.status === 403 || q.error.status === 404);
+  useEffect(() => {
+    if (gone) forgetOfflineReservation(id);
+  }, [gone, id]);
   const cancel = useMutation({
     mutationFn: (reason: string | null) => api.post<Reservation>(`/reservations/${id}/cancel`, { reason }),
     onSuccess: (r) => {
@@ -96,6 +135,8 @@ export function ReservationView({ id }: { id: number }) {
     },
   });
 
+  // Without a network, the saved copy, at once: not after the request's retries have run out.
+  if (!q.data && stored && !gone && (offline || q.isError)) return <OfflineReservationView r={stored} />;
   if (q.isError) return <div className="mx-auto max-w-3xl px-4 py-12"><ErrorState error={q.error} onRetry={() => q.refetch()} /></div>;
   const r = q.data;
   if (!r) return <div className="mx-auto max-w-3xl px-4 py-12"><ListSkeleton rows={3} /></div>;
@@ -237,5 +278,40 @@ export function ReservationView({ id }: { id: number }) {
         {reviewOpen && <ReviewDialog item={r} open onOpenChange={setReviewOpen} />}
       </div>
     </MotionConfig>
+  );
+}
+
+/** The reservation as saved on this phone, shown without a network (P7.12): the code, the item, the shop and when
+ * it was saved, with a note that it may be out of date. */
+function OfflineReservationView({ r }: { r: OfflineReservation }) {
+  const { t, info } = useI18n();
+  const savedAt = new Intl.DateTimeFormat(info.htmlLang, { dateStyle: "medium", timeStyle: "short" }).format(new Date(r.saved_at));
+  return (
+    <div className="mx-auto max-w-3xl px-4 pt-6 md:px-6 md:pt-10">
+      <Link href="/account" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+        <ArrowLeft className="size-4" /> {t("transactions.common.yourActivity")}
+      </Link>
+      <section aria-labelledby="offline-code-title" className="mt-4 rounded-3xl border border-brand/30 bg-brand-soft/50 p-6">
+        <StatusBadge status={r.status} kind="reservation" />
+        <h1 id="offline-code-title" className="mt-3 text-2xl font-semibold md:text-3xl">{t("shell.offline.savedCodeTitle")}</h1>
+        <section aria-labelledby="offline-code-label" className="mt-6 rounded-2xl border-2 border-dashed border-brand/50 bg-card p-5 text-center">
+          <p id="offline-code-label" className="text-sm font-semibold">{t("transactions.reservation.showAtCounter")}</p>
+          <p className="mt-2 font-mono text-5xl font-bold tracking-[0.25em] tabular sm:text-6xl" data-testid="offline-code">
+            {r.code.replace(/^R-/, "")}
+          </p>
+          <p className="mt-2 text-sm">{r.product.name} × {formatNumber(r.quantity)}</p>
+        </section>
+        <div className="mt-6">
+          <p className="font-semibold">{r.shop.name}</p>
+          <p className="mt-0.5 text-sm text-muted-foreground">{r.shop.address_line}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{r.shop.hours_label}</p>
+        </div>
+        <p className="mt-6 flex items-center gap-2 text-sm font-medium" data-testid="offline-saved-at">
+          <WifiOff className="size-4 shrink-0" aria-hidden />
+          {t("shell.offline.savedAt", { time: savedAt })}
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">{t("shell.offline.mayBeOutdated")}</p>
+      </section>
+    </div>
   );
 }

@@ -61,7 +61,18 @@
     },
     "homeLabel": "",
     "themeToggle": "",
-    "demoBanner": ""
+    "demoBanner": "",
+    "offline": {
+      "banner": "",
+      "title": "",
+      "body": "",
+      "retry": "",
+      "savedCodeTitle": "",
+      "showAtCounter": "",
+      "savedAt": "",
+      "mayBeOutdated": "",
+      "home": ""
+    }
   },
   "common": {
     "states": {

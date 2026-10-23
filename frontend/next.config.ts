@@ -43,6 +43,17 @@ function sentryEnvironment(): string {
 }
 const SENTRY_RELEASE = process.env.VERCEL_GIT_COMMIT_SHA ?? "";
 
+// The build id (P7.12): NEARSHOP_BUILD_ID when the build sets one, else the Vercel deployment's id, else a fresh value
+// per build. It versions the service worker (public/sw.js, registered as /sw.js?v=<build id> by
+// src/components/site/sw-register.tsx), whose shell and page caches are named after it, so each deploy installs a new
+// worker that drops the previous build's caches. A fresh value is written back to the environment, so the build's
+// worker processes, which load this file again, use the same one.
+const BUILD_ID =
+  process.env.NEARSHOP_BUILD_ID?.trim() ||
+  process.env.VERCEL_DEPLOYMENT_ID?.trim() ||
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+process.env.NEARSHOP_BUILD_ID = BUILD_ID;
+
 // Content security policy (P2.6, plan section 8.13; every header and the reasons: docs/security/headers.md).
 // Header-only, without nonces: nonces would make every page render dynamically, which turns off static output,
 // ISR and CDN caching. So inline scripts, which hydration needs without nonces, are allowed, and eval only in
@@ -148,6 +159,7 @@ function siteHeaders(): { key: string; value: string }[] {
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
+  generateBuildId: () => BUILD_ID,
   // Off unless the build sets it to "true". A default is needed so the flag is always inlined as a
   // constant: an unset NEXT_PUBLIC_ variable is not, and the demo-account module would then ship.
   // The Sentry values have defaults for the same reason: always inlined, so a build without a DSN ships
@@ -157,6 +169,7 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_SENTRY_DSN: process.env.NEXT_PUBLIC_SENTRY_DSN ?? "",
     NEXT_PUBLIC_SENTRY_ENVIRONMENT: sentryEnvironment(),
     NEXT_PUBLIC_SENTRY_RELEASE: SENTRY_RELEASE,
+    NEXT_PUBLIC_NEARSHOP_BUILD_ID: BUILD_ID,
   },
   // next/image accepts remote images only from these patterns.
   images: { remotePatterns: MEDIA_BASE_URL ? [mediaPattern(MEDIA_BASE_URL)] : [] },
@@ -172,8 +185,23 @@ const nextConfig: NextConfig = {
   // Strict-Transport-Security is left to Vercel, which sends a two-year max-age with includeSubDomains and
   // preload on every response (docs/security/headers.md). /api and /media are proxied to the API, whose
   // responses carry its own set (backend/app/core/security_headers.py), so they are left out here.
+  //
+  // The service worker (P7.12), as the Next.js progressive web apps guide sets it: never cached, so a deploy's new
+  // worker is found on the next launch, and a policy of its own, which governs the worker: it may load and fetch
+  // from this site only. The worker-src directive of the site policy above already allows a worker from the site.
+  // It comes after the site's headers, so its own policy replaces the site's when that is enforced.
   async headers() {
-    return [{ source: "/((?!api(?:/|$)|media(?:/|$)).*)", headers: siteHeaders() }];
+    return [
+      { source: "/((?!api(?:/|$)|media(?:/|$)).*)", headers: siteHeaders() },
+      {
+        source: "/sw.js",
+        headers: [
+          { key: "Content-Type", value: "application/javascript; charset=utf-8" },
+          { key: "Cache-Control", value: "no-cache, no-store, must-revalidate" },
+          { key: "Content-Security-Policy", value: "default-src 'self'; script-src 'self'" },
+        ],
+      },
+    ];
   },
 };
 

@@ -3,6 +3,7 @@ import { Geist, Geist_Mono, Noto_Sans_Kannada } from "next/font/google";
 import { cookies, headers } from "next/headers";
 
 import { Providers } from "@/components/providers";
+import { ServiceWorkerRegister } from "@/components/site/sw-register";
 import { CLIENT_AREAS, languageInfo, pickAreas, requestI18n, type ScriptFont, servableLanguages } from "@/lib/i18n";
 
 import "./globals.css";
@@ -66,6 +67,8 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
       <body className="min-h-dvh antialiased">
         <Providers language={language} languages={languages} messages={pickAreas(messages, CLIENT_AREAS)}>
           {children}
+          {/* The installable app's worker and the offline notice (P7.12). */}
+          <ServiceWorkerRegister />
         </Providers>
       </body>
     </html>

@@ -61,7 +61,18 @@
     },
     "homeLabel": "NearShop home",
     "themeToggle": "Toggle dark mode",
-    "demoBanner": "Demo with generated data. Do not enter real personal details."
+    "demoBanner": "Demo with generated data. Do not enter real personal details.",
+    "offline": {
+      "banner": "You are offline. Pages you opened before still work; anything new waits for the network.",
+      "title": "You are offline",
+      "body": "This page has not been saved on this phone. Check your connection and try again.",
+      "retry": "Try again",
+      "savedCodeTitle": "Your saved pickup code",
+      "showAtCounter": "Show this at the counter",
+      "savedAt": "Saved at {time}",
+      "mayBeOutdated": "Saved while you were online, so it may be out of date. The shop has the current status.",
+      "home": "Home"
+    }
   },
   "common": {
     "states": {
