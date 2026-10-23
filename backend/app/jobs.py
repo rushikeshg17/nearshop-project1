@@ -54,6 +54,10 @@ unmatched NEARSHOP_BILLING_UNMATCHED_ALERT_WORKING_DAYS (3) working days after i
 (app/services/billing.py alert_unmatched), once per credit; the day it ran for is kept in the lease's last_result
 (ran_for), like lead_counts. A gateway that cannot be reached is logged and the alert still runs; the next day's run
 reads the missed day's report again (NEARSHOP_AUTOPAY_RECONCILE_DAYS).
+boost (P10.12, app/services/boost.py), every tick, closes the Boost periods that have ended (a period with no request
+earns its free make-good period, once per purchase; any other ends), and once per IST day (the first tick of the day)
+records each city's eligibility figures and pauses the packs of a city below a threshold, or resumes them with the
+paused days added back; the day the daily part ran for is kept in the lease's last_result (ran_for).
 demand_report (P9.7), once a week, on Monday at 03:00 IST or on the first tick after it, builds the "asked for near you"
 report of every verified live shop and draws R5's weekly audit sample (app/services/demand_report.py build_week); the
 ISO week it ran for is kept in the lease's last_result (ran_for), like lead_counts. Counts only, never a query.
@@ -70,6 +74,11 @@ level, lowest first (app/services/alerts.py send_low_stock_alerts): in the app a
 as a free-form message inside the owner's open window, otherwise as the template. The day it considered a shop is
 recorded on the shop with a conditional write, so a shop gets at most one alert a day; a Free shop, a shop with
 nothing low and a shop with the alert off get none. It runs beside the stock check and never replaces it.
+kpis (P9.12, app/services/kpis.py run_job), every tick: once per IST day it records the gate city's median stock age
+(kpi_days, for the consecutive fresh weeks), and once a month, on the 2nd at 06:00 IST or on the first tick after it,
+it stores the previous month's snapshot of every gate figure (kpi_snapshots), which is never changed afterwards; the
+day and the month it ran for are kept in the lease's last_result (reading_for, snapshot_for), so every other tick
+does nothing. Nothing is recorded from demo data.
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -141,9 +150,11 @@ RETRY_AFTER_FAILURE: dict[str, timedelta] = {"snapshot_storage": timedelta(hours
                                               "phone_migration": timedelta(hours=1),
                                               "stock_check": timedelta(minutes=15), "lead_counts": timedelta(hours=1),
                                               "billing_reconciliation": timedelta(hours=1),
+                                              "boost": timedelta(minutes=15),
                                               "demand_report": timedelta(hours=1),
                                               "statements": timedelta(minutes=15),
-                                              "low_stock_alerts": timedelta(minutes=15)}
+                                              "low_stock_alerts": timedelta(minutes=15),
+                                              "kpis": timedelta(hours=1)}
 RETENTION_AT = time(21, 30)  # UTC: 03:00 IST, the nightly retention job (P3.2)
 # The phone migration (P4.2): in-app warnings this many days before the email sign-in sunset, and accounts still
 # without a verified phone switched off this many days after it.
@@ -161,9 +172,11 @@ LEAD_COUNTS_JOB = "lead_counts"  # the monthly lead counts per shop (P9.2)
 LEAD_COUNTS_AT = time(2, 0)  # IST, on the 1st of each month
 SUBSCRIPTIONS_JOB = "subscriptions"  # plans and subscriptions (P9.4)
 BILLING_JOB = "billing_reconciliation"  # the daily unmatched-credit alert (P9.5)
+BOOST_JOB = "boost"  # Boost periods every tick, city eligibility once per IST day (P10.12)
 DEMAND_REPORT_JOB = "demand_report"  # the weekly "asked for near you" report (P9.7)
 STATEMENTS_JOB = "statements"  # the monthly statements (P9.9)
 LOW_STOCK_ALERTS_JOB = "low_stock_alerts"  # the daily low-stock alert for Growth shops (P9.14)
+KPIS_JOB = "kpis"  # the gate KPIs' daily reading and monthly snapshot (P9.12)
 
 RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
@@ -514,6 +527,22 @@ def billing_reconciliation(clock: Clock = utcnow) -> dict[str, Any]:
     return {"ran_for": today, **billing.alert_unmatched(db, now), "autopay": autopay}
 
 
+def boost(clock: Clock = utcnow) -> dict[str, Any]:
+    """Boost packs (P10.12, app/services/boost.py): the periods that have ended, every tick; the city eligibility check
+    with pausing and resuming, once per IST day (ran_for in the lease's last_result). A failed run is retried 15 minutes
+    later (RETRY_AFTER_FAILURE)."""
+    from app.services import boost as boost_service
+
+    now = clock()
+    today = ist_day(now).isoformat()
+    db = Database()
+    result: dict[str, Any] = dict(boost_service.end_periods(db, now))
+    last = (db.mongo[LEASES].find_one({"_id": BOOST_JOB}, {"last_result": 1}) or {}).get("last_result") or {}
+    if last.get("ok") is True and last.get("ran_for") == today:
+        return {**result, "ran_for": today, "daily": last.get("daily")}
+    return {**result, "ran_for": today, "daily": boost_service.run_daily(db, now)}
+
+
 def demand_report(clock: Clock = utcnow) -> dict[str, Any]:
     """The weekly demand report (P9.7, app/services/demand_report.py build_week), once per week from Monday 03:00 IST:
     the ISO week it ran for is kept in the lease's last_result (ran_for), and every later tick that week only repeats
@@ -559,13 +588,27 @@ def low_stock_alerts(clock: Clock = utcnow) -> dict[str, Any]:
     return alerts.send_low_stock_alerts(Database(), clock())
 
 
+def kpis(clock: Clock = utcnow) -> dict[str, Any]:
+    """The gate KPIs (P9.12, app/services/kpis.py run_job): the day's median stock age reading once per IST day, and
+    the previous month's snapshot from the 2nd at 06:00 IST, each once (reading_for and snapshot_for in the lease's
+    last_result). A failed run is retried an hour later (RETRY_AFTER_FAILURE)."""
+    from app.services import kpis as service
+
+    now = clock()
+    db = Database()
+    last = (db.mongo[LEASES].find_one({"_id": KPIS_JOB}, {"last_result": 1}) or {}).get("last_result") or {}
+    if last.get("ok") is not True:
+        last = {}
+    return service.run_job(db, now, last)
+
+
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {
     "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage, "retention": retention,
     "process_deletions": process_deletions, PHONE_MIGRATION_JOB: phone_migration,
     SEND_NOTIFICATIONS_JOB: send_notifications, STOCK_CHECK_JOB: stock_check, LEAD_COUNTS_JOB: lead_counts,
-    SUBSCRIPTIONS_JOB: subscriptions, BILLING_JOB: billing_reconciliation, DEMAND_REPORT_JOB: demand_report,
-    STATEMENTS_JOB: statements,
-    LOW_STOCK_ALERTS_JOB: low_stock_alerts}
+    SUBSCRIPTIONS_JOB: subscriptions, BILLING_JOB: billing_reconciliation, BOOST_JOB: boost,
+    DEMAND_REPORT_JOB: demand_report, STATEMENTS_JOB: statements, LOW_STOCK_ALERTS_JOB: low_stock_alerts,
+    KPIS_JOB: kpis}
 
 
 class SearchIndexRefresher:

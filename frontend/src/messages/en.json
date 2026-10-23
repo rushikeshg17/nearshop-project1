@@ -486,7 +486,11 @@
         "stale": "Stock not confirmed recently"
       },
       "callOnly": "Call the shop to check",
-      "callShop": "Call {shop}"
+      "callShop": "Call {shop}",
+      "sponsored": {
+        "label": "Sponsored",
+        "name": "{label}: {name}, from {price}"
+      }
     },
     "product": {
       "opening": "Opening…",
@@ -1155,7 +1159,8 @@
         "settings": "Shop settings",
         "statements": "Statements",
         "billing": "Plan and billing",
-        "staff": "Staff"
+        "staff": "Staff",
+        "boost": "Boost"
       },
       "staffPausedTitle": "Your staff access is paused",
       "staffPausedBody": "The shop's plan allows fewer logins just now, or the owner removed you. Ask the shop's owner.",
@@ -2166,6 +2171,106 @@
         "cancel": "Cancel"
       },
       "removed": "{name} was removed"
+    },
+    "boost": {
+      "title": "Boost",
+      "subtitle": "One clearly labelled sponsored card on search results near your shop. It never changes the ordinary results or your ratings.",
+      "city": {
+        "heading": "Boost in {city}",
+        "asOf": "Checked on {date}",
+        "notChecked": "Your city has not been checked yet",
+        "eligible": "Boost on sale",
+        "notEligible": "Not on sale",
+        "none": "–",
+        "verifiedShops": "Verified shops",
+        "monthlyCustomers": "Monthly customers, lowest in {weeks} weeks",
+        "medianStockAge": "Median stock age",
+        "hours": "{count} h",
+        "atLeast": "Needs {count} or more",
+        "atMost": "Needs {count} h or less"
+      },
+      "reasons": {
+        "heading": "You cannot buy a pack right now:",
+        "salesOff": "Boost sales have not started yet.",
+        "shopNotLive": "Your shop is not live for customers.",
+        "noRecentCheck": "Your city has no recent daily check.",
+        "verifiedShops": "Your city has too few verified shops.",
+        "medianStockAge": "Stock in your city is not updated often enough.",
+        "customerWeeks": "Your city does not have 4 full weeks of customer figures yet.",
+        "monthlyCustomers": "Your city has too few monthly customers."
+      },
+      "how": {
+        "heading": "How Boost works",
+        "labelText": "Sponsored",
+        "label": "Your item appears once per results page, at place {position}, marked \"{label}\".",
+        "fresh": "It shows only when the item is in stock and its stock was updated in the last {hours} hours.",
+        "organic": "The ordinary results, their order and ratings stay exactly the same.",
+        "makeGood": "If a period brings no customer requests, the next period is free, automatically.",
+        "pause": "If your city falls below a threshold, your pack pauses and the days are added back."
+      },
+      "kind": {
+        "standard": "30-day pack",
+        "festive": "Festive pack"
+      },
+      "status": {
+        "pending": "Waiting for payment",
+        "active": "Running",
+        "paused": "Paused",
+        "ended": "Ended",
+        "makeGood": "Free period"
+      },
+      "buy": {
+        "heading": "Buy a pack",
+        "kindLabel": "Pack",
+        "terms": "{days} days, up to {count} item groups",
+        "discount": "{pct}% off with your plan",
+        "groupsHeading": "Choose up to {count} item groups",
+        "groupsHint": "Categories or catalogue items. The card shows your matching item when a customer searches for it.",
+        "chosen": "Chosen item groups",
+        "remove": "Remove {name}",
+        "categories": "Categories",
+        "items": "Catalogue items in your shop",
+        "searchLabel": "Search your catalogue items",
+        "searchPlaceholder": "Search your items",
+        "noItems": "No catalogue items match.",
+        "button": "Buy for {price}",
+        "gstNote": "You pay by UPI to NearShop; the pack starts when the payment is matched.",
+        "replacesPending": "Buying now replaces your unpaid pack and cancels its payment request {number}. Pay only the new request.",
+        "done": "Pack ordered. Pay with the note {number}."
+      },
+      "pay": {
+        "title": "Pay NearShop by UPI",
+        "body": "Pay {price} to {payee} from any UPI app.",
+        "qrLabel": "QR code to pay {price} to {payee}",
+        "button": "Pay {price}",
+        "scanHint": "Or scan the QR code from another phone.",
+        "payee": "Payee",
+        "upiId": "UPI ID",
+        "amount": "Amount",
+        "gst": "{amount} + GST {gst}",
+        "note": "Note",
+        "after": "Keep the note as it is: it is how we match your payment. Your pack starts once it is matched."
+      },
+      "packs": {
+        "heading": "Your packs",
+        "none": "You have no Boost packs yet.",
+        "period": "{start} to {end}",
+        "awaiting": "Waiting for payment {number}",
+        "replaced": "Replaced by a newer pack before it was paid. Its payment request {number} is cancelled: do not pay it.",
+        "refunded": "Ended: its payment was refunded.",
+        "price": "{price} for {days} days",
+        "impressions": "Shown",
+        "clicks": "Opened",
+        "ctr": "{pct}% of views",
+        "requests": "Customer requests",
+        "makeGoodRunning": "This is your free period: the last one brought no customer requests.",
+        "makeGoodEarned": "A free period was earned for this pack.",
+        "makeGoodOpen": "Customer requests this period: {count}. With none, the next period is free.",
+        "paused": "Paused while your city is below a threshold. The days will be added back.",
+        "daysAdded": "{days} days added back for pauses",
+        "byDay": "Day by day",
+        "day": "Day"
+      }
     }
   },
   "support": {

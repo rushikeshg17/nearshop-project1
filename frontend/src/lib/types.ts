@@ -306,6 +306,30 @@ export interface SearchResponse {
   shops: MapPin[];
   category_counts: Record<string, number>;
   engine: { semantic: string; keyword: string };
+  /** Boost (P10.12, P10.13): at most one sponsored card, on the first page only, never part of groups. Absent when
+   * no pack serves this search. */
+  sponsored?: SponsoredCard;
+}
+
+/** The sponsored card of a results page (Boost, P10.12; plan section 8.22). It is carried apart from the organic
+ * groups, which are exactly what they would be without it, and shown at `position` (1-based among the first page's
+ * cards). `token` is posted to /api/search/sponsored-click when the card is opened. */
+export interface SponsoredCard {
+  position: number;
+  sponsored: true;
+  /** The API's English label; the screens show their own translated, reviewed wording. */
+  label: string;
+  token: string;
+  key: string;
+  catalog_item_id: number | null;
+  name: string;
+  brand: string | null;
+  unit: string | null;
+  icon: string;
+  image_url: string | null;
+  thumbnail_url: string | null;
+  category: string;
+  listing: Listing & { shop: ShopBrief };
 }
 
 export interface Suggestions {
@@ -1123,4 +1147,109 @@ export interface StaffOverview {
   staff: StaffMember[];
   logins: { limit: number; used: number; available: number };
   plan: { code: string; name: string; status: string; ends_at: string | null };
+}
+
+// ---------------------------------------------------------------- Boost (P10.12, P10.13; plan section 8.22)
+
+export type BoostPackKind = "standard" | "festive";
+export type BoostPackStatus = "pending" | "active" | "paused" | "ended" | "make_good";
+/** Why the shop cannot buy a pack now (GET /owner/boost/eligibility). */
+export type BoostReason =
+  | "sales_off"
+  | "shop_not_live"
+  | "city_no_recent_check"
+  | "city_verified_shops"
+  | "city_median_stock_age"
+  | "city_customer_weeks"
+  | "city_monthly_customers";
+
+/** What a pack of one kind costs this shop now: the list price less its plan's Boost discount. */
+export interface BoostQuote {
+  kind: BoostPackKind;
+  list_price_paise: number;
+  days: number;
+  max_groups: number;
+  discount_pct: number;
+  amount_paise: number;
+  plan_code: string;
+  plan_version: number;
+}
+
+/** The shop's city against the three thresholds, from the daily check (the latest row, today's or yesterday's). */
+export interface BoostCity {
+  city: string;
+  name: string;
+  eligible: boolean;
+  reasons: string[];
+  as_of: string | null;
+  verified_shops: number | null;
+  median_stock_age_hours: number | null;
+  monthly_customers: number | null;
+  lowest_monthly_customers: number | null;
+  days_checked: number;
+  thresholds: { verified_shops: number; monthly_customers: number; customer_weeks: number; median_stock_age_hours: number };
+}
+
+/** GET /owner/boost/eligibility. */
+export interface BoostEligibility {
+  can_buy: boolean;
+  reasons: BoostReason[];
+  sales_enabled: boolean;
+  city: BoostCity;
+  label: string;
+  slot_position: number;
+  fresh_hours: number;
+  packs: BoostQuote[];
+}
+
+export interface BoostGroup {
+  type: "category" | "item";
+  id: number;
+  name: string;
+}
+
+export interface BoostDayStats {
+  day: string;
+  impressions: number;
+  clicks: number;
+  requests: number;
+}
+
+/** One pack (GET /owner/boost/packs), with its impressions, clicks and requests per IST day and in total. */
+export interface BoostPack {
+  id: number;
+  kind: BoostPackKind;
+  status: BoostPackStatus;
+  groups: BoostGroup[];
+  days: number;
+  list_price_paise: number;
+  discount_pct: number;
+  amount_paise: number;
+  payment_request_number: string | null;
+  paid_at: string | null;
+  period_start: string | null;
+  ends_at: string | null;
+  make_good_used: boolean;
+  paused_at: string | null;
+  pause_reason: string | null;
+  paused_days_added: number;
+  ended_at: string | null;
+  end_reason: string | null;
+  period_requests: number;
+  totals: { impressions: number; clicks: number; requests: number };
+  by_day: BoostDayStats[];
+}
+
+/** A payment request to NearShop (P9.5) as the owner pays it, with NearShop's UPI ID, payee name, the total and the
+ * request number as the note. Only the fields the Boost page reads. */
+export interface BoostPaymentRequest {
+  id: number;
+  number: string;
+  purpose: string;
+  amount_paise: number;
+  gst_paise: number;
+  total_paise: number;
+  status: string;
+  boost_pack_id: number | null;
+  pay_to: { upi_id: string; payee_name: string; amount: string; note: string };
 }

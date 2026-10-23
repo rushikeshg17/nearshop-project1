@@ -486,7 +486,11 @@
         "stale": ""
       },
       "callOnly": "",
-      "callShop": ""
+      "callShop": "",
+      "sponsored": {
+        "label": "",
+        "name": ""
+      }
     },
     "product": {
       "opening": "",
@@ -1155,7 +1159,8 @@
         "settings": "",
         "statements": "",
         "billing": "",
-        "staff": ""
+        "staff": "",
+        "boost": ""
       },
       "staffPausedTitle": "",
       "staffPausedBody": "",
@@ -2166,6 +2171,106 @@
         "cancel": ""
       },
       "removed": ""
+    },
+    "boost": {
+      "title": "",
+      "subtitle": "",
+      "city": {
+        "heading": "",
+        "asOf": "",
+        "notChecked": "",
+        "eligible": "",
+        "notEligible": "",
+        "none": "",
+        "verifiedShops": "",
+        "monthlyCustomers": "",
+        "medianStockAge": "",
+        "hours": "",
+        "atLeast": "",
+        "atMost": ""
+      },
+      "reasons": {
+        "heading": "",
+        "salesOff": "",
+        "shopNotLive": "",
+        "noRecentCheck": "",
+        "verifiedShops": "",
+        "medianStockAge": "",
+        "customerWeeks": "",
+        "monthlyCustomers": ""
+      },
+      "how": {
+        "heading": "",
+        "labelText": "",
+        "label": "",
+        "fresh": "",
+        "organic": "",
+        "makeGood": "",
+        "pause": ""
+      },
+      "kind": {
+        "standard": "",
+        "festive": ""
+      },
+      "status": {
+        "pending": "",
+        "active": "",
+        "paused": "",
+        "ended": "",
+        "makeGood": ""
+      },
+      "buy": {
+        "heading": "",
+        "kindLabel": "",
+        "terms": "",
+        "discount": "",
+        "groupsHeading": "",
+        "groupsHint": "",
+        "chosen": "",
+        "remove": "",
+        "categories": "",
+        "items": "",
+        "searchLabel": "",
+        "searchPlaceholder": "",
+        "noItems": "",
+        "button": "",
+        "gstNote": "",
+        "replacesPending": "",
+        "done": ""
+      },
+      "pay": {
+        "title": "",
+        "body": "",
+        "qrLabel": "",
+        "button": "",
+        "scanHint": "",
+        "payee": "",
+        "upiId": "",
+        "amount": "",
+        "gst": "",
+        "note": "",
+        "after": ""
+      },
+      "packs": {
+        "heading": "",
+        "none": "",
+        "period": "",
+        "awaiting": "",
+        "replaced": "",
+        "refunded": "",
+        "price": "",
+        "impressions": "",
+        "clicks": "",
+        "ctr": "",
+        "requests": "",
+        "makeGoodRunning": "",
+        "makeGoodEarned": "",
+        "makeGoodOpen": "",
+        "paused": "",
+        "daysAdded": "",
+        "byDay": "",
+        "day": ""
+      }
     }
   },
   "support": {

@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 
 /** A listing's stock freshness from the API (P7.4): fresh within 48 hours (no label), aging up to 7 days
  * ("updated N days ago", ranked lower) and stale beyond ("stock not confirmed recently", ranked lower still). */
-type StockFreshness = { band: "fresh" | "aging" | "stale"; label: string | null };
+export type StockFreshness = { band: "fresh" | "aging" | "stale"; label: string | null };
 /** A call-only listing (P9.8, plan section 8.17): nobody has confirmed its stock for over 14 days (from 1 Jun 2027), so
  * it shows no stock band, offers no reservation or delivery, and asks the customer to call the shop on call_phone. */
 type CallOnly = { call_only?: boolean; call_phone?: string | null };
@@ -30,7 +30,7 @@ function CallOnlyLabel() {
   );
 }
 
-function FreshnessLabel({ freshness }: { freshness: StockFreshness }) {
+export function FreshnessLabel({ freshness }: { freshness: StockFreshness }) {
   const { t, language } = useI18n();
   if (!freshness.label) return null;
   const stale = freshness.band === "stale";

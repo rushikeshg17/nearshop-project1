@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { lazy, Suspense, useMemo, useState } from "react";
+import { Fragment, lazy, Suspense, useMemo, useState } from "react";
 
 import { AppIcon } from "@/components/common/app-icon";
 import { Distance, Rating } from "@/components/common/indicators";
@@ -32,13 +32,16 @@ import { api } from "@/lib/api";
 import { formatNumber, formatPrice } from "@/lib/format";
 import { plural, richText } from "@/lib/i18n";
 import { useLocation } from "@/lib/location";
-import type { MapPin, SearchResponse } from "@/lib/types";
+import type { MapPin, SearchResponse, SponsoredCard } from "@/lib/types";
 import { cn, revealFocused } from "@/lib/utils";
 
 // The filters sheet loads when the pointer or focus reaches its button and opens on the first tap; it is not
 // first-load JavaScript (P2.9).
 const loadFilters = () => import("@/components/search/search-filters");
 const SearchFiltersSheet = lazy(() => loadFilters().then((m) => ({ default: m.SearchFiltersSheet })));
+// The sponsored card (Boost, P10.13) loads only when a results page carries one, which almost no search does, so it
+// adds nothing to the route's first-load JavaScript (P2.9). While it loads, a placeholder of its size holds its place.
+const SponsoredResultCard = lazy(() => import("@/components/search/sponsored-card").then((m) => ({ default: m.SponsoredResultCard })));
 
 const SORTS = [
   { value: "relevance", label: "discovery.search.sort.relevance" },
@@ -46,6 +49,14 @@ const SORTS = [
   { value: "price_asc", label: "discovery.search.sort.priceAsc" },
   { value: "price_desc", label: "discovery.search.sort.priceDesc" },
 ] as const;
+
+function SponsoredSlot(props: { card: SponsoredCard; onHover: (shopIds: number[] | null) => void }) {
+  return (
+    <Suspense fallback={<div aria-hidden className="h-40 animate-pulse rounded-2xl border-2 border-info/40 bg-card" />}>
+      <SponsoredResultCard {...props} />
+    </Suspense>
+  );
+}
 
 export function SearchView() {
   const { t, language } = useI18n();
@@ -103,6 +114,11 @@ export function SearchView() {
   const first = query.data?.pages[0];
   const groups = useMemo(() => query.data?.pages.flatMap((p) => p.groups) ?? [], [query.data]);
   const pins: MapPin[] = useMemo(() => first?.shops ?? [], [first]);
+  // Boost (P10.13): the one sponsored card comes with the first page only (later pages never carry one, and any that
+  // did would be ignored), and goes in front of the organic card now at its 1-based position, or after the last one
+  // of a shorter list. Organic cards keep their own order and positions (the click positions count them only).
+  const sponsored = first?.sponsored;
+  const slot = sponsored ? Math.max(0, sponsored.position - 1) : -1;
   const points = useMemo(
     () =>
       pins.map((s) => ({
@@ -282,14 +298,17 @@ export function SearchView() {
           ) : (
             <div className={cn("space-y-3 transition-opacity", query.isFetching && !query.isFetchingNextPage && "opacity-60")}>
               {groups.map((g, i) => (
-                <ResultCard
-                  key={g.key}
-                  group={g}
-                  index={i}
-                  highlighted={!!selectedShop && g.offers.some((o) => o.shop.id === selectedShop)}
-                  onHover={setHoverShops}
-                />
+                <Fragment key={g.key}>
+                  {sponsored && slot === i && <SponsoredSlot card={sponsored} onHover={setHoverShops} />}
+                  <ResultCard
+                    group={g}
+                    index={i}
+                    highlighted={!!selectedShop && g.offers.some((o) => o.shop.id === selectedShop)}
+                    onHover={setHoverShops}
+                  />
+                </Fragment>
               ))}
+              {sponsored && slot >= groups.length && <SponsoredSlot card={sponsored} onHover={setHoverShops} />}
               {query.hasNextPage && (
                 <Button variant="outline" className="w-full" onClick={() => query.fetchNextPage()} disabled={query.isFetchingNextPage}>
                   {query.isFetchingNextPage ? <Loader2 className="animate-spin" /> : null} {t("discovery.search.showMore")}

@@ -230,6 +230,7 @@ LIMITS: tuple[Row, ...] = (
     Row(("GET",), (SEARCH_IP, SEARCH_SESSION), route="/api/search"),
     Row(("GET",), (SUGGEST_IP,), route="/api/search/suggest"),
     Row(("POST",), (SEARCH_CLICK_IP,), route="/api/search/click"),
+    Row(("POST",), (SEARCH_CLICK_IP,), route="/api/search/sponsored-click"),  # P10.12: a Boost card's click
     Row(("GET",), (SEARCH_COMPARE_IP,), route="/api/ai/search-compare"),
     Row(("POST",), (IMAGE_UPLOAD,), route="/api/owner/shop/image"),
     Row(("POST",), (IMAGE_UPLOAD,), route="/api/owner/products/{product_id}/image"),

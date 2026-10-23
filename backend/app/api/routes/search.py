@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.core.deps import DB, AdminUser, OptionalUser
+from app.services import boost, search_events
 from app.services import search as search_service
-from app.services import search_events
 from app.services.meta import city_config
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -92,6 +92,36 @@ def click(request: Request, response: Response, db: DB, user: OptionalUser,
             search_events.record_click(db, request, response, user, body.listing_id, body.group, body.position)
     except Exception as exc:  # a click is never worth an error
         search_events.log.warning("search click not recorded: %s", type(exc).__name__)
+    response.status_code = 204
+    return response
+
+
+class SponsoredClickIn(BaseModel):
+    """A sponsored card the customer opened (Boost, P10.12): the card's token."""
+
+    model_config = ConfigDict(extra="ignore")
+    token: str = Field(min_length=1, max_length=200)
+
+
+async def sponsored_click_body(request: Request) -> SponsoredClickIn | None:
+    try:
+        return SponsoredClickIn.model_validate_json(await request.body())
+    except (ValidationError, ValueError):
+        return None
+
+
+@router.post("/sponsored-click", status_code=204)
+def sponsored_click(request: Request, response: Response, db: DB,
+                    body: Annotated[SponsoredClickIn | None, Depends(sponsored_click_body)]) -> Response:
+    """Record a click on a sponsored card (app/services/boost.py): counted for its pack when the token is this
+    server's and recent, and remembered in this browser session's boost cookie so that a reservation or order there
+    today counts as a request for the pack. 204 whatever happens; signed in or not, nothing names the customer. Rate
+    limit: 120 per IP per minute (app/core/ratelimit.py)."""
+    try:
+        if body is not None:
+            boost.record_click(db, request, response, body.token)
+    except Exception as exc:  # a click is never worth an error
+        search_events.log.warning("sponsored click not recorded: %s", type(exc).__name__)
     response.status_code = 204
     return response
 
