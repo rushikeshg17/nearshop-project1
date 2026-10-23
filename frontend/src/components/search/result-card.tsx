@@ -1,12 +1,13 @@
 "use client";
 
-import { Bike, ChevronRight, Clock3, Footprints, Store } from "lucide-react";
+import { Bike, ChevronRight, Clock3, Footprints, Phone, Store } from "lucide-react";
 import Link from "next/link";
 import type { MouseEvent } from "react";
 
 import { Distance, Freshness, Rating, StockPill } from "@/components/common/indicators";
 import { ProductThumb } from "@/components/common/product-thumb";
 import { useI18n } from "@/components/providers";
+import { recordLead } from "@/lib/api";
 import { formatDistance, formatNumber, formatPrice, travelTime } from "@/lib/format";
 import { plural } from "@/lib/i18n";
 import type { ResultGroup } from "@/lib/types";
@@ -15,6 +16,19 @@ import { cn } from "@/lib/utils";
 /** A listing's stock freshness from the API (P7.4): fresh within 48 hours (no label), aging up to 7 days
  * ("updated N days ago", ranked lower) and stale beyond ("stock not confirmed recently", ranked lower still). */
 type StockFreshness = { band: "fresh" | "aging" | "stale"; label: string | null };
+/** A call-only listing (P9.8, plan section 8.17): nobody has confirmed its stock for over 14 days (from 1 Jun 2027), so
+ * it shows no stock band, offers no reservation or delivery, and asks the customer to call the shop on call_phone. */
+type CallOnly = { call_only?: boolean; call_phone?: string | null };
+
+function CallOnlyLabel() {
+  const { t } = useI18n();
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-warning-soft px-2 py-0.5 text-xs font-medium whitespace-nowrap text-warning-ink">
+      <Phone className="size-3" aria-hidden />
+      {t("discovery.result.callOnly")}
+    </span>
+  );
+}
 
 function FreshnessLabel({ freshness }: { freshness: StockFreshness }) {
   const { t, language } = useI18n();
@@ -72,6 +86,7 @@ export function ResultCard({
   const best = group.best_offer;
   const travel = travelTime(best.shop.distance_km);
   const freshness = (best as typeof best & { freshness?: StockFreshness }).freshness;
+  const { call_only: callOnly = false, call_phone: callPhone = null } = best as typeof best & CallOnly;
   const others = group.offers.filter((o) => o.id !== best.id).slice(0, 3);
   const outOfStock = group.in_stock_count === 0;
   // index is the card's 0-based place in the loaded list; positions are 1-based. Middle clicks open a tab too.
@@ -112,8 +127,14 @@ export function ResultCard({
           </div>
 
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
-            <StockPill status={best.stock_status} quantity={best.quantity} />
-            {freshness?.label ? <FreshnessLabel freshness={freshness} /> : <Freshness at={best.stock_updated_at} />}
+            {callOnly ? (
+              <CallOnlyLabel />
+            ) : (
+              <>
+                <StockPill status={best.stock_status} quantity={best.quantity} />
+                {freshness?.label ? <FreshnessLabel freshness={freshness} /> : <Freshness at={best.stock_updated_at} />}
+              </>
+            )}
           </div>
 
           <div className="mt-3 flex items-center gap-2 text-sm">
@@ -129,12 +150,12 @@ export function ResultCard({
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <Rating value={best.shop.rating_avg} count={best.shop.rating_count} />
-            {best.shop.offers_pickup && (
+            {best.shop.offers_pickup && !callOnly && (
               <span className="inline-flex items-center gap-1">
                 <Footprints className="size-3.5" /> {t("discovery.result.pickup")}
               </span>
             )}
-            {best.shop.offers_delivery && (
+            {best.shop.offers_delivery && !callOnly && (
               <span className="inline-flex items-center gap-1">
                 <Bike className="size-3.5" /> {t("discovery.result.delivery")}
               </span>
@@ -142,6 +163,19 @@ export function ResultCard({
           </div>
         </div>
       </Link>
+
+      {/* Outside the card's link: a link inside a link is not valid HTML. */}
+      {callOnly && callPhone && (
+        <div className="border-t px-4 py-2.5">
+          <a
+            href={`tel:${callPhone}`}
+            onClick={() => recordLead(best.shop.id, "call_tap", best.id)}
+            className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-medium transition-colors hover:bg-accent"
+          >
+            <Phone className="size-3.5" aria-hidden /> {t("discovery.result.callShop", { shop: best.shop.name })}
+          </a>
+        </div>
+      )}
 
       {group.shop_count > 1 && (
         <div className="border-t px-4 py-2.5">
@@ -151,22 +185,33 @@ export function ResultCard({
               ` · ${t("discovery.result.inStock", { count: formatNumber(group.in_stock_count) })}`}
           </p>
           <ul className="flex flex-wrap gap-1.5">
-            {others.map((o) => (
-              <li key={o.id}>
-                <Link
-                  href={`/product/${o.id}`}
-                  {...opened(o.id)}
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors hover:bg-accent",
-                    o.quantity <= 0 && "text-muted-foreground line-through decoration-muted-foreground/40",
-                  )}
-                >
-                  <span className="max-w-36 truncate">{o.shop.name}</span>
-                  <span className="font-medium tabular">{formatPrice(o.price)}</span>
-                  <span className="text-muted-foreground tabular">{formatDistance(o.shop.distance_km)}</span>
-                </Link>
-              </li>
-            ))}
+            {others.map((o) => {
+              // A call-only offer (P9.8) shows no stock state: it is marked "call the shop to check" instead.
+              const otherCallOnly = (o as typeof o & CallOnly).call_only === true;
+              return (
+                <li key={o.id}>
+                  <Link
+                    href={`/product/${o.id}`}
+                    {...opened(o.id)}
+                    title={otherCallOnly ? t("discovery.result.callOnly") : undefined}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors hover:bg-accent",
+                      !otherCallOnly && o.quantity <= 0 && "text-muted-foreground line-through decoration-muted-foreground/40",
+                    )}
+                  >
+                    {otherCallOnly && (
+                      <>
+                        <Phone className="size-3 text-warning-ink" aria-hidden />
+                        <span className="sr-only">{t("discovery.result.callOnly")}</span>
+                      </>
+                    )}
+                    <span className="max-w-36 truncate">{o.shop.name}</span>
+                    <span className="font-medium tabular">{formatPrice(o.price)}</span>
+                    <span className="text-muted-foreground tabular">{formatDistance(o.shop.distance_km)}</span>
+                  </Link>
+                </li>
+              );
+            })}
             {group.shop_count > 4 && (
               <li>
                 <Link href={`/product/${best.id}#compare`} {...opened(best.id)} className="inline-flex items-center gap-0.5 rounded-full px-2 py-1 text-xs font-medium hover:bg-accent">

@@ -49,6 +49,10 @@ const DeliveryDialog = lazy(() => loadDeliveryDialog().then((m) => ({ default: m
 const preloadReserve = { onPointerEnter: () => void loadReserveDialog(), onPointerDown: () => void loadReserveDialog(), onFocus: () => void loadReserveDialog() };
 const preloadDelivery = { onPointerEnter: () => void loadDeliveryDialog(), onPointerDown: () => void loadDeliveryDialog(), onFocus: () => void loadDeliveryDialog() };
 
+/** A call-only listing (P9.8, plan section 8.17): nobody has confirmed its stock for over 14 days (from 1 Jun 2027), so
+ * it shows no stock band and no Reserve or Delivery button, only "Call the shop to check" with the shop's Call link. */
+const isCallOnly = (o: object) => (o as { call_only?: boolean }).call_only === true;
+
 /** Feedback for the first tap on slow 4G while a dialog's code is still on its way; it also stops repeated taps. */
 function DialogLoading() {
   const { t } = useI18n();
@@ -150,6 +154,7 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
   if (!p) return <ProductSkeleton />;
 
   const out = p.quantity <= 0;
+  const callOnly = isCallOnly(p);
   const isCustomer = !me || me.role === "customer";
   const insight = p.price_insight;
   const shop = p.shop;
@@ -233,10 +238,16 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                         </TableCell>
                         <TableCell className="text-right font-semibold tabular">{formatPrice(o.price)}</TableCell>
                         <TableCell className="hidden sm:table-cell">
-                          <div className="flex flex-col items-start gap-1">
-                            <StockPill status={o.stock_status} quantity={o.quantity} compact />
-                            <Freshness at={o.stock_updated_at} />
-                          </div>
+                          {isCallOnly(o) ? (
+                            <span className="inline-flex items-center gap-1 text-xs font-medium text-warning-ink">
+                              <Phone className="size-3" aria-hidden /> {t("discovery.product.callToCheck")}
+                            </span>
+                          ) : (
+                            <div className="flex flex-col items-start gap-1">
+                              <StockPill status={o.stock_status} quantity={o.quantity} compact />
+                              <Freshness at={o.stock_updated_at} />
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell className="text-right text-sm tabular">{formatDistance(o.shop.distance_km) || "-"}</TableCell>
                       </TableRow>
@@ -309,10 +320,12 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                 {insight.statement}
               </p>
             )}
-            <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2">
-              <StockPill status={p.stock_status} quantity={p.quantity} />
-              <Freshness at={p.stock_updated_at} />
-            </div>
+            {!callOnly && (
+              <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2">
+                <StockPill status={p.stock_status} quantity={p.quantity} />
+                <Freshness at={p.stock_updated_at} />
+              </div>
+            )}
             {p.sold_last_30d > 0 && (
               <p className="mt-2 text-xs text-muted-foreground">{t(`discovery.product.sold30d.${plural(language, p.sold_last_30d)}`, { count: formatNumber(p.sold_last_30d) })}</p>
             )}
@@ -325,6 +338,24 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                 </span>
                 <ArrowRight className="size-4" />
               </Link>
+            ) : callOnly ? (
+              <div className="mt-5 space-y-2.5">
+                <div className="rounded-2xl bg-warning-soft p-4 text-warning-ink">
+                  <p className="flex items-center gap-1.5 text-sm font-semibold">
+                    <Phone className="size-4" aria-hidden /> {t("discovery.product.callOnlyTitle")}
+                  </p>
+                  <p className="mt-1 text-sm">{t("discovery.product.callOnlyBody")}</p>
+                </div>
+                {shop.phone ? (
+                  <Button asChild size="lg" className="h-12 w-full rounded-xl bg-brand text-base text-brand-foreground hover:bg-brand/90">
+                    <a href={`tel:${shop.phone}`} onClick={() => recordLead(shop.id, "call_tap", p.id)}>
+                      <Phone /> {t("discovery.product.callShop")}
+                    </a>
+                  </Button>
+                ) : (
+                  <p className="text-center text-xs text-muted-foreground">{t("discovery.product.callOnlyNoPhone")}</p>
+                )}
+              </div>
             ) : (
               <div className="mt-5 space-y-2.5">
                 <Button
@@ -433,7 +464,7 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
       </div>
 
       {/* mobile sticky buy bar */}
-      {!p.my_reservation && isCustomer && !out && (
+      {!p.my_reservation && isCustomer && !out && !callOnly && (
         <div className="fixed inset-x-0 bottom-[calc(3.9rem+env(safe-area-inset-bottom))] z-30 border-t bg-background/95 p-3 backdrop-blur lg:hidden">
           <div className="mx-auto flex max-w-md items-center gap-3">
             <div className="min-w-0">

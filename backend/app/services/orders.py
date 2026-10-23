@@ -7,6 +7,12 @@
 Stock is held at SHOP_CONFIRMED and released on cancel or return. The customer pays the shop at
 the door, in cash or to the shop's own UPI ID; delivering records which (P6.1, plan section 8.8). NearShop
 never holds customer money.
+
+An order that includes a call-only listing (P9.8) is refused with 409 listing_call_only. An owner who cancels a
+SHOP_CONFIRMED or PREPARING order with the reason out_of_stock_after_confirm (P9.8, plan section 8.17) records an arrival
+failure instead of a release: the holds end without the units going back, and every listing in the order gets an
+arrival_failure event with delta 0 and is unconfirmed until the shop next sets its stock (the reason does not say which
+line was missing, so the shop's next count settles each one).
 """
 import logging
 import secrets
@@ -28,11 +34,21 @@ from app.models import (
 from app.models import (
     OrderStatus as OS,
 )
+from app.schemas.serializers import OUT_OF_STOCK_AFTER_CONFIRM
 from app.services.fulfillment_common import record_event, record_sales
 from app.services.inventory import change_stock
 from app.services.notification_text import Term
 from app.services.notifications import notify
-from app.services.reservations import NOT_ENOUGH_STOCK, SHOP_NOT_VERIFIED, check_payment_method, check_public_cap
+from app.services.reservations import (
+    NOT_ENOUGH_STOCK,
+    RESERVED_REASONS,
+    SHOP_NOT_VERIFIED,
+    check_not_call_only,
+    check_payment_method,
+    check_public_cap,
+    owner_out_of_stock,
+    record_arrival_failure,
+)
 from app.utils.geo import haversine_km
 from app.utils.text import short_code
 
@@ -127,6 +143,8 @@ def create_order(
         raise Conflict("This shop is not taking orders right now")
     if not shop.is_live:  # not verified, or its approval has ended (P3.3, plan section 8.1)
         raise Conflict(SHOP_NOT_VERIFIED, code="shop_not_verified")
+    for p, _ in products:
+        check_not_call_only(p)
     # Public stock bands (P10.1): without the shop's exact-stock opt-in, a line asks for at most the public cap, and
     # a shortage is reported without a count. Lines for the same product are added up first, so splitting a quantity
     # across several lines neither gets past the cap nor hides a combined shortage.
@@ -274,11 +292,20 @@ def _transition(db: Database, order_id: int, action: str, user: User | None, rea
                        code_failures=0)
         record_sales(db, [(products[i.product_id], i.quantity, i.unit_price) for i in order.items],
                      source=SaleSource.ORDER, basket_id=order.code, customer_id=order.customer_id)
+    elif action == "cancel" and owner_out_of_stock(reason, actor, order.stock_held):
+        # The owner confirmed, then found the shelf empty (P9.8): an arrival failure for each listing, no release.
+        for product in products.values():
+            record_arrival_failure(db, product, actor_id, now)
+        changes.update(stock_held=False, closed_at=now, close_reason=OUT_OF_STOCK_AFTER_CONFIRM)
+        reason = None  # a code, not words for the customer's timeline or notification
     elif action in {"cancel", "return"}:
         if order.stock_held:
             for item in order.items:
                 change_stock(db, products[item.product_id], item.quantity, InventoryReason.ORDER_RELEASE, actor_id)
-        changes.update(stock_held=False, closed_at=now, close_reason=(reason or "").strip() or None)
+        close_reason = (reason or "").strip() or None
+        if close_reason in RESERVED_REASONS:  # set only by NearShop (the owner's out-of-stock cancel above)
+            close_reason = reason = None
+        changes.update(stock_held=False, closed_at=now, close_reason=close_reason)
     elif action == "fail":
         changes["close_reason"] = (reason or "").strip() or None
 
@@ -286,7 +313,8 @@ def _transition(db: Database, order_id: int, action: str, user: User | None, rea
 
     if actor != "customer" and to_status in CUSTOMER_MESSAGES:
         message = CUSTOMER_MESSAGES[to_status]
-        if order.close_reason and to_status in {OS.CANCELLED, OS.DELIVERY_FAILED}:
+        if order.close_reason and order.close_reason != OUT_OF_STOCK_AFTER_CONFIRM \
+                and to_status in {OS.CANCELLED, OS.DELIVERY_FAILED}:
             no_response = (to_status == OS.CANCELLED and actor == "system"
                            and order.close_reason == NO_RESPONSE_REASON)
             message = "order_cancelled_no_response" if no_response else f"{message}_reason"

@@ -51,6 +51,9 @@ class InventoryReason(StrEnum):
     ORDER_HOLD = "order_hold"
     ORDER_RELEASE = "order_release"
     WHATSAPP_UPDATE = "whatsapp_update"  # the owner set a count by replying on WhatsApp (P4.4)
+    # A customer found a confirmed item missing (P9.1, plan section 8.17): the hold ends without putting units back,
+    # so the row's delta is 0, and the listing is unconfirmed (Product.stock_unconfirmed_at) until the shop counts it.
+    ARRIVAL_FAILURE = "arrival_failure"
 
 
 class AnomalyStatus(StrEnum):

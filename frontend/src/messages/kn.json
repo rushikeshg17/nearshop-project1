@@ -61,7 +61,18 @@
     },
     "homeLabel": "",
     "themeToggle": "",
-    "demoBanner": ""
+    "demoBanner": "",
+    "offline": {
+      "banner": "",
+      "title": "",
+      "body": "",
+      "retry": "",
+      "savedCodeTitle": "",
+      "showAtCounter": "",
+      "savedAt": "",
+      "mayBeOutdated": "",
+      "home": ""
+    }
   },
   "common": {
     "states": {
@@ -471,7 +482,9 @@
           "other": ""
         },
         "stale": ""
-      }
+      },
+      "callOnly": "",
+      "callShop": ""
     },
     "product": {
       "opening": "",
@@ -525,7 +538,11 @@
       "callShop": "",
       "trustTitle": "",
       "stickyStock": "",
-      "reserveShort": ""
+      "reserveShort": "",
+      "callOnlyTitle": "",
+      "callOnlyBody": "",
+      "callOnlyNoPhone": "",
+      "callToCheck": ""
     },
     "shop": {
       "notFoundTitle": "",
@@ -1021,7 +1038,15 @@
       "cancelReasonPlaceholder": "",
       "rate": "",
       "findElsewhere": "",
-      "pickupCodeHintUpi": ""
+      "pickupCodeHintUpi": "",
+      "notAvailable": {
+        "action": "",
+        "title": "",
+        "body": "",
+        "confirm": "",
+        "done": "",
+        "closedBody": ""
+      }
     },
     "order": {
       "status": {
@@ -1291,7 +1316,8 @@
         "deliverPaid": {
           "cash": "",
           "upi": ""
-        }
+        },
+        "cancelOutOfStock": ""
       },
       "code": {
         "wrongPickup": "",
@@ -1318,7 +1344,6 @@
         "decline": "",
         "declinePlaceholder": "",
         "cancelTitle": "",
-        "cancelBody": "",
         "cancelConfirm": "",
         "cancelReason": "",
         "cancelPlaceholder": "",
@@ -1358,6 +1383,15 @@
         "checkingUpi": "",
         "addUpi": "",
         "settingsLink": ""
+      },
+      "cancelWhy": {
+        "legend": "",
+        "outOfStock": "",
+        "outOfStockHint": "",
+        "customerAsked": "",
+        "customerAskedHint": "",
+        "other": "",
+        "otherHint": ""
       }
     },
     "inventory": {

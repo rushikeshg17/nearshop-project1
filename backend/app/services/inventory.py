@@ -40,14 +40,17 @@ def change_stock(
     guard = {"_id": product.id}
     if delta < 0:
         guard["quantity"] = {"$gte": -delta}
-    updated = db.products.find_one_and_update(
-        guard, {"$inc": {"quantity": delta}, "$set": {"stock_updated_at": now, "updated_at": now}}
-    )
+    changes = {"stock_updated_at": now, "updated_at": now}
+    if reason in OWNER_REASONS:
+        changes["stock_unconfirmed_at"] = None  # the shop counted it: an arrival report no longer applies (P9.1)
+    updated = db.products.find_one_and_update(guard, {"$inc": {"quantity": delta}, "$set": changes})
     if updated is None:
         current = db.products.get(product.id)
         left = current.quantity if current else 0
         raise Conflict(f"Only {left} of {product.name} left in stock", code="insufficient_stock")
     product.quantity, product.stock_updated_at = updated.quantity, now
+    if reason in OWNER_REASONS:
+        product.stock_unconfirmed_at = None
     before = updated.quantity - delta
     db.inventory_events.insert(
         InventoryEvent(product_id=product.id, shop_id=product.shop_id, delta=delta, quantity_after=updated.quantity,
@@ -74,7 +77,7 @@ def set_stock(db: Database, product: Product, new_quantity: int, actor_id: int,
     if delta == 0:
         # Still a meaningful "I checked this" signal for freshness.
         now = utcnow()
-        db.products.set(product, stock_updated_at=now)
+        db.products.set(product, stock_updated_at=now, stock_unconfirmed_at=None)
         db.shops.update_one({"_id": product.shop_id}, {"$set": {"inventory_updated_at": now}})
         return product
     reason = reason or (InventoryReason.RESTOCK if delta > 0 else InventoryReason.ADJUSTMENT)
@@ -119,7 +122,7 @@ def apply_bulk(
                 raise Conflict("Stock cannot be negative")
             stock_counted = True
             before, delta = product.quantity, new_quantity - product.quantity
-            changes.update(quantity=new_quantity, stock_updated_at=now)
+            changes.update(quantity=new_quantity, stock_updated_at=now, stock_unconfirmed_at=None)
             if delta:
                 events.append(InventoryEvent(
                     product_id=product.id, shop_id=shop.id, delta=delta, quantity_after=new_quantity,

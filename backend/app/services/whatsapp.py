@@ -16,7 +16,8 @@ which writes one notification_outbox row when all of these hold:
 The row holds the template, its language and its two variables (the notification's title and text, on one line
 each), never the phone number: the sender reads the number at send time. A rolled-back transaction leaves neither
 the notification nor its row. The text is in the recipient's language (P7.11, app/services/notification_text.py), and
-so is the template: en (the code in NEARSHOP_WHATSAPP_TEMPLATE_LANGUAGE) or kn (template_language).
+so is the template: en (the code in NEARSHOP_WHATSAPP_TEMPLATE_LANGUAGE) or kn (template_language), except that a kind
+whose message awaits the team's Kannada (notification_text.AWAITING_KANNADA) always uses the en template.
 
 The sender
 ----------
@@ -177,6 +178,7 @@ TEMPLATES: dict[str, Template] = {
     "statement_free": Template("nearshop_shop_statement_free", Role.OWNER,
                                ("accurate", "not_accurate", "would_pay", "not_now")),
     "statement_roi": Template("nearshop_shop_statement_roi", Role.OWNER, ("accurate", "not_accurate")),
+    "arrival_failure": Template("nearshop_shop_arrival_report", Role.OWNER),  # an item missing on arrival (P9.1)
     "reservation_confirmed": Template("nearshop_reservation_confirmed", Role.CUSTOMER),
     "reservation_ready": Template("nearshop_reservation_ready", Role.CUSTOMER),
     "reservation_expired": Template("nearshop_reservation_closed", Role.CUSTOMER),
@@ -342,6 +344,15 @@ def _recipient(db: Database, user_id: int, template: Template) -> tuple[str | No
     return (user["phone"], None) if user is not None else (None, reason)
 
 
+def _row_language(kind: str, language: str | None) -> str:
+    """The template language of a kind's outbox row. A kind whose message still awaits the team's Kannada
+    (notification_text.AWAITING_KANNADA) was rendered in English for everyone, and its template has no kn version
+    at Meta yet, so it goes with the English template until both exist."""
+    if kind in words.AWAITING_KANNADA:
+        return template_language(None)
+    return template_language(language)
+
+
 def enqueue(db: Database, note: Notification) -> int | None:
     """Write the notification's outbox row in db's transaction, when its kind has a template and the recipient opted
     in (module docstring). Returns the row's id, or None when nothing was written."""
@@ -356,7 +367,7 @@ def enqueue(db: Database, note: Notification) -> int | None:
     row = {"_id": db.next_id(OUTBOX), "notification_id": note.id, "user_id": note.user_id, "channel": CHANNEL,
            "kind": note.kind, "template": template.name,
            # The template in the language notify() rendered the text in: the recipient's, read in this transaction.
-           "language": template_language(user.get("language")),
+           "language": _row_language(note.kind, user.get("language")),
            "params": [_one_line(note.title), _one_line(note.body)], "subject": subject,
            "route": ROUTE_TEMPLATE, "category": template.category,
            "buttons": [f"{subject or f'notification:{note.id}'}:{action}" for action in template.buttons],

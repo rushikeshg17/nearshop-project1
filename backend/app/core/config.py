@@ -313,6 +313,14 @@ class Settings(BaseSettings):
     # order line may ask for at most this many (more needs a call to the shop). Owners, staff and admins always see
     # exact counts. NEARSHOP_PUBLIC_STOCK_CAP.
     public_stock_cap: int = Field(10, ge=1)
+    # Call-only listings (P9.8, plan section 8.17; app/schemas/serializers.py is_call_only). From the IST day
+    # call_only_from, a listing whose stock count is more than call_only_after_days days old, or that has been
+    # unconfirmed by an arrival failure for longer than that, is call-only: public responses carry call_only, customers
+    # are asked to call the shop, and reservations and delivery orders for it are refused (409 listing_call_only). Its
+    # ranking is unchanged. The shop's next stock update restores it at once. NEARSHOP_CALL_ONLY_AFTER_DAYS and
+    # NEARSHOP_CALL_ONLY_FROM (YYYY-MM-DD).
+    call_only_after_days: int = Field(14, ge=1)
+    call_only_from: date = date(2027, 6, 1)
     # Reviews (P3.5, plan section 8.2): only from a verified phone (User.phone_verified_at). On since P4.1
     # wherever a customer can verify a phone: where phone sign-in is live (otp_live), and in development, where
     # the console provider verifies phones. A decision that departs from the prompt's "turn it on": it stays off

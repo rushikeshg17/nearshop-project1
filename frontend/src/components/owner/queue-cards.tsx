@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Textarea } from "@/components/ui/textarea";
 import { useNow } from "@/hooks/use-debounce";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import { formatDistance, formatNumber, formatPrice, timeAgo } from "@/lib/format";
@@ -24,6 +25,11 @@ import type { Order, OwnerShopSettings, PaymentMethod, Reservation } from "@/lib
 
 type Action = "confirm" | "reject" | "ready" | "complete" | "prepare" | "dispatch" | "deliver" | "fail" | "return" | "cancel";
 type ActionInput = { id: number; action: Action; reason?: string | null; code?: string; payment_method?: PaymentMethod };
+
+/** The reason an owner's "Out of stock after confirming" cancellation sends (P9.8, plan section 8.17): a code the API
+ * handles as an arrival failure (the held units are not put back and the listing is unconfirmed), never shown to the
+ * customer. */
+const OUT_OF_STOCK_AFTER_CONFIRM = "out_of_stock_after_confirm";
 
 function useOwnerAction<T>(kind: "reservations" | "orders", silent = false) {
   const { t } = useI18n();
@@ -40,7 +46,9 @@ function useOwnerAction<T>(kind: "reservations" | "orders", silent = false) {
     onSuccess: (_d, v) => {
       qc.invalidateQueries({ queryKey: ["owner"] });
       // Completing or delivering records how the customer paid (P6.1): the toast says which.
-      if ((v.action === "complete" || v.action === "deliver") && v.payment_method) {
+      if (v.action === "cancel" && v.reason === OUT_OF_STOCK_AFTER_CONFIRM) {
+        toast.success(t("owner.queue.done.cancelOutOfStock"));
+      } else if ((v.action === "complete" || v.action === "deliver") && v.payment_method) {
         toast.success(t(`owner.queue.done.${v.action}Paid.${v.payment_method === "upi_direct" ? "upi" : "cash"}`));
       } else {
         toast.success(t(`owner.queue.done.${v.action}`));
@@ -217,6 +225,103 @@ function CodeDialog({
   );
 }
 
+type CancelChoice = "outOfStock" | "customerAsked" | "other";
+const CANCEL_CHOICES: { value: CancelChoice; label: MessageKey; hint: MessageKey }[] = [
+  { value: "outOfStock", label: "owner.queue.cancelWhy.outOfStock", hint: "owner.queue.cancelWhy.outOfStockHint" },
+  { value: "customerAsked", label: "owner.queue.cancelWhy.customerAsked", hint: "owner.queue.cancelWhy.customerAskedHint" },
+  { value: "other", label: "owner.queue.cancelWhy.other", hint: "owner.queue.cancelWhy.otherHint" },
+];
+
+/**
+ * Cancelling a reservation or order the shop has confirmed, so its stock is held (P9.8, plan section 8.17): the owner
+ * says why. "Out of stock after confirming" sends OUT_OF_STOCK_AFTER_CONFIRM, an arrival failure: the held units are
+ * not put back. "Customer asked to cancel" sends those words, and "Other" the owner's own (required when
+ * otherRequired); both put the held units back, as cancelling did before.
+ */
+function CancelWithReason({
+  title,
+  confirmLabel,
+  otherLabel,
+  otherPlaceholder,
+  otherRequired = false,
+  pending,
+  onConfirm,
+  trigger,
+}: {
+  title: string;
+  confirmLabel: string;
+  otherLabel: string;
+  otherPlaceholder?: string;
+  otherRequired?: boolean;
+  pending: boolean;
+  onConfirm: (reason: string | null) => void;
+  trigger: (open: () => void) => React.ReactNode;
+}) {
+  const { t } = useI18n();
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  const [choice, setChoice] = useState<CancelChoice | null>(null);
+  const [text, setText] = useState("");
+  const ready = choice !== null && (choice !== "other" || !otherRequired || text.trim() !== "");
+  const change = (o: boolean) => {
+    if (!o) {
+      setChoice(null);
+      setText("");
+    }
+    setOpen(o);
+  };
+  const confirm = () => {
+    if (!ready) return;
+    onConfirm(
+      choice === "outOfStock"
+        ? OUT_OF_STOCK_AFTER_CONFIRM
+        : choice === "customerAsked"
+          ? t("owner.queue.cancelWhy.customerAsked")
+          : text.trim() || null,
+    );
+    change(false);
+  };
+  return (
+    <>
+      {trigger(() => setOpen(true))}
+      <ResponsiveDialog
+        open={open}
+        onOpenChange={change}
+        title={title}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => change(false)}>{t("common.confirm.keep")}</Button>
+            <Button variant="destructive" disabled={pending || !ready} onClick={confirm}>
+              {pending && <Loader2 className="animate-spin" />} {confirmLabel}
+            </Button>
+          </>
+        }
+      >
+        <fieldset className="space-y-3 pb-2">
+          <legend className="mb-2 text-sm font-medium">{t("owner.queue.cancelWhy.legend")}</legend>
+          <RadioGroup value={choice ?? ""} onValueChange={(v) => setChoice(v as CancelChoice)} className="gap-2.5">
+            {CANCEL_CHOICES.map((c) => (
+              <div key={c.value} className="flex items-start gap-2.5">
+                <RadioGroupItem value={c.value} id={`${id}-${c.value}`} className="mt-0.5" />
+                <Label htmlFor={`${id}-${c.value}`} className="flex-col items-start gap-0 font-normal">
+                  <span className="font-medium">{t(c.label)}</span>
+                  <span className="text-xs text-muted-foreground">{t(c.hint)}</span>
+                </Label>
+              </div>
+            ))}
+          </RadioGroup>
+          {choice === "other" && (
+            <div className="space-y-1.5">
+              <Label htmlFor={`${id}-text`}>{otherLabel}</Label>
+              <Textarea id={`${id}-text`} rows={2} value={text} onChange={(e) => setText(e.target.value.slice(0, 300))} placeholder={otherPlaceholder} />
+            </div>
+          )}
+        </fieldset>
+      </ResponsiveDialog>
+    </>
+  );
+}
+
 export function OwnerReservationCard({ r }: { r: Reservation }) {
   const { t, language } = useI18n();
   const now = useNow(30_000);
@@ -284,9 +389,9 @@ export function OwnerReservationCard({ r }: { r: Reservation }) {
                 trigger={(open) => <Button size="sm" variant="ghost" onClick={open} disabled={busy}><X /> {t("owner.queue.reservation.decline")}</Button>} />
             )}
             {has("cancel") && (
-              <ConfirmAction title={t("owner.queue.reservation.cancelTitle")} description={t("owner.queue.reservation.cancelBody")}
-                confirmLabel={t("owner.queue.reservation.cancelConfirm")} reasonLabel={t("owner.queue.reservation.cancelReason")}
-                reasonPlaceholder={t("owner.queue.reservation.cancelPlaceholder")} pending={busy}
+              <CancelWithReason title={t("owner.queue.reservation.cancelTitle")}
+                confirmLabel={t("owner.queue.reservation.cancelConfirm")} otherLabel={t("owner.queue.reservation.cancelReason")}
+                otherPlaceholder={t("owner.queue.reservation.cancelPlaceholder")} pending={busy}
                 onConfirm={(reason) => run("cancel", reason)}
                 trigger={(open) => <Button size="sm" variant="ghost" onClick={open} disabled={busy}><Ban /> {t("owner.queue.reservation.noShow")}</Button>} />
             )}
@@ -356,15 +461,18 @@ export function OwnerOrderCard({ o }: { o: Order }) {
                 trigger={(open) => <Button size="sm" variant="ghost" onClick={open}>{t("owner.queue.order.couldNotDeliver")}</Button>} />
             )}
             {has("return") && <Button size="sm" variant="outline" onClick={() => run("return")} disabled={busy}><RotateCcw /> {t("owner.queue.order.return")}</Button>}
-            {has("cancel") && (
+            {/* Once the shop has confirmed, the order's stock is held: the owner says why it is cancelled (P9.8). */}
+            {has("cancel") && o.status !== "PENDING" && (
+              <CancelWithReason title={t("owner.queue.order.cancelTitle")} confirmLabel={t("owner.queue.order.cancelConfirm")}
+                otherLabel={t("owner.queue.reasonForCustomer")} otherRequired pending={busy}
+                onConfirm={(reason) => run("cancel", reason)}
+                trigger={(open) => <Button size="sm" variant="ghost" onClick={open} disabled={busy}><X /> {t("owner.queue.order.cancel")}</Button>} />
+            )}
+            {has("cancel") && o.status === "PENDING" && (
               <ConfirmAction title={t("owner.queue.order.cancelTitle")} description={t("owner.queue.order.cancelBody")}
                 confirmLabel={t("owner.queue.order.cancelConfirm")} reasonLabel={t("owner.queue.reasonForCustomer")} reasonRequired pending={busy}
                 onConfirm={(reason) => run("cancel", reason)}
-                trigger={(open) => (
-                  <Button size="sm" variant="ghost" onClick={open} disabled={busy}>
-                    <X /> {o.status === "PENDING" ? t("owner.queue.order.decline") : t("owner.queue.order.cancel")}
-                  </Button>
-                )} />
+                trigger={(open) => <Button size="sm" variant="ghost" onClick={open} disabled={busy}><X /> {t("owner.queue.order.decline")}</Button>} />
             )}
           </div>
         )}

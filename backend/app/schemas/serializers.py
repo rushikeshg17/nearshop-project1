@@ -1,13 +1,13 @@
 """Model -> JSON dict helpers. References (`product.category`, `reservation.shop`, ...) must be
 resolved first with app/services/loaders.py. Timestamps are emitted as ISO-8601 UTC with a trailing Z so
 browsers never mistake them for local time (important for 'updated 2 minutes ago')."""
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 from app.core.config import settings
 from app.core.database import utcnow
 from app.models import Category, Notification, Order, Product, Reservation, Review, Shop, StatusEvent
 from app.services.media import thumbnail_key
-from app.utils.hours import open_status
+from app.utils.hours import IST, open_status
 
 
 def iso(dt: datetime | None) -> str | None:
@@ -17,11 +17,44 @@ def iso(dt: datetime | None) -> str | None:
 # Stock freshness (P7.4): how long ago a listing's stock was confirmed. Up to FRESH_HOURS it is fresh (no label,
 # no change). Beyond that and up to STALE_DAYS it is labelled "updated N days ago" and its search group ranks with
 # FRESHNESS_MULTIPLIERS["aging"]; beyond STALE_DAYS it is labelled "stock not confirmed recently", ranks with
-# FRESHNESS_MULTIPLIERS["stale"] and is left out of the in-stock-only filter (app/services/search.py).
+# FRESHNESS_MULTIPLIERS["stale"] and is left out of the in-stock-only filter (app/services/search.py). A listing a
+# customer reported missing on arrival (Product.stock_unconfirmed_at, P9.1, plan section 8.17) is treated the same as
+# one beyond STALE_DAYS until the shop next counts it, whenever its stock_updated_at was (confirmed_at).
 FRESH_HOURS = 48
 STALE_DAYS = 7
 FRESHNESS_MULTIPLIERS = {"fresh": 1.0, "aging": 0.85, "stale": 0.6}
 STALE_LABEL = "stock not confirmed recently"
+
+
+def confirmed_at(stock_updated_at: datetime | None, stock_unconfirmed_at: datetime | None) -> datetime | None:
+    """When a listing's stock was last confirmed, for its freshness band: None while an arrival report has unconfirmed
+    it (P9.1), which bands it as stale."""
+    return None if stock_unconfirmed_at is not None else stock_updated_at
+
+
+def call_only_since() -> datetime:
+    """When the call-only rule starts (P9.8): the start of the IST day settings.call_only_from, as naive UTC."""
+    start = datetime.combine(settings.call_only_from, time(0), tzinfo=IST)
+    return start.astimezone(UTC).replace(tzinfo=None)
+
+
+def is_call_only(stock_updated_at: datetime | None, stock_unconfirmed_at: datetime | None,
+                 now: datetime | None = None) -> bool:
+    """Whether a listing is call-only at `now` (P9.8, plan section 8.17): from settings.call_only_from, its stock count
+    is more than settings.call_only_after_days days old (or it has none), or an arrival failure has left it unconfirmed
+    for longer than that. Customers are asked to call the shop, and reservations and delivery orders are refused. The
+    shop's next stock update sets stock_updated_at and clears stock_unconfirmed_at, so the listing is restored at once.
+    Note: inventory.change_stock sets stock_updated_at for every reason, so a hold or release left over from before the
+    listing turned call-only (an expiring reservation, a cancelled order) also restores a listing that was stale by age;
+    only the shop's own updates (OWNER_REASONS) clear stock_unconfirmed_at, so such a change does not restore a listing
+    unconfirmed by an arrival failure. Both follow plan section 8.17's "the next stock update of any kind"."""
+    now = now or utcnow()
+    if now < call_only_since():
+        return False
+    limit = timedelta(days=settings.call_only_after_days)
+    if stock_unconfirmed_at is not None and now - stock_unconfirmed_at > limit:
+        return True
+    return stock_updated_at is None or now - stock_updated_at > limit
 
 
 def freshness(updated_at: datetime | None, now: datetime) -> dict:
@@ -109,8 +142,9 @@ def shop_detail(s: Shop, distance_km: float | None, reliability: dict) -> dict:
 
 def listing(p: Product, shop: dict | None = None, now: datetime | None = None) -> dict:
     """A product as sold by one shop (an 'offer'). `now` is the clock its freshness is judged at (search passes
-    its own, so the evaluation harness can fix it)."""
-    fresh = freshness(p.stock_updated_at, now or utcnow())
+    its own, so the evaluation harness can fix it). call_only (P9.8) is judged at the same clock."""
+    now = now or utcnow()
+    fresh = freshness(confirmed_at(p.stock_updated_at, p.stock_unconfirmed_at), now)
     return {
         "id": p.id,
         "catalog_item_id": p.catalog_item_id,
@@ -128,6 +162,7 @@ def listing(p: Product, shop: dict | None = None, now: datetime | None = None) -
         "stock_status": p.stock_status,
         "stock_updated_at": iso(p.stock_updated_at),
         "freshness": {"band": fresh["band"], "label": fresh["label"]},
+        "call_only": is_call_only(p.stock_updated_at, p.stock_unconfirmed_at, now),
         "is_active": p.is_active,
         "shop": shop,
     }
@@ -149,12 +184,27 @@ def public_listing(p: Product, shop: dict | None = None, now: datetime | None = 
     """A listing as customers and anyone else outside the shop see it (P10.1, plan section 8.20). `seller` is the
     listing's Shop (p.shop when omitted). Without the shop's opt-in, quantity is capped at settings.public_stock_cap and
     stock_exact is false; stock_status and stock_updated_at come from the real count, unchanged. Every public caller
-    uses this; owner, admin and analytics responses use listing, which keeps exact counts."""
-    exact = shows_exact_stock(seller if seller is not None else p.shop)
+    uses this; owner, admin and analytics responses use listing, which keeps exact counts. A call-only listing (P9.8)
+    also carries call_phone, the shop's phone for its "Call the shop to check" link (None otherwise)."""
+    seller = seller if seller is not None else p.shop
+    exact = shows_exact_stock(seller)
     out = listing(p, shop, now)
     out["quantity"] = public_quantity(p.quantity, exact)
     out["stock_exact"] = exact
+    out["call_phone"] = (seller.phone or None) if out["call_only"] and seller is not None else None
     return out
+
+
+# The close_reason an owner's "Out of stock after confirming" cancellation records (P9.8, plan section 8.17): an
+# arrival failure, handled in app/services/reservations.py and app/services/orders.py. It is a code, so customers'
+# responses leave it out (customer_close_reason) and their screens show the plain cancelled text instead.
+OUT_OF_STOCK_AFTER_CONFIRM = "out_of_stock_after_confirm"
+
+
+def customer_close_reason(close_reason: str | None, for_owner: bool) -> str | None:
+    """The close_reason a response shows: as stored for the owner; for the customer, without the owner's out-of-stock
+    code (P9.8)."""
+    return None if close_reason == OUT_OF_STOCK_AFTER_CONFIRM and not for_owner else close_reason
 
 
 def event_out(e: StatusEvent) -> dict:
@@ -187,7 +237,7 @@ def reservation_out(r: Reservation, *, actions: list[str], events: list[StatusEv
         "ready_at": iso(r.ready_at),
         "completed_at": iso(r.completed_at),
         "closed_at": iso(r.closed_at),
-        "close_reason": r.close_reason,
+        "close_reason": customer_close_reason(r.close_reason, for_owner),
         "product": {"id": p.id, "name": p.name, "brand": p.brand, "unit": p.unit, "icon": p.icon,
                     "image_url": media_url(p.image_path), "thumbnail_url": thumbnail_url(p.image_path),
                     "quantity_in_stock": public_quantity(p.quantity, exact), "stock_exact": exact},
@@ -225,7 +275,7 @@ def order_out(o: Order, *, actions: list[str], events: list[StatusEvent] | None 
         "created_at": iso(o.created_at),
         "delivered_at": iso(o.delivered_at),
         "closed_at": iso(o.closed_at),
-        "close_reason": o.close_reason,
+        "close_reason": customer_close_reason(o.close_reason, for_owner),
         "items": [
             {"product_id": i.product_id, "name": i.name, "unit_price": i.unit_price, "quantity": i.quantity,
              "icon": i.product.icon if i.product else "Package",
