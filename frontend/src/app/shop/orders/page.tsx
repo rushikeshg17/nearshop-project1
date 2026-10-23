@@ -15,12 +15,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { formatDateTime, formatPrice } from "@/lib/format";
-import type { Order, OwnerOverview } from "@/lib/types";
+import type { Order, WorkOverview } from "@/lib/types";
 
 export default function OwnerOrdersPage() {
   const { t, language } = useI18n();
   const [scope, setScope] = useState<"active" | "history">("active");
-  const overview = useQuery({ queryKey: ["owner", "overview"], queryFn: () => api.get<OwnerOverview>("/owner/overview") });
+  const overview = useQuery({ queryKey: ["owner", "overview"], queryFn: () => api.get<WorkOverview>("/owner/overview") });
   const q = useQuery({
     queryKey: ["owner", "orders", scope],
     queryFn: () => api.get<Order[]>("/owner/orders", { scope }),

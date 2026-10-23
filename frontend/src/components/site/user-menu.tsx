@@ -58,7 +58,7 @@ export function UserMenu({ user }: { user: User }) {
         {(user.role === "owner" || user.role === "staff") && (
           <>
             <DropdownMenuItem asChild>
-              <Link href="/shop">
+              <Link href={user.role === "staff" ? "/shop/reservations" : "/shop"}>
                 <LayoutDashboard /> {t("shell.nav.shopDashboard")}
               </Link>
             </DropdownMenuItem>

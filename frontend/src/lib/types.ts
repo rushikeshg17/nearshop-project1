@@ -575,26 +575,32 @@ export interface SalesPoint {
   units: number;
 }
 
-export interface OwnerOverview {
-  today: { revenue: number; units: number; reservations: number; orders: number };
-  revenue_7d: number;
-  revenue_prev_7d: number;
-  revenue_30d: number;
+/** What /owner/overview gives anyone who works the shop, staff included (P9.13): the queues and the shop line,
+ * never the shop's money. takes_upi: the shop has a UPI ID (P6.1). */
+export interface WorkOverview {
   queue: {
     reservation_requests: number;
     pickups_waiting: number;
     orders_pending: number;
     deliveries_in_progress: number;
   };
+  reservation_requests: Reservation[];
+  pending_orders: Order[];
+  shop: { id: number; name: string; slug: string; offers_delivery: boolean; takes_upi: boolean };
+}
+
+/** The owner's full overview: the work part plus sales and stock. */
+export interface OwnerOverview extends WorkOverview {
+  today: { revenue: number; units: number; reservations: number; orders: number };
+  revenue_7d: number;
+  revenue_prev_7d: number;
+  revenue_30d: number;
   inventory: { listings: number; in_stock: number; low_stock: number; out_of_stock: number; updated_at: string | null };
   sales_series: SalesPoint[];
   top_products: (Listing & { units: number; revenue: number })[];
   low_stock: (Listing & { days_to_stockout: number | null; recommended_restock: number | null })[];
   rating: { avg: number | null; count: number };
   includes_demo_data: boolean;
-  reservation_requests: Reservation[];
-  pending_orders: Order[];
-  shop: { id: number; name: string; slug: string; offers_delivery: boolean };
 }
 
 export interface ForecastItem extends Listing {

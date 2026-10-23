@@ -229,11 +229,14 @@ def test_a_phone_that_already_has_an_account_is_refused(world):
     shop = world.shop(1)
     paid(world.db, shop)
     owner = as_owner(world, shop)
-    customer_phone = world.customer(9, new_phone()).phone  # a customer account's number
-    res = invite(owner, customer_phone)
+    db = world.db
+    customer = world.customer(9, new_phone())  # a customer account's verified number
+    db.users.set(customer, phone_verified_at=utcnow())
+    res = invite(owner, customer.phone)
     assert res.status_code == 409 and res.json()["error"]["code"] == "phone_registered"
-    owner_phone = world.owner(8, phone=new_phone()).phone
-    res = invite(owner, owner_phone)
+    other_owner = world.owner(8, phone=new_phone())
+    db.users.set(other_owner, phone_verified_at=utcnow())
+    res = invite(owner, other_owner.phone)
     assert res.status_code == 409 and res.json()["error"]["code"] == "phone_registered"
     assert invite(owner, new_phone(), agreed=False).status_code == 422
     assert invite(owner, "12345").status_code == 422  # not an Indian mobile number
@@ -374,3 +377,140 @@ def test_password_sign_in_is_unchanged_for_owners(world):
     c = new_client()
     res = c.post("/api/auth/login", json={"email": owner.email, "password": PASSWORD}, headers=HEADERS)
     assert res.status_code == 200 and res.json()["role"] == "owner"
+
+
+# ---------------------------------------------------------------- review fixes
+
+
+def test_staff_get_the_queues_from_the_overview_but_never_the_shops_money(db, world):
+    shop = world.shop(1)
+    paid(db, shop)
+    product = world.product(shop, "Stafftest Ball Valve")
+    requested(db, shop, product.id)
+    owner = as_owner(world, shop)
+    member, _ = staff_member(world, owner, "Staff Counter")
+
+    mine = owner.get("/api/owner/overview").json()
+    theirs = member.get("/api/owner/overview").json()
+    assert set(theirs) == {"queue", "reservation_requests", "pending_orders", "shop"}
+    assert theirs["queue"] == mine["queue"] and theirs["queue"]["reservation_requests"] == 1
+    assert [r["id"] for r in theirs["reservation_requests"]] == [r["id"] for r in mine["reservation_requests"]]
+    assert {"today", "revenue_7d", "revenue_30d", "sales_series", "top_products"} <= set(mine)
+    # Whether the shop takes UPI reaches staff here, so the queue's payment choice never needs /owner/shop.
+    assert theirs["shop"]["takes_upi"] is False and mine["shop"]["takes_upi"] is False
+    db.shops.update_one({"_id": shop.id}, {"$set": {"upi_id": "plantest@upi"}})
+    assert member.get("/api/owner/overview").json()["shop"]["takes_upi"] is True
+    assert member.get("/api/owner/shop").status_code == 403
+
+
+def test_an_invited_phone_cannot_sign_up_as_a_customer(world, monkeypatch):
+    monkeypatch.setattr(settings, "signups_open", True)
+    shop = world.shop(1)
+    paid(world.db, shop)
+    phone = new_phone()
+    assert invite(as_owner(world, shop), phone).status_code == 200
+    c = new_client()
+    c.post("/api/auth/otp/request", json={"phone": phone, "purpose": "register"}, headers=HEADERS)
+    res = c.post("/api/auth/otp/verify", json={
+        "phone": phone, "purpose": "register", "code": ConsoleProvider.last_code(phone), "name": "Staff Signup",
+        "consent": {"account_and_orders": True, "age_18_plus": True}}, headers=HEADERS)
+    assert res.status_code == 409 and res.json()["error"]["code"] == "staff_invited"
+    assert world.db.users.find_one({"phone": phone}) is None
+    # The phone's sign-in is the staff one, and the invitation becomes active.
+    assert sign_in(phone).get("/api/owner/reservations").status_code == 200
+    assert staff.rows(world.db).find_one({"phone": phone}).status == StaffStatus.ACTIVE
+
+
+def test_a_number_only_typed_into_another_account_can_be_invited(db, world):
+    shop = world.shop(1)
+    paid(db, shop)
+    phone = new_phone()
+    typed = world.customer(7, phone)  # typed in, never verified: not that account's number yet
+    assert typed.phone_verified_at is None
+    assert invite(as_owner(world, shop), phone).status_code == 200
+    member = sign_in(phone)
+    assert member.get("/api/auth/me").json()["role"] == "staff"
+    assert db.users.get(typed.id).phone is None  # the code released it
+
+
+def test_a_lapse_suspends_waiting_invitations_too_and_the_counts_agree(db, world):
+    shop = world.shop(1)
+    sub = paid(db, shop)
+    owner = as_owner(world, shop)
+    member, _ = staff_member(world, owner, "Staff Member")
+    waiting = new_phone()
+    assert invite(owner, waiting, "Staff Waiting").status_code == 200
+
+    plans.run_jobs(db, plans.subscriptions(db).get(sub.id).ends_at)  # Free: the owner's one login
+    body = owner.get("/api/owner/staff").json()
+    assert body["logins"] == {"limit": 1, "used": 1, "available": 0}
+    assert {s["name"]: s["status"] for s in body["staff"]} == {"Staff Member": "suspended",
+                                                              "Staff Waiting": "suspended"}
+    # The suspended invitation cannot be taken up, and says why.
+    c = new_client()
+    c.post("/api/auth/otp/request", json={"phone": waiting, "purpose": "login"}, headers=HEADERS)
+    res = c.post("/api/auth/otp/verify", json={"phone": waiting, "purpose": "login",
+                                               "code": ConsoleProvider.last_code(waiting)}, headers=HEADERS)
+    assert res.status_code == 403 and res.json()["error"]["code"] == "staff_paused"
+    assert db.users.find_one({"phone": waiting}) is None
+
+    plans.extend(db, sub.id, actor=ADMIN, reason=REASON, months=12)  # renewed: the member first, then the invitation
+    body = owner.get("/api/owner/staff").json()
+    assert body["logins"] == {"limit": 3, "used": 3, "available": 0}
+    assert {s["name"]: s["status"] for s in body["staff"]} == {"Staff Member": "active", "Staff Waiting": "invited"}
+    assert sign_in(waiting).get("/api/owner/reservations").status_code == 200
+
+
+def test_fewer_logins_keep_members_before_invitations(db, world, monkeypatch):
+    shop = world.shop(1)
+    paid(db, shop)
+    owner = as_owner(world, shop)
+    assert invite(owner, new_phone(), "Staff Early Invite").status_code == 200  # invited first, never signed in
+    staff_member(world, owner, "Staff Signed In")
+    monkeypatch.setattr(staff, "logins", lambda db, shop_id, at=None: 2)
+    staff.reconcile(db, shop.id)
+    by_name = {r.name: r.status for r in staff.rows(db).find({"shop_id": shop.id})}
+    assert by_name == {"Staff Signed In": StaffStatus.ACTIVE, "Staff Early Invite": StaffStatus.SUSPENDED}
+    assert staff.overview(db, shop)["logins"]["used"] == 2
+
+
+def test_me_shows_a_lapse_at_once(db, world):
+    shop = world.shop(1)
+    sub = paid(db, shop)
+    member, _ = staff_member(world, as_owner(world, shop), "Staff Me")
+    plans.run_jobs(db, plans.subscriptions(db).get(sub.id).ends_at)
+    # The lapse ends the member's sessions; signed in again, /me says paused before any queue request.
+    row = staff.rows(db).find_one({"name": "Staff Me"})
+    assert row.status == StaffStatus.ACTIVE  # nothing has fitted the shop to its plan yet
+    back = sign_in(row.phone)
+    assert back.get("/api/auth/me").json()["shop"]["staff_status"] == "suspended"
+
+
+def test_deleting_a_staff_account_removes_its_membership(db, world):
+    from app.services import privacy
+
+    shop = world.shop(1)
+    paid(db, shop)
+    owner = as_owner(world, shop)
+    _, phone = staff_member(world, owner, "Staff Leaving")
+    row = staff.rows(db).find_one({"phone": phone})
+    privacy.request_deletion(db, db.users.get(row.user_id), cancel_open=False)
+    row = staff.rows(db).get(row.id)
+    assert row.status == StaffStatus.REMOVED and row.removed_at is not None
+    assert not staff.is_member(db, row.user_id, shop.id)
+    assert owner.get("/api/owner/staff").json()["logins"]["used"] == 1
+    # The number is free again: a new invitation makes a new staff account.
+    assert invite(owner, phone, "Staff Returning").status_code == 200
+    me = sign_in(phone).get("/api/auth/me").json()
+    assert me["role"] == "staff" and me["id"] != row.user_id
+
+
+def test_deleting_an_owners_account_removes_the_shops_staff(db, world):
+    from app.services import privacy
+
+    shop = world.shop(1)
+    paid(db, shop)
+    member, phone = staff_member(world, as_owner(world, shop), "Staff Orphaned")
+    privacy.anonymise(db, shop.owner_id)
+    assert staff.rows(db).find_one({"phone": phone}).status == StaffStatus.REMOVED
+    assert member.get("/api/owner/reservations").status_code == 401

@@ -17,10 +17,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useNow } from "@/hooks/use-debounce";
+import { useMe } from "@/hooks/use-session";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import { formatDistance, formatNumber, formatPrice, timeAgo } from "@/lib/format";
 import { type MessageKey, richText } from "@/lib/i18n";
-import type { Order, OwnerShopSettings, PaymentMethod, Reservation } from "@/lib/types";
+import type { Order, OwnerShopSettings, PaymentMethod, Reservation, WorkOverview } from "@/lib/types";
 
 type Action = "confirm" | "reject" | "ready" | "complete" | "prepare" | "dispatch" | "deliver" | "fail" | "return" | "cancel";
 type ActionInput = { id: number; action: Action; reason?: string | null; code?: string; payment_method?: PaymentMethod };
@@ -58,12 +59,19 @@ function normalizeReservationCode(input: string) {
   return `R-${raw.replace(/^R(?=[A-Z0-9]{6}$)/, "")}`;
 }
 
-/** Whether the shop has a UPI ID (P6.1): UPI is offered as a payment method only then. The owner's own settings,
- * the same query as the settings page, so a UPI ID saved there reaches the queue straight away. Null while the
- * settings are still loading, so the queue never claims cash only for a shop that takes UPI. */
+/** Whether the shop has a UPI ID (P6.1): UPI is offered as a payment method only then. For the owner, their own
+ * settings, the same query as the settings page, so a UPI ID saved there reaches the queue straight away. Staff
+ * (P9.13) cannot read the settings, which are the owner's alone: for them the overview's shop.takes_upi. Null while
+ * either is still loading (or failed), so the queue never claims cash only for a shop that takes UPI. */
 function useShopTakesUpi(): boolean | null {
-  const shop = useQuery({ queryKey: ["owner", "shop"], queryFn: () => api.get<OwnerShopSettings>("/owner/shop") });
-  return shop.isPending ? null : !!shop.data?.upi_id;
+  const { data: me } = useMe();
+  const isOwner = me?.role === "owner";
+  const isStaff = me?.role === "staff";
+  const shop = useQuery({ queryKey: ["owner", "shop"], queryFn: () => api.get<OwnerShopSettings>("/owner/shop"), enabled: isOwner });
+  const work = useQuery({ queryKey: ["owner", "overview"], queryFn: () => api.get<WorkOverview>("/owner/overview"), enabled: isStaff });
+  if (isOwner) return shop.data ? !!shop.data.upi_id : null;
+  if (isStaff) return work.data ? work.data.shop.takes_upi : null;
+  return null;
 }
 
 const PAYMENT_OPTIONS: { value: PaymentMethod; label: MessageKey; hint: MessageKey }[] = [

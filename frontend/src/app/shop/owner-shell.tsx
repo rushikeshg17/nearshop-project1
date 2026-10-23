@@ -20,7 +20,8 @@ import {
   Users,
 } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect } from "react";
 
 import { DashboardShell, LegalFooter } from "@/components/dashboard/dashboard-shell";
 import { EmptyState, ListSkeleton } from "@/components/common/states";
@@ -30,22 +31,29 @@ import { Button } from "@/components/ui/button";
 import { useMe } from "@/hooks/use-session";
 import { api } from "@/lib/api";
 import { DEFAULT_LANGUAGE, type LanguageCode, languageInfo } from "@/lib/i18n";
-import type { OwnerOverview, ShopVerification } from "@/lib/types";
+import type { ShopVerification, WorkOverview } from "@/lib/types";
 
 /** The console pages an active staff member may open (P9.13): the daily work. Every other page is the owner's alone,
- * as the API's owner-only routes are (backend/app/core/deps.py WorkShop). */
+ * as the API's owner-only routes are (backend/app/core/deps.py WorkShop); the overview too, since it shows the shop's
+ * sales (staff land on the reservations instead, STAFF_HOME). */
 const STAFF_PAGES = ["/shop/reservations", "/shop/orders", "/shop/inventory", "/shop/import", "/shop/catalog"];
+export const STAFF_HOME = "/shop/reservations";
 
 export function staffMayOpen(pathname: string) {
-  return pathname === "/shop" || STAFF_PAGES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  return STAFF_PAGES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
 export function OwnerShell({ children }: { children: React.ReactNode }) {
   const { t } = useI18n();
   const pathname = usePathname();
+  const router = useRouter();
   const { data: me, isLoading } = useMe();
   const isStaff = me?.role === "staff";
   const staffActive = isStaff && me.shop?.staff_status === "active";
+  // The overview is the owner's; a staff member who opens the console's front page goes to the queue.
+  useEffect(() => {
+    if (staffActive && pathname === "/shop") router.replace(STAFF_HOME);
+  }, [staffActive, pathname, router]);
   const verification = useQuery({
     queryKey: ["owner", "verification"],
     queryFn: () => api.get<ShopVerification>("/owner/verification"),
@@ -54,7 +62,7 @@ export function OwnerShell({ children }: { children: React.ReactNode }) {
   });
   const overview = useQuery({
     queryKey: ["owner", "overview"],
-    queryFn: () => api.get<OwnerOverview>("/owner/overview"),
+    queryFn: () => api.get<WorkOverview>("/owner/overview"),
     enabled: me?.role === "owner" || staffActive,
     refetchInterval: 15_000,
   });

@@ -36,7 +36,8 @@ export function useSignOut() {
 
 export function homeFor(user: User | null | undefined) {
   if (!user) return "/";
-  if (user.role === "owner" || user.role === "staff") return "/shop";
+  if (user.role === "owner") return "/shop";
+  if (user.role === "staff") return "/shop/reservations"; // P9.13: the overview shows the shop's sales, owner only
   if (user.role === "admin") return "/admin";
   return "/account";
 }

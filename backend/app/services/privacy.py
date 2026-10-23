@@ -346,7 +346,8 @@ def anonymise(db: Database, user_id: int, now: datetime | None = None) -> None:
     "Deleted user" with no email, phone, password, home, nominee or sessions; optional consents are
     withdrawn by new rows; notifications, their WhatsApp outbox rows and search history are deleted; reviews keep their rating and lose
     their comment; review reports the user filed keep their reason and lose their note; reservations and orders stay for the shop without phone, address or note; sales lose the
-    customer id. An owner's shops are hidden and their listings deactivated first. Before anything changes, every UPI
+    customer id. An owner's shops are hidden and their listings deactivated first; a staff member's memberships, or
+    the staff of an owner's shops, are removed (P9.13). Before anything changes, every UPI
     Autopay mandate of an owner's shops is cancelled at the payment gateway (P9.6, gateway.end_for_owner), so no more
     money is taken from someone who has left; while the gateway cannot be reached this raises (GatewayError or
     AutopayNotConfigured) and nothing is deleted."""
@@ -357,10 +358,14 @@ def anonymise(db: Database, user_id: int, now: datetime | None = None) -> None:
 
         gateway.end_for_owner(db, user_id, now=now)
 
+    from app.services import staff  # imported here: staff -> plans -> app.core.deps
+
     def run() -> None:
         user = db.users.get(user_id)
         if user is None or user.deleted_at is not None:
             return
+        # P9.13: a staff member's memberships end; an owner's shops lose their staff, signed out.
+        staff.end_for_deleted_account(db, user, now)
         if user.role == Role.OWNER:
             shop_ids = _shop_ids(db, user)
             db.shops.update_many({"_id": {"$in": shop_ids}}, {"$set": {"is_active": False, "updated_at": now}})

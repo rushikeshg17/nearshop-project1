@@ -1,6 +1,6 @@
 """Shop owner: shop settings, inventory, catalog, reservation and delivery queues, insights, staff.
 
-Daily work (the overview, listings and stock, the catalogue, the reservation and order queues and their actions, and
+Daily work (the overview, its sales and revenue left out for staff, listings and stock, the catalogue, the reservation and order queues and their actions, and
 imports) takes WorkShop: the owner or an active staff member of the shop (P9.13, app/services/staff.py). Everything
 else takes OwnerShop and stays the owner's alone: shop settings and the UPI ID, KYC, the plan and billing, insights,
 reviews and staff."""
@@ -17,7 +17,7 @@ from app.core.config import settings
 from app.core.database import Database, utcnow
 from app.core.deps import DB, CurrentUser, OwnerShop, OwnerUser, WorkShop
 from app.core.errors import AppError, Conflict, NotFound
-from app.models import Category, GeoPoint, InventoryReason, Order, Product, Reservation, Shop
+from app.models import Category, GeoPoint, InventoryReason, Order, Product, Reservation, Role, Shop
 from app.models.billing import Actor
 from app.models.core import (
     RENEWAL_WINDOW_DAYS,
@@ -225,17 +225,36 @@ def upload_shop_image(shop: OwnerShop, db: DB, file: UploadFile = File(...)):
     return {"image_url": media_url(rel), "thumbnail_url": thumbnail_url(rel)}
 
 
+def _work_queue(db: Database, shop: Shop) -> dict:
+    """The queue counts the console's menu badges show (the same as analytics.owner_overview's queue)."""
+    mine = {"shop_id": shop.id}
+    req, pickups, pending, deliveries = db.gather(
+        lambda: db.reservations.count({**mine, "status": "REQUESTED"}),
+        lambda: db.reservations.count({**mine, "status": {"$in": ["CONFIRMED", "READY_FOR_PICKUP"]}}),
+        lambda: db.orders.count({**mine, "status": "PENDING"}),
+        lambda: db.orders.count({**mine, "status": {"$in": ["SHOP_CONFIRMED", "PREPARING", "OUT_FOR_DELIVERY"]}}),
+    )
+    return {"reservation_requests": req, "pickups_waiting": pickups, "orders_pending": pending,
+            "deliveries_in_progress": deliveries}
+
+
 @router.get("/overview")
-def overview(shop: WorkShop, db: DB):
+def overview(shop: WorkShop, user: CurrentUser, db: DB):
+    """The owner's overview: sales, stock, the queues and what needs attention. A staff member (P9.13) gets the
+    daily-work part only, never the shop's money: the queue counts, the requests waiting and the shop line.
+    shop.takes_upi says whether the shop has a UPI ID (P6.1), so the queue offers UPI as a payment method without
+    reading the owner-only settings."""
     reservation_service.expire_due(db)
+    is_staff = user.role == Role.STAFF
     data, requests, pending = db.gather(
-        lambda: analytics.owner_overview(db, shop),
+        lambda: {"queue": _work_queue(db, shop)} if is_staff else analytics.owner_overview(db, shop),
         lambda: db.reservations.find({"shop_id": shop.id, "status": "REQUESTED"}, sort=[("created_at", 1)], limit=6),
         lambda: db.orders.find({"shop_id": shop.id, "status": "PENDING"}, sort=[("created_at", 1)], limit=6),
     )
     data["reservation_requests"] = _res(db, requests)
     data["pending_orders"] = _ord(db, pending)
-    data["shop"] = {"id": shop.id, "name": shop.name, "slug": shop.slug, "offers_delivery": shop.offers_delivery}
+    data["shop"] = {"id": shop.id, "name": shop.name, "slug": shop.slug, "offers_delivery": shop.offers_delivery,
+                    "takes_upi": bool(shop.upi_id)}
     return data
 
 
