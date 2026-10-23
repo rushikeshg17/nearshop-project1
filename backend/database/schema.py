@@ -841,6 +841,43 @@ VALIDATORS: dict[str, dict] = {
         reason={"bsonType": STR_N, "maxLength": statements.REASON_MAX}, reason_at=DATE_N, payment_request_id=INT_N,
         keep_until=DATE,
     ),
+    # Gate KPIs (P9.12, app/services/kpis.py; plan section 8.23). Aggregates only, never a customer.
+    # One snapshot per month (_id YYYY-MM), only ever inserted: every figure with its threshold and pass as computed
+    # then, and the active shop ids (annual inactivity reads them a year later). Kept for good: business records.
+    "kpi_snapshots": {"$jsonSchema": {
+        "bsonType": "object", "additionalProperties": False,
+        "required": ["_id", "month", "taken_at", "city", "figures", "active_shop_ids"],
+        "properties": {
+            "_id": {"bsonType": STR, "pattern": "^\\d{4}-(0[1-9]|1[0-2])$"},
+            "month": {"bsonType": STR, "pattern": "^\\d{4}-(0[1-9]|1[0-2])$"}, "taken_at": {"bsonType": DATE},
+            "city": {"bsonType": STR, "maxLength": 100},
+            "figures": {"bsonType": "array", "maxItems": 100, "items": {
+                "bsonType": "object", "required": ["key", "label", "unit", "value"],
+                "properties": {"key": {"bsonType": STR}, "label": {"bsonType": STR}, "unit": {"bsonType": STR},
+                               "value": {"bsonType": NUM_N}}}},
+            "active_shop_ids": {"bsonType": "array", "items": {"bsonType": INT}},
+        },
+    }},
+    # The daily reading of the city's median stock age (P9.12), for the consecutive fresh weeks: one row per city and
+    # IST day, _id "<city>:<YYYY-MM-DD>"; the first reading of a day stands.
+    "kpi_days": {"$jsonSchema": {
+        "bsonType": "object", "additionalProperties": False,
+        "required": ["_id", "city", "day", "median_stock_age_hours", "listings", "active_shops", "recorded_at"],
+        "properties": {
+            "_id": {"bsonType": STR, "maxLength": 120}, "city": {"bsonType": STR, "maxLength": 100},
+            "day": {"bsonType": STR, "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+            "median_stock_age_hours": {"bsonType": NUM_N, "minimum": 0}, "listings": COUNT, "active_shops": COUNT,
+            "recorded_at": {"bsonType": DATE},
+        },
+    }},
+    # The figures admins enter each month (P9.12: activation cost per activated shop, support minutes per active shop),
+    # each with its source note. Only added: a correction is a new row, and the latest is shown.
+    "kpi_inputs": schema(
+        ["key", "month", "value", "source_note", "entered_by", "entered_at"],
+        key={"enum": ["activation_cost_rupees", "support_minutes"]},
+        month={"bsonType": STR, "pattern": "^\\d{4}-(0[1-9]|1[0-2])$"}, value={"bsonType": NUM, "minimum": 0},
+        source_note={"bsonType": STR, "minLength": 10, "maxLength": 500}, entered_by=INT, entered_at=DATE,
+    ),
     "counters": {},
     "text_embeddings": {},
 }
@@ -927,6 +964,9 @@ INDEXES: dict[str, list[IndexModel]] = {
         # A customer can hold only one active reservation per listing, guaranteed by the database.
         IndexModel([("customer_id", A), ("product_id", A)], unique=True, name="uq_active_customer_product",
                    partialFilterExpression={"status": {"$in": ["REQUESTED", "CONFIRMED", "READY_FOR_PICKUP"]}}),
+        # Arrival failures by close reason and date (P9.12, app/services/kpis.py: check 10.5).
+        IndexModel([("close_reason", A), ("closed_at", A)], name="close_reason_closed",
+                   partialFilterExpression={"close_reason": {"$type": "string"}}),
     ],
     "orders": [
         IndexModel([("code", A)], unique=True, name="uq_code"),
@@ -935,6 +975,8 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("status", A), ("created_at", A)], name="status_created"),  # stale-pending sweep
         IndexModel([("created_at", A)], name="created"),  # the monthly lead counts (P9.2)
         IndexModel([("delivered_at", A)], name="delivered"),  # the lead counts and the facilitated-sales export
+        IndexModel([("close_reason", A), ("closed_at", A)], name="close_reason_closed",  # arrival failures (P9.12)
+                   partialFilterExpression={"close_reason": {"$type": "string"}}),
     ],
     "status_events": [
         IndexModel([("entity", A), ("entity_id", A), ("created_at", A)], name="entity_timeline"),
@@ -1153,6 +1195,9 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("month", A), ("kind", A)], name="month_kind"),  # the admin summary
         IndexModel([("keep_until", A)], expireAfterSeconds=0, name="keep_until_ttl"),
     ],
+    # Gate KPIs (P9.12, app/services/kpis.py): snapshots by their month _id; daily readings and inputs as read.
+    "kpi_days": [IndexModel([("city", A), ("day", A)], name="city_day")],
+    "kpi_inputs": [IndexModel([("key", A), ("entered_at", D)], name="key_entered")],
     "admin_audit": [
         IndexModel([("created_at", A)], expireAfterSeconds=ADMIN_AUDIT_KEEP_SECONDS, name="created_ttl_1y"),
         IndexModel([("target_user_id", A), ("created_at", D)], name="target_created"),

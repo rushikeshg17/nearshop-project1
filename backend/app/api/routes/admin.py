@@ -28,7 +28,7 @@ from app.schemas.requests import (
     SubscriptionGrantIn,
 )
 from app.schemas.serializers import iso, listing, shop_brief
-from app.services import analytics, billing, plans, statements
+from app.services import analytics, billing, kpis, plans, statements
 from app.services import reviews as review_service
 from app.services import synonyms as synonym_service
 from app.services.loaders import with_categories, with_category
@@ -750,3 +750,40 @@ def statement_summary(_: AdminUser, db: DB,
     if month is None:
         raise NotFound("No statements yet")
     return statements.admin_summary(db, month)
+
+
+# ------------------------------------------------------------------ gate KPIs (P9.12, app/services/kpis.py)
+
+
+class KpiInputIn(BaseModel):
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    key: Literal["activation_cost_rupees", "support_minutes"]
+    month: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+    value: float = Field(ge=0, le=kpis.INPUT_MAX)
+    # Where the figure comes from (R6's cost log, the B12 ticket log): required.
+    source_note: str = Field(min_length=kpis.NOTE_MIN, max_length=kpis.NOTE_MAX)
+
+
+@router.get("/kpis")
+def gate_kpis(_: AdminUser, db: DB):
+    """The gate figures (plan section 8.23): live, and the last 12 monthly snapshots, each with its next gate's
+    threshold (business-model assumptions, from settings) and pass or fail; the entered inputs and when each was last
+    entered."""
+    return kpis.report(db)
+
+
+@router.post("/kpis/inputs", status_code=201)
+def enter_kpi_input(body: KpiInputIn, admin: AdminUser, db: DB):
+    """A monthly figure that cannot be computed (activation cost per activated shop, support minutes per active shop),
+    with its source note. Entries are only added; the latest is shown."""
+    return kpis.record_input(db, key=body.key, month=body.month, value=body.value, source_note=body.source_note,
+                             admin_id=admin.id)
+
+
+@router.get("/kpis/snapshots.csv")
+def gate_kpi_snapshots_csv(_: AdminUser, db: DB):
+    """Every monthly snapshot as CSV, one row per figure."""
+    return Response(kpis.snapshots_csv(db), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="nearshop-gate-kpis.csv"',
+                             "Cache-Control": "private, no-store"})

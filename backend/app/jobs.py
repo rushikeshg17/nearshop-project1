@@ -68,6 +68,11 @@ the month it ran for is kept in the lease's last_result (ran_for), like lead_cou
 that has its statement, so none is sent twice. Every tick it also copies the outbox rows' delivery statuses onto
 the statements still queued or sent, built in the last 40 days (sync_delivery), and sends again by template a
 statement the sender cancelled before sending it: one indexed query when there are none.
+kpis (P9.12, app/services/kpis.py run_job), every tick: once per IST day it records the gate city's median stock age
+(kpi_days, for the consecutive fresh weeks), and once a month, on the 2nd at 06:00 IST or on the first tick after it,
+it stores the previous month's snapshot of every gate figure (kpi_snapshots), which is never changed afterwards; the
+day and the month it ran for are kept in the lease's last_result (reading_for, snapshot_for), so every other tick
+does nothing. Nothing is recorded from demo data.
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -141,7 +146,8 @@ RETRY_AFTER_FAILURE: dict[str, timedelta] = {"snapshot_storage": timedelta(hours
                                               "billing_reconciliation": timedelta(hours=1),
                                               "boost": timedelta(minutes=15),
                                               "demand_report": timedelta(hours=1),
-                                              "statements": timedelta(minutes=15)}
+                                              "statements": timedelta(minutes=15),
+                                              "kpis": timedelta(hours=1)}
 RETENTION_AT = time(21, 30)  # UTC: 03:00 IST, the nightly retention job (P3.2)
 # The phone migration (P4.2): in-app warnings this many days before the email sign-in sunset, and accounts still
 # without a verified phone switched off this many days after it.
@@ -162,6 +168,7 @@ BILLING_JOB = "billing_reconciliation"  # the daily unmatched-credit alert (P9.5
 BOOST_JOB = "boost"  # Boost periods every tick, city eligibility once per IST day (P10.12)
 DEMAND_REPORT_JOB = "demand_report"  # the weekly "asked for near you" report (P9.7)
 STATEMENTS_JOB = "statements"  # the monthly statements (P9.9)
+KPIS_JOB = "kpis"  # the gate KPIs' daily reading and monthly snapshot (P9.12)
 
 RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
@@ -563,12 +570,26 @@ def statements(clock: Clock = utcnow) -> dict[str, Any]:
     return {"ran_for": key, **{k: v for k, v in built.items() if k != "month"}, "synced": synced}
 
 
+def kpis(clock: Clock = utcnow) -> dict[str, Any]:
+    """The gate KPIs (P9.12, app/services/kpis.py run_job): the day's median stock age reading once per IST day, and
+    the previous month's snapshot from the 2nd at 06:00 IST, each once (reading_for and snapshot_for in the lease's
+    last_result). A failed run is retried an hour later (RETRY_AFTER_FAILURE)."""
+    from app.services import kpis as service
+
+    now = clock()
+    db = Database()
+    last = (db.mongo[LEASES].find_one({"_id": KPIS_JOB}, {"last_result": 1}) or {}).get("last_result") or {}
+    if last.get("ok") is not True:
+        last = {}
+    return service.run_job(db, now, last)
+
+
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {
     "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage, "retention": retention,
     "process_deletions": process_deletions, PHONE_MIGRATION_JOB: phone_migration,
     SEND_NOTIFICATIONS_JOB: send_notifications, STOCK_CHECK_JOB: stock_check, LEAD_COUNTS_JOB: lead_counts,
     SUBSCRIPTIONS_JOB: subscriptions, BILLING_JOB: billing_reconciliation, BOOST_JOB: boost,
-    DEMAND_REPORT_JOB: demand_report, STATEMENTS_JOB: statements}
+    DEMAND_REPORT_JOB: demand_report, STATEMENTS_JOB: statements, KPIS_JOB: kpis}
 
 
 class SearchIndexRefresher:

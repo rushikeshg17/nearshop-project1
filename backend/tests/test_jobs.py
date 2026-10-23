@@ -181,7 +181,7 @@ def test_the_default_scheduler_runs_the_real_sweep(mongo):
     assert s.tick() == {"sweep_expired": True, "snapshot_storage": True, "retention": True, "process_deletions": True,
                         "phone_migration": True, "send_notifications": True, "stock_check": True,
                         "lead_counts": True, "subscriptions": True, "billing_reconciliation": True,
-                        "demand_report": True, "boost": True, "statements": True}
+                        "demand_report": True, "boost": True, "statements": True, "kpis": True}
     result = mongo[jobs.LEASES].find_one({"_id": "sweep_expired"})["last_result"]
     assert result["ok"] is True and {"expired_reservations", "cancelled_orders"} <= set(result)
     s.shutdown()

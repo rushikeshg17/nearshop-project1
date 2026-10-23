@@ -632,6 +632,41 @@ class Settings(BaseSettings):
     # session and the same IST day).
     boost_token_minutes: int = Field(120, ge=5, le=24 * 60)
 
+    # Gate KPIs (P9.12, app/services/kpis.py; plan section 8.23). The gates and their thresholds are
+    # business/BUSINESS_MODEL.md's (section 11.2, frozen 18 Oct 2026, and the plan's checks 10.3 and 10.5). They are
+    # business-model assumptions, so each is a setting; the admin page shows each figure against the next gate's value.
+    # Dates: G4 (checks 10.3 and 10.5), the willingness-to-pay readout (B25) and the Ballari gate.
+    kpi_g4_date: date = date(2027, 7, 15)
+    kpi_readout_date: date = date(2027, 7, 25)
+    kpi_ballari_gate_date: date = date(2028, 12, 31)
+    # G4: check 10.3 (verified active shops, median stock age for consecutive weeks) and check 10.5 (completions and
+    # the arrival-failure rate over the last 90 days).
+    kpi_g4_min_active_shops: int = Field(50, ge=0)
+    kpi_g4_min_fresh_weeks: int = Field(4, ge=0)
+    kpi_g4_min_completions_90d: int = Field(300, ge=0)
+    # The readout on 25 Jul 2027: the share of active shops that answered Accurate, and the advance subscriptions paid.
+    kpi_readout_min_accurate_pct: float = Field(60.0, ge=0, le=100)
+    kpi_readout_min_advances: int = Field(15, ge=0)
+    # The Ballari gate (31 Dec 2028), with its conditions "not modelled and assumed met" (fresh weeks, arrival
+    # failures, zero-result rate and support minutes).
+    kpi_ballari_min_active_shops: int = Field(280, ge=0)
+    kpi_ballari_min_completions_month: int = Field(1_400, ge=0)
+    kpi_ballari_min_month2_return_pct: float = Field(25.0, ge=0, le=100)
+    kpi_ballari_max_activation_cost_rupees: float = Field(500.0, ge=0)
+    kpi_ballari_max_annual_inactivity_pct: float = Field(20.0, ge=0, le=100)
+    kpi_ballari_min_shop_paid_pct: float = Field(10.0, ge=0, le=100)
+    kpi_ballari_min_renewal_pct: float = Field(55.0, ge=0, le=100)
+    kpi_ballari_min_partner_plans: int = Field(2, ge=0)
+    kpi_ballari_min_fresh_weeks: int = Field(8, ge=0)
+    kpi_max_support_minutes: float = Field(5.5, ge=0)
+    # At every gate that has them.
+    kpi_max_median_stock_age_hours: float = Field(48.0, gt=0)
+    kpi_max_arrival_failure_pct: float = Field(5.0, ge=0, le=100)
+    kpi_max_zero_result_pct: float = Field(10.0, ge=0, le=100)
+    # A week counts towards the consecutive fresh weeks when it has at least this many daily readings (a missed day
+    # or two, a deploy, does not break the run) and every one is at most kpi_max_median_stock_age_hours.
+    kpi_week_min_readings: int = Field(5, ge=1, le=7)
+
     @property
     def billing_holiday_list(self) -> list[date]:
         """NEARSHOP_BILLING_BANK_HOLIDAYS as dates (an entry that is not an ISO date is ignored)."""
