@@ -5,20 +5,40 @@ import { BadgeCheck, Clock3, Star } from "lucide-react";
 import { useI18n } from "@/components/providers";
 import { useNow } from "@/hooks/use-debounce";
 import { formatDistance, formatNumber, formatPrice, freshnessLevel, timeAgo } from "@/lib/format";
-import { plural } from "@/lib/i18n";
+import { plural, type Translate } from "@/lib/i18n";
 import type { StockStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+/** The stock text customers see (P10.2, plan section 8.20). Only with exact (the shop opted in to showing exact
+ * stock, stock_exact on a public listing) does it hold the count: "N left", "Only N left" or "N in stock". Otherwise it
+ * is the band alone: "In stock", "Low stock" or "Out of stock". */
+export function stockLabel(
+  t: Translate,
+  status: StockStatus,
+  quantity: number,
+  { exact = false, compact = false }: { exact?: boolean; compact?: boolean } = {},
+): string {
+  if (status === "out_of_stock") return t("common.stock.out");
+  if (!exact) return t(status === "low_stock" ? "common.stock.low" : "common.stock.available");
+  const count = formatNumber(quantity);
+  if (compact) return t("common.stock.left", { count });
+  return t(status === "low_stock" ? "common.stock.only" : "common.stock.inStock", { count });
+}
+
+/** A listing's stock. Without exact (false by default) it shows only the band, so lists, cards and the home page
+ * never show a count; the product page and the reserve dialog pass the listing's stock_exact (P10.2). */
 export function StockPill({
   status,
   quantity,
   className,
   compact = false,
+  exact = false,
 }: {
   status: StockStatus;
   quantity: number;
   className?: string;
   compact?: boolean;
+  exact?: boolean;
 }) {
   const { t } = useI18n();
   const styles = {
@@ -27,15 +47,7 @@ export function StockPill({
     out_of_stock: "bg-muted text-muted-foreground",
   }[status];
   const dot = { in_stock: "bg-success", low_stock: "bg-warning", out_of_stock: "bg-muted-foreground/50" }[status];
-  const count = formatNumber(quantity);
-  const label =
-    status === "out_of_stock"
-      ? t("common.stock.out")
-      : compact
-        ? t("common.stock.left", { count })
-        : status === "low_stock"
-          ? t("common.stock.only", { count })
-          : t("common.stock.inStock", { count });
+  const label = stockLabel(t, status, quantity, { exact, compact });
   return (
     <span
       className={cn(

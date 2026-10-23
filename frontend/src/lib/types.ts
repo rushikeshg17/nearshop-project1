@@ -142,6 +142,9 @@ export interface ShopDetail extends ShopBrief {
   closed_on: string | null;
   established_year: number | null;
   hold_minutes: number;
+  /** Whether customers see this shop's exact stock counts (P10.1, P10.2, plan section 8.20). Off by default: customers
+   * then see stock bands, and public quantities are capped. */
+  show_exact_stock: boolean;
   is_active: boolean;
   reliability: Reliability;
   category_details: Category[];
@@ -246,6 +249,9 @@ export interface Listing {
   low_stock_threshold: number;
   stock_status: StockStatus;
   stock_updated_at: string | null;
+  /** Public listings only (P10.1): true when the shop opted in to showing exact stock, so quantity is its real count.
+   * When false, quantity is capped and customers see only the stock band (P10.2). Absent from owner listings. */
+  stock_exact?: boolean;
   is_active: boolean;
   shop: ShopBrief | null;
 }
@@ -488,6 +494,8 @@ export interface Reservation {
     image_url: string | null;
     thumbnail_url: string | null; // the 320 px thumbnail (P2.7), for lists and small previews
     quantity_in_stock: number;
+    /** True for the owner, or when the shop shows exact stock; otherwise quantity_in_stock is capped (P10.1). */
+    stock_exact: boolean;
   };
   shop: {
     id: number;

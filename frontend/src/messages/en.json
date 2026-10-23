@@ -180,7 +180,9 @@
       "out": "Out of stock",
       "left": "{count} left",
       "only": "Only {count} left",
-      "inStock": "{count} in stock"
+      "inStock": "{count} in stock",
+      "available": "In stock",
+      "low": "Low stock"
     },
     "freshness": {
       "updated": "Updated {time}",
@@ -525,6 +527,7 @@
       "callShop": "Call shop",
       "trustTitle": "Why you can trust this listing",
       "stickyStock": "{count} in stock · {shop}",
+      "stickyBand": "{stock} · {shop}",
       "reserveShort": "Reserve"
     },
     "shop": {
@@ -793,6 +796,7 @@
       "submitOne": "Reserve it · {price}",
       "submitMany": "Reserve {count} units · {price}",
       "eachInStock": "{price} each · {count} in stock",
+      "eachBand": "{price} each · {stock}",
       "steps": {
         "check": {
           "title": "The shop checks the shelf",
@@ -1747,6 +1751,8 @@
       "pickupHint": "Customers reserve and pay at your counter.",
       "activeLabel": "Shop visible on NearShop",
       "activeHint": "Turn off to pause while you are away. Nothing is deleted.",
+      "exactStockLabel": "Show exact stock counts to customers",
+      "exactStockHint": "Off by default: customers see In stock, Low stock or Out of stock. Other shops and scrapers could otherwise track how fast you sell.",
       "save": "Save changes",
       "toast": {
         "savedReview": "Saved. Your shop is hidden until an admin approves the new details.",

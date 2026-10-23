@@ -110,6 +110,8 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
   const { data: meta } = useMeta();
   const [form, setForm] = useState<ShopFormState>(() => toForm(initial));
   const [active, setActive] = useState(initial.is_active);
+  // Public stock bands (P10.1, P10.2, plan section 8.20): customers see exact counts only when the owner turns this on.
+  const [exactStock, setExactStock] = useState(initial.show_exact_stock ?? false);
   const [confirming, setConfirming] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   // Direct UPI (P6.1, P6.2): the shop's own UPI ID, where customers pay it directly. Empty removes it.
@@ -123,6 +125,7 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
         ...shopPayload(form),
         offers_pickup: form.offers_pickup,
         is_active: active,
+        show_exact_stock: exactStock,
         upi_id: normalizeUpiId(upi.upi_id) || null,
         upi_payee_name: normalizePayeeName(upi.upi_payee_name) || null,
         // A Free shop's alert settings are kept as they are: the alert is part of Growth.
@@ -132,6 +135,7 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
       }),
     onSuccess: (s) => {
       setConfirming(false);
+      setExactStock(s.show_exact_stock ?? false);
       setUpi({ upi_id: s.upi_id ?? "", upi_payee_name: s.upi_payee_name ?? "" });
       setAlerts(alertsOf(s));
       qc.setQueryData(["owner", "shop"], s);
@@ -213,6 +217,13 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
               <span className="text-xs font-normal text-muted-foreground">{t("owner.settings.activeHint")}</span>
             </Label>
             <Switch id="active" checked={active} onCheckedChange={setActive} />
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <Label htmlFor="exact-stock" className="flex flex-col items-start gap-0.5">
+              <span>{t("owner.settings.exactStockLabel")}</span>
+              <span className="text-xs font-normal text-muted-foreground">{t("owner.settings.exactStockHint")}</span>
+            </Label>
+            <Switch id="exact-stock" checked={exactStock} onCheckedChange={setExactStock} />
           </div>
         </section>
         <UpiFields s={upi} set={setUpi} errors={upiErrors} />

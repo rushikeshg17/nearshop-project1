@@ -180,7 +180,9 @@
       "out": "",
       "left": "",
       "only": "",
-      "inStock": ""
+      "inStock": "",
+      "available": "",
+      "low": ""
     },
     "freshness": {
       "updated": "",
@@ -525,6 +527,7 @@
       "callShop": "",
       "trustTitle": "",
       "stickyStock": "",
+      "stickyBand": "",
       "reserveShort": ""
     },
     "shop": {
@@ -793,6 +796,7 @@
       "submitOne": "",
       "submitMany": "",
       "eachInStock": "",
+      "eachBand": "",
       "steps": {
         "check": {
           "title": "",
@@ -1747,6 +1751,8 @@
       "pickupHint": "",
       "activeLabel": "",
       "activeHint": "",
+      "exactStockLabel": "",
+      "exactStockHint": "",
       "save": "",
       "toast": {
         "savedReview": "",

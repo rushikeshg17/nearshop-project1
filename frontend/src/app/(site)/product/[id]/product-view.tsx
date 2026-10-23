@@ -19,7 +19,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { lazy, Suspense, useEffect, useState } from "react";
 
-import { Distance, Freshness, OpenBadge, Price, Rating, StockPill, VerifiedMark } from "@/components/common/indicators";
+import { Distance, Freshness, OpenBadge, Price, Rating, StockPill, stockLabel, VerifiedMark } from "@/components/common/indicators";
 import { ProductThumb } from "@/components/common/product-thumb";
 import { EmptyState, ErrorState } from "@/components/common/states";
 import { StatusBadge } from "@/components/common/status";
@@ -234,7 +234,7 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
                         <TableCell className="text-right font-semibold tabular">{formatPrice(o.price)}</TableCell>
                         <TableCell className="hidden sm:table-cell">
                           <div className="flex flex-col items-start gap-1">
-                            <StockPill status={o.stock_status} quantity={o.quantity} compact />
+                            <StockPill status={o.stock_status} quantity={o.quantity} exact={o.stock_exact} compact />
                             <Freshness at={o.stock_updated_at} />
                           </div>
                         </TableCell>
@@ -310,7 +310,7 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
               </p>
             )}
             <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2">
-              <StockPill status={p.stock_status} quantity={p.quantity} />
+              <StockPill status={p.stock_status} quantity={p.quantity} exact={p.stock_exact} />
               <Freshness at={p.stock_updated_at} />
             </div>
             {p.sold_last_30d > 0 && (
@@ -439,7 +439,9 @@ export function ProductView({ id, initial }: { id: number; initial: ProductDetai
             <div className="min-w-0">
               <p className="text-lg font-semibold tabular">{formatPrice(p.price)}</p>
               <p className="truncate text-xs text-muted-foreground">
-                {t("discovery.product.stickyStock", { count: formatNumber(p.quantity), shop: shop.name })}
+                {p.stock_exact
+                  ? t("discovery.product.stickyStock", { count: formatNumber(p.quantity), shop: shop.name })
+                  : t("discovery.product.stickyBand", { stock: stockLabel(t, p.stock_status, p.quantity), shop: shop.name })}
               </p>
             </div>
             <Button className="ml-auto h-11 rounded-xl bg-brand px-5 text-brand-foreground hover:bg-brand/90" onClick={() => requireCustomer(openReserve)} {...preloadReserve}>
