@@ -185,22 +185,33 @@ export function ResultCard({
               ` · ${t("discovery.result.inStock", { count: formatNumber(group.in_stock_count) })}`}
           </p>
           <ul className="flex flex-wrap gap-1.5">
-            {others.map((o) => (
-              <li key={o.id}>
-                <Link
-                  href={`/product/${o.id}`}
-                  {...opened(o.id)}
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors hover:bg-accent",
-                    o.quantity <= 0 && "text-muted-foreground line-through decoration-muted-foreground/40",
-                  )}
-                >
-                  <span className="max-w-36 truncate">{o.shop.name}</span>
-                  <span className="font-medium tabular">{formatPrice(o.price)}</span>
-                  <span className="text-muted-foreground tabular">{formatDistance(o.shop.distance_km)}</span>
-                </Link>
-              </li>
-            ))}
+            {others.map((o) => {
+              // A call-only offer (P9.8) shows no stock state: it is marked "call the shop to check" instead.
+              const otherCallOnly = (o as typeof o & CallOnly).call_only === true;
+              return (
+                <li key={o.id}>
+                  <Link
+                    href={`/product/${o.id}`}
+                    {...opened(o.id)}
+                    title={otherCallOnly ? t("discovery.result.callOnly") : undefined}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors hover:bg-accent",
+                      !otherCallOnly && o.quantity <= 0 && "text-muted-foreground line-through decoration-muted-foreground/40",
+                    )}
+                  >
+                    {otherCallOnly && (
+                      <>
+                        <Phone className="size-3 text-warning-ink" aria-hidden />
+                        <span className="sr-only">{t("discovery.result.callOnly")}</span>
+                      </>
+                    )}
+                    <span className="max-w-36 truncate">{o.shop.name}</span>
+                    <span className="font-medium tabular">{formatPrice(o.price)}</span>
+                    <span className="text-muted-foreground tabular">{formatDistance(o.shop.distance_km)}</span>
+                  </Link>
+                </li>
+              );
+            })}
             {group.shop_count > 4 && (
               <li>
                 <Link href={`/product/${best.id}#compare`} {...opened(best.id)} className="inline-flex items-center gap-0.5 rounded-full px-2 py-1 text-xs font-medium hover:bg-accent">

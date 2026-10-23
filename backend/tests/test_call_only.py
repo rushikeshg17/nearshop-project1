@@ -100,9 +100,12 @@ def test_no_effect_before_call_only_from(monkeypatch):
     assert is_call_only(ancient, ancient, start)
 
 
-def test_the_rule_is_off_today_by_default(customer, ids, restore):
-    """Until 1 Jun 2027 nothing changes: a listing untouched for months is still reserved."""
-    assert settings.call_only_from == date(2027, 6, 1) and utcnow() < call_only_since()
+def test_the_rule_is_off_before_call_only_from(customer, ids, restore, monkeypatch):
+    """The rule ships off: call_only_from defaults to 1 Jun 2027, and until that day a listing untouched for months is
+    still reserved. The day is moved to after now so the test does not depend on the real date."""
+    assert type(settings).model_fields["call_only_from"].default == date(2027, 6, 1)
+    monkeypatch.setattr(settings, "call_only_from", (utcnow() + 30 * DAY).date())
+    assert utcnow() < call_only_since()
     _age(ids["tape"], 90)
     listing = customer.get(f"/api/products/{ids['tape']}", headers=HEADERS).json()
     assert listing["call_only"] is False and listing["call_phone"] is None

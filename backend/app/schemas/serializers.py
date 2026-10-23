@@ -43,7 +43,11 @@ def is_call_only(stock_updated_at: datetime | None, stock_unconfirmed_at: dateti
     """Whether a listing is call-only at `now` (P9.8, plan section 8.17): from settings.call_only_from, its stock count
     is more than settings.call_only_after_days days old (or it has none), or an arrival failure has left it unconfirmed
     for longer than that. Customers are asked to call the shop, and reservations and delivery orders are refused. The
-    shop's next stock update sets stock_updated_at and clears stock_unconfirmed_at, so the listing is restored at once."""
+    shop's next stock update sets stock_updated_at and clears stock_unconfirmed_at, so the listing is restored at once.
+    Note: inventory.change_stock sets stock_updated_at for every reason, so a hold or release left over from before the
+    listing turned call-only (an expiring reservation, a cancelled order) also restores a listing that was stale by age;
+    only the shop's own updates (OWNER_REASONS) clear stock_unconfirmed_at, so such a change does not restore a listing
+    unconfirmed by an arrival failure. Both follow plan section 8.17's "the next stock update of any kind"."""
     now = now or utcnow()
     if now < call_only_since():
         return False
