@@ -52,6 +52,7 @@ from app.services import analytics, billing, gateway, importer, plans, staff
 from app.services import orders as order_service
 from app.services import reservations as reservation_service
 from app.services import reviews as review_service
+from app.services.alerts import settings_out as low_stock_alert_settings
 from app.services.inventory import apply_bulk, change_stock, set_stock
 from app.services.loaders import (
     categories,
@@ -116,7 +117,8 @@ def verification_out(shop: Shop) -> dict:
 def _shop_settings(db: Database, shop: Shop, review_started: bool = False) -> dict:
     # The UPI ID (P6.1) is added here, for the owner, and never by shop_detail, which public shop pages use too.
     return {**shop_detail(shop, None, shop_reliability(db, shop)), "verification": verification_out(shop),
-            "review_started": review_started, "upi_id": shop.upi_id, "upi_payee_name": shop.upi_payee_name}
+            "review_started": review_started, "upi_id": shop.upi_id, "upi_payee_name": shop.upi_payee_name,
+            **low_stock_alert_settings(db, shop)}
 
 
 @router.get("/verification")

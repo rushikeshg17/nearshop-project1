@@ -163,6 +163,7 @@ TEMPLATES: dict[str, Template] = {
     "reservation_new": Template("nearshop_shop_new_reservation", Role.OWNER, ("confirm", "decline")),
     "order_new": Template("nearshop_shop_new_order", Role.OWNER),
     "stock_check": Template("nearshop_shop_stock_check", Role.OWNER),  # the daily stock check (P4.4)
+    "low_stock_alert": Template("nearshop_shop_low_stock", Role.OWNER),  # the daily low-stock alert (P9.14)
     "reservation_confirmed": Template("nearshop_reservation_confirmed", Role.CUSTOMER),
     "reservation_ready": Template("nearshop_reservation_ready", Role.CUSTOMER),
     "reservation_expired": Template("nearshop_reservation_closed", Role.CUSTOMER),

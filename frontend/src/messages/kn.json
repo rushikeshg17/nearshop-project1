@@ -1799,6 +1799,17 @@
         "payeeHint": "",
         "idError": "",
         "payeeError": ""
+      },
+      "lowStock": {
+        "title": "",
+        "intro": "",
+        "switchLabel": "",
+        "switchHint": "",
+        "hourLabel": "",
+        "hourHint": "",
+        "growthOnly": "",
+        "seePlans": "",
+        "freeUpdates": ""
       }
     },
     "reviews": {

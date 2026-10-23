@@ -1799,6 +1799,17 @@
         "payeeHint": "Customers see it before paying. Empty uses your shop's name.",
         "idError": "A UPI ID looks like yourshop@okhdfcbank: a name or number, an @ and your bank or app, {min} to {max} characters with no spaces",
         "payeeError": "The payee name has {min} to {max} characters, as your UPI app shows it"
+      },
+      "lowStock": {
+        "title": "Low-stock alerts",
+        "intro": "Once a day, at the hour you choose, NearShop sends you one message, in the app and on WhatsApp, listing up to 10 items at or below their low-stock level, lowest first.",
+        "switchLabel": "Send me low-stock alerts",
+        "switchHint": "Only on days when something is low.",
+        "hourLabel": "Send at",
+        "hourHint": "Indian time. 18:00 unless you change it.",
+        "growthOnly": "Low-stock alerts are part of the Growth plan.",
+        "seePlans": "See plans",
+        "freeUpdates": "Updating your stock by WhatsApp stays free on every plan."
       }
     },
     "reviews": {

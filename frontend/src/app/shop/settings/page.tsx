@@ -1,7 +1,8 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BadgeCheck, Camera, IndianRupee, Loader2, Save, ShieldCheck } from "lucide-react";
+import { BadgeCheck, BellRing, Camera, IndianRupee, Loader2, Save, ShieldCheck } from "lucide-react";
+import Link from "next/link";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -35,13 +36,30 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useMeta } from "@/hooks/use-session";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import type { LanguageCode, MessageKey, Translate } from "@/lib/i18n";
-import type { OwnerShopSettings, ShopDetail, ShopVerification } from "@/lib/types";
+import type { OwnerShopSettings as ShopSettingsBase, ShopDetail, ShopVerification } from "@/lib/types";
 import { normalizePayeeName, normalizeUpiId, payeeNameError, UPI_LIMITS, upiIdError } from "@/lib/upi";
+
+/** The owner's shop settings with the daily low-stock alert (P9.14): on by default, at an IST hour (18 by default),
+ * and whether the shop's plan includes it (Growth and above). */
+type OwnerShopSettings = ShopSettingsBase & {
+  low_stock_alerts_on: boolean;
+  low_stock_alert_hour: number;
+  low_stock_alerts_entitled: boolean;
+};
+
+type AlertFormState = { on: boolean; hour: number };
+
+const ALERT_HOURS = Array.from({ length: 24 }, (_, h) => h);
+
+function alertsOf(s: OwnerShopSettings): AlertFormState {
+  return { on: s.low_stock_alerts_on ?? true, hour: s.low_stock_alert_hour ?? 18 };
+}
 
 function toForm(s: ShopDetail): ShopFormState {
   return {
@@ -97,6 +115,7 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
   // Direct UPI (P6.1, P6.2): the shop's own UPI ID, where customers pay it directly. Empty removes it.
   const [upi, setUpi] = useState<UpiFormState>(() => ({ upi_id: initial.upi_id ?? "", upi_payee_name: initial.upi_payee_name ?? "" }));
   const upiErrors = upiErrorsOf(upi);
+  const [alerts, setAlerts] = useState<AlertFormState>(() => alertsOf(initial));
 
   const save = useMutation({
     mutationFn: () =>
@@ -106,10 +125,15 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
         is_active: active,
         upi_id: normalizeUpiId(upi.upi_id) || null,
         upi_payee_name: normalizePayeeName(upi.upi_payee_name) || null,
+        // A Free shop's alert settings are kept as they are: the alert is part of Growth.
+        ...(initial.low_stock_alerts_entitled
+          ? { low_stock_alerts_on: alerts.on, low_stock_alert_hour: alerts.hour }
+          : {}),
       }),
     onSuccess: (s) => {
       setConfirming(false);
       setUpi({ upi_id: s.upi_id ?? "", upi_payee_name: s.upi_payee_name ?? "" });
+      setAlerts(alertsOf(s));
       qc.setQueryData(["owner", "shop"], s);
       qc.setQueryData(["owner", "verification"], s.verification);
       qc.invalidateQueries({ queryKey: ["me"] });
@@ -192,6 +216,7 @@ function SettingsForm({ initial, verification }: { initial: OwnerShopSettings; v
           </div>
         </section>
         <UpiFields s={upi} set={setUpi} errors={upiErrors} />
+        <LowStockAlertFields s={alerts} set={setAlerts} entitled={initial.low_stock_alerts_entitled} />
       </div>
       <div className="fixed inset-x-0 bottom-0 z-40 border-t bg-background/95 p-3 backdrop-blur lg:left-[248px]">
         <div className="mx-auto flex max-w-6xl justify-end px-1 md:px-3">
@@ -308,6 +333,64 @@ function UpiFields({
           <p id="upi-payee-hint" className="text-xs text-muted-foreground">{t("owner.settings.upi.payeeHint")}</p>
         )}
       </div>
+    </section>
+  );
+}
+
+/** "Low-stock alerts" (P9.14): on Growth and above, on or off and the hour; on Free, that the alert is part of Growth.
+ * Stock updates by WhatsApp stay free on every plan. */
+function LowStockAlertFields({
+  s,
+  set,
+  entitled,
+}: {
+  s: AlertFormState;
+  set: (s: AlertFormState) => void;
+  entitled: boolean;
+}) {
+  const { t } = useI18n();
+  return (
+    <section aria-labelledby="low-stock-title" className="space-y-5 rounded-2xl border bg-card p-5">
+      <div className="flex items-start gap-3">
+        <BellRing className="mt-0.5 size-5 shrink-0 text-primary" />
+        <div>
+          <h2 id="low-stock-title" className="font-semibold">{t("owner.settings.lowStock.title")}</h2>
+          <p className="text-sm text-muted-foreground">{t("owner.settings.lowStock.intro")}</p>
+        </div>
+      </div>
+      {entitled ? (
+        <>
+          <div className="flex items-center justify-between gap-4">
+            <Label htmlFor="low-stock-on" className="flex flex-col items-start gap-0.5">
+              <span>{t("owner.settings.lowStock.switchLabel")}</span>
+              <span className="text-xs font-normal text-muted-foreground">{t("owner.settings.lowStock.switchHint")}</span>
+            </Label>
+            <Switch id="low-stock-on" checked={s.on} onCheckedChange={(on) => set({ ...s, on })} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="low-stock-hour">{t("owner.settings.lowStock.hourLabel")}</Label>
+            <Select value={String(s.hour)} onValueChange={(v) => set({ ...s, hour: Number(v) })} disabled={!s.on}>
+              <SelectTrigger id="low-stock-hour" className="w-full" aria-describedby="low-stock-hour-hint">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ALERT_HOURS.map((h) => (
+                  <SelectItem key={h} value={String(h)}>{`${String(h).padStart(2, "0")}:00`}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p id="low-stock-hour-hint" className="text-xs text-muted-foreground">{t("owner.settings.lowStock.hourHint")}</p>
+          </div>
+        </>
+      ) : (
+        <div className="space-y-2 rounded-xl bg-muted/50 p-3 text-sm" data-testid="low-stock-growth-only">
+          <p>{t("owner.settings.lowStock.growthOnly")}</p>
+          <Link href="/shop/billing" className="font-medium text-primary underline-offset-4 hover:underline">
+            {t("owner.settings.lowStock.seePlans")}
+          </Link>
+        </div>
+      )}
+      <p className="text-xs text-muted-foreground">{t("owner.settings.lowStock.freeUpdates")}</p>
     </section>
   );
 }

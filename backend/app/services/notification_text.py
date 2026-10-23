@@ -168,7 +168,16 @@ MESSAGES: dict[str, dict[str, tuple[str, str | None]]] = {
         "en": ("Stock check for {shop}", "Are these counts still right? {items}"),
         "kn": ("{shop} ಸ್ಟಾಕ್ ಪರಿಶೀಲನೆ", "ಈ ಸಂಖ್ಯೆಗಳು ಇನ್ನೂ ಸರಿಯಾಗಿವೆಯೇ? {items}"),
     },
+    # ------------------------------------------------------------ the daily low-stock alert (app/services/alerts.py)
+    "low_stock_alert": {  # items: the low_stock_item fragments, joined by "; ". Kannada awaited (KANNADA_AWAITED).
+        "en": ("Low stock at {shop}", "{items}"),
+    },
 }
+
+# Entries whose Kannada the team has not supplied yet (P9.14: only text the team supplies is used for new entries).
+# They have English only and render in English for everyone until the Kannada arrives; the catalogue test
+# (tests/test_notification_text.py) holds every other entry to both languages.
+KANNADA_AWAITED: frozenset[str] = frozenset({"low_stock_alert", "low_stock_item", "low_stock_more"})
 
 # key -> language -> text: the WhatsApp bot's replies to shops (P4.4) and the fragments messages are built from.
 TEXTS: dict[str, dict[str, str]] = {
@@ -179,6 +188,9 @@ TEXTS: dict[str, dict[str, str]] = {
     # ------------------------------------------------------------ the stock check's listings
     "stock_check_item": {"en": "{name}: {quantity} (counted {days} days ago)",
                          "kn": "{name}: {quantity} ({days} ದಿನಗಳ ಹಿಂದೆ ಎಣಿಸಲಾಗಿದೆ)"},
+    # ------------------------------------------------------------ the low-stock alert's listings (Kannada awaited)
+    "low_stock_item": {"en": "{name}: {quantity} (alert at {threshold})"},
+    "low_stock_more": {"en": "and {count} more"},
     # ------------------------------------------------------------ the bot's replies
     "bot_help": {
         "en": "To update your stock on NearShop, send one line per item with its name and count, for example:\n"

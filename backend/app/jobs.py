@@ -57,6 +57,12 @@ reads the missed day's report again (NEARSHOP_AUTOPAY_RECONCILE_DAYS).
 demand_report (P9.7), once a week, on Monday at 03:00 IST or on the first tick after it, builds the "asked for near you"
 report of every verified live shop and draws R5's weekly audit sample (app/services/demand_report.py build_week); the
 ISO week it ran for is kept in the lease's last_result (ran_for), like lead_counts. Counts only, never a query.
+low_stock_alerts (P9.14), every tick, sends each shop on Growth or above with the alert on one message a day, from
+its alert hour (IST, 18:00 by default) until 3 hours after it, listing up to 10 listings at or below their low-stock
+level, lowest first (app/services/alerts.py send_low_stock_alerts): in the app and, through the outbox, on WhatsApp,
+as a free-form message inside the owner's open window, otherwise as the template. The day it considered a shop is
+recorded on the shop with a conditional write, so a shop gets at most one alert a day; a Free shop, a shop with
+nothing low and a shop with the alert off get none. It runs beside the stock check and never replaces it.
 
 A failed run is retried on the next tick, except for a job in RETRY_AFTER_FAILURE: its failure is
 recorded on the lease with retry_at, and until then the holder only renews the lease without running
@@ -128,7 +134,8 @@ RETRY_AFTER_FAILURE: dict[str, timedelta] = {"snapshot_storage": timedelta(hours
                                               "phone_migration": timedelta(hours=1),
                                               "stock_check": timedelta(minutes=15), "lead_counts": timedelta(hours=1),
                                               "billing_reconciliation": timedelta(hours=1),
-                                              "demand_report": timedelta(hours=1)}
+                                              "demand_report": timedelta(hours=1),
+                                              "low_stock_alerts": timedelta(minutes=15)}
 RETENTION_AT = time(21, 30)  # UTC: 03:00 IST, the nightly retention job (P3.2)
 # The phone migration (P4.2): in-app warnings this many days before the email sign-in sunset, and accounts still
 # without a verified phone switched off this many days after it.
@@ -147,6 +154,7 @@ LEAD_COUNTS_AT = time(2, 0)  # IST, on the 1st of each month
 SUBSCRIPTIONS_JOB = "subscriptions"  # plans and subscriptions (P9.4)
 BILLING_JOB = "billing_reconciliation"  # the daily unmatched-credit alert (P9.5)
 DEMAND_REPORT_JOB = "demand_report"  # the weekly "asked for near you" report (P9.7)
+LOW_STOCK_ALERTS_JOB = "low_stock_alerts"  # the daily low-stock alert for Growth shops (P9.14)
 
 RETRAIN_REQUESTS = "retrain_requests"
 RETRAIN_DAILY_LIMIT = 3  # manual requests in any 24 hours
@@ -513,11 +521,22 @@ def demand_report(clock: Clock = utcnow) -> dict[str, Any]:
     return {"ran_for": week, **{k: v for k, v in built.items() if k != "week"}}
 
 
+def low_stock_alerts(clock: Clock = utcnow) -> dict[str, Any]:
+    """The daily low-stock alert (P9.14, app/services/alerts.py send_low_stock_alerts), every tick. last_result: the
+    IST day and the shops considered this run: sent (with its route: in_window, template, or app when the owner gets
+    no WhatsApp), nothing_low and not_entitled. A failed run is retried 15 minutes later (RETRY_AFTER_FAILURE), still
+    inside the 3 hours after a shop's alert hour."""
+    from app.services import alerts
+
+    return alerts.send_low_stock_alerts(Database(), clock())
+
+
 JOBS: dict[str, Callable[[], Mapping[str, Any] | None]] = {
     "sweep_expired": sweep_expired, "snapshot_storage": snapshot_storage, "retention": retention,
     "process_deletions": process_deletions, PHONE_MIGRATION_JOB: phone_migration,
     SEND_NOTIFICATIONS_JOB: send_notifications, STOCK_CHECK_JOB: stock_check, LEAD_COUNTS_JOB: lead_counts,
-    SUBSCRIPTIONS_JOB: subscriptions, BILLING_JOB: billing_reconciliation, DEMAND_REPORT_JOB: demand_report}
+    SUBSCRIPTIONS_JOB: subscriptions, BILLING_JOB: billing_reconciliation, DEMAND_REPORT_JOB: demand_report,
+    LOW_STOCK_ALERTS_JOB: low_stock_alerts}
 
 
 class SearchIndexRefresher:
