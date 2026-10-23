@@ -2,19 +2,21 @@
 
 A shop whose plan has the low_stock_alerts entitlement (Growth and above, P9.4: asked through plans.entitled, nothing
 else) gets one message a day listing its active listings at or below their low-stock level (quantity at or below
-low_stock_threshold, as the inventory page's low-stock filter counts them, out-of-stock listings included): up to
-MAX_ITEMS of them, lowest count first, with "and N more" when there are more, and a link to the inventory page.
+low_stock_threshold; unlike the inventory page's low-stock filter, which leaves out listings at 0, out-of-stock
+listings are included): up to MAX_ITEMS of them, lowest count first, with "and N more" when there are more, and a
+link to the unfiltered inventory page.
 
 Settings (on Shop, changed through PATCH /api/owner/shop): low_stock_alerts_on (true by default, so an entitled shop
 gets the alert without doing anything) and low_stock_alert_hour (the IST hour, 18 by default). A Free shop keeps
 the setting but gets nothing; its settings page says the alert is part of Growth (settings_out).
 
-When: the low_stock_alerts job (app/jobs.py, every 30-second tick under its lease, P1.7) considers each active shop
-with the alert on once per IST day, from its hour until GRACE after it (a tick missed while no process ran is caught
-up, never sent twice). Considering a shop records the day on it (low_stock_alert_day, with low_stock_alert_outcome:
-sent, nothing_low or not_entitled), with a write conditional on the day not being recorded yet; for a sent alert that
-write and the notification are one transaction. So a shop gets at most one alert a day, whatever the number of
-processes, and a failed send leaves the day unrecorded for the next tick.
+When: the low_stock_alerts job (app/jobs.py, every 30-second tick under its lease, P1.7) considers each active shop with
+the alert on once per IST day, from its hour until GRACE after it or IST midnight, whichever comes first (a tick missed
+while no process ran is caught up, never sent twice; the slot never runs into the next IST day, so an hour of 22 gets
+two hours to catch up and 23 one). Considering a shop records the day on it (low_stock_alert_day, with
+low_stock_alert_outcome: sent, nothing_low or not_entitled), with a write conditional on the day not being recorded yet;
+for a sent alert that write and the notification are one transaction. So a shop gets at most one alert a day, whatever
+the number of processes, and a failed send leaves the day unrecorded for the next tick.
 
 How: notify() writes the in-app notification (kind low_stock_alert, link /shop/inventory) and, while WhatsApp is on
 and the owner opted in with a verified phone, its outbox row (app/services/whatsapp.py). Inside the owner's open
@@ -53,7 +55,8 @@ OUTCOME_FIELD = "low_stock_alert_outcome"
 
 
 def due_hours(local: datetime) -> list[int]:
-    """The alert hours whose slot is open at this IST time: from the hour until GRACE after it, the same day."""
+    """The alert hours whose slot is open at this IST time: from the hour until GRACE after it, cut off at IST
+    midnight (the slot stays inside one IST day, so hours 22 and 23 get a shorter catch-up window)."""
     span = int(GRACE.total_seconds() // 3600)
     return [local.hour - i for i in range(span) if local.hour - i >= 0]
 
