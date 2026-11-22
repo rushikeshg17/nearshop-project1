@@ -25,7 +25,7 @@ dependencies = [
     "python-multipart>=0.0.32",
     "rapidfuzz>=3.14.6",
     "scikit-learn>=1.9.1",
-    "sentry-sdk[fastapi]>=2.70.0",
+    "sentry-sdk[fastapi]>=2.75.0",
     "uvicorn[standard]>=0.54.0",
 ]
 
